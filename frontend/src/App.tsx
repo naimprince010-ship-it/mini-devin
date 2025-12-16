@@ -3,10 +3,27 @@ import { Session } from './types';
 import { SessionList } from './components/SessionList';
 import { TaskPanel } from './components/TaskPanel';
 import { StatusBar } from './components/StatusBar';
-import { Bot, Github } from 'lucide-react';
+import { LoginForm } from './components/LoginForm';
+import { UserMenu } from './components/UserMenu';
+import { useAuth } from './contexts/AuthContext';
+import { Bot, Github, LogIn, Loader2 } from 'lucide-react';
 
 function App() {
+  const { user, loading } = useAuth();
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
+  const [showLogin, setShowLogin] = useState(false);
+
+  if (loading) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-gray-900">
+        <Loader2 className="animate-spin text-blue-400" size={48} />
+      </div>
+    );
+  }
+
+  if (showLogin && !user) {
+    return <LoginForm />;
+  }
 
   return (
     <div className="h-screen flex flex-col bg-gray-900 text-white">
@@ -32,6 +49,17 @@ function App() {
           >
             <Github size={20} />
           </a>
+          {user ? (
+            <UserMenu />
+          ) : (
+            <button
+              onClick={() => setShowLogin(true)}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 transition-colors text-sm"
+            >
+              <LogIn size={16} />
+              Sign In
+            </button>
+          )}
         </div>
       </header>
 

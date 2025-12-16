@@ -91,3 +91,39 @@ export interface Model {
   name: string;
   provider: string;
 }
+
+export interface User {
+  user_id: string;
+  email: string;
+  username: string;
+  is_active: boolean;
+  is_admin: boolean;
+  created_at: string;
+  last_login_at: string | null;
+}
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface RegisterRequest {
+  email: string;
+  username: string;
+  password: string;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+}
+
+export interface APIKey {
+  api_key_id: string;
+  name: string;
+  key_prefix: string;
+  created_at: string;
+  last_used_at: string | null;
+  expires_at: string | null;
+}

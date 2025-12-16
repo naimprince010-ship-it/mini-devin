@@ -20,6 +20,7 @@ from .routes import router
 from .websocket import ConnectionManager
 from ..sessions.db_manager import DatabaseSessionManager
 from ..database.config import init_db, close_db
+from ..auth.routes import router as auth_router
 
 
 # Global instances
@@ -102,6 +103,7 @@ def create_app(
     
     # Include API routes
     app.include_router(router, prefix="/api")
+    app.include_router(auth_router, prefix="/api")
     
     # Serve static files if they exist
     static_dir = os.path.join(os.path.dirname(__file__), "static")
