@@ -36,6 +36,15 @@ from .working_memory import (
     create_working_memory,
 )
 
+from .conversation_memory import (
+    ConversationEntryType,
+    Importance,
+    ConversationEntry,
+    TaskSummary,
+    ConversationMemory,
+    create_conversation_memory,
+)
+
 __all__ = [
     # Symbol index
     "Symbol",
@@ -56,4 +65,11 @@ __all__ = [
     "WorkingMemory",
     "MemoryItem",
     "create_working_memory",
+    # Conversation memory
+    "ConversationEntryType",
+    "Importance",
+    "ConversationEntry",
+    "TaskSummary",
+    "ConversationMemory",
+    "create_conversation_memory",
 ]
