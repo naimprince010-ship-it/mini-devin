@@ -57,6 +57,15 @@ from ..agents import (
     PlanningStrategy,
     create_planner_agent,
 )
+from ..core.parallel_executor import (
+    ParallelExecutor,
+    BatchToolCaller,
+    ToolCall,
+    ToolCallResult,
+    ParallelExecutionResult,
+    create_parallel_executor,
+    create_batch_caller,
+)
 
 
 # System prompt for the agent
@@ -129,6 +138,8 @@ class Agent:
         max_repair_iterations: int = 3,
         safety_policy: SafetyPolicy | None = None,
         artifact_dir: str = "runs",
+        enable_parallel_execution: bool = True,
+        max_parallel_tools: int = 5,
     ):
         self.llm = llm_client or create_llm_client()
         self.registry = tool_registry or get_global_registry()
@@ -173,6 +184,12 @@ class Agent:
         # Conversation memory for cross-session learning (Phase 18)
         self._conversation_memory: ConversationMemory | None = None
         self._use_conversation_memory: bool = True
+        
+        # Parallel execution (Phase 19)
+        self._enable_parallel_execution = enable_parallel_execution
+        self._max_parallel_tools = max_parallel_tools
+        self._parallel_executor: ParallelExecutor | None = None
+        self._batch_caller: BatchToolCaller | None = None
         
         # Register default tools
         self._register_default_tools()
@@ -1685,6 +1702,235 @@ class Agent:
         
         planner = self.get_planner_agent()
         self.state.current_plan = planner.create_minimal_plan(task_to_plan)
+    
+    def get_parallel_executor(self) -> ParallelExecutor:
+        """
+        Get or create the parallel executor.
+        
+        Returns:
+            ParallelExecutor instance
+        """
+        if self._parallel_executor is None:
+            async def execute_tool(tool_name: str, arguments: dict) -> str:
+                return await self._execute_tool(tool_name, arguments)
+            
+            self._parallel_executor = create_parallel_executor(
+                execute_fn=execute_tool,
+                max_concurrent=self._max_parallel_tools,
+                fail_fast=False,
+            )
+        return self._parallel_executor
+    
+    def get_batch_caller(self) -> BatchToolCaller:
+        """
+        Get or create the batch tool caller.
+        
+        Returns:
+            BatchToolCaller instance for fluent API
+        """
+        if self._batch_caller is None:
+            async def execute_tool(tool_name: str, arguments: dict) -> str:
+                return await self._execute_tool(tool_name, arguments)
+            
+            self._batch_caller = create_batch_caller(
+                execute_fn=execute_tool,
+                max_concurrent=self._max_parallel_tools,
+            )
+        return self._batch_caller
+    
+    def enable_parallel_execution(self, enabled: bool = True) -> None:
+        """
+        Enable or disable parallel tool execution.
+        
+        Args:
+            enabled: Whether to enable parallel execution
+        """
+        self._enable_parallel_execution = enabled
+    
+    def set_max_parallel_tools(self, max_tools: int) -> None:
+        """
+        Set the maximum number of parallel tool executions.
+        
+        Args:
+            max_tools: Maximum number of concurrent tool calls
+        """
+        self._max_parallel_tools = max_tools
+        self._parallel_executor = None
+        self._batch_caller = None
+    
+    async def execute_tools_parallel(
+        self,
+        tool_calls: list[dict],
+    ) -> ParallelExecutionResult:
+        """
+        Execute multiple tool calls in parallel when possible.
+        
+        Analyzes dependencies between calls and executes independent
+        calls concurrently for improved performance.
+        
+        Args:
+            tool_calls: List of tool call dicts with 'name' and 'arguments'
+            
+        Returns:
+            ParallelExecutionResult with all results and timing info
+        """
+        if not self._enable_parallel_execution or len(tool_calls) <= 1:
+            results = []
+            for tc in tool_calls:
+                from datetime import datetime
+                started_at = datetime.utcnow()
+                try:
+                    result = await self._execute_tool(tc["name"], tc["arguments"])
+                    completed_at = datetime.utcnow()
+                    duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+                    success = "Error" not in str(result) and "BLOCKED" not in str(result)
+                    results.append(ToolCallResult(
+                        call_id=tc.get("id", str(len(results))),
+                        tool_name=tc["name"],
+                        success=success,
+                        result=result,
+                        error=None if success else result,
+                        started_at=started_at,
+                        completed_at=completed_at,
+                        duration_ms=duration_ms,
+                    ))
+                except Exception as e:
+                    completed_at = datetime.utcnow()
+                    duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+                    results.append(ToolCallResult(
+                        call_id=tc.get("id", str(len(results))),
+                        tool_name=tc["name"],
+                        success=False,
+                        result=None,
+                        error=str(e),
+                        started_at=started_at,
+                        completed_at=completed_at,
+                        duration_ms=duration_ms,
+                    ))
+            
+            total_duration = sum(r.duration_ms for r in results)
+            return ParallelExecutionResult(
+                results=results,
+                total_duration_ms=total_duration,
+                parallel_speedup=1.0,
+                execution_order=[[r.call_id for r in results]],
+            )
+        
+        calls = [
+            ToolCall.create(
+                tool_name=tc["name"],
+                arguments=tc["arguments"],
+            )
+            for tc in tool_calls
+        ]
+        
+        executor = self.get_parallel_executor()
+        return await executor.execute(calls)
+    
+    async def batch_read_files(self, paths: list[str]) -> dict[str, str]:
+        """
+        Read multiple files in parallel.
+        
+        Args:
+            paths: List of file paths to read
+            
+        Returns:
+            Dict mapping paths to file contents
+        """
+        tool_calls = [
+            {"name": "editor", "arguments": {"action": "read_file", "path": path}}
+            for path in paths
+        ]
+        
+        result = await self.execute_tools_parallel(tool_calls)
+        
+        contents = {}
+        for i, path in enumerate(paths):
+            if i < len(result.results):
+                r = result.results[i]
+                contents[path] = r.result if r.success else f"Error: {r.error}"
+            else:
+                contents[path] = "Error: No result"
+        
+        return contents
+    
+    async def batch_search(
+        self,
+        patterns: list[str],
+        path: str,
+    ) -> dict[str, str]:
+        """
+        Search for multiple patterns in parallel.
+        
+        Args:
+            patterns: List of search patterns
+            path: Directory to search in
+            
+        Returns:
+            Dict mapping patterns to search results
+        """
+        tool_calls = [
+            {"name": "editor", "arguments": {"action": "search", "pattern": pattern, "path": path}}
+            for pattern in patterns
+        ]
+        
+        result = await self.execute_tools_parallel(tool_calls)
+        
+        results = {}
+        for i, pattern in enumerate(patterns):
+            if i < len(result.results):
+                r = result.results[i]
+                results[pattern] = r.result if r.success else f"Error: {r.error}"
+            else:
+                results[pattern] = "Error: No result"
+        
+        return results
+    
+    async def batch_terminal_commands(
+        self,
+        commands: list[str],
+        working_directory: str | None = None,
+    ) -> list[ToolCallResult]:
+        """
+        Execute multiple terminal commands.
+        
+        Note: Commands are analyzed for dependencies and may be
+        executed sequentially if they depend on each other.
+        
+        Args:
+            commands: List of shell commands
+            working_directory: Optional working directory
+            
+        Returns:
+            List of ToolCallResult for each command
+        """
+        tool_calls = [
+            {
+                "name": "terminal",
+                "arguments": {
+                    "command": cmd,
+                    **({"working_directory": working_directory} if working_directory else {}),
+                },
+            }
+            for cmd in commands
+        ]
+        
+        result = await self.execute_tools_parallel(tool_calls)
+        return result.results
+    
+    def get_parallel_execution_stats(self) -> dict:
+        """
+        Get statistics about parallel execution.
+        
+        Returns:
+            Dict with parallel execution configuration and stats
+        """
+        return {
+            "enabled": self._enable_parallel_execution,
+            "max_parallel_tools": self._max_parallel_tools,
+            "executor_initialized": self._parallel_executor is not None,
+            "batch_caller_initialized": self._batch_caller is not None,
+        }
     
     def _update_phase(self, new_phase: AgentPhase) -> None:
         """Update the agent phase."""
