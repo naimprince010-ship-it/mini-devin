@@ -1,0 +1,8 @@
+{
+  "task_id": "task_01_python_fix_test",
+  "name": "Python: Fix Failing Test",
+  "description": "Fix a failing test in a Python calculator module",
+  "task_prompt": "The test_divide function in tests/test_calculator.py is failing. Fix the divide function in src/calculator.py to handle division by zero correctly by raising a ValueError.",
+  "repo_type": "python",
+  "workspace": "/tmp/mini_devin_task_01_python_fix_test_4gwrej8f"
+}

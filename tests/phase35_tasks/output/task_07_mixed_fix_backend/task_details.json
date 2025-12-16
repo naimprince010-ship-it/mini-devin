@@ -1,0 +1,8 @@
+{
+  "task_id": "task_07_mixed_fix_backend",
+  "name": "Mixed: Fix Backend Test",
+  "description": "Fix a failing test in the backend validation module",
+  "task_prompt": "The test for 'validate_email' in backend/tests/test_validation.py is failing. Fix the validate_email function in backend/utils/validation.py.",
+  "repo_type": "mixed",
+  "workspace": "/tmp/mini_devin_task_07_mixed_fix_backend_cg0v4tr3"
+}

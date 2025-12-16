@@ -1,0 +1,12 @@
+{
+  "name": "mixed-app-frontend",
+  "version": "1.0.0",
+  "description": "Frontend for mixed app",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "jest"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0"
+  }
+}

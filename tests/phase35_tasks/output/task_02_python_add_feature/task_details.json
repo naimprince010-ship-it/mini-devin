@@ -1,0 +1,8 @@
+{
+  "task_id": "task_02_python_add_feature",
+  "name": "Python: Add Feature",
+  "description": "Add a power function to the calculator",
+  "task_prompt": "Add a 'power(base, exponent)' function to src/calculator.py that calculates base raised to the power of exponent. Also add a test for it in tests/test_calculator.py.",
+  "repo_type": "python",
+  "workspace": "/tmp/mini_devin_task_02_python_add_feature_dzvq0s11"
+}

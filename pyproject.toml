@@ -1,0 +1,51 @@
+[tool.poetry]
+name = "mini-devin"
+version = "0.1.0"
+description = "An autonomous AI software engineer agent with access to Terminal, Code Editor, and Web Browser"
+authors = ["Mini-Devin Team"]
+readme = "README.md"
+packages = [{include = "mini_devin"}]
+
+[tool.poetry.scripts]
+mini-devin = "mini_devin.cli:main"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+pydantic = "^2.5.0"
+litellm = "^1.0.0"
+httpx = "^0.25.0"
+playwright = "^1.40.0"
+tree-sitter = "^0.20.0"
+pexpect = "^4.9.0"
+docker = "^7.0.0"
+sqlalchemy = "^2.0.0"
+asyncio = "^3.4.3"
+python-dotenv = "^1.0.0"
+rich = "^13.7.0"
+typer = "^0.9.0"
+fastapi = "^0.124.4"
+uvicorn = "^0.38.0"
+websockets = "^15.0.1"
+sqlmodel = "^0.0.27"
+alembic = "^1.17.2"
+asyncpg = "^0.31.0"
+psycopg2-binary = "^2.9.11"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.21.0"
+black = "^23.0.0"
+ruff = "^0.1.0"
+mypy = "^1.7.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true

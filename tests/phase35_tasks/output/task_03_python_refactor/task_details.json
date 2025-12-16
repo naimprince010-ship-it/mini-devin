@@ -1,0 +1,8 @@
+{
+  "task_id": "task_03_python_refactor",
+  "name": "Python: Refactor Code",
+  "description": "Refactor calculator to use a Calculator class",
+  "task_prompt": "Refactor src/calculator.py to use a Calculator class with methods add, subtract, multiply, divide instead of standalone functions. Update the tests accordingly.",
+  "repo_type": "python",
+  "workspace": "/tmp/mini_devin_task_03_python_refactor_xhss00x4"
+}

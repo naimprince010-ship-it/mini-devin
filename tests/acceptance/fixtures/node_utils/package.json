@@ -1,0 +1,12 @@
+{
+  "name": "string-utils",
+  "version": "1.0.0",
+  "description": "String utility functions",
+  "main": "src/stringUtils.js",
+  "scripts": {
+    "test": "jest"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0"
+  }
+}

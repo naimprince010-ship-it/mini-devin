@@ -1,0 +1,8 @@
+{
+  "task_id": "task_09_python_add_docs",
+  "name": "Python: Add Documentation",
+  "description": "Add docstrings to all functions in calculator module",
+  "task_prompt": "Add comprehensive docstrings to all functions in src/calculator.py following Google style docstrings. Include Args, Returns, and Raises sections where applicable.",
+  "repo_type": "python",
+  "workspace": "/tmp/mini_devin_task_09_python_add_docs_fm_jbc2i"
+}

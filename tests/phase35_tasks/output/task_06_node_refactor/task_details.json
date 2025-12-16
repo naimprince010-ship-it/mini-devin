@@ -1,0 +1,8 @@
+{
+  "task_id": "task_06_node_refactor",
+  "name": "Node: Refactor Code",
+  "description": "Refactor string utilities to use ES6 class",
+  "task_prompt": "Refactor src/stringUtils.js to use an ES6 class called StringUtils with static methods. Update the tests to use the new class.",
+  "repo_type": "node",
+  "workspace": "/tmp/mini_devin_task_06_node_refactor_kkya7yz3"
+}

@@ -1,0 +1,8 @@
+{
+  "task_id": "task_10_node_error_handling",
+  "name": "Node: Add Error Handling",
+  "description": "Add proper error handling to string utilities",
+  "task_prompt": "Add proper error handling to all functions in src/stringUtils.js. Each function should throw a TypeError if the input is not a string. Add tests for the error cases.",
+  "repo_type": "node",
+  "workspace": "/tmp/mini_devin_task_10_node_error_handling_t4rxjjvk"
+}

@@ -1,0 +1,8 @@
+{
+  "task_id": "task_08_mixed_fix_frontend",
+  "name": "Mixed: Fix Frontend Test",
+  "description": "Fix a failing test in the frontend validation module",
+  "task_prompt": "The test for 'validateEmail' in frontend/tests/validation.test.js is failing. Fix the validateEmail function in frontend/src/utils/validation.js.",
+  "repo_type": "mixed",
+  "workspace": "/tmp/mini_devin_task_08_mixed_fix_frontend_2wekubm6"
+}

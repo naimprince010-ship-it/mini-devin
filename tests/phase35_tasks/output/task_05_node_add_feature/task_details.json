@@ -1,0 +1,8 @@
+{
+  "task_id": "task_05_node_add_feature",
+  "name": "Node: Add Feature",
+  "description": "Add a truncate function to string utilities",
+  "task_prompt": "Add a 'truncate(str, maxLength)' function to src/stringUtils.js that truncates a string to maxLength characters and adds '...' if truncated. Add tests for it.",
+  "repo_type": "node",
+  "workspace": "/tmp/mini_devin_task_05_node_add_feature_yw52b_1n"
+}

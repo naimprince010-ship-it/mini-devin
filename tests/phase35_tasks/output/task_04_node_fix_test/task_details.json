@@ -1,0 +1,8 @@
+{
+  "task_id": "task_04_node_fix_test",
+  "name": "Node: Fix Failing Test",
+  "description": "Fix a failing test in a Node.js string utilities module",
+  "task_prompt": "The test for 'capitalize' function in tests/stringUtils.test.js is failing. Fix the capitalize function in src/stringUtils.js to handle empty strings correctly.",
+  "repo_type": "node",
+  "workspace": "/tmp/mini_devin_task_04_node_fix_test_b1p67ivk"
+}
