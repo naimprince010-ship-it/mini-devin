@@ -10,6 +10,13 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from mini_devin.core.providers import (
+    Provider,
+    get_model_registry,
+    get_litellm_model_name,
+    AzureConfig,
+)
+
 
 # LiteLLM import
 try:
@@ -30,6 +37,7 @@ class LLMConfig:
     api_base: str | None = None
     timeout: int = 120
     max_retries: int = 3
+    provider: Provider | None = None
 
 
 @dataclass
@@ -110,12 +118,42 @@ class LLMClient:
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         
-        # Set API key if provided
-        if self.config.api_key:
-            os.environ["OPENAI_API_KEY"] = self.config.api_key
+        self._setup_provider()
         
         # Disable litellm logging noise
         litellm.set_verbose = False
+    
+    def _setup_provider(self) -> None:
+        """Set up provider-specific configuration."""
+        registry = get_model_registry()
+        model_info = registry.get_model(self.config.model)
+        
+        if model_info:
+            self.config.provider = model_info.provider
+        
+        provider = self.config.provider
+        
+        if provider == Provider.OPENAI:
+            if self.config.api_key:
+                os.environ["OPENAI_API_KEY"] = self.config.api_key
+        elif provider == Provider.ANTHROPIC:
+            if self.config.api_key:
+                os.environ["ANTHROPIC_API_KEY"] = self.config.api_key
+        elif provider == Provider.OLLAMA:
+            if not self.config.api_base:
+                self.config.api_base = os.environ.get(
+                    "OLLAMA_API_BASE", "http://localhost:11434"
+                )
+        elif provider == Provider.AZURE:
+            if self.config.api_key:
+                os.environ["AZURE_API_KEY"] = self.config.api_key
+            config = registry.get_provider_config(Provider.AZURE)
+            if config and isinstance(config, AzureConfig):
+                if config.api_base:
+                    self.config.api_base = config.api_base
+        else:
+            if self.config.api_key:
+                os.environ["OPENAI_API_KEY"] = self.config.api_key
     
     def set_system_prompt(self, prompt: str) -> None:
         """Set or update the system prompt."""
@@ -182,8 +220,10 @@ class LLMClient:
         """
         messages = self.get_conversation_for_api()
         
+        model_name = get_litellm_model_name(self.config.model)
+        
         kwargs: dict[str, Any] = {
-            "model": self.config.model,
+            "model": model_name,
             "messages": messages,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
@@ -309,14 +349,50 @@ class LLMClient:
 
 
 def create_llm_client(
-    model: str = "gpt-4o",
+    model: str | None = None,
     api_key: str | None = None,
     temperature: float = 0.0,
+    api_base: str | None = None,
 ) -> LLMClient:
-    """Create an LLM client with common defaults."""
+    """
+    Create an LLM client with common defaults.
+    
+    Args:
+        model: Model ID (e.g., "gpt-4o", "claude-3-5-sonnet-20241022", "ollama/llama3.2")
+               If None, uses the default model based on configured providers.
+        api_key: API key for the provider. If None, uses environment variable.
+        temperature: Temperature for generation (0.0 = deterministic)
+        api_base: Base URL for the API (mainly for Ollama or custom endpoints)
+        
+    Returns:
+        Configured LLMClient instance
+    """
+    registry = get_model_registry()
+    
+    if model is None:
+        model = registry.get_default_model()
+    
+    model_info = registry.get_model(model)
+    provider = model_info.provider if model_info else None
+    
+    if api_key is None and provider:
+        if provider == Provider.OPENAI:
+            api_key = os.environ.get("OPENAI_API_KEY")
+        elif provider == Provider.ANTHROPIC:
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+        elif provider == Provider.AZURE:
+            api_key = os.environ.get("AZURE_API_KEY")
+        elif provider == Provider.OLLAMA:
+            api_key = "ollama"
+    
+    if api_key is None:
+        api_key = os.environ.get("OPENAI_API_KEY")
+    
     config = LLMConfig(
         model=model,
-        api_key=api_key or os.environ.get("OPENAI_API_KEY"),
+        api_key=api_key,
         temperature=temperature,
+        api_base=api_base,
+        provider=provider,
     )
     return LLMClient(config)
