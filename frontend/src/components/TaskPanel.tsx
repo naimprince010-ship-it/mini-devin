@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Session, Task, WebSocketMessage } from '../types';
 import { useApi } from '../hooks/useApi';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { Send, Square, FileText, Clock, CheckCircle, XCircle, Loader } from 'lucide-react';
+import { Send, Square, Clock, CheckCircle, XCircle, Loader } from 'lucide-react';
 
 interface TaskPanelProps {
   session: Session;
@@ -28,7 +28,7 @@ export function TaskPanel({ session }: TaskPanelProps) {
     }
   };
 
-  const { isConnected, messages } = useWebSocket({
+  const { isConnected } = useWebSocket({
     sessionId: session.session_id,
     onMessage: handleWebSocketMessage,
   });

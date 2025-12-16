@@ -1,7 +1,6 @@
 """SQLAlchemy models for Mini-Devin persistence."""
 
 from datetime import datetime, timezone
-from typing import Optional
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
