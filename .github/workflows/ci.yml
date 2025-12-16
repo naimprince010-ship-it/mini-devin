@@ -10,9 +10,17 @@ on:
     branches:
       - main
       - master
+  workflow_dispatch:
+    inputs:
+      run_e2e:
+        description: 'Run E2E tests'
+        required: false
+        default: 'false'
+        type: boolean
 
 env:
   PYTHON_VERSION: "3.12"
+  E2E_REQUIRED: ${{ vars.E2E_REQUIRED || 'false' }}
 
 jobs:
   lint:
@@ -211,3 +219,81 @@ jobs:
 
       - name: Run TypeScript check
         run: npm run build
+
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' && github.event.inputs.run_e2e == 'true' ||
+      contains(github.event.pull_request.labels.*.name, 'run-e2e') ||
+      env.E2E_REQUIRED == 'true'
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: minidevin_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 1.7.1
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Load cached venv
+        id: cached-poetry-dependencies
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/poetry.lock') }}
+
+      - name: Install dependencies
+        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+        run: poetry install --no-interaction --no-root
+
+      - name: Install project
+        run: poetry install --no-interaction
+
+      - name: Run E2E tests
+        id: e2e_tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/minidevin_test
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          poetry run python tests/e2e/generate_report.py
+          exit_code=$?
+          echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
+          exit $exit_code
+        continue-on-error: true
+
+      - name: Upload E2E test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-report
+          path: tests/e2e/e2e_test_report.md
+          if-no-files-found: ignore
+
+      - name: Check E2E required status
+        if: env.E2E_REQUIRED == 'true' && steps.e2e_tests.outputs.exit_code != '0'
+        run: |
+          echo "E2E tests failed and E2E_REQUIRED is true. Blocking merge."
+          exit 1

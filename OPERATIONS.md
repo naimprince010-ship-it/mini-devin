@@ -486,6 +486,71 @@ For better performance:
 
 ---
 
+## End-to-End Testing
+
+Mini-Devin includes a comprehensive end-to-end test suite that validates all components work together correctly.
+
+### Running E2E Tests Locally
+
+```bash
+# Run all E2E tests
+poetry run pytest tests/e2e/ -v
+
+# Run with detailed output
+poetry run pytest tests/e2e/ -v --tb=short
+
+# Generate a test report
+poetry run python tests/e2e/generate_report.py
+```
+
+The test report will be generated at `tests/e2e/e2e_test_report.md`.
+
+### Running E2E Tests in CI
+
+E2E tests can be triggered in CI in three ways:
+
+1. **Manual trigger (workflow_dispatch):**
+   - Go to Actions > CI > Run workflow
+   - Check "Run E2E tests" checkbox
+   - Click "Run workflow"
+
+2. **Pull request label:**
+   - Add the `run-e2e` label to your PR
+   - E2E tests will run automatically
+
+3. **Always run (E2E_REQUIRED=true):**
+   - Set the repository variable `E2E_REQUIRED` to `true`
+   - E2E tests will run on every push and PR
+
+### E2E Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `E2E_REQUIRED` | `false` | When true, E2E tests run on every CI and block merge on failure |
+| `E2E_TIMEOUT` | `300` | Timeout in seconds for E2E test execution |
+| `E2E_REPORT_DIR` | `./tests/e2e` | Directory for E2E test reports |
+
+### E2E Test Categories
+
+The E2E test suite covers:
+
+1. **Terminal & Editor Tools:** Tests for command execution, file operations, and integration between terminal and editor.
+
+2. **Browser Tools:** Tests for browser tool registration and schemas (search, fetch, interactive).
+
+3. **Gates Integration:** Tests for planner and reviewer gates in the execution flow, including configuration via environment variables.
+
+### Viewing E2E Test Reports
+
+When E2E tests run in CI, the test report is uploaded as an artifact:
+
+1. Go to the workflow run in GitHub Actions
+2. Scroll to "Artifacts" section
+3. Download `e2e-test-report`
+4. Open `e2e_test_report.md` to view results
+
+---
+
 ## Appendix: CLI Reference
 
 ```
