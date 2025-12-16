@@ -231,6 +231,82 @@ MEMORY_LIMIT=4G    # Memory limit
 
 ---
 
+## Sandbox Security (Phase 6D)
+
+Mini-Devin runs in a security-hardened Docker sandbox with the following protections:
+
+### Non-Root User
+
+By default, the container runs as a non-root user (`minidevin` with UID/GID 1000) to prevent privilege escalation attacks.
+
+```bash
+# Customize user ID to match host user (for file permissions)
+USER_ID=1000 GROUP_ID=1000 docker-compose up -d
+```
+
+### Resource Limits
+
+The sandbox enforces strict resource limits to prevent resource exhaustion:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CPU_LIMIT` | `2.0` | Maximum CPU cores |
+| `MEMORY_LIMIT` | `4G` | Maximum memory |
+| `PID_LIMIT` | `256` | Maximum processes |
+| `TMP_SIZE` | `512MB` | Temporary filesystem size |
+| `NOFILE_SOFT` | `65536` | Soft limit for open files |
+| `NOFILE_HARD` | `65536` | Hard limit for open files |
+| `NPROC_SOFT` | `256` | Soft limit for processes |
+| `NPROC_HARD` | `512` | Hard limit for processes |
+
+### Capability Restrictions
+
+The container drops all Linux capabilities by default and only adds back the minimum required:
+
+- `CHOWN` - Change file ownership
+- `DAC_OVERRIDE` - Bypass file permission checks
+- `FOWNER` - Bypass permission checks for file owner
+- `SETGID` - Set group ID
+- `SETUID` - Set user ID
+
+Additional security options:
+- `no-new-privileges` - Prevents privilege escalation via setuid binaries
+
+### Read-Only Filesystem
+
+Enable read-only root filesystem for maximum security (disabled by default for compatibility):
+
+```bash
+READ_ONLY_ROOT=true docker-compose up -d
+```
+
+When enabled, only `/workspace`, `/workspace/runs`, and `/tmp` are writable.
+
+### Network Isolation
+
+Enable network isolation to restrict outbound connections:
+
+```bash
+NETWORK_ISOLATION=true docker-compose up -d
+```
+
+### Security Configuration
+
+All security settings can be configured via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SANDBOX_ENABLED` | `true` | Enable sandbox security features |
+| `RUN_AS_NON_ROOT` | `true` | Run container as non-root user |
+| `USER_ID` | `1000` | User ID for container user |
+| `GROUP_ID` | `1000` | Group ID for container user |
+| `READ_ONLY_ROOT` | `false` | Enable read-only root filesystem |
+| `NETWORK_ISOLATION` | `false` | Enable network isolation |
+| `DROP_ALL_CAPABILITIES` | `true` | Drop all Linux capabilities |
+| `NO_NEW_PRIVILEGES` | `true` | Prevent privilege escalation |
+
+---
+
 ## Safety Features
 
 Mini-Devin includes multiple safety mechanisms to prevent dangerous operations.

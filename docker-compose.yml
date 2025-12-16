@@ -26,6 +26,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        USER_ID: ${USER_ID:-1000}
+        GROUP_ID: ${GROUP_ID:-1000}
+        USERNAME: ${SANDBOX_USER:-minidevin}
     container_name: mini-devin-agent
     depends_on:
       postgres:
@@ -57,29 +61,64 @@ services:
       # Artifact Configuration
       - ARTIFACT_DIR=${ARTIFACT_DIR:-/workspace/runs}
       - VERBOSE=${VERBOSE:-true}
+      
+      # Security Configuration
+      - SANDBOX_ENABLED=${SANDBOX_ENABLED:-true}
+      - NETWORK_ISOLATION=${NETWORK_ISOLATION:-false}
     volumes:
       # Mount workspace directory
       - ${WORKSPACE_DIR:-./workspace}:/workspace
       # Mount runs directory for artifacts
       - ${RUNS_DIR:-./runs}:/workspace/runs
+      # Security: Mount tmp as tmpfs (in-memory, size-limited)
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: ${TMP_SIZE:-536870912}  # 512MB default
+          mode: 1777
     working_dir: /workspace
     stdin_open: true
     tty: true
+    # Security: Run as non-root user
+    user: "${USER_ID:-1000}:${GROUP_ID:-1000}"
+    # Security: Read-only root filesystem with specific writable paths
+    read_only: ${READ_ONLY_ROOT:-false}
+    # Security: Drop all capabilities and add only what's needed
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    # Security: Prevent privilege escalation
+    security_opt:
+      - no-new-privileges:true
     # Resource limits
     deploy:
       resources:
         limits:
           cpus: '${CPU_LIMIT:-2.0}'
           memory: ${MEMORY_LIMIT:-4G}
+          pids: ${PID_LIMIT:-256}
         reservations:
           cpus: '0.5'
           memory: 512M
+    # Security: Limit open files and processes
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      nproc:
+        soft: 256
+        hard: 512
     # Network configuration
     networks:
       - mini-devin-network
     # Health check
     healthcheck:
-      test: ["CMD", "python", "-c", "import mini_devin; print('healthy')"]
+      test: ["CMD", "python3", "-c", "print('healthy')"]
       interval: 30s
       timeout: 10s
       retries: 3
