@@ -24,6 +24,68 @@ class Base(DeclarativeBase):
     pass
 
 
+class UserModel(Base):
+    """Database model for users."""
+    __tablename__ = "users"
+
+    id = Column(String(36), primary_key=True)
+    email = Column(String(256), unique=True, nullable=False, index=True)
+    username = Column(String(128), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(256), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    is_admin = Column(Boolean, nullable=False, default=False)
+    
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
+    
+    sessions = relationship("SessionModel", back_populates="user", cascade="all, delete-orphan")
+    api_keys = relationship("APIKeyModel", back_populates="user", cascade="all, delete-orphan")
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary (excludes password)."""
+        return {
+            "user_id": self.id,
+            "email": self.email,
+            "username": self.username,
+            "is_active": self.is_active,
+            "is_admin": self.is_admin,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "last_login_at": self.last_login_at.isoformat() if self.last_login_at else None,
+        }
+
+
+class APIKeyModel(Base):
+    """Database model for API keys."""
+    __tablename__ = "api_keys"
+
+    id = Column(String(36), primary_key=True)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(128), nullable=False)
+    key_hash = Column(String(256), nullable=False, unique=True)
+    key_prefix = Column(String(8), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    
+    user = relationship("UserModel", back_populates="api_keys")
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary (excludes key hash)."""
+        return {
+            "api_key_id": self.id,
+            "user_id": self.user_id,
+            "name": self.name,
+            "key_prefix": self.key_prefix,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "last_used_at": self.last_used_at.isoformat() if self.last_used_at else None,
+            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+        }
+
+
 class SessionStatus(str, PyEnum):
     """Session status enum."""
     IDLE = "idle"
@@ -46,6 +108,7 @@ class SessionModel(Base):
     __tablename__ = "sessions"
 
     id = Column(String(36), primary_key=True)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     working_directory = Column(String(1024), nullable=False, default=".")
     model = Column(String(128), nullable=False, default="gpt-4o")
     max_iterations = Column(Integer, nullable=False, default=50)
@@ -55,6 +118,7 @@ class SessionModel(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
+    user = relationship("UserModel", back_populates="sessions")
     tasks = relationship("TaskModel", back_populates="session", cascade="all, delete-orphan")
 
     def to_dict(self) -> dict:

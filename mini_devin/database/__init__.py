@@ -2,6 +2,8 @@
 
 from .config import get_database_url, get_engine, get_session, init_db
 from .models import (
+    UserModel,
+    APIKeyModel,
     SessionModel,
     TaskModel,
     TaskResultModel,
@@ -20,6 +22,8 @@ __all__ = [
     "get_engine",
     "get_session",
     "init_db",
+    "UserModel",
+    "APIKeyModel",
     "SessionModel",
     "TaskModel",
     "TaskResultModel",
