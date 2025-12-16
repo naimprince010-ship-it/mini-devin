@@ -52,6 +52,37 @@ class SafetySettings:
 
 
 @dataclass
+class AgentGatesSettings:
+    """Settings for planner and reviewer gates (Phase 9C)."""
+    
+    planning_required: bool = True
+    """Whether planning is required before execution."""
+    
+    max_plan_steps: int = 5
+    """Maximum number of steps allowed in a plan."""
+    
+    review_required: bool = True
+    """Whether review is required before commit."""
+    
+    block_on_high_severity: bool = True
+    """Block commit on high/critical reviewer findings."""
+    
+    use_llm_planning: bool = True
+    """Use LLM for planning (False = use minimal plan)."""
+    
+    @classmethod
+    def from_env(cls) -> "AgentGatesSettings":
+        """Load agent gates settings from environment variables."""
+        return cls(
+            planning_required=os.environ.get("PLANNING_REQUIRED", "true").lower() == "true",
+            max_plan_steps=int(os.environ.get("MAX_PLAN_STEPS", "5")),
+            review_required=os.environ.get("REVIEW_REQUIRED", "true").lower() == "true",
+            block_on_high_severity=os.environ.get("BLOCK_ON_HIGH_SEVERITY", "true").lower() == "true",
+            use_llm_planning=os.environ.get("USE_LLM_PLANNING", "true").lower() == "true",
+        )
+
+
+@dataclass
 class LLMSettings:
     """LLM-related settings."""
     
@@ -135,6 +166,7 @@ class Settings:
     llm: LLMSettings = field(default_factory=LLMSettings)
     browser: BrowserSettings = field(default_factory=BrowserSettings)
     artifacts: ArtifactSettings = field(default_factory=ArtifactSettings)
+    gates: AgentGatesSettings = field(default_factory=AgentGatesSettings)
     workspace_dir: str = "/workspace"
     
     def __post_init__(self):
@@ -158,6 +190,7 @@ class Settings:
             llm=LLMSettings.from_env(),
             browser=BrowserSettings.from_env(),
             artifacts=ArtifactSettings.from_env(),
+            gates=AgentGatesSettings.from_env(),
             workspace_dir=os.environ.get("WORKSPACE_DIR", "/workspace"),
         )
     
@@ -229,6 +262,13 @@ class Settings:
                 "artifact_dir": self.artifacts.artifact_dir,
                 "verbose": self.artifacts.verbose,
                 "log_level": self.artifacts.log_level,
+            },
+            "gates": {
+                "planning_required": self.gates.planning_required,
+                "max_plan_steps": self.gates.max_plan_steps,
+                "review_required": self.gates.review_required,
+                "block_on_high_severity": self.gates.block_on_high_severity,
+                "use_llm_planning": self.gates.use_llm_planning,
             },
             "workspace_dir": self.workspace_dir,
         }

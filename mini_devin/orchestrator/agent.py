@@ -46,12 +46,14 @@ from ..memory import (
 from ..agents import (
     ReviewerAgent,
     ReviewFeedback,
+    ReviewSeverity,
     create_reviewer_agent,
     PlannerAgent,
     PlanningResult,
     PlanningStrategy,
     create_planner_agent,
 )
+from ..config.settings import AgentGatesSettings
 
 
 # System prompt for the agent
@@ -124,6 +126,7 @@ class Agent:
         max_repair_iterations: int = 3,
         safety_policy: SafetyPolicy | None = None,
         artifact_dir: str = "runs",
+        gates_settings: AgentGatesSettings | None = None,
     ):
         self.llm = llm_client or create_llm_client()
         self.registry = tool_registry or get_global_registry()
@@ -132,6 +135,9 @@ class Agent:
         self.verbose = verbose
         self.auto_verify = auto_verify
         self.max_repair_iterations = max_repair_iterations
+        
+        # Gates settings (Phase 9C)
+        self.gates = gates_settings or AgentGatesSettings()
         
         # Initialize state
         self.state = AgentState(
@@ -1432,6 +1438,123 @@ class Agent:
         self.state.phase = new_phase
         self._log(f"Phase transition: {old_phase.value} -> {new_phase.value}")
     
+    async def _execute_plan_step(self, step_description: str) -> tuple[bool, str]:
+        """
+        Execute a single plan step using LLM tool calls.
+        
+        Args:
+            step_description: Description of the step to execute
+            
+        Returns:
+            Tuple of (success, result_summary)
+        """
+        step_prompt = f"""Execute this step: {step_description}
+
+Use the available tools to complete this step. When done, respond with a brief summary of what you did."""
+        
+        self.llm.add_user_message(step_prompt)
+        
+        max_step_iterations = 10
+        step_iteration = 0
+        
+        while step_iteration < max_step_iterations:
+            step_iteration += 1
+            
+            try:
+                response = await self.llm.complete(
+                    tools=self._get_tool_schemas(),
+                    tool_choice="auto",
+                )
+                
+                if response.tool_calls:
+                    self.llm.add_assistant_message(
+                        content=response.content,
+                        tool_calls=response.tool_calls,
+                    )
+                    
+                    for tc in response.tool_calls:
+                        self._log(f"  Step tool: {tc.name}({json.dumps(tc.arguments)[:80]}...)")
+                        result = await self._execute_tool(tc.name, tc.arguments)
+                        self.llm.add_tool_result(tc.id, tc.name, result)
+                else:
+                    if response.content:
+                        self.llm.add_assistant_message(content=response.content)
+                        return True, response.content
+                    break
+                    
+            except Exception as e:
+                self._log(f"  Step error: {str(e)}")
+                return False, str(e)
+        
+        return True, "Step completed"
+    
+    async def _run_verification_step(self) -> tuple[bool, str]:
+        """
+        Run verification after an implementation step.
+        
+        Returns:
+            Tuple of (passed, summary)
+        """
+        if not self.auto_verify:
+            return True, "Verification skipped"
+        
+        runner = self._get_verification_runner()
+        if not runner:
+            return True, "No verification runner available"
+        
+        result = await runner.run_all()
+        
+        if result.passed:
+            return True, "All verification checks passed"
+        
+        failed_checks = [c.name for c in result.checks if not c.passed]
+        return False, f"Verification failed: {', '.join(failed_checks)}"
+    
+    async def _check_reviewer_gate(self) -> tuple[bool, str]:
+        """
+        Check reviewer gate before commit.
+        
+        Returns:
+            Tuple of (can_commit, reason)
+        """
+        if not self.gates.review_required:
+            return True, "Review not required"
+        
+        reviewer = self.get_reviewer_agent()
+        if not reviewer:
+            return True, "No reviewer agent available"
+        
+        git_mgr = self._get_git_manager()
+        if not git_mgr:
+            return True, "No git manager available"
+        
+        diff_result = await git_mgr.get_diff()
+        if not diff_result or not diff_result.success:
+            return True, "No diff to review"
+        
+        diff = diff_result.data.get("diff", "")
+        if not diff.strip():
+            return True, "No changes to review"
+        
+        self._log("Running reviewer gate before commit...")
+        
+        should_commit, report = await self.review_before_commit()
+        
+        if should_commit:
+            return True, "Review passed"
+        
+        if self.gates.block_on_high_severity:
+            high_severity_count = 0
+            if hasattr(report, 'comments'):
+                for comment in report.comments:
+                    if comment.severity in (ReviewSeverity.HIGH, ReviewSeverity.CRITICAL):
+                        high_severity_count += 1
+            
+            if high_severity_count > 0:
+                return False, f"Blocked: {high_severity_count} high/critical findings"
+        
+        return True, "Review completed with findings (non-blocking)"
+    
     async def run(self, task: TaskState) -> TaskState:
         """
         Run the agent on a task.
@@ -1455,6 +1578,180 @@ class Agent:
         self._log(f"Starting task: {task.goal.description}")
         self._update_phase(AgentPhase.INTAKE)
         
+        # Phase 9C: Planning Gate
+        if self.gates.planning_required:
+            self._log("Planning gate enabled - creating plan before execution")
+            self._update_phase(AgentPhase.PLAN)
+            
+            try:
+                if self.gates.use_llm_planning:
+                    planning_result = await self.create_plan(
+                        task.goal.description,
+                        context={"acceptance_criteria": task.goal.acceptance_criteria},
+                    )
+                    
+                    if not planning_result or not planning_result.plan:
+                        self._log("LLM planning failed, falling back to minimal plan")
+                        self.create_minimal_plan(task.goal.description)
+                    else:
+                        # Enforce max plan steps
+                        if len(planning_result.plan.steps) > self.gates.max_plan_steps:
+                            self._log(f"Plan has {len(planning_result.plan.steps)} steps, truncating to {self.gates.max_plan_steps}")
+                            planning_result.plan.steps = planning_result.plan.steps[:self.gates.max_plan_steps]
+                else:
+                    self.create_minimal_plan(task.goal.description)
+                    
+            except Exception as e:
+                self._log(f"Planning failed: {str(e)}, falling back to minimal plan")
+                self.create_minimal_plan(task.goal.description)
+            
+            # Verify we have a plan
+            planner = self.get_planner_agent()
+            if not planner or not planner.current_plan:
+                self._log("ERROR: No plan created - cannot proceed with gates enabled")
+                task.status = TaskStatus.FAILED
+                task.last_error = "Planning gate failed: No plan created"
+                self._update_phase(AgentPhase.BLOCKED)
+                return task
+            
+            self._log(f"Plan created with {len(planner.current_plan.steps)} steps")
+            
+            # Execute plan step-by-step
+            return await self._run_with_plan(task)
+        
+        # Legacy execution mode (gates disabled)
+        return await self._run_legacy(task)
+    
+    async def _run_with_plan(self, task: TaskState) -> TaskState:
+        """
+        Run task execution with step-by-step plan execution.
+        
+        Args:
+            task: The task to execute
+            
+        Returns:
+            The updated task state
+        """
+        planner = self.get_planner_agent()
+        if not planner or not planner.current_plan:
+            task.status = TaskStatus.FAILED
+            task.last_error = "No plan available for step-by-step execution"
+            return task
+        
+        # Add task context to conversation
+        task_message = f"""Task: {task.goal.description}
+
+Acceptance Criteria:
+{chr(10).join(f'- {c}' for c in task.goal.acceptance_criteria) if task.goal.acceptance_criteria else '- Complete the task successfully'}
+
+Working Directory: {self.working_directory or 'current directory'}
+
+I will guide you through the plan step by step."""
+        
+        self.llm.add_user_message(task_message)
+        
+        iteration = 0
+        steps_completed = 0
+        
+        while iteration < self.max_iterations:
+            iteration += 1
+            self.state.iteration = iteration
+            
+            # Update artifact logger
+            if self._artifact_logger:
+                self._artifact_logger.increment_iteration()
+            
+            # Reset per-iteration safety counters
+            self.safety_guard.reset_iteration()
+            
+            # Get next plan step
+            next_step = self.get_next_plan_step()
+            
+            if not next_step:
+                # All steps completed
+                self._log("All plan steps completed!")
+                self._update_phase(AgentPhase.COMPLETE)
+                task.status = TaskStatus.COMPLETED
+                task.completed_at = datetime.utcnow()
+                break
+            
+            self._log(f"Iteration {iteration}: Executing step {next_step.order} - {next_step.description[:50]}...")
+            self._update_phase(AgentPhase.EXECUTE)
+            
+            try:
+                # Execute the step
+                success, result = await self._execute_plan_step(next_step.description)
+                
+                if success:
+                    self.mark_plan_step_complete(next_step.step_id, result)
+                    steps_completed += 1
+                    self._log(f"Step {next_step.order} completed: {result[:100]}...")
+                    
+                    # Run verification after implementation steps
+                    if next_step.step_type.value in ("implement", "fix", "refactor"):
+                        self._update_phase(AgentPhase.VERIFY)
+                        verify_passed, verify_msg = await self._run_verification_step()
+                        self._log(f"Verification: {verify_msg}")
+                        
+                        if not verify_passed:
+                            # Try repair loop
+                            self._log("Verification failed, attempting repair...")
+                            repair_result = await self.run_repair_loop()
+                            if not repair_result.get("success", False):
+                                self._log("Repair failed, marking step as failed")
+                                self.mark_plan_step_failed(next_step.step_id, verify_msg)
+                else:
+                    self.mark_plan_step_failed(next_step.step_id, result)
+                    self._log(f"Step {next_step.order} failed: {result}")
+                    task.error_count += 1
+                    
+                    if task.error_count >= 3:
+                        self._update_phase(AgentPhase.BLOCKED)
+                        task.status = TaskStatus.FAILED
+                        task.last_error = f"Too many step failures: {result}"
+                        break
+                        
+            except Exception as e:
+                self._log(f"Error executing step: {str(e)}")
+                self.mark_plan_step_failed(next_step.step_id, str(e))
+                task.last_error = str(e)
+                task.error_count += 1
+                
+                if task.error_count >= 3:
+                    self._update_phase(AgentPhase.BLOCKED)
+                    task.status = TaskStatus.FAILED
+                    break
+        
+        # Max iterations reached
+        if iteration >= self.max_iterations and task.status != TaskStatus.COMPLETED:
+            self._log("Max iterations reached")
+            task.status = TaskStatus.FAILED
+            task.last_error = "Max iterations reached"
+        
+        # Phase 9C: Reviewer Gate before final commit
+        if task.status == TaskStatus.COMPLETED and self.gates.review_required:
+            can_commit, review_reason = await self._check_reviewer_gate()
+            self._log(f"Reviewer gate: {review_reason}")
+            
+            if not can_commit:
+                self._log("Reviewer gate blocked commit!")
+                task.status = TaskStatus.FAILED
+                task.last_error = f"Reviewer gate blocked: {review_reason}"
+                self._update_phase(AgentPhase.BLOCKED)
+        
+        # Finalize task
+        return await self._finalize_task(task)
+    
+    async def _run_legacy(self, task: TaskState) -> TaskState:
+        """
+        Legacy execution mode without gates (for backward compatibility).
+        
+        Args:
+            task: The task to execute
+            
+        Returns:
+            The updated task state
+        """
         # Add task description to conversation
         task_message = f"""Task: {task.goal.description}
 
@@ -1555,6 +1852,19 @@ Please start by exploring the codebase if needed, then create a plan and execute
             task.status = TaskStatus.FAILED
             task.last_error = "Max iterations reached"
         
+        # Finalize task
+        return await self._finalize_task(task)
+    
+    async def _finalize_task(self, task: TaskState) -> TaskState:
+        """
+        Finalize task execution and save artifacts.
+        
+        Args:
+            task: The task to finalize
+            
+        Returns:
+            The finalized task state
+        """
         # Update token usage
         usage = self.llm.get_usage_stats()
         task.total_tokens_used = usage["total_tokens"]
