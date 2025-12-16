@@ -42,6 +42,11 @@ from ..memory import (
     create_vector_store,
     create_retrieval_manager,
     create_working_memory,
+    ConversationMemory,
+    ConversationEntryType,
+    Importance,
+    TaskSummary,
+    create_conversation_memory,
 )
 from ..agents import (
     ReviewerAgent,
@@ -164,6 +169,10 @@ class Agent:
         
         # Planner agent (Phase 9B)
         self._planner_agent: PlannerAgent | None = None
+        
+        # Conversation memory for cross-session learning (Phase 18)
+        self._conversation_memory: ConversationMemory | None = None
+        self._use_conversation_memory: bool = True
         
         # Register default tools
         self._register_default_tools()
@@ -1030,7 +1039,258 @@ class Agent:
             "working_memory": self.get_working_memory().get_statistics(),
             "retrieval": self.get_retrieval_manager().get_statistics() if self._memory_indexed else {},
             "indexed": self._memory_indexed,
+            "conversation_memory": self.get_conversation_memory().get_statistics() if self._conversation_memory else {},
         }
+    
+    # Conversation Memory Methods (Phase 18)
+    
+    def get_conversation_memory(self) -> ConversationMemory:
+        """
+        Get or create the conversation memory for cross-session learning.
+        
+        Returns:
+            ConversationMemory instance
+        """
+        if self._conversation_memory is None:
+            from pathlib import Path
+            storage_path = Path.home() / ".mini-devin" / "conversation_memory.json"
+            self._conversation_memory = create_conversation_memory(
+                storage_path=str(storage_path),
+                max_entries=1000,
+            )
+        return self._conversation_memory
+    
+    def enable_conversation_memory(self, enabled: bool = True) -> None:
+        """Enable or disable conversation memory for this agent."""
+        self._use_conversation_memory = enabled
+    
+    def get_context_from_memory(self, task_description: str) -> str:
+        """
+        Get relevant context from conversation memory for a task.
+        
+        Args:
+            task_description: Description of the current task
+            
+        Returns:
+            Context string with relevant past experiences
+        """
+        if not self._use_conversation_memory:
+            return ""
+        
+        memory = self.get_conversation_memory()
+        return memory.get_context_for_task(task_description, max_entries=5)
+    
+    def add_lesson_to_memory(
+        self,
+        lesson: str,
+        context: str = "",
+        importance: str = "medium",
+        tags: list[str] | None = None,
+    ) -> str:
+        """
+        Add a lesson learned to conversation memory.
+        
+        Args:
+            lesson: The lesson content
+            context: Context about when this lesson applies
+            importance: Importance level (low, medium, high, critical)
+            tags: Optional tags for categorization
+            
+        Returns:
+            Entry ID
+        """
+        if not self._use_conversation_memory:
+            return ""
+        
+        importance_map = {
+            "low": Importance.LOW,
+            "medium": Importance.MEDIUM,
+            "high": Importance.HIGH,
+            "critical": Importance.CRITICAL,
+        }
+        
+        memory = self.get_conversation_memory()
+        result = memory.add_lesson(
+            lesson=lesson,
+            context=context or "General",
+            importance=importance_map.get(importance, Importance.MEDIUM),
+            tags=tags or [],
+            session_id=self.state.session_id,
+        )
+        return result or ""
+    
+    def add_error_pattern_to_memory(
+        self,
+        error: str,
+        cause: str,
+        solution: str,
+        tags: list[str] | None = None,
+    ) -> str:
+        """
+        Add an error pattern and its solution to memory.
+        
+        Args:
+            error: The error message or type
+            cause: What caused the error
+            solution: How the error was solved
+            tags: Optional tags for categorization
+            
+        Returns:
+            Entry ID
+        """
+        if not self._use_conversation_memory:
+            return ""
+        
+        memory = self.get_conversation_memory()
+        result = memory.add_error_pattern(
+            error=error,
+            cause=cause,
+            solution=solution,
+            tags=tags or [],
+            session_id=self.state.session_id,
+        )
+        return result or ""
+    
+    def add_solution_pattern_to_memory(
+        self,
+        problem: str,
+        solution: str,
+        code_example: str | None = None,
+        tags: list[str] | None = None,
+    ) -> str:
+        """
+        Add a solution pattern to memory.
+        
+        Args:
+            problem: Description of the problem
+            solution: The solution that worked
+            code_example: Optional code example
+            tags: Optional tags for categorization
+            
+        Returns:
+            Entry ID
+        """
+        if not self._use_conversation_memory:
+            return ""
+        
+        memory = self.get_conversation_memory()
+        result = memory.add_solution_pattern(
+            problem=problem,
+            solution=solution,
+            code_example=code_example,
+            tags=tags or [],
+            session_id=self.state.session_id,
+        )
+        return result or ""
+    
+    def get_error_solutions(self, error_message: str) -> list[str]:
+        """
+        Get solutions for similar errors from memory.
+        
+        Args:
+            error_message: The error message to find solutions for
+            
+        Returns:
+            List of solution strings
+        """
+        if not self._use_conversation_memory:
+            return []
+        
+        memory = self.get_conversation_memory()
+        return memory.get_error_solutions(error_message)
+    
+    def save_task_summary(
+        self,
+        task: "TaskState",
+        summary: str,
+        lessons_learned: list[str] | None = None,
+    ) -> str:
+        """
+        Save a task summary to conversation memory.
+        
+        Args:
+            task: The completed task
+            summary: Summary of what was done
+            lessons_learned: Optional list of lessons learned
+            
+        Returns:
+            Entry ID
+        """
+        if not self._use_conversation_memory:
+            return ""
+        
+        memory = self.get_conversation_memory()
+        
+        task_summary = TaskSummary(
+            task_id=task.task_id,
+            session_id=self.state.session_id,
+            description=task.goal.description,
+            outcome=summary,
+            success=task.status == TaskStatus.COMPLETED,
+            duration_seconds=int((task.completed_at - task.started_at).total_seconds()) if task.completed_at and task.started_at else 0,
+            tools_used=list(task.commands_executed or []),
+            files_modified=[fc.path for fc in task.files_changed] if task.files_changed else [],
+            errors_encountered=[task.last_error] if task.last_error else [],
+            lessons=lessons_learned or [],
+        )
+        
+        result = memory.add_task_summary(task_summary)
+        return result or ""
+    
+    def get_recent_lessons(self, limit: int = 10) -> list[str]:
+        """
+        Get recent lessons learned from memory.
+        
+        Args:
+            limit: Maximum number of lessons to return
+            
+        Returns:
+            List of lesson strings
+        """
+        if not self._use_conversation_memory:
+            return []
+        
+        memory = self.get_conversation_memory()
+        entries = memory.get_recent_lessons(limit=limit)
+        return [e.content for e in entries]
+    
+    def search_memory(
+        self,
+        query: str,
+        entry_type: str | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """
+        Search conversation memory.
+        
+        Args:
+            query: Search query
+            entry_type: Optional filter by entry type
+            limit: Maximum results to return
+            
+        Returns:
+            List of matching entries as dicts
+        """
+        if not self._use_conversation_memory:
+            return []
+        
+        memory = self.get_conversation_memory()
+        
+        type_filter = None
+        if entry_type:
+            type_map = {
+                "task_summary": ConversationEntryType.TASK_SUMMARY,
+                "lesson": ConversationEntryType.LESSON_LEARNED,
+                "error": ConversationEntryType.ERROR_PATTERN,
+                "solution": ConversationEntryType.SOLUTION_PATTERN,
+                "preference": ConversationEntryType.USER_PREFERENCE,
+                "feedback": ConversationEntryType.FEEDBACK,
+            }
+            type_filter = type_map.get(entry_type)
+        
+        entry_types = [type_filter] if type_filter else None
+        entries = memory.search(query, entry_types=entry_types, limit=limit)
+        return [e.to_dict() for e in entries]
     
     def get_reviewer_agent(self, strict_mode: bool = False) -> ReviewerAgent:
         """
@@ -1467,6 +1727,19 @@ Please start by exploring the codebase if needed, then create a plan and execute
         
         self.llm.add_user_message(task_message)
         
+        # Retrieve relevant context from conversation memory (Phase 18)
+        memory_context = ""
+        if self._use_conversation_memory:
+            try:
+                memory_context = self.get_context_from_memory(task.goal.description)
+                if memory_context:
+                    self._log("Retrieved relevant context from conversation memory")
+                    self.llm.add_user_message(
+                        f"Here is relevant context from past experiences that may help:\n\n{memory_context}"
+                    )
+            except Exception as e:
+                self._log(f"Warning: Failed to retrieve memory context: {e}")
+        
         # Main agent loop
         iteration = 0
         while iteration < self.max_iterations:
@@ -1584,6 +1857,18 @@ Please start by exploring the codebase if needed, then create a plan and execute
             self._artifact_logger.complete(status=status, summary=summary)
             
             self._log(f"Artifacts saved to: {self._artifact_logger.get_run_dir()}")
+        
+        # Save task summary to conversation memory (Phase 18)
+        if self._use_conversation_memory:
+            try:
+                self.save_task_summary(
+                    task=task,
+                    summary=summary,
+                    lessons_learned=[],
+                )
+                self._log("Task summary saved to conversation memory")
+            except Exception as e:
+                self._log(f"Warning: Failed to save task summary to memory: {e}")
         
         return task
     
