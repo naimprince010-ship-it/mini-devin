@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Session } from '../types';
 import { useApi } from '../hooks/useApi';
 import { Plus, Trash2, RefreshCw } from 'lucide-react';
+import { ModelSelector } from './ModelSelector';
 
 interface SessionListProps {
   onSelectSession: (session: Session) => void;
@@ -105,15 +106,11 @@ export function SessionList({ onSelectSession, selectedSessionId }: SessionListP
             </div>
             <div>
               <label className="block text-sm text-gray-300 mb-1">Model</label>
-              <select
+              <ModelSelector
                 value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className="w-full px-3 py-2 bg-gray-600 text-white rounded border border-gray-500 focus:border-blue-500 focus:outline-none"
-              >
-                <option value="gpt-4o">GPT-4o</option>
-                <option value="gpt-4o-mini">GPT-4o Mini</option>
-                <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</option>
-              </select>
+                onChange={setModel}
+                showDetails={true}
+              />
             </div>
             <div>
               <label className="block text-sm text-gray-300 mb-1">Max Iterations</label>

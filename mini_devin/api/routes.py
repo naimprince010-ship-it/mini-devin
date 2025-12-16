@@ -329,14 +329,71 @@ async def get_status(req: Request):
 
 
 @router.get("/models")
-async def list_models():
-    """List available LLM models."""
+async def list_models(
+    provider: str | None = None,
+    supports_tools: bool | None = None,
+    only_configured: bool = False,
+):
+    """
+    List available LLM models.
+    
+    Args:
+        provider: Filter by provider (openai, anthropic, ollama, azure)
+        supports_tools: Filter by tool support capability
+        only_configured: Only return models from configured providers
+    """
+    from mini_devin.core.providers import get_model_registry, Provider
+    
+    registry = get_model_registry()
+    
+    provider_enum = None
+    if provider:
+        try:
+            provider_enum = Provider(provider)
+        except ValueError:
+            pass
+    
+    models = registry.list_models(
+        provider=provider_enum,
+        supports_tools=supports_tools,
+        only_configured=only_configured,
+    )
+    
     return {
         "models": [
-            {"id": "gpt-4o", "name": "GPT-4o", "provider": "openai"},
-            {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "provider": "openai"},
-            {"id": "gpt-4-turbo", "name": "GPT-4 Turbo", "provider": "openai"},
-            {"id": "claude-3-5-sonnet-20241022", "name": "Claude 3.5 Sonnet", "provider": "anthropic"},
-            {"id": "claude-3-opus-20240229", "name": "Claude 3 Opus", "provider": "anthropic"},
+            {
+                "id": m.id,
+                "name": m.name,
+                "provider": m.provider.value,
+                "context_window": m.context_window,
+                "supports_tools": m.supports_tools,
+                "supports_vision": m.supports_vision,
+                "max_output_tokens": m.max_output_tokens,
+                "description": m.description,
+            }
+            for m in models
         ]
+    }
+
+
+@router.get("/providers")
+async def list_providers():
+    """List all providers and their configuration status."""
+    from mini_devin.core.providers import get_model_registry, Provider
+    
+    registry = get_model_registry()
+    
+    providers = []
+    for p in Provider:
+        config = registry.get_provider_config(p)
+        providers.append({
+            "id": p.value,
+            "name": p.name,
+            "configured": registry.is_provider_configured(p),
+            "enabled": config.enabled if config else False,
+        })
+    
+    return {
+        "providers": providers,
+        "default_model": registry.get_default_model(),
     }
