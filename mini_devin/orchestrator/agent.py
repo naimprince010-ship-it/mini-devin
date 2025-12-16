@@ -43,6 +43,11 @@ from ..memory import (
     create_retrieval_manager,
     create_working_memory,
 )
+from ..agents import (
+    ReviewerAgent,
+    ReviewFeedback,
+    create_reviewer_agent,
+)
 
 
 # System prompt for the agent
@@ -149,6 +154,9 @@ class Agent:
         self._retrieval_manager: RetrievalManager | None = None
         self._working_memory: WorkingMemory | None = None
         self._memory_indexed = False
+        
+        # Reviewer agent (Phase 9A)
+        self._reviewer_agent: ReviewerAgent | None = None
         
         # Register default tools
         self._register_default_tools()
@@ -1016,6 +1024,110 @@ class Agent:
             "retrieval": self.get_retrieval_manager().get_statistics() if self._memory_indexed else {},
             "indexed": self._memory_indexed,
         }
+    
+    def get_reviewer_agent(self, strict_mode: bool = False) -> ReviewerAgent:
+        """
+        Get or create the reviewer agent.
+        
+        Args:
+            strict_mode: If True, be stricter about diff discipline
+            
+        Returns:
+            ReviewerAgent instance
+        """
+        if self._reviewer_agent is None:
+            self._reviewer_agent = create_reviewer_agent(
+                strict_mode=strict_mode,
+                auto_suggest_improvements=True,
+            )
+        return self._reviewer_agent
+    
+    async def review_changes(
+        self,
+        context: str | None = None,
+        task_description: str | None = None,
+    ) -> ReviewFeedback:
+        """
+        Review the current git diff using the reviewer agent.
+        
+        Args:
+            context: Optional context about the codebase
+            task_description: Optional description of what the change is trying to do
+            
+        Returns:
+            ReviewFeedback with the review results
+        """
+        git_mgr = self._get_git_manager()
+        if not git_mgr:
+            from ..agents import ReviewFeedback
+            return ReviewFeedback(
+                approved=False,
+                summary="Cannot review: Git manager not available",
+            )
+        
+        diff_result = await git_mgr.get_diff()
+        if not diff_result or not diff_result.success:
+            return ReviewFeedback(
+                approved=False,
+                summary="Cannot review: Failed to get git diff",
+            )
+        
+        diff = diff_result.data.get("diff", "")
+        if not diff:
+            return ReviewFeedback(
+                approved=True,
+                summary="No changes to review",
+                overall_quality_score=10.0,
+            )
+        
+        reviewer = self.get_reviewer_agent()
+        return await reviewer.review_diff(diff, context, task_description)
+    
+    def quick_review_changes(self, diff: str) -> tuple[bool, list[str]]:
+        """
+        Perform a quick, synchronous review of a diff without LLM.
+        
+        Args:
+            diff: The diff to review
+            
+        Returns:
+            Tuple of (approved, list of issues)
+        """
+        reviewer = self.get_reviewer_agent()
+        return reviewer.quick_review(diff)
+    
+    async def review_before_commit(
+        self,
+        task_description: str | None = None,
+    ) -> tuple[bool, str]:
+        """
+        Review changes before committing.
+        
+        This is a convenience method that reviews the current changes
+        and returns whether they should be committed.
+        
+        Args:
+            task_description: Optional description of the task
+            
+        Returns:
+            Tuple of (should_commit, review_report)
+        """
+        feedback = await self.review_changes(task_description=task_description)
+        
+        should_commit = feedback.approved and not feedback.has_blocking_issues
+        report = feedback.format_report()
+        
+        if self._artifact_logger:
+            self._artifact_logger.log_tool_call(
+                call_id="review",
+                tool_name="reviewer_agent",
+                arguments={"task_description": task_description},
+                result=report[:5000],
+                duration_ms=0,
+                success=should_commit,
+            )
+        
+        return should_commit, report
     
     def _update_phase(self, new_phase: AgentPhase) -> None:
         """Update the agent phase."""

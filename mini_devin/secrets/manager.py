@@ -2,10 +2,11 @@
 Secrets Manager for Mini-Devin
 
 This module provides secure credential management with:
-- Encrypted storage
+- Fernet encryption (AES-128-CBC with HMAC)
 - Scoped access (global, session, task)
 - Environment variable injection
 - Audit logging
+- Secret redaction in logs/artifacts
 """
 
 from __future__ import annotations
@@ -14,12 +15,17 @@ import base64
 import hashlib
 import json
 import os
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
 from dataclasses import dataclass, field
 import secrets as crypto_secrets
+
+from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 
 class SecretScope(str, Enum):
@@ -104,7 +110,7 @@ class SecretsManager:
         if key_file.exists():
             return key_file.read_bytes()
         
-        # Generate new key
+        # Generate new key (32 bytes for Fernet key derivation)
         key = crypto_secrets.token_bytes(32)
         key_file.parent.mkdir(parents=True, exist_ok=True)
         key_file.write_bytes(key)
@@ -112,26 +118,63 @@ class SecretsManager:
         
         return key
     
+    def _derive_fernet_key(self, salt: bytes | None = None) -> tuple[Fernet, bytes]:
+        """
+        Derive a Fernet key from the master key using PBKDF2.
+        
+        Args:
+            salt: Optional salt for key derivation (generated if not provided)
+            
+        Returns:
+            Tuple of (Fernet instance, salt used)
+        """
+        if salt is None:
+            salt = crypto_secrets.token_bytes(16)
+        
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=480000,  # OWASP recommended minimum
+        )
+        key = base64.urlsafe_b64encode(kdf.derive(self._master_key))
+        return Fernet(key), salt
+    
     def _encrypt(self, value: str) -> str:
-        """Encrypt a value using simple XOR with key derivation."""
-        # Derive a key from master key
-        key = hashlib.sha256(self._master_key).digest()
+        """
+        Encrypt a value using Fernet (AES-128-CBC with HMAC).
         
-        # XOR encryption (simple but effective for this use case)
-        value_bytes = value.encode()
-        encrypted = bytes(b ^ key[i % len(key)] for i, b in enumerate(value_bytes))
-        
-        return base64.b64encode(encrypted).decode()
+        The encrypted format is: base64(salt + encrypted_data)
+        """
+        fernet, salt = self._derive_fernet_key()
+        encrypted = fernet.encrypt(value.encode())
+        # Prepend salt to encrypted data
+        combined = salt + encrypted
+        return base64.b64encode(combined).decode()
     
     def _decrypt(self, encrypted: str) -> str:
-        """Decrypt a value."""
-        # Derive the same key
-        key = hashlib.sha256(self._master_key).digest()
+        """
+        Decrypt a Fernet-encrypted value.
         
-        # Decode and XOR decrypt
+        Handles both new Fernet format and legacy XOR format for migration.
+        """
+        try:
+            combined = base64.b64decode(encrypted.encode())
+            # Extract salt (first 16 bytes) and encrypted data
+            salt = combined[:16]
+            encrypted_data = combined[16:]
+            
+            fernet, _ = self._derive_fernet_key(salt)
+            return fernet.decrypt(encrypted_data).decode()
+        except (InvalidToken, ValueError):
+            # Try legacy XOR decryption for backward compatibility
+            return self._decrypt_legacy(encrypted)
+    
+    def _decrypt_legacy(self, encrypted: str) -> str:
+        """Decrypt using legacy XOR method (for migration)."""
+        key = hashlib.sha256(self._master_key).digest()
         encrypted_bytes = base64.b64decode(encrypted.encode())
         decrypted = bytes(b ^ key[i % len(key)] for i, b in enumerate(encrypted_bytes))
-        
         return decrypted.decode()
     
     def set(
@@ -524,3 +567,132 @@ class SecretsManager:
             self._save()
         
         return len(to_delete)
+
+
+class SecretRedactor:
+    """
+    Utility for redacting secrets from text content.
+    
+    Use this to prevent accidental exposure of secrets in:
+    - Log files
+    - Artifacts
+    - Error messages
+    - API responses
+    """
+    
+    REDACTED_PLACEHOLDER = "[REDACTED]"
+    
+    SECRET_PATTERNS = [
+        (r'(?i)(api[_-]?key|apikey|api[_-]?token)\s*[=:]\s*["\']?([a-zA-Z0-9_\-]{20,})["\']?', 2),
+        (r'(?i)(bearer|token|auth)\s+([a-zA-Z0-9_\-\.]{20,})', 2),
+        (r'(?i)(sk-[a-zA-Z0-9]{20,})', 1),
+        (r'(?i)(ghp_[a-zA-Z0-9]{36})', 1),
+        (r'(?i)(gho_[a-zA-Z0-9]{36})', 1),
+        (r'(?i)(github_pat_[a-zA-Z0-9_]{22,})', 1),
+        (r'(?i)(AKIA[0-9A-Z]{16})', 1),
+        (r'(?i)(aws[_-]?secret[_-]?access[_-]?key)\s*[=:]\s*["\']?([a-zA-Z0-9/+=]{40})["\']?', 2),
+        (r'(?i)(postgres|mysql|mongodb)://[^:]+:([^@]+)@', 2),
+        (r'(?i)(password|passwd|pwd)\s*[=:]\s*["\']?([^\s"\']{8,})["\']?', 2),
+        (r'-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----', 0),
+        (r'eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*', 0),
+    ]
+    
+    def __init__(self, secrets_manager: SecretsManager | None = None):
+        self._secrets_manager = secrets_manager
+        self._custom_patterns: list[tuple[str, int]] = []
+        self._known_secrets: set[str] = set()
+    
+    def add_pattern(self, pattern: str, group: int = 0) -> None:
+        self._custom_patterns.append((pattern, group))
+    
+    def add_known_secret(self, value: str) -> None:
+        if value and len(value) >= 4:
+            self._known_secrets.add(value)
+    
+    def load_from_manager(
+        self,
+        scope: SecretScope = SecretScope.GLOBAL,
+        session_id: str | None = None,
+        task_id: str | None = None,
+    ) -> None:
+        if not self._secrets_manager:
+            return
+        
+        env_vars = self._secrets_manager.inject_env(
+            scope=scope,
+            session_id=session_id,
+            task_id=task_id,
+        )
+        
+        for value in env_vars.values():
+            self.add_known_secret(value)
+    
+    def redact(self, text: str) -> str:
+        if not text:
+            return text
+        
+        result = text
+        
+        for secret in self._known_secrets:
+            if secret in result:
+                result = result.replace(secret, self.REDACTED_PLACEHOLDER)
+        
+        all_patterns = self.SECRET_PATTERNS + self._custom_patterns
+        
+        for pattern, group in all_patterns:
+            try:
+                if group == 0:
+                    result = re.sub(pattern, self.REDACTED_PLACEHOLDER, result)
+                else:
+                    def replace_group(match: re.Match) -> str:
+                        full = match.group(0)
+                        original = match.group(group) if group <= len(match.groups()) else ""
+                        return full.replace(original, self.REDACTED_PLACEHOLDER) if original else full
+                    
+                    result = re.sub(pattern, replace_group, result)
+            except re.error:
+                continue
+        
+        return result
+    
+    def redact_dict(self, data: dict[str, Any], sensitive_keys: set[str] | None = None) -> dict[str, Any]:
+        if sensitive_keys is None:
+            sensitive_keys = {
+                "password", "passwd", "pwd", "secret", "token", "api_key",
+                "apikey", "auth", "credential", "private_key", "access_key",
+                "secret_key", "bearer", "authorization",
+            }
+        
+        def redact_value(key: str, value: Any) -> Any:
+            key_lower = key.lower()
+            
+            if any(sk in key_lower for sk in sensitive_keys):
+                if isinstance(value, str):
+                    return self.REDACTED_PLACEHOLDER
+                elif isinstance(value, (list, tuple)):
+                    return [self.REDACTED_PLACEHOLDER] * len(value)
+            
+            if isinstance(value, dict):
+                return self.redact_dict(value, sensitive_keys)
+            elif isinstance(value, list):
+                return [redact_value(key, item) for item in value]
+            elif isinstance(value, str):
+                return self.redact(value)
+            
+            return value
+        
+        return {k: redact_value(k, v) for k, v in data.items()}
+    
+    def redact_file(self, file_path: str | Path) -> str:
+        path = Path(file_path)
+        if not path.exists():
+            return ""
+        
+        try:
+            content = path.read_text()
+            return self.redact(content)
+        except Exception:
+            return f"[Unable to read file: {file_path}]"
+    
+    def create_safe_error(self, error: Exception) -> str:
+        return self.redact(str(error))
