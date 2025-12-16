@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Session } from '../types';
 import { useApi } from '../hooks/useApi';
-import { Plus, Trash2, Play, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, RefreshCw } from 'lucide-react';
 
 interface SessionListProps {
   onSelectSession: (session: Session) => void;
