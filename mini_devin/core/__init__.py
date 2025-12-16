@@ -24,6 +24,18 @@ from .llm_client import (
     create_llm_client,
 )
 
+from .parallel_executor import (
+    DependencyType,
+    ToolCall as ParallelToolCall,
+    ToolCallResult,
+    ParallelExecutionResult,
+    DependencyAnalyzer,
+    ParallelExecutor,
+    BatchToolCaller,
+    create_parallel_executor,
+    create_batch_caller,
+)
+
 __all__ = [
     "ToolExecutionError",
     "ToolPolicy",
@@ -37,4 +49,13 @@ __all__ = [
     "LLMResponse",
     "ToolCall",
     "create_llm_client",
+    "DependencyType",
+    "ParallelToolCall",
+    "ToolCallResult",
+    "ParallelExecutionResult",
+    "DependencyAnalyzer",
+    "ParallelExecutor",
+    "BatchToolCaller",
+    "create_parallel_executor",
+    "create_batch_caller",
 ]
