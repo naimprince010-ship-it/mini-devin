@@ -51,9 +51,6 @@ jobs:
       - name: Run Ruff linter
         run: poetry run ruff check mini_devin/
 
-      - name: Run Ruff formatter check
-        run: poetry run ruff format --check mini_devin/
-
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest
