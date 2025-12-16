@@ -8,10 +8,11 @@ This module provides secure credential management for:
 - Environment variables
 """
 
-from .manager import SecretsManager, Secret, SecretScope
+from .manager import SecretsManager, Secret, SecretScope, SecretRedactor
 
 __all__ = [
     "SecretsManager",
     "Secret",
     "SecretScope",
+    "SecretRedactor",
 ]
