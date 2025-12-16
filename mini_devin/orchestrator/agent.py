@@ -47,6 +47,10 @@ from ..agents import (
     ReviewerAgent,
     ReviewFeedback,
     create_reviewer_agent,
+    PlannerAgent,
+    PlanningResult,
+    PlanningStrategy,
+    create_planner_agent,
 )
 
 
@@ -157,6 +161,9 @@ class Agent:
         
         # Reviewer agent (Phase 9A)
         self._reviewer_agent: ReviewerAgent | None = None
+        
+        # Planner agent (Phase 9B)
+        self._planner_agent: PlannerAgent | None = None
         
         # Register default tools
         self._register_default_tools()
@@ -1128,6 +1135,296 @@ class Agent:
             )
         
         return should_commit, report
+    
+    def get_planner_agent(
+        self,
+        strategy: PlanningStrategy = PlanningStrategy.ITERATIVE,
+    ) -> PlannerAgent:
+        """
+        Get or create the planner agent.
+        
+        Args:
+            strategy: Default planning strategy to use
+            
+        Returns:
+            PlannerAgent instance
+        """
+        if self._planner_agent is None:
+            self._planner_agent = create_planner_agent(
+                default_strategy=strategy,
+                max_steps=50,
+                include_verification_steps=True,
+            )
+        return self._planner_agent
+    
+    async def create_plan(
+        self,
+        task: TaskState | None = None,
+        context: str | None = None,
+        strategy: PlanningStrategy | None = None,
+    ) -> PlanningResult:
+        """
+        Create an execution plan for a task using the planner agent.
+        
+        Args:
+            task: The task to plan for (uses current task if None)
+            context: Optional context about the codebase
+            strategy: Optional strategy override
+            
+        Returns:
+            PlanningResult with the plan and analysis
+        """
+        task_to_plan = task or self.state.current_task
+        if not task_to_plan:
+            return PlanningResult(
+                success=False,
+                plan=None,
+                analysis=None,
+                validation=None,
+                reasoning="No task provided and no current task set",
+            )
+        
+        planner = self.get_planner_agent()
+        result = await planner.create_plan(task_to_plan, context, strategy)
+        
+        if result.success and result.plan:
+            self.state.current_plan = result.plan
+            
+            if self._artifact_logger:
+                self._artifact_logger.log_tool_call(
+                    call_id="plan",
+                    tool_name="planner_agent",
+                    arguments={
+                        "task": task_to_plan.goal.description,
+                        "strategy": strategy.value if strategy else "iterative",
+                    },
+                    result=result.reasoning[:5000],
+                    duration_ms=0,
+                    success=True,
+                )
+        
+        return result
+    
+    async def analyze_task(
+        self,
+        task: TaskState | None = None,
+        context: str | None = None,
+    ) -> dict:
+        """
+        Analyze a task without creating a full plan.
+        
+        Args:
+            task: The task to analyze (uses current task if None)
+            context: Optional context about the codebase
+            
+        Returns:
+            Dictionary with task analysis
+        """
+        task_to_analyze = task or self.state.current_task
+        if not task_to_analyze:
+            return {"error": "No task provided and no current task set"}
+        
+        planner = self.get_planner_agent()
+        analysis = await planner.analyze_task(task_to_analyze, context)
+        return analysis.to_dict()
+    
+    async def refine_plan(
+        self,
+        feedback: str,
+    ) -> PlanningResult:
+        """
+        Refine the current plan based on feedback.
+        
+        Args:
+            feedback: Feedback on what to improve
+            
+        Returns:
+            PlanningResult with the refined plan
+        """
+        if not self.state.current_plan:
+            return PlanningResult(
+                success=False,
+                plan=None,
+                analysis=None,
+                validation=None,
+                reasoning="No current plan to refine",
+            )
+        
+        if not self.state.current_task:
+            return PlanningResult(
+                success=False,
+                plan=None,
+                analysis=None,
+                validation=None,
+                reasoning="No current task set",
+            )
+        
+        planner = self.get_planner_agent()
+        result = await planner.refine_plan(
+            self.state.current_plan,
+            feedback,
+            self.state.current_task,
+        )
+        
+        if result.success and result.plan:
+            self.state.current_plan = result.plan
+        
+        return result
+    
+    async def replan_from_failure(
+        self,
+        failed_step_id: str,
+        error: str,
+    ) -> PlanningResult:
+        """
+        Create a recovery plan after a step failure.
+        
+        Args:
+            failed_step_id: ID of the step that failed
+            error: Error message
+            
+        Returns:
+            PlanningResult with a recovery plan
+        """
+        if not self.state.current_plan:
+            return PlanningResult(
+                success=False,
+                plan=None,
+                analysis=None,
+                validation=None,
+                reasoning="No current plan",
+            )
+        
+        if not self.state.current_task:
+            return PlanningResult(
+                success=False,
+                plan=None,
+                analysis=None,
+                validation=None,
+                reasoning="No current task set",
+            )
+        
+        failed_step = None
+        for step in self.state.current_plan.steps:
+            if step.step_id == failed_step_id:
+                failed_step = step
+                break
+        
+        if not failed_step:
+            return PlanningResult(
+                success=False,
+                plan=None,
+                analysis=None,
+                validation=None,
+                reasoning=f"Step {failed_step_id} not found in plan",
+            )
+        
+        planner = self.get_planner_agent()
+        result = await planner.replan_from_failure(
+            self.state.current_plan,
+            failed_step,
+            error,
+            self.state.current_task,
+        )
+        
+        if result.success and result.plan:
+            self.state.current_plan = result.plan
+        
+        return result
+    
+    def get_next_plan_step(self):
+        """
+        Get the next step to execute in the current plan.
+        
+        Returns:
+            The next PlanStep to execute, or None if done/no plan
+        """
+        if not self.state.current_plan:
+            return None
+        
+        planner = self.get_planner_agent()
+        return planner.get_next_step(self.state.current_plan)
+    
+    def mark_plan_step_complete(
+        self,
+        step_id: str,
+        result: str | None = None,
+    ) -> None:
+        """
+        Mark a plan step as completed.
+        
+        Args:
+            step_id: ID of the step to mark complete
+            result: Optional result description
+        """
+        if not self.state.current_plan:
+            return
+        
+        planner = self.get_planner_agent()
+        self.state.current_plan = planner.mark_step_complete(
+            self.state.current_plan,
+            step_id,
+            result,
+        )
+    
+    def mark_plan_step_failed(
+        self,
+        step_id: str,
+        error: str,
+    ) -> None:
+        """
+        Mark a plan step as failed.
+        
+        Args:
+            step_id: ID of the step to mark failed
+            error: Error message
+        """
+        if not self.state.current_plan:
+            return
+        
+        planner = self.get_planner_agent()
+        self.state.current_plan = planner.mark_step_failed(
+            self.state.current_plan,
+            step_id,
+            error,
+        )
+    
+    def get_plan_progress(self) -> dict:
+        """
+        Get progress statistics for the current plan.
+        
+        Returns:
+            Dictionary with progress statistics
+        """
+        if not self.state.current_plan:
+            return {
+                "total_steps": 0,
+                "completed_steps": 0,
+                "progress_percent": 0,
+                "has_plan": False,
+            }
+        
+        planner = self.get_planner_agent()
+        progress = planner.get_plan_progress(self.state.current_plan)
+        progress["has_plan"] = True
+        return progress
+    
+    def create_minimal_plan(
+        self,
+        task: TaskState | None = None,
+    ) -> None:
+        """
+        Create a minimal plan without LLM (for simple tasks).
+        
+        Args:
+            task: The task to plan for (uses current task if None)
+        """
+        task_to_plan = task or self.state.current_task
+        if not task_to_plan:
+            return
+        
+        planner = self.get_planner_agent()
+        self.state.current_plan = planner.create_minimal_plan(task_to_plan)
     
     def _update_phase(self, new_phase: AgentPhase) -> None:
         """Update the agent phase."""
