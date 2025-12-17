@@ -222,6 +222,76 @@ export function TaskPanel({ session }: TaskPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.session_id]);
 
+  useEffect(() => {
+    if (selectedTask) {
+      setStreamingContent('Loading task output...');
+      api.getTaskOutput(session.session_id, selectedTask.task_id)
+        .then(output => {
+          if (output.outputs && output.outputs.length > 0) {
+            const content = output.outputs
+              .map(o => {
+                if (o.type === 'thinking') return `--- Thinking ---\n${o.content}\n`;
+                if (o.type === 'response') return `\n--- Agent Response ---\n${o.content}`;
+                if (o.type === 'error') return `\n--- Error ---\n${o.content}`;
+                return o.content;
+              })
+              .join('\n');
+            setStreamingContent(content);
+          } else if (output.result) {
+            setStreamingContent(output.result);
+          } else {
+            setStreamingContent('No output available');
+          }
+          setIsStreaming(output.status === 'running' || output.status === 'queued');
+        })
+        .catch(() => {
+          setStreamingContent('Failed to load task output');
+        });
+    }
+  }, [selectedTask?.task_id, session.session_id, api]);
+
+  const pollTaskOutput = useCallback(async (sessionId: string, taskId: string) => {
+    const maxAttempts = 60;
+    let attempts = 0;
+    
+    const poll = async () => {
+      try {
+        const output = await api.getTaskOutput(sessionId, taskId);
+        
+        if (output.outputs && output.outputs.length > 0) {
+          const content = output.outputs
+            .map(o => {
+              if (o.type === 'thinking') return `--- Thinking ---\n${o.content}\n`;
+              if (o.type === 'response') return `\n--- Agent Response ---\n${o.content}`;
+              if (o.type === 'error') return `\n--- Error ---\n${o.content}`;
+              return o.content;
+            })
+            .join('\n');
+          setStreamingContent(content);
+        }
+        
+        if (output.status === 'completed' || output.status === 'failed') {
+          setIsStreaming(false);
+          loadTasks();
+          return;
+        }
+        
+        attempts++;
+        if (attempts < maxAttempts && (output.status === 'queued' || output.status === 'running')) {
+          setTimeout(poll, 1000);
+        }
+      } catch (e) {
+        console.error('Failed to poll task output:', e);
+        attempts++;
+        if (attempts < maxAttempts) {
+          setTimeout(poll, 2000);
+        }
+      }
+    };
+    
+    poll();
+  }, [api]);
+
   const handleSubmitTask = async () => {
     if (!taskDescription.trim()) return;
     
@@ -233,10 +303,13 @@ export function TaskPanel({ session }: TaskPanelProps) {
       setTasks([...tasks, task]);
       setTaskDescription('');
       setSelectedTask(task);
-      setStreamingContent('');
+      setStreamingContent('Waiting for agent response...');
+      setIsStreaming(true);
       setToolExecutions([]);
       setCurrentPlan(null);
       setActiveTab('output');
+      
+      pollTaskOutput(session.session_id, task.task_id);
     } catch (e) {
       console.error('Failed to create task:', e);
     }
