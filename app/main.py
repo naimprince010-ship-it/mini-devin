@@ -5,6 +5,7 @@ This is a minimal version that doesn't load heavy dependencies
 to work within free tier memory constraints.
 """
 
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -97,3 +98,39 @@ async def create_session():
         "message": "Please run Mini-Devin locally for full functionality",
         "docs": "https://github.com/naimprince010-ship-it/mini-devin#readme",
     }
+
+
+@app.get("/api/skills/tags")
+async def list_skill_tags():
+    return {
+        "tags": ["api", "fastapi", "backend", "testing", "pytest", "refactoring", "code-quality"],
+    }
+
+
+@app.get("/api/status")
+async def get_status():
+    return {
+        "status": "running",
+        "mode": "lightweight",
+        "version": "1.0.0",
+    }
+
+
+@app.get("/skills")
+async def list_skills_root():
+    return await list_skills()
+
+
+@app.get("/skills/tags")
+async def list_skill_tags_root():
+    return await list_skill_tags()
+
+
+@app.get("/sessions")
+async def list_sessions_root():
+    return await list_sessions()
+
+
+@app.get("/status")
+async def get_status_root():
+    return await get_status()
