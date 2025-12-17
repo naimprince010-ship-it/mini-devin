@@ -593,28 +593,28 @@ export function SkillsManager({ apiBaseUrl = 'http://localhost:8000/api' }: Skil
                 )}
               </div>
 
-              {expandedSkill === skill.name && (
-                <div className="px-3 pb-3 border-t border-gray-600">
-                  <div className="mt-3">
-                    <h4 className="text-sm text-gray-400 mb-2">Required Tools</h4>
-                    <div className="flex flex-wrap gap-1">
-                      {skill.required_tools.length > 0 ? (
-                        skill.required_tools.map(tool => (
-                          <span key={tool} className="px-2 py-0.5 bg-gray-600 text-xs text-gray-300 rounded">
-                            {tool}
-                          </span>
-                        ))
-                      ) : (
-                        <span className="text-gray-500 text-xs">None</span>
-                      )}
-                    </div>
-                  </div>
+                            {expandedSkill === skill.name && (
+                              <div className="px-3 pb-3 border-t border-gray-600">
+                                <div className="mt-3">
+                                  <h4 className="text-sm text-gray-400 mb-2">Required Tools</h4>
+                                  <div className="flex flex-wrap gap-1">
+                                    {(skill.required_tools ?? []).length > 0 ? (
+                                      (skill.required_tools ?? []).map(tool => (
+                                        <span key={tool} className="px-2 py-0.5 bg-gray-600 text-xs text-gray-300 rounded">
+                                          {tool}
+                                        </span>
+                                      ))
+                                    ) : (
+                                      <span className="text-gray-500 text-xs">None</span>
+                                    )}
+                                  </div>
+                                </div>
 
-                  {skill.parameters.length > 0 && (
-                    <div className="mt-3">
-                      <h4 className="text-sm text-gray-400 mb-2">Parameters</h4>
-                      <div className="space-y-2">
-                        {skill.parameters.map((param, index) => (
+                                                    {(skill.parameters ?? []).length > 0 && (
+                                        <div className="mt-3">
+                                          <h4 className="text-sm text-gray-400 mb-2">Parameters</h4>
+                                          <div className="space-y-2">
+                                            {(skill.parameters ?? []).map((param, index) => (
                           <div key={index} className="flex items-center gap-2">
                             <input
                               type="text"
