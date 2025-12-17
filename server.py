@@ -200,6 +200,13 @@ class GitOperationRequest(BaseModel):
     body: Optional[str] = Field(default=None, description="PR body/description")
     base_branch: Optional[str] = Field(default="main", description="Base branch for PR")
 
+class CreateGitHubRepoRequest(BaseModel):
+    name: str = Field(..., description="Repository name")
+    description: str = Field(default="", description="Repository description")
+    private: bool = Field(default=False, description="Whether the repository should be private")
+    github_token: str = Field(..., description="GitHub Personal Access Token with repo creation permissions")
+    auto_init: bool = Field(default=True, description="Initialize with README")
+
 REPOS_DIR = os.environ.get("MINI_DEVIN_REPOS", "/root/mini-devin/repos")
 
 DANGEROUS_COMMANDS = [
@@ -401,6 +408,84 @@ def execute_memory_recall(key: str, session_id: str) -> ToolResult:
     except Exception as e:
         return ToolResult(tool="memory_recall", success=False, output="", error=str(e), error_code="unknown_error")
 
+def execute_create_github_repo(name: str, description: str, private: bool, github_token: str, auto_init: bool = True) -> ToolResult:
+    """Execute GitHub repo creation via API."""
+    import httpx
+    
+    if not name or not name.strip():
+        return ToolResult(tool="create_github_repo", success=False, output="", error="Repository name is required", error_code="invalid_input")
+    
+    repo_name = name.strip()
+    if not all(c.isalnum() or c in '-_.' for c in repo_name):
+        return ToolResult(tool="create_github_repo", success=False, output="", error="Repository name can only contain alphanumeric characters, hyphens, underscores, and periods", error_code="invalid_input")
+    
+    if not github_token:
+        return ToolResult(tool="create_github_repo", success=False, output="", error="GitHub token is required. Please provide a Personal Access Token with 'repo' scope.", error_code="missing_token")
+    
+    github_api_url = "https://api.github.com/user/repos"
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    payload = {
+        "name": repo_name,
+        "description": description or "",
+        "private": private,
+        "auto_init": auto_init
+    }
+    
+    try:
+        with httpx.Client() as client:
+            response = client.post(github_api_url, headers=headers, json=payload, timeout=30.0)
+            
+            if response.status_code == 201:
+                repo_data = response.json()
+                owner = repo_data["owner"]["login"]
+                repo_url = repo_data["clone_url"]
+                html_url = repo_data["html_url"]
+                default_branch = repo_data.get("default_branch", "main")
+                
+                # Auto-add to database
+                repo_id = str(uuid.uuid4())[:8]
+                local_path = os.path.join(REPOS_DIR, f"{owner}_{repo_name}_{repo_id}")
+                now = datetime.utcnow().isoformat()
+                
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("""INSERT INTO github_repos 
+                             (repo_id, repo_url, repo_name, owner, github_token, local_path, default_branch, created_at, status)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                          (repo_id, repo_url, repo_name, owner, github_token, local_path, default_branch, now, "pending"))
+                conn.commit()
+                conn.close()
+                
+                result = {
+                    "repo_id": repo_id,
+                    "repo_url": repo_url,
+                    "html_url": html_url,
+                    "repo_name": repo_name,
+                    "owner": owner,
+                    "private": repo_data["private"],
+                    "default_branch": default_branch,
+                    "local_path": local_path
+                }
+                return ToolResult(tool="create_github_repo", success=True, output=json.dumps(result, indent=2))
+            elif response.status_code == 401:
+                return ToolResult(tool="create_github_repo", success=False, output="", error="Invalid GitHub token. Make sure your token has 'repo' scope.", error_code="auth_error")
+            elif response.status_code == 422:
+                error_data = response.json()
+                errors = error_data.get("errors", [])
+                if errors and errors[0].get("message", "").startswith("name already exists"):
+                    return ToolResult(tool="create_github_repo", success=False, output="", error=f"Repository '{repo_name}' already exists in your GitHub account", error_code="already_exists")
+                return ToolResult(tool="create_github_repo", success=False, output="", error=f"GitHub API error: {error_data.get('message', 'Unknown error')}", error_code="api_error")
+            else:
+                return ToolResult(tool="create_github_repo", success=False, output="", error=f"GitHub API error: {response.text}", error_code="api_error")
+    except httpx.TimeoutException:
+        return ToolResult(tool="create_github_repo", success=False, output="", error="GitHub API request timed out", error_code="timeout")
+    except Exception as e:
+        return ToolResult(tool="create_github_repo", success=False, output="", error=f"Failed to create repo: {str(e)}", error_code="unknown_error")
+
 def get_llm_client(provider: str):
     if provider == "openai":
         api_key = os.environ.get("OPENAI_API_KEY")
@@ -592,6 +677,14 @@ def execute_tool(tool_call: dict, session_id: str = "") -> ToolResult:
             return execute_memory_store(tool_call.get("key", ""), tool_call.get("value", ""), session_id)
         elif tool == "memory_recall":
             return execute_memory_recall(tool_call.get("key", ""), session_id)
+        elif tool == "create_github_repo":
+            return execute_create_github_repo(
+                name=tool_call.get("name", ""),
+                description=tool_call.get("description", ""),
+                private=tool_call.get("private", False),
+                github_token=tool_call.get("github_token", ""),
+                auto_init=tool_call.get("auto_init", True)
+            )
         else:
             return ToolResult(tool=str(tool), success=False, output="", error=f"Unknown tool: {tool}", error_code="unknown_tool", suggestions=get_error_suggestions("unknown_tool"))
     except Exception as e:
@@ -962,7 +1055,8 @@ async def list_tools():
             {"name": "code_analysis", "description": "Analyze code structure/complexity", "params": ["path", "analysis_type"]},
             {"name": "search_files", "description": "Search for text in files", "params": ["path", "pattern", "file_pattern"]},
             {"name": "memory_store", "description": "Store information for later recall", "params": ["key", "value"]},
-            {"name": "memory_recall", "description": "Recall stored information", "params": ["key"]}
+            {"name": "memory_recall", "description": "Recall stored information", "params": ["key"]},
+            {"name": "create_github_repo", "description": "Create a new GitHub repository", "params": ["name", "description", "private", "github_token", "auto_init"]}
         ]
     }
 
@@ -1272,6 +1366,88 @@ async def add_repo(request: AddRepoRequest):
         "status": "pending",
         "message": "Repository added. Use POST /api/repos/{repo_id}/clone to clone it."
     }
+
+@app.post("/api/repos/create-github")
+async def create_github_repo(request: CreateGitHubRepoRequest):
+    """Create a new GitHub repository using the GitHub API.
+    
+    This endpoint allows the agent to create new repositories on GitHub.
+    Requires a GitHub Personal Access Token with 'repo' scope.
+    """
+    import httpx
+    
+    # Validate repo name (GitHub naming rules)
+    if not request.name or not request.name.strip():
+        raise HTTPException(status_code=400, detail="Repository name is required")
+    
+    repo_name = request.name.strip()
+    if not all(c.isalnum() or c in '-_.' for c in repo_name):
+        raise HTTPException(status_code=400, detail="Repository name can only contain alphanumeric characters, hyphens, underscores, and periods")
+    
+    # Create repo via GitHub API
+    github_api_url = "https://api.github.com/user/repos"
+    headers = {
+        "Authorization": f"Bearer {request.github_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    payload = {
+        "name": repo_name,
+        "description": request.description,
+        "private": request.private,
+        "auto_init": request.auto_init
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(github_api_url, headers=headers, json=payload, timeout=30.0)
+            
+            if response.status_code == 201:
+                repo_data = response.json()
+                
+                # Auto-add to our database
+                owner = repo_data["owner"]["login"]
+                repo_url = repo_data["clone_url"]
+                repo_id = str(uuid.uuid4())[:8]
+                local_path = os.path.join(REPOS_DIR, f"{owner}_{repo_name}_{repo_id}")
+                now = datetime.utcnow().isoformat()
+                default_branch = repo_data.get("default_branch", "main")
+                
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("""INSERT INTO github_repos 
+                             (repo_id, repo_url, repo_name, owner, github_token, local_path, default_branch, created_at, status)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                          (repo_id, repo_url, repo_name, owner, request.github_token, local_path, default_branch, now, "pending"))
+                conn.commit()
+                conn.close()
+                
+                return {
+                    "success": True,
+                    "repo_id": repo_id,
+                    "repo_url": repo_url,
+                    "html_url": repo_data["html_url"],
+                    "repo_name": repo_name,
+                    "owner": owner,
+                    "private": repo_data["private"],
+                    "default_branch": default_branch,
+                    "local_path": local_path,
+                    "message": f"Repository '{repo_name}' created successfully on GitHub. Use POST /api/repos/{repo_id}/clone to clone it locally."
+                }
+            elif response.status_code == 401:
+                raise HTTPException(status_code=401, detail="Invalid GitHub token. Make sure your token has 'repo' scope.")
+            elif response.status_code == 422:
+                error_data = response.json()
+                errors = error_data.get("errors", [])
+                if errors and errors[0].get("message", "").startswith("name already exists"):
+                    raise HTTPException(status_code=422, detail=f"Repository '{repo_name}' already exists in your GitHub account")
+                raise HTTPException(status_code=422, detail=f"GitHub API error: {error_data.get('message', 'Unknown error')}")
+            else:
+                raise HTTPException(status_code=response.status_code, detail=f"GitHub API error: {response.text}")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="GitHub API request timed out")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to connect to GitHub API: {str(e)}")
 
 @app.get("/api/repos/{repo_id}")
 async def get_repo(repo_id: str):
