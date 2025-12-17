@@ -143,3 +143,42 @@ export interface APIKey {
   last_used_at: string | null;
   expires_at: string | null;
 }
+
+export interface Provider {
+  id: string;
+  name: string;
+  models: string[];
+}
+
+export interface UploadedFile {
+  file_id: string;
+  filename: string;
+  size: number;
+  mime_type: string;
+  uploaded_at: string;
+}
+
+export interface Memory {
+  memory_id: string;
+  type: string;
+  content: {
+    key: string;
+    value: string;
+  };
+  created_at: string;
+  last_accessed: string;
+  access_count: number;
+}
+
+export interface ExportResponse {
+  format?: string;
+  content?: string;
+  session_id?: string;
+  created_at?: string;
+  model?: string;
+  provider?: string | number;
+  tasks?: Task[];
+  memories?: Memory[];
+  files?: UploadedFile[];
+  exported_at?: string;
+}

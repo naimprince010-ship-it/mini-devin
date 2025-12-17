@@ -7,6 +7,10 @@ import {
   CreateTaskRequest,
   SystemStatus,
   Model,
+  Provider,
+  UploadedFile,
+  Memory,
+  ExportResponse,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : '/api';
@@ -250,6 +254,126 @@ export function useApi() {
     }
   }, []);
 
+  const listProviders = useCallback(async (): Promise<Provider[]> => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await fetchApi<{ providers: Provider[] }>('/providers');
+      return result.providers;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to list providers');
+      throw e;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const uploadFile = useCallback(async (sessionId: string, file: File): Promise<UploadedFile> => {
+    setLoading(true);
+    setError(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const response = await fetch(`${API_BASE}/sessions/${sessionId}/files`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Upload failed' }));
+        throw new Error(error.detail || `HTTP ${response.status}`);
+      }
+      return response.json();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to upload file');
+      throw e;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const listFiles = useCallback(async (sessionId: string): Promise<UploadedFile[]> => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await fetchApi<{ files: UploadedFile[]; total: number }>(`/sessions/${sessionId}/files`);
+      return result.files;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to list files');
+      throw e;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const deleteFile = useCallback(async (sessionId: string, fileId: string): Promise<void> => {
+    setLoading(true);
+    setError(null);
+    try {
+      await fetchApi(`/sessions/${sessionId}/files/${fileId}`, { method: 'DELETE' });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete file');
+      throw e;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const listMemories = useCallback(async (sessionId: string): Promise<Memory[]> => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await fetchApi<{ memories: Memory[]; total: number }>(`/sessions/${sessionId}/memory`);
+      return result.memories;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to list memories');
+      throw e;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const storeMemory = useCallback(async (sessionId: string, key: string, value: string): Promise<{ memory_id: string }> => {
+    setLoading(true);
+    setError(null);
+    try {
+      return await fetchApi<{ memory_id: string; key: string; stored_at: string }>(`/sessions/${sessionId}/memory`, {
+        method: 'POST',
+        body: JSON.stringify({ key, value }),
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to store memory');
+      throw e;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const deleteMemory = useCallback(async (sessionId: string, memoryId: string): Promise<void> => {
+    setLoading(true);
+    setError(null);
+    try {
+      await fetchApi(`/sessions/${sessionId}/memory/${memoryId}`, { method: 'DELETE' });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete memory');
+      throw e;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const exportSession = useCallback(async (sessionId: string, format: 'json' | 'markdown' | 'txt'): Promise<ExportResponse> => {
+    setLoading(true);
+    setError(null);
+    try {
+      return await fetchApi<ExportResponse>(`/sessions/${sessionId}/export?format=${format}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to export session');
+      throw e;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   return {
     loading,
     error,
@@ -272,5 +396,17 @@ export function useApi() {
     // System
     getStatus,
     listModels,
+    // Providers
+    listProviders,
+    // Files
+    uploadFile,
+    listFiles,
+    deleteFile,
+    // Memory
+    listMemories,
+    storeMemory,
+    deleteMemory,
+    // Export
+    exportSession,
   };
 }
