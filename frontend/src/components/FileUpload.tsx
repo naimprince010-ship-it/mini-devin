@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { UploadedFile } from '../types';
 import { useApi } from '../hooks/useApi';
 import { Upload, Trash2, Download, Loader2 } from 'lucide-react';
@@ -24,9 +24,9 @@ export function FileUpload({ sessionId, onFileUploaded }: FileUploadProps) {
     }
   }, [sessionId, api]);
 
-  useState(() => {
+  useEffect(() => {
     loadFiles();
-  });
+  }, [loadFiles]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
