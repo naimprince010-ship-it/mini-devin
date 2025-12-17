@@ -1,9 +1,10 @@
 """
-Mini-Devin API Server v4.0
-Phase 29: Improved Tool Execution Reliability
-Phase 30: Server Code in Repo
-Phase 31: WebSocket Support
-Phase 32: More Tools (git, web search, code analysis)
+Mini-Devin API Server v5.0
+Phase 34: Better Error Handling
+Phase 35: Task History & Export
+Phase 36: Multi-Model Support (OpenAI, Anthropic, Ollama)
+Phase 37: File Upload
+Phase 38: Agent Memory (cross-session)
 """
 
 import os
@@ -13,21 +14,50 @@ import sqlite3
 import re
 import json
 import uuid
+import traceback
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional, List, Dict, Any
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
-import openai
 
 DB_PATH = os.environ.get("MINI_DEVIN_DB_PATH", "/root/mini-devin/mini_devin.db")
 WORKSPACE_DIR = os.environ.get("MINI_DEVIN_WORKSPACE", "/root/mini-devin/workspace")
+UPLOADS_DIR = os.environ.get("MINI_DEVIN_UPLOADS", "/root/mini-devin/uploads")
+MEMORY_DIR = os.environ.get("MINI_DEVIN_MEMORY", "/root/mini-devin/memory")
+
+class APIError(Exception):
+    def __init__(self, message: str, code: str, status_code: int = 400, details: Optional[Dict] = None):
+        self.message = message
+        self.code = code
+        self.status_code = status_code
+        self.details = details or {}
+        super().__init__(message)
+
+ERROR_SUGGESTIONS = {
+    "file_not_found": ["Check if the file path is correct", "Use list_files to see available files", "Create the file first using file_write"],
+    "permission_denied": ["File is in a restricted directory", "Use /tmp or workspace directory instead"],
+    "command_timeout": ["Command took too long (60s limit)", "Try breaking into smaller commands", "Check if command is stuck"],
+    "command_blocked": ["Command contains dangerous patterns", "Use safer alternatives"],
+    "api_error": ["Check API key configuration", "Verify model name is correct", "Try again later"],
+    "rate_limit": ["Too many requests", "Wait a moment and try again"],
+    "invalid_json": ["Tool call JSON is malformed", "Check JSON syntax"],
+    "unknown_tool": ["Tool name not recognized", "Check available tools list"],
+}
+
+def get_error_suggestions(error_code: str) -> List[str]:
+    return ERROR_SUGGESTIONS.get(error_code, ["Try a different approach", "Check the error message for details"])
 
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    os.makedirs(WORKSPACE_DIR, exist_ok=True)
+    os.makedirs(UPLOADS_DIR, exist_ok=True)
+    os.makedirs(MEMORY_DIR, exist_ok=True)
+    
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS sessions (
@@ -36,6 +66,7 @@ def init_db():
         status TEXT,
         working_directory TEXT,
         model TEXT,
+        provider TEXT DEFAULT 'openai',
         max_iterations INTEGER,
         current_task TEXT,
         iteration INTEGER DEFAULT 0,
@@ -50,6 +81,8 @@ def init_db():
         started_at TEXT,
         completed_at TEXT,
         result TEXT,
+        error_message TEXT,
+        error_code TEXT,
         FOREIGN KEY (session_id) REFERENCES sessions(session_id)
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS task_outputs (
@@ -60,28 +93,71 @@ def init_db():
         created_at TEXT,
         FOREIGN KEY (task_id) REFERENCES tasks(task_id)
     )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS uploaded_files (
+        file_id TEXT PRIMARY KEY,
+        session_id TEXT,
+        original_name TEXT,
+        stored_path TEXT,
+        file_size INTEGER,
+        mime_type TEXT,
+        uploaded_at TEXT,
+        FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS agent_memory (
+        memory_id TEXT PRIMARY KEY,
+        session_id TEXT,
+        memory_type TEXT,
+        content TEXT,
+        created_at TEXT,
+        last_accessed TEXT,
+        access_count INTEGER DEFAULT 0,
+        FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+    )''')
+    try:
+        c.execute("ALTER TABLE sessions ADD COLUMN provider TEXT DEFAULT 'openai'")
+    except:
+        pass
+    try:
+        c.execute("ALTER TABLE tasks ADD COLUMN error_message TEXT")
+    except:
+        pass
+    try:
+        c.execute("ALTER TABLE tasks ADD COLUMN error_code TEXT")
+    except:
+        pass
     conn.commit()
     conn.close()
 
 def get_db():
-    return sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 active_websockets: Dict[str, List[WebSocket]] = {}
-client: Optional[openai.OpenAI] = None
+llm_clients: Dict[str, Any] = {}
 
 class CreateSessionRequest(BaseModel):
     working_directory: str = Field(default=".", description="Working directory")
     model: str = Field(default="gpt-4o-mini", description="LLM model to use")
+    provider: str = Field(default="openai", description="LLM provider: openai, anthropic, ollama")
     max_iterations: int = Field(default=10, description="Max iterations per task")
 
 class CreateTaskRequest(BaseModel):
     description: str = Field(..., description="Task description")
+    files: Optional[List[str]] = Field(default=None, description="List of uploaded file IDs")
+
+class MemoryEntry(BaseModel):
+    key: str
+    value: str
+    memory_type: str = "fact"
 
 class ToolResult(BaseModel):
     tool: str
     success: bool
     output: str
     error: Optional[str] = None
+    error_code: Optional[str] = None
+    suggestions: Optional[List[str]] = None
 
 DANGEROUS_COMMANDS = [
     "rm -rf /", "rm -rf /*", "mkfs", "dd if=", ":(){", "fork bomb",
@@ -89,7 +165,7 @@ DANGEROUS_COMMANDS = [
     "wget http", "curl http", "nc -e", "bash -i", "/dev/tcp"
 ]
 
-ALLOWED_DIRS = ["/tmp", WORKSPACE_DIR]
+ALLOWED_DIRS = ["/tmp", WORKSPACE_DIR, UPLOADS_DIR]
 
 def is_path_allowed(path: str) -> bool:
     abs_path = os.path.abspath(path)
@@ -106,7 +182,7 @@ def execute_terminal(command: str, working_dir: str = "/tmp") -> ToolResult:
     try:
         safe, reason = is_command_safe(command)
         if not safe:
-            return ToolResult(tool="terminal", success=False, output="", error=reason)
+            return ToolResult(tool="terminal", success=False, output="", error=reason, error_code="command_blocked", suggestions=get_error_suggestions("command_blocked"))
         
         result = subprocess.run(
             command, shell=True, capture_output=True, text=True,
@@ -114,27 +190,35 @@ def execute_terminal(command: str, working_dir: str = "/tmp") -> ToolResult:
             env={**os.environ, "PATH": "/usr/local/bin:/usr/bin:/bin"}
         )
         output = result.stdout[:10000] if result.stdout else ""
-        error = result.stderr[:2000] if result.stderr and result.returncode != 0 else None
-        return ToolResult(tool="terminal", success=result.returncode == 0, output=output, error=error)
+        if result.returncode != 0:
+            error = result.stderr[:2000] if result.stderr else "Command failed with no error output"
+            return ToolResult(tool="terminal", success=False, output=output, error=error, error_code="command_failed", suggestions=["Check command syntax", "Verify file paths exist"])
+        return ToolResult(tool="terminal", success=True, output=output)
     except subprocess.TimeoutExpired:
-        return ToolResult(tool="terminal", success=False, output="", error="Command timed out (60s limit)")
+        return ToolResult(tool="terminal", success=False, output="", error="Command timed out (60s limit)", error_code="command_timeout", suggestions=get_error_suggestions("command_timeout"))
+    except FileNotFoundError:
+        return ToolResult(tool="terminal", success=False, output="", error=f"Working directory not found: {working_dir}", error_code="file_not_found", suggestions=get_error_suggestions("file_not_found"))
     except Exception as e:
-        return ToolResult(tool="terminal", success=False, output="", error=str(e))
+        return ToolResult(tool="terminal", success=False, output="", error=str(e), error_code="unknown_error", suggestions=["Check command syntax", "Try a simpler command"])
 
 def execute_file_read(path: str) -> ToolResult:
     try:
         if not is_path_allowed(path):
-            return ToolResult(tool="file_read", success=False, output="", error=f"Access denied. Allowed: {ALLOWED_DIRS}")
+            return ToolResult(tool="file_read", success=False, output="", error=f"Access denied. Allowed: {ALLOWED_DIRS}", error_code="permission_denied", suggestions=get_error_suggestions("permission_denied"))
+        if not os.path.exists(path):
+            return ToolResult(tool="file_read", success=False, output="", error=f"File not found: {path}", error_code="file_not_found", suggestions=get_error_suggestions("file_not_found"))
         with open(path, 'r') as f:
             content = f.read(100000)
         return ToolResult(tool="file_read", success=True, output=content)
+    except UnicodeDecodeError:
+        return ToolResult(tool="file_read", success=False, output="", error="File is not a text file (binary content)", error_code="binary_file", suggestions=["Use a different tool for binary files"])
     except Exception as e:
-        return ToolResult(tool="file_read", success=False, output="", error=str(e))
+        return ToolResult(tool="file_read", success=False, output="", error=str(e), error_code="unknown_error")
 
 def execute_file_write(path: str, content: str) -> ToolResult:
     try:
         if not is_path_allowed(path):
-            return ToolResult(tool="file_write", success=False, output="", error=f"Access denied. Allowed: {ALLOWED_DIRS}")
+            return ToolResult(tool="file_write", success=False, output="", error=f"Access denied. Allowed: {ALLOWED_DIRS}", error_code="permission_denied", suggestions=get_error_suggestions("permission_denied"))
         dir_path = os.path.dirname(path)
         if dir_path:
             os.makedirs(dir_path, exist_ok=True)
@@ -142,48 +226,50 @@ def execute_file_write(path: str, content: str) -> ToolResult:
             f.write(content)
         return ToolResult(tool="file_write", success=True, output=f"Written {len(content)} bytes to {path}")
     except Exception as e:
-        return ToolResult(tool="file_write", success=False, output="", error=str(e))
+        return ToolResult(tool="file_write", success=False, output="", error=str(e), error_code="unknown_error")
 
 def execute_list_files(path: str = "/tmp") -> ToolResult:
     try:
         if not is_path_allowed(path):
-            return ToolResult(tool="list_files", success=False, output="", error=f"Access denied. Allowed: {ALLOWED_DIRS}")
+            return ToolResult(tool="list_files", success=False, output="", error=f"Access denied. Allowed: {ALLOWED_DIRS}", error_code="permission_denied", suggestions=get_error_suggestions("permission_denied"))
+        if not os.path.exists(path):
+            return ToolResult(tool="list_files", success=False, output="", error=f"Directory not found: {path}", error_code="file_not_found", suggestions=get_error_suggestions("file_not_found"))
         entries = []
         for entry in os.scandir(path):
             entry_type = "dir" if entry.is_dir() else "file"
             size = entry.stat().st_size if entry.is_file() else 0
             entries.append(f"{entry_type}\t{size}\t{entry.name}")
-        return ToolResult(tool="list_files", success=True, output="\n".join(entries[:200]))
+        return ToolResult(tool="list_files", success=True, output="\n".join(entries[:200]) if entries else "Directory is empty")
     except Exception as e:
-        return ToolResult(tool="list_files", success=False, output="", error=str(e))
+        return ToolResult(tool="list_files", success=False, output="", error=str(e), error_code="unknown_error")
 
 def execute_git(command: str, working_dir: str = "/tmp") -> ToolResult:
     try:
         allowed_git_commands = ["status", "log", "diff", "branch", "show", "ls-files", "rev-parse", "config --get"]
         cmd_parts = command.strip().split()
         if not cmd_parts:
-            return ToolResult(tool="git", success=False, output="", error="No git command provided")
+            return ToolResult(tool="git", success=False, output="", error="No git command provided", error_code="invalid_input")
         
         git_cmd = cmd_parts[0] if len(cmd_parts) == 1 else " ".join(cmd_parts[:2])
         if not any(git_cmd.startswith(allowed) for allowed in allowed_git_commands):
-            return ToolResult(tool="git", success=False, output="", error=f"Git command not allowed. Allowed: {allowed_git_commands}")
+            return ToolResult(tool="git", success=False, output="", error=f"Git command not allowed. Allowed: {allowed_git_commands}", error_code="command_blocked", suggestions=["Use read-only git commands"])
         
         full_command = f"git {command}"
-        result = subprocess.run(
-            full_command, shell=True, capture_output=True, text=True,
-            timeout=30, cwd=working_dir
-        )
-        return ToolResult(tool="git", success=result.returncode == 0, output=result.stdout[:5000], error=result.stderr[:1000] if result.returncode != 0 else None)
+        result = subprocess.run(full_command, shell=True, capture_output=True, text=True, timeout=30, cwd=working_dir)
+        if result.returncode != 0:
+            return ToolResult(tool="git", success=False, output="", error=result.stderr[:1000], error_code="command_failed", suggestions=["Check if directory is a git repository"])
+        return ToolResult(tool="git", success=True, output=result.stdout[:5000])
+    except subprocess.TimeoutExpired:
+        return ToolResult(tool="git", success=False, output="", error="Git command timed out", error_code="command_timeout")
     except Exception as e:
-        return ToolResult(tool="git", success=False, output="", error=str(e))
+        return ToolResult(tool="git", success=False, output="", error=str(e), error_code="unknown_error")
 
 def execute_code_analysis(path: str, analysis_type: str = "structure") -> ToolResult:
     try:
         if not is_path_allowed(path):
-            return ToolResult(tool="code_analysis", success=False, output="", error=f"Access denied. Allowed: {ALLOWED_DIRS}")
-        
+            return ToolResult(tool="code_analysis", success=False, output="", error=f"Access denied. Allowed: {ALLOWED_DIRS}", error_code="permission_denied")
         if not os.path.exists(path):
-            return ToolResult(tool="code_analysis", success=False, output="", error=f"File not found: {path}")
+            return ToolResult(tool="code_analysis", success=False, output="", error=f"File not found: {path}", error_code="file_not_found", suggestions=get_error_suggestions("file_not_found"))
         
         with open(path, 'r') as f:
             content = f.read()
@@ -194,35 +280,25 @@ def execute_code_analysis(path: str, analysis_type: str = "structure") -> ToolRe
             functions = re.findall(r'(?:def|function|func)\s+(\w+)', content)
             classes = re.findall(r'(?:class)\s+(\w+)', content)
             imports = re.findall(r'(?:import|from|require|include)\s+[\w.]+', content)
-            
-            result = f"File: {path}\n"
-            result += f"Lines: {len(lines)}\n"
-            result += f"Classes: {', '.join(classes) if classes else 'None'}\n"
-            result += f"Functions: {', '.join(functions) if functions else 'None'}\n"
-            result += f"Imports: {len(imports)} found\n"
+            result = f"File: {path}\nLines: {len(lines)}\nClasses: {', '.join(classes) if classes else 'None'}\nFunctions: {', '.join(functions) if functions else 'None'}\nImports: {len(imports)} found\n"
             return ToolResult(tool="code_analysis", success=True, output=result)
-        
         elif analysis_type == "complexity":
             indent_levels = [len(line) - len(line.lstrip()) for line in lines if line.strip()]
             max_indent = max(indent_levels) if indent_levels else 0
             avg_indent = sum(indent_levels) / len(indent_levels) if indent_levels else 0
-            
-            result = f"File: {path}\n"
-            result += f"Total lines: {len(lines)}\n"
-            result += f"Non-empty lines: {len([l for l in lines if l.strip()])}\n"
-            result += f"Max nesting depth: {max_indent // 4}\n"
-            result += f"Average indentation: {avg_indent:.1f} spaces\n"
+            result = f"File: {path}\nTotal lines: {len(lines)}\nNon-empty lines: {len([l for l in lines if l.strip()])}\nMax nesting depth: {max_indent // 4}\nAverage indentation: {avg_indent:.1f} spaces\n"
             return ToolResult(tool="code_analysis", success=True, output=result)
-        
         else:
-            return ToolResult(tool="code_analysis", success=False, output="", error=f"Unknown analysis type: {analysis_type}")
+            return ToolResult(tool="code_analysis", success=False, output="", error=f"Unknown analysis type: {analysis_type}. Use 'structure' or 'complexity'", error_code="invalid_input")
     except Exception as e:
-        return ToolResult(tool="code_analysis", success=False, output="", error=str(e))
+        return ToolResult(tool="code_analysis", success=False, output="", error=str(e), error_code="unknown_error")
 
 def execute_search_files(path: str, pattern: str, file_pattern: str = "*") -> ToolResult:
     try:
         if not is_path_allowed(path):
-            return ToolResult(tool="search_files", success=False, output="", error=f"Access denied. Allowed: {ALLOWED_DIRS}")
+            return ToolResult(tool="search_files", success=False, output="", error=f"Access denied. Allowed: {ALLOWED_DIRS}", error_code="permission_denied")
+        if not os.path.exists(path):
+            return ToolResult(tool="search_files", success=False, output="", error=f"Directory not found: {path}", error_code="file_not_found")
         
         import fnmatch
         results = []
@@ -248,7 +324,112 @@ def execute_search_files(path: str, pattern: str, file_pattern: str = "*") -> To
         else:
             return ToolResult(tool="search_files", success=True, output=f"No matches found for '{pattern}'")
     except Exception as e:
-        return ToolResult(tool="search_files", success=False, output="", error=str(e))
+        return ToolResult(tool="search_files", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_memory_store(key: str, value: str, session_id: str) -> ToolResult:
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        memory_id = str(uuid.uuid4())[:8]
+        now = datetime.utcnow().isoformat()
+        c.execute("INSERT OR REPLACE INTO agent_memory (memory_id, session_id, memory_type, content, created_at, last_accessed, access_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                  (memory_id, session_id, "user_stored", json.dumps({"key": key, "value": value}), now, now, 1))
+        conn.commit()
+        conn.close()
+        return ToolResult(tool="memory_store", success=True, output=f"Stored memory: {key}")
+    except Exception as e:
+        return ToolResult(tool="memory_store", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_memory_recall(key: str, session_id: str) -> ToolResult:
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT content FROM agent_memory WHERE session_id=? AND content LIKE ?", (session_id, f'%"key": "{key}"%'))
+        row = c.fetchone()
+        if row:
+            data = json.loads(row[0])
+            c.execute("UPDATE agent_memory SET last_accessed=?, access_count=access_count+1 WHERE session_id=? AND content LIKE ?",
+                      (datetime.utcnow().isoformat(), session_id, f'%"key": "{key}"%'))
+            conn.commit()
+            conn.close()
+            return ToolResult(tool="memory_recall", success=True, output=data.get("value", ""))
+        conn.close()
+        return ToolResult(tool="memory_recall", success=False, output="", error=f"No memory found for key: {key}", error_code="not_found")
+    except Exception as e:
+        return ToolResult(tool="memory_recall", success=False, output="", error=str(e), error_code="unknown_error")
+
+def get_llm_client(provider: str):
+    if provider == "openai":
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if api_key:
+            import openai
+            return openai.OpenAI(api_key=api_key)
+    elif provider == "anthropic":
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if api_key:
+            try:
+                import anthropic
+                return anthropic.Anthropic(api_key=api_key)
+            except ImportError:
+                return None
+    elif provider == "ollama":
+        ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+        return {"type": "ollama", "url": ollama_url}
+    return None
+
+async def call_llm(provider: str, model: str, messages: list, max_tokens: int = 2000) -> str:
+    client = get_llm_client(provider)
+    if not client:
+        raise APIError(f"LLM provider '{provider}' not configured", "api_not_configured", 500)
+    
+    try:
+        if provider == "openai":
+            response = client.chat.completions.create(model=model, messages=messages, max_tokens=max_tokens, temperature=0.7)
+            return response.choices[0].message.content
+        elif provider == "anthropic":
+            system_msg = ""
+            user_msgs = []
+            for msg in messages:
+                if msg["role"] == "system":
+                    system_msg = msg["content"]
+                else:
+                    user_msgs.append(msg)
+            response = client.messages.create(model=model, max_tokens=max_tokens, system=system_msg, messages=user_msgs)
+            return response.content[0].text
+        elif provider == "ollama":
+            import httpx
+            async with httpx.AsyncClient(timeout=120.0) as http_client:
+                response = await http_client.post(f"{client['url']}/api/chat", json={"model": model, "messages": messages, "stream": False})
+                if response.status_code == 200:
+                    return response.json().get("message", {}).get("content", "")
+                else:
+                    raise APIError(f"Ollama error: {response.text}", "ollama_error", response.status_code)
+        raise APIError(f"Unknown provider: {provider}", "unknown_provider", 400)
+    except Exception as e:
+        if isinstance(e, APIError):
+            raise
+        raise APIError(f"LLM call failed: {str(e)}", "api_error", 500, {"original_error": str(e)})
+
+def get_session_memory(session_id: str) -> str:
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT content FROM agent_memory WHERE session_id=? ORDER BY last_accessed DESC LIMIT 10", (session_id,))
+        rows = c.fetchall()
+        conn.close()
+        if rows:
+            memories = []
+            for row in rows:
+                try:
+                    data = json.loads(row[0])
+                    memories.append(f"- {data.get('key', 'unknown')}: {data.get('value', '')}")
+                except:
+                    pass
+            if memories:
+                return "\n\n## Your Memory (from previous interactions)\n" + "\n".join(memories)
+        return ""
+    except:
+        return ""
 
 SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer. You MUST use tools to accomplish tasks - do not just describe what you would do.
 
@@ -297,31 +478,28 @@ When you need to perform an action, you MUST output a JSON block like this:
    {"tool": "search_files", "path": "/tmp", "pattern": "TODO", "file_pattern": "*.py"}
    ```
 
+8. **memory_store** - Store information for later recall
+   ```json
+   {"tool": "memory_store", "key": "user_preference", "value": "prefers Python"}
+   ```
+
+9. **memory_recall** - Recall stored information
+   ```json
+   {"tool": "memory_recall", "key": "user_preference"}
+   ```
+
 ## Working Directory
 You can create and modify files in: /tmp and the workspace directory.
+
+## Error Handling
+If a tool fails, you'll receive an error message with suggestions. Use these to fix the issue and try again.
 
 ## Instructions
 1. ALWAYS use tools - never just describe what you would do
 2. After each tool execution, you'll see the results
-3. Continue using tools until the task is complete
-4. Provide a summary when done
-
-## Example Task Flow
-User: "Create a Python script that prints hello world and run it"
-
-Your response should be:
-"I'll create a Python script and run it.
-
-```json
-{"tool": "file_write", "path": "/tmp/hello.py", "content": "print('Hello, World!')"}
-```"
-
-Then after seeing the result, you continue:
-"File created. Now I'll run it:
-
-```json
-{"tool": "terminal", "command": "python3 /tmp/hello.py"}
-```"
+3. If a tool fails, read the error and suggestions, then try a different approach
+4. Continue using tools until the task is complete
+5. Provide a summary when done
 
 REMEMBER: Always output the JSON tool block, never just describe what you would do!"""
 
@@ -331,8 +509,7 @@ def parse_tool_calls(response: str) -> list:
     matches = re.findall(pattern, response, re.DOTALL)
     for match in matches:
         try:
-            match_clean = match.strip()
-            tool_call = json.loads(match_clean)
+            tool_call = json.loads(match.strip())
             if "tool" in tool_call:
                 tools.append(tool_call)
         except json.JSONDecodeError:
@@ -351,24 +528,31 @@ def parse_tool_calls(response: str) -> list:
     
     return tools
 
-def execute_tool(tool_call: dict) -> ToolResult:
+def execute_tool(tool_call: dict, session_id: str = "") -> ToolResult:
     tool = tool_call.get("tool")
-    if tool == "terminal":
-        return execute_terminal(tool_call.get("command", ""), tool_call.get("working_dir", "/tmp"))
-    elif tool == "file_read":
-        return execute_file_read(tool_call.get("path", ""))
-    elif tool == "file_write":
-        return execute_file_write(tool_call.get("path", ""), tool_call.get("content", ""))
-    elif tool == "list_files":
-        return execute_list_files(tool_call.get("path", "/tmp"))
-    elif tool == "git":
-        return execute_git(tool_call.get("command", ""), tool_call.get("working_dir", "/tmp"))
-    elif tool == "code_analysis":
-        return execute_code_analysis(tool_call.get("path", ""), tool_call.get("analysis_type", "structure"))
-    elif tool == "search_files":
-        return execute_search_files(tool_call.get("path", "/tmp"), tool_call.get("pattern", ""), tool_call.get("file_pattern", "*"))
-    else:
-        return ToolResult(tool=str(tool), success=False, output="", error=f"Unknown tool: {tool}")
+    try:
+        if tool == "terminal":
+            return execute_terminal(tool_call.get("command", ""), tool_call.get("working_dir", "/tmp"))
+        elif tool == "file_read":
+            return execute_file_read(tool_call.get("path", ""))
+        elif tool == "file_write":
+            return execute_file_write(tool_call.get("path", ""), tool_call.get("content", ""))
+        elif tool == "list_files":
+            return execute_list_files(tool_call.get("path", "/tmp"))
+        elif tool == "git":
+            return execute_git(tool_call.get("command", ""), tool_call.get("working_dir", "/tmp"))
+        elif tool == "code_analysis":
+            return execute_code_analysis(tool_call.get("path", ""), tool_call.get("analysis_type", "structure"))
+        elif tool == "search_files":
+            return execute_search_files(tool_call.get("path", "/tmp"), tool_call.get("pattern", ""), tool_call.get("file_pattern", "*"))
+        elif tool == "memory_store":
+            return execute_memory_store(tool_call.get("key", ""), tool_call.get("value", ""), session_id)
+        elif tool == "memory_recall":
+            return execute_memory_recall(tool_call.get("key", ""), session_id)
+        else:
+            return ToolResult(tool=str(tool), success=False, output="", error=f"Unknown tool: {tool}", error_code="unknown_tool", suggestions=get_error_suggestions("unknown_tool"))
+    except Exception as e:
+        return ToolResult(tool=str(tool), success=False, output="", error=f"Tool execution error: {str(e)}", error_code="execution_error", suggestions=["Check tool parameters", "Try again"])
 
 async def broadcast_to_session(session_id: str, message: dict):
     if session_id in active_websockets:
@@ -381,17 +565,20 @@ async def broadcast_to_session(session_id: str, message: dict):
         for ws in dead_connections:
             active_websockets[session_id].remove(ws)
 
-async def execute_agent_task(session_id: str, task_id: str, description: str, model: str, max_iterations: int = 10):
-    global client
+async def execute_agent_task(session_id: str, task_id: str, description: str, model: str, provider: str = "openai", max_iterations: int = 10):
     conn = get_db()
     c = conn.cursor()
     
-    if not client:
-        c.execute("UPDATE tasks SET status=?, result=? WHERE task_id=?", ("failed", "OpenAI API key not configured", task_id))
-        c.execute("INSERT INTO task_outputs (task_id, output_type, content, created_at) VALUES (?, ?, ?, ?)", (task_id, "error", "OpenAI API key not configured", datetime.utcnow().isoformat()))
+    llm_client = get_llm_client(provider)
+    if not llm_client:
+        error_msg = f"LLM provider '{provider}' not configured"
+        error_code = "api_not_configured"
+        suggestions = get_error_suggestions("api_error")
+        c.execute("UPDATE tasks SET status=?, result=?, error_message=?, error_code=? WHERE task_id=?", ("failed", error_msg, error_msg, error_code, task_id))
+        c.execute("INSERT INTO task_outputs (task_id, output_type, content, created_at) VALUES (?, ?, ?, ?)", (task_id, "error", json.dumps({"message": error_msg, "code": error_code, "suggestions": suggestions}), datetime.utcnow().isoformat()))
         conn.commit()
         conn.close()
-        await broadcast_to_session(session_id, {"type": "task_failed", "task_id": task_id, "error": "OpenAI API key not configured"})
+        await broadcast_to_session(session_id, {"type": "task_failed", "task_id": task_id, "error": error_msg, "error_code": error_code, "suggestions": suggestions})
         return
     
     c.execute("UPDATE tasks SET status=?, started_at=? WHERE task_id=?", ("running", datetime.utcnow().isoformat(), task_id))
@@ -403,7 +590,9 @@ async def execute_agent_task(session_id: str, task_id: str, description: str, mo
     conn.commit()
     await broadcast_to_session(session_id, {"type": "thinking", "task_id": task_id, "content": f"Analyzing task: {description}"})
     
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": description}]
+    memory_context = get_session_memory(session_id)
+    system_prompt = SYSTEM_PROMPT + memory_context
+    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": description}]
     iteration = 0
     final_response = ""
     
@@ -415,8 +604,16 @@ async def execute_agent_task(session_id: str, task_id: str, description: str, mo
             conn.commit()
             await broadcast_to_session(session_id, {"type": "iteration", "task_id": task_id, "iteration": iteration, "max": max_iterations})
             
-            response = client.chat.completions.create(model=model, messages=messages, max_tokens=2000, temperature=0.7)
-            agent_response = response.choices[0].message.content
+            try:
+                agent_response = await call_llm(provider, model, messages, max_tokens=2000)
+            except APIError as e:
+                c.execute("UPDATE tasks SET status=?, result=?, error_message=?, error_code=? WHERE task_id=?", ("failed", e.message, e.message, e.code, task_id))
+                c.execute("INSERT INTO task_outputs (task_id, output_type, content, created_at) VALUES (?, ?, ?, ?)", (task_id, "error", json.dumps({"message": e.message, "code": e.code, "suggestions": get_error_suggestions(e.code)}), datetime.utcnow().isoformat()))
+                conn.commit()
+                await broadcast_to_session(session_id, {"type": "task_failed", "task_id": task_id, "error": e.message, "error_code": e.code, "suggestions": get_error_suggestions(e.code)})
+                conn.close()
+                return
+            
             final_response = agent_response
             
             c.execute("INSERT INTO task_outputs (task_id, output_type, content, created_at) VALUES (?, ?, ?, ?)", (task_id, "response", agent_response, datetime.utcnow().isoformat()))
@@ -432,16 +629,16 @@ async def execute_agent_task(session_id: str, task_id: str, description: str, mo
             for tool_call in tool_calls:
                 await broadcast_to_session(session_id, {"type": "tool_started", "task_id": task_id, "tool": tool_call})
                 
-                result = execute_tool(tool_call)
+                result = execute_tool(tool_call, session_id)
                 tool_results.append(result)
                 
-                tool_output = {"tool": result.tool, "success": result.success, "output": result.output[:5000], "error": result.error}
+                tool_output = {"tool": result.tool, "success": result.success, "output": result.output[:5000], "error": result.error, "error_code": result.error_code, "suggestions": result.suggestions}
                 c.execute("INSERT INTO task_outputs (task_id, output_type, content, created_at) VALUES (?, ?, ?, ?)", (task_id, "tool", json.dumps(tool_output), datetime.utcnow().isoformat()))
                 conn.commit()
                 await broadcast_to_session(session_id, {"type": "tool_result", "task_id": task_id, "result": tool_output})
             
             tool_output_text = "\n\n".join([
-                f"**Tool: {r.tool}**\nSuccess: {r.success}\n```\n{r.output}\n```\n{f'Error: {r.error}' if r.error else ''}"
+                f"**Tool: {r.tool}**\nSuccess: {r.success}\n```\n{r.output}\n```\n{f'Error: {r.error}' if r.error else ''}{f' (Suggestions: {r.suggestions})' if r.suggestions else ''}"
                 for r in tool_results
             ])
             
@@ -454,76 +651,111 @@ async def execute_agent_task(session_id: str, task_id: str, description: str, mo
         
     except Exception as e:
         error_msg = str(e)
-        c.execute("UPDATE tasks SET status=?, result=? WHERE task_id=?", ("failed", f"Error: {error_msg}", task_id))
-        c.execute("INSERT INTO task_outputs (task_id, output_type, content, created_at) VALUES (?, ?, ?, ?)", (task_id, "error", error_msg, datetime.utcnow().isoformat()))
+        error_code = "unknown_error"
+        tb = traceback.format_exc()
+        c.execute("UPDATE tasks SET status=?, result=?, error_message=?, error_code=? WHERE task_id=?", ("failed", f"Error: {error_msg}", error_msg, error_code, task_id))
+        c.execute("INSERT INTO task_outputs (task_id, output_type, content, created_at) VALUES (?, ?, ?, ?)", (task_id, "error", json.dumps({"message": error_msg, "code": error_code, "traceback": tb[:1000]}), datetime.utcnow().isoformat()))
         conn.commit()
-        await broadcast_to_session(session_id, {"type": "task_failed", "task_id": task_id, "error": error_msg})
+        await broadcast_to_session(session_id, {"type": "task_failed", "task_id": task_id, "error": error_msg, "error_code": error_code})
     
     conn.close()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    global client
-    print("Starting Mini-Devin API v4.0...")
-    print("Features: Tool Execution, SQLite Storage, WebSocket, Git, Code Analysis, Search")
+    print("Starting Mini-Devin API v5.0...")
+    print("Features: Tool Execution, SQLite Storage, WebSocket, Multi-Model, File Upload, Agent Memory, Export")
     init_db()
     print(f"SQLite database initialized at {DB_PATH}")
-    os.makedirs(WORKSPACE_DIR, exist_ok=True)
     print(f"Workspace directory: {WORKSPACE_DIR}")
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if api_key:
-        client = openai.OpenAI(api_key=api_key)
-        print(f"OpenAI API key configured (length: {len(api_key)} chars)")
+    print(f"Uploads directory: {UPLOADS_DIR}")
+    print(f"Memory directory: {MEMORY_DIR}")
+    
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+    ollama_url = os.environ.get("OLLAMA_URL")
+    
+    providers = []
+    if openai_key:
+        providers.append("openai")
+        print(f"OpenAI API key configured")
+    if anthropic_key:
+        providers.append("anthropic")
+        print(f"Anthropic API key configured")
+    if ollama_url:
+        providers.append("ollama")
+        print(f"Ollama URL configured: {ollama_url}")
+    
+    if not providers:
+        print("Warning: No LLM providers configured - set OPENAI_API_KEY, ANTHROPIC_API_KEY, or OLLAMA_URL")
     else:
-        print("Warning: No OpenAI API key found - set OPENAI_API_KEY environment variable")
+        print(f"Available providers: {', '.join(providers)}")
+    
     yield
     print("Shutting down Mini-Devin API...")
 
-app = FastAPI(title="Mini-Devin API", version="4.0.0", description="Autonomous AI Software Engineer with Tool Execution, WebSocket, and Code Analysis", lifespan=lifespan)
+app = FastAPI(title="Mini-Devin API", version="5.0.0", description="Autonomous AI Software Engineer with Multi-Model Support, File Upload, Agent Memory, and Export", lifespan=lifespan)
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+def get_configured_providers():
+    providers = []
+    if os.environ.get("OPENAI_API_KEY"):
+        providers.append({"id": "openai", "name": "OpenAI", "models": ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]})
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        providers.append({"id": "anthropic", "name": "Anthropic", "models": ["claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-haiku-20240307"]})
+    if os.environ.get("OLLAMA_URL"):
+        providers.append({"id": "ollama", "name": "Ollama (Local)", "models": ["llama3", "codellama", "mistral"]})
+    return providers
+
 @app.get("/")
 async def root():
-    api_key = os.environ.get("OPENAI_API_KEY")
+    providers = get_configured_providers()
     return {
         "name": "Mini-Devin API",
-        "version": "4.0.0",
+        "version": "5.0.0",
         "status": "running",
-        "mode": "full-agent" if api_key else "limited",
-        "llm_configured": bool(api_key),
-        "features": ["tool_execution", "persistent_storage", "websocket", "git", "code_analysis", "search"],
-        "tools": ["terminal", "file_read", "file_write", "list_files", "git", "code_analysis", "search_files"],
+        "mode": "full-agent" if providers else "limited",
+        "llm_configured": bool(providers),
+        "providers": [p["id"] for p in providers],
+        "features": ["tool_execution", "persistent_storage", "websocket", "multi_model", "file_upload", "agent_memory", "export", "error_handling"],
+        "tools": ["terminal", "file_read", "file_write", "list_files", "git", "code_analysis", "search_files", "memory_store", "memory_recall"],
         "docs": "/docs"
     }
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "version": "4.0.0"}
+    return {"status": "healthy", "version": "5.0.0"}
 
 @app.get("/api/health")
 async def api_health():
-    api_key = os.environ.get("OPENAI_API_KEY")
-    return {"status": "healthy", "mode": "full-agent" if api_key else "limited", "llm_configured": bool(api_key), "version": "4.0.0"}
+    providers = get_configured_providers()
+    return {"status": "healthy", "mode": "full-agent" if providers else "limited", "llm_configured": bool(providers), "providers": [p["id"] for p in providers], "version": "5.0.0"}
 
 @app.get("/api/status")
 async def get_status():
-    api_key = os.environ.get("OPENAI_API_KEY")
+    providers = get_configured_providers()
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM sessions")
     session_count = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM tasks WHERE status='completed'")
     completed_tasks = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM uploaded_files")
+    file_count = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM agent_memory")
+    memory_count = c.fetchone()[0]
     conn.close()
     return {
         "status": "running",
-        "mode": "full-agent" if api_key else "limited",
-        "version": "4.0.0",
+        "mode": "full-agent" if providers else "limited",
+        "version": "5.0.0",
         "active_sessions": session_count,
         "completed_tasks": completed_tasks,
-        "llm_configured": bool(api_key),
-        "features": ["tool_execution", "persistent_storage", "websocket", "git", "code_analysis", "search"]
+        "uploaded_files": file_count,
+        "memory_entries": memory_count,
+        "llm_configured": bool(providers),
+        "providers": [p["id"] for p in providers],
+        "features": ["tool_execution", "persistent_storage", "websocket", "multi_model", "file_upload", "agent_memory", "export", "error_handling"]
     }
 
 @app.websocket("/ws/{session_id}")
@@ -569,16 +801,16 @@ async def list_sessions():
 
 @app.post("/api/sessions")
 async def create_session(request: CreateSessionRequest):
-    api_key = os.environ.get("OPENAI_API_KEY")
+    providers = get_configured_providers()
     session_id = str(uuid.uuid4())[:8]
     created_at = datetime.utcnow().isoformat()
     conn = get_db()
     c = conn.cursor()
-    c.execute("INSERT INTO sessions (session_id, created_at, status, working_directory, model, max_iterations, iteration, total_tasks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-              (session_id, created_at, "active", request.working_directory, request.model, request.max_iterations, 0, 0))
+    c.execute("INSERT INTO sessions (session_id, created_at, status, working_directory, model, provider, max_iterations, iteration, total_tasks) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              (session_id, created_at, "active", request.working_directory, request.model, request.provider, request.max_iterations, 0, 0))
     conn.commit()
     conn.close()
-    return {"session_id": session_id, "created_at": created_at, "status": "active", "llm_enabled": bool(api_key)}
+    return {"session_id": session_id, "created_at": created_at, "status": "active", "provider": request.provider, "model": request.model, "llm_enabled": bool(providers)}
 
 @app.get("/api/sessions/{session_id}")
 async def get_session(session_id: str):
@@ -611,13 +843,13 @@ async def delete_session(session_id: str):
 async def create_task(session_id: str, request: CreateTaskRequest):
     conn = get_db()
     c = conn.cursor()
-    c.execute("SELECT model, max_iterations FROM sessions WHERE session_id=?", (session_id,))
+    c.execute("SELECT model, provider, max_iterations FROM sessions WHERE session_id=?", (session_id,))
     row = c.fetchone()
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Session not found")
-    model, max_iterations = row
-    api_key = os.environ.get("OPENAI_API_KEY")
+    model, provider, max_iterations = row[0], row[1] or "openai", row[2]
+    providers = get_configured_providers()
     task_id = str(uuid.uuid4())[:8]
     created_at = datetime.utcnow().isoformat()
     c.execute("INSERT INTO tasks (task_id, session_id, description, status, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -625,9 +857,9 @@ async def create_task(session_id: str, request: CreateTaskRequest):
     c.execute("UPDATE sessions SET total_tasks = total_tasks + 1, current_task = ? WHERE session_id = ?", (task_id, session_id))
     conn.commit()
     conn.close()
-    if api_key:
-        asyncio.create_task(execute_agent_task(session_id, task_id, request.description, model, max_iterations))
-    return {"task_id": task_id, "session_id": session_id, "description": request.description, "status": "queued", "created_at": created_at}
+    if providers:
+        asyncio.create_task(execute_agent_task(session_id, task_id, request.description, model, provider, max_iterations))
+    return {"task_id": task_id, "session_id": session_id, "description": request.description, "status": "queued", "created_at": created_at, "provider": provider, "model": model}
 
 @app.get("/api/sessions/{session_id}/tasks")
 async def list_tasks(session_id: str):
@@ -685,7 +917,9 @@ async def list_tools():
             {"name": "list_files", "description": "List directory contents", "params": ["path"]},
             {"name": "git", "description": "Run git commands (read-only)", "params": ["command", "working_dir"]},
             {"name": "code_analysis", "description": "Analyze code structure/complexity", "params": ["path", "analysis_type"]},
-            {"name": "search_files", "description": "Search for text in files", "params": ["path", "pattern", "file_pattern"]}
+            {"name": "search_files", "description": "Search for text in files", "params": ["path", "pattern", "file_pattern"]},
+            {"name": "memory_store", "description": "Store information for later recall", "params": ["key", "value"]},
+            {"name": "memory_recall", "description": "Recall stored information", "params": ["key"]}
         ]
     }
 
@@ -702,3 +936,190 @@ async def list_skills():
 @app.get("/api/skills/tags")
 async def list_skill_tags():
     return {"tags": ["python", "scripting", "analysis", "search", "git", "files"]}
+
+@app.get("/api/providers")
+async def list_providers():
+    return {"providers": get_configured_providers()}
+
+@app.post("/api/sessions/{session_id}/files")
+async def upload_file(session_id: str, file: UploadFile = File(...)):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT session_id FROM sessions WHERE session_id=?", (session_id,))
+    if not c.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    file_id = str(uuid.uuid4())[:8]
+    session_upload_dir = os.path.join(UPLOADS_DIR, session_id)
+    os.makedirs(session_upload_dir, exist_ok=True)
+    
+    file_ext = os.path.splitext(file.filename)[1] if file.filename else ""
+    stored_filename = f"{file_id}{file_ext}"
+    stored_path = os.path.join(session_upload_dir, stored_filename)
+    
+    content = await file.read()
+    with open(stored_path, "wb") as f:
+        f.write(content)
+    
+    c.execute("INSERT INTO uploaded_files (file_id, session_id, original_name, stored_path, file_size, mime_type, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+              (file_id, session_id, file.filename, stored_path, len(content), file.content_type, datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+    
+    await broadcast_to_session(session_id, {"type": "file_uploaded", "file_id": file_id, "filename": file.filename, "size": len(content)})
+    return {"file_id": file_id, "filename": file.filename, "size": len(content), "mime_type": file.content_type}
+
+@app.get("/api/sessions/{session_id}/files")
+async def list_files_endpoint(session_id: str):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT file_id, original_name, file_size, mime_type, uploaded_at FROM uploaded_files WHERE session_id=?", (session_id,))
+    rows = c.fetchall()
+    conn.close()
+    files = [{"file_id": r[0], "filename": r[1], "size": r[2], "mime_type": r[3], "uploaded_at": r[4]} for r in rows]
+    return {"files": files, "total": len(files)}
+
+@app.get("/api/sessions/{session_id}/files/{file_id}")
+async def download_file(session_id: str, file_id: str):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT stored_path, original_name, mime_type FROM uploaded_files WHERE file_id=? AND session_id=?", (file_id, session_id))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(row[0], filename=row[1], media_type=row[2])
+
+@app.delete("/api/sessions/{session_id}/files/{file_id}")
+async def delete_file(session_id: str, file_id: str):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT stored_path FROM uploaded_files WHERE file_id=? AND session_id=?", (file_id, session_id))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        os.remove(row[0])
+    except:
+        pass
+    c.execute("DELETE FROM uploaded_files WHERE file_id=?", (file_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "deleted", "file_id": file_id}
+
+@app.get("/api/sessions/{session_id}/export")
+async def export_session(session_id: str, format: str = "json"):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,))
+    session_row = c.fetchone()
+    if not session_row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    c.execute("SELECT * FROM tasks WHERE session_id=? ORDER BY created_at", (session_id,))
+    task_rows = c.fetchall()
+    
+    tasks_data = []
+    for task in task_rows:
+        c.execute("SELECT output_type, content, created_at FROM task_outputs WHERE task_id=? ORDER BY created_at", (task[0],))
+        outputs = [{"type": o[0], "content": o[1], "created_at": o[2]} for o in c.fetchall()]
+        tasks_data.append({
+            "task_id": task[0], "description": task[2], "status": task[3],
+            "created_at": task[4], "started_at": task[5], "completed_at": task[6],
+            "result": task[7], "outputs": outputs
+        })
+    
+    c.execute("SELECT memory_id, memory_type, content, created_at FROM agent_memory WHERE session_id=?", (session_id,))
+    memories = [{"memory_id": m[0], "type": m[1], "content": m[2], "created_at": m[3]} for m in c.fetchall()]
+    
+    c.execute("SELECT file_id, original_name, file_size, uploaded_at FROM uploaded_files WHERE session_id=?", (session_id,))
+    files = [{"file_id": f[0], "filename": f[1], "size": f[2], "uploaded_at": f[3]} for f in c.fetchall()]
+    conn.close()
+    
+    export_data = {
+        "session_id": session_id,
+        "created_at": session_row[1],
+        "model": session_row[4],
+        "provider": session_row[5] if len(session_row) > 5 else "openai",
+        "tasks": tasks_data,
+        "memories": memories,
+        "files": files,
+        "exported_at": datetime.utcnow().isoformat()
+    }
+    
+    if format == "json":
+        return JSONResponse(content=export_data)
+    elif format == "markdown":
+        md = f"# Session Export: {session_id}\n\n"
+        md += f"**Created:** {session_row[1]}\n**Model:** {session_row[4]}\n\n"
+        md += "## Tasks\n\n"
+        for task in tasks_data:
+            md += f"### Task: {task['description'][:50]}...\n"
+            md += f"- Status: {task['status']}\n- Created: {task['created_at']}\n\n"
+            md += "#### Outputs\n"
+            for output in task['outputs']:
+                md += f"**{output['type']}:**\n```\n{output['content'][:500]}\n```\n\n"
+        if memories:
+            md += "## Memories\n\n"
+            for mem in memories:
+                md += f"- {mem['content']}\n"
+        return JSONResponse(content={"format": "markdown", "content": md})
+    elif format == "txt":
+        txt = f"Session Export: {session_id}\n{'='*50}\n\n"
+        txt += f"Created: {session_row[1]}\nModel: {session_row[4]}\n\n"
+        txt += "TASKS\n" + "-"*50 + "\n\n"
+        for task in tasks_data:
+            txt += f"Task: {task['description']}\nStatus: {task['status']}\n\n"
+            for output in task['outputs']:
+                txt += f"[{output['type']}]\n{output['content'][:500]}\n\n"
+        return JSONResponse(content={"format": "txt", "content": txt})
+    else:
+        raise HTTPException(status_code=400, detail="Invalid format. Use: json, markdown, or txt")
+
+@app.get("/api/sessions/{session_id}/memory")
+async def get_session_memory_endpoint(session_id: str):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT memory_id, memory_type, content, created_at, last_accessed, access_count FROM agent_memory WHERE session_id=? ORDER BY last_accessed DESC", (session_id,))
+    rows = c.fetchall()
+    conn.close()
+    memories = []
+    for r in rows:
+        try:
+            content = json.loads(r[2])
+        except:
+            content = {"raw": r[2]}
+        memories.append({"memory_id": r[0], "type": r[1], "content": content, "created_at": r[3], "last_accessed": r[4], "access_count": r[5]})
+    return {"memories": memories, "total": len(memories)}
+
+@app.post("/api/sessions/{session_id}/memory")
+async def store_memory_endpoint(session_id: str, entry: MemoryEntry):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT session_id FROM sessions WHERE session_id=?", (session_id,))
+    if not c.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    memory_id = str(uuid.uuid4())[:8]
+    now = datetime.utcnow().isoformat()
+    content = json.dumps({"key": entry.key, "value": entry.value})
+    c.execute("INSERT INTO agent_memory (memory_id, session_id, memory_type, content, created_at, last_accessed, access_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
+              (memory_id, session_id, entry.memory_type, content, now, now, 1))
+    conn.commit()
+    conn.close()
+    
+    await broadcast_to_session(session_id, {"type": "memory_stored", "memory_id": memory_id, "key": entry.key})
+    return {"memory_id": memory_id, "key": entry.key, "stored_at": now}
+
+@app.delete("/api/sessions/{session_id}/memory/{memory_id}")
+async def delete_memory(session_id: str, memory_id: str):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM agent_memory WHERE memory_id=? AND session_id=?", (memory_id, session_id))
+    conn.commit()
+    conn.close()
+    return {"status": "deleted", "memory_id": memory_id}
