@@ -6,10 +6,11 @@ import { StatusBar } from './components/StatusBar';
 import { LoginForm } from './components/LoginForm';
 import { UserMenu } from './components/UserMenu';
 import { SkillsManager } from './components/SkillsManager';
+import { RepoManager } from './components/RepoManager';
 import { useAuth } from './contexts/AuthContext';
-import { Bot, Github, LogIn, Loader2, MessageSquare, Wrench } from 'lucide-react';
+import { Bot, Github, LogIn, Loader2, MessageSquare, Wrench, GitFork } from 'lucide-react';
 
-type TabType = 'sessions' | 'skills';
+type TabType = 'sessions' | 'skills' | 'repos';
 
 function App() {
   const { user, loading } = useAuth();
@@ -84,62 +85,95 @@ function App() {
               <MessageSquare size={16} />
               Sessions
             </button>
-            <button
-              onClick={() => setActiveTab('skills')}
-              className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
-                activeTab === 'skills'
-                  ? 'text-blue-400 border-b-2 border-blue-400 bg-gray-800/50'
-                  : 'text-gray-400 hover:text-white hover:bg-gray-800/30'
-              }`}
-            >
-              <Wrench size={16} />
-              Skills
-            </button>
-          </div>
+                      <button
+                        onClick={() => setActiveTab('skills')}
+                        className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
+                          activeTab === 'skills'
+                            ? 'text-blue-400 border-b-2 border-blue-400 bg-gray-800/50'
+                            : 'text-gray-400 hover:text-white hover:bg-gray-800/30'
+                        }`}
+                      >
+                        <Wrench size={16} />
+                        Skills
+                      </button>
+                      <button
+                        onClick={() => setActiveTab('repos')}
+                        className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
+                          activeTab === 'repos'
+                            ? 'text-blue-400 border-b-2 border-blue-400 bg-gray-800/50'
+                            : 'text-gray-400 hover:text-white hover:bg-gray-800/30'
+                        }`}
+                      >
+                        <GitFork size={16} />
+                        Repos
+                      </button>
+                    </div>
           
-          {/* Tab Content */}
-          <div className="flex-1 overflow-y-auto p-4">
-            {activeTab === 'sessions' ? (
-              <SessionList
-                onSelectSession={setSelectedSession}
-                selectedSessionId={selectedSession?.session_id}
-              />
-            ) : (
-              <SkillsManager apiBaseUrl={import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : 'http://localhost:8000/api'} />
-            )}
-          </div>
+                    {/* Tab Content */}
+                    <div className="flex-1 overflow-y-auto">
+                      {activeTab === 'sessions' ? (
+                        <div className="p-4">
+                          <SessionList
+                            onSelectSession={setSelectedSession}
+                            selectedSessionId={selectedSession?.session_id}
+                          />
+                        </div>
+                      ) : activeTab === 'skills' ? (
+                        <div className="p-4">
+                          <SkillsManager apiBaseUrl={import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : 'http://localhost:8000/api'} />
+                        </div>
+                      ) : (
+                        <RepoManager 
+                          apiBaseUrl={import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : 'http://localhost:8000/api'}
+                          sessionId={selectedSession?.session_id}
+                          onRepoLinked={() => {}}
+                        />
+                      )}
+                    </div>
         </aside>
 
-        {/* Main Panel */}
-        <main className="flex-1 flex flex-col overflow-hidden">
-          {activeTab === 'sessions' && selectedSession ? (
-            <TaskPanel session={selectedSession} />
-          ) : activeTab === 'sessions' ? (
-            <div className="flex-1 flex items-center justify-center">
-              <div className="text-center">
-                <Bot className="mx-auto text-gray-600 mb-4" size={64} />
-                <h2 className="text-xl font-medium text-gray-400 mb-2">
-                  Welcome to Mini-Devin
-                </h2>
-                <p className="text-gray-500 max-w-md">
-                  Create a new session or select an existing one to start working with your autonomous AI software engineer.
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div className="flex-1 flex items-center justify-center">
-              <div className="text-center">
-                <Wrench className="mx-auto text-gray-600 mb-4" size={64} />
-                <h2 className="text-xl font-medium text-gray-400 mb-2">
-                  Skills Manager
-                </h2>
-                <p className="text-gray-500 max-w-md">
-                  Create, edit, and manage custom skills for your AI agent. Skills are reusable procedures that can be executed on demand.
-                </p>
-              </div>
-            </div>
-          )}
-        </main>
+                {/* Main Panel */}
+                <main className="flex-1 flex flex-col overflow-hidden">
+                  {activeTab === 'sessions' && selectedSession ? (
+                    <TaskPanel session={selectedSession} />
+                  ) : activeTab === 'sessions' ? (
+                    <div className="flex-1 flex items-center justify-center">
+                      <div className="text-center">
+                        <Bot className="mx-auto text-gray-600 mb-4" size={64} />
+                        <h2 className="text-xl font-medium text-gray-400 mb-2">
+                          Welcome to Mini-Devin
+                        </h2>
+                        <p className="text-gray-500 max-w-md">
+                          Create a new session or select an existing one to start working with your autonomous AI software engineer.
+                        </p>
+                      </div>
+                    </div>
+                  ) : activeTab === 'skills' ? (
+                    <div className="flex-1 flex items-center justify-center">
+                      <div className="text-center">
+                        <Wrench className="mx-auto text-gray-600 mb-4" size={64} />
+                        <h2 className="text-xl font-medium text-gray-400 mb-2">
+                          Skills Manager
+                        </h2>
+                        <p className="text-gray-500 max-w-md">
+                          Create, edit, and manage custom skills for your AI agent. Skills are reusable procedures that can be executed on demand.
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex-1 flex items-center justify-center">
+                      <div className="text-center">
+                        <GitFork className="mx-auto text-gray-600 mb-4" size={64} />
+                        <h2 className="text-xl font-medium text-gray-400 mb-2">
+                          GitHub Repositories
+                        </h2>
+                        <p className="text-gray-500 max-w-md">
+                          Connect GitHub repositories to Mini-Devin. The AI agent can clone, edit, commit, push, and create pull requests on your repos.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </main>
       </div>
 
       {/* Status Bar */}

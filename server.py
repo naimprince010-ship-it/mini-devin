@@ -57,6 +57,7 @@ def init_db():
     os.makedirs(WORKSPACE_DIR, exist_ok=True)
     os.makedirs(UPLOADS_DIR, exist_ok=True)
     os.makedirs(MEMORY_DIR, exist_ok=True)
+    os.makedirs(REPOS_DIR, exist_ok=True)
     
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -103,16 +104,38 @@ def init_db():
         uploaded_at TEXT,
         FOREIGN KEY (session_id) REFERENCES sessions(session_id)
     )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS agent_memory (
-        memory_id TEXT PRIMARY KEY,
-        session_id TEXT,
-        memory_type TEXT,
-        content TEXT,
-        created_at TEXT,
-        last_accessed TEXT,
-        access_count INTEGER DEFAULT 0,
-        FOREIGN KEY (session_id) REFERENCES sessions(session_id)
-    )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS agent_memory (
+            memory_id TEXT PRIMARY KEY,
+            session_id TEXT,
+            memory_type TEXT,
+            content TEXT,
+            created_at TEXT,
+            last_accessed TEXT,
+            access_count INTEGER DEFAULT 0,
+            FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+        )''')
+        # Phase 41: GitHub Repo Integration
+        c.execute('''CREATE TABLE IF NOT EXISTS github_repos (
+            repo_id TEXT PRIMARY KEY,
+            repo_url TEXT NOT NULL,
+            repo_name TEXT NOT NULL,
+            owner TEXT NOT NULL,
+            github_token TEXT,
+            local_path TEXT,
+            default_branch TEXT DEFAULT 'main',
+            created_at TEXT,
+            last_synced TEXT,
+            status TEXT DEFAULT 'pending'
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS session_repos (
+            session_id TEXT,
+            repo_id TEXT,
+            branch TEXT DEFAULT 'main',
+            linked_at TEXT,
+            PRIMARY KEY (session_id, repo_id),
+            FOREIGN KEY (session_id) REFERENCES sessions(session_id),
+            FOREIGN KEY (repo_id) REFERENCES github_repos(repo_id)
+        )''')
     try:
         c.execute("ALTER TABLE sessions ADD COLUMN provider TEXT DEFAULT 'openai'")
     except:
@@ -158,6 +181,26 @@ class ToolResult(BaseModel):
     error: Optional[str] = None
     error_code: Optional[str] = None
     suggestions: Optional[List[str]] = None
+
+# Phase 41: GitHub Repo Integration Models
+class AddRepoRequest(BaseModel):
+    repo_url: str = Field(..., description="GitHub repository URL (e.g., https://github.com/owner/repo)")
+    github_token: Optional[str] = Field(default=None, description="GitHub Personal Access Token for private repos")
+    branch: str = Field(default="main", description="Default branch to use")
+
+class LinkRepoRequest(BaseModel):
+    repo_id: str = Field(..., description="Repository ID to link")
+    branch: str = Field(default="main", description="Branch to work on")
+
+class GitOperationRequest(BaseModel):
+    repo_id: str = Field(..., description="Repository ID")
+    operation: str = Field(..., description="Git operation: clone, pull, commit, push, create_branch, create_pr")
+    message: Optional[str] = Field(default=None, description="Commit message or PR title")
+    branch: Optional[str] = Field(default=None, description="Branch name for operations")
+    body: Optional[str] = Field(default=None, description="PR body/description")
+    base_branch: Optional[str] = Field(default="main", description="Base branch for PR")
+
+REPOS_DIR = os.environ.get("MINI_DEVIN_REPOS", "/root/mini-devin/repos")
 
 DANGEROUS_COMMANDS = [
     "rm -rf /", "rm -rf /*", "mkfs", "dd if=", ":(){", "fork bomb",
@@ -1123,3 +1166,474 @@ async def delete_memory(session_id: str, memory_id: str):
     conn.commit()
     conn.close()
     return {"status": "deleted", "memory_id": memory_id}
+
+# ============================================
+# Phase 41: GitHub Repo Integration Endpoints
+# ============================================
+
+def parse_github_url(url: str) -> tuple[str, str]:
+    """Parse GitHub URL to extract owner and repo name."""
+    import re
+    patterns = [
+        r'github\.com[:/]([^/]+)/([^/\.]+)',
+        r'github\.com/([^/]+)/([^/]+?)(?:\.git)?$'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1), match.group(2).replace('.git', '')
+    raise ValueError(f"Invalid GitHub URL: {url}")
+
+def get_repo_clone_url(repo_url: str, token: Optional[str] = None) -> str:
+    """Get clone URL with token for authentication."""
+    if token:
+        # Insert token into URL for authentication
+        if repo_url.startswith("https://"):
+            return repo_url.replace("https://", f"https://{token}@")
+    return repo_url
+
+def execute_git_command(command: str, working_dir: str, timeout: int = 120) -> tuple[bool, str]:
+    """Execute a git command and return success status and output."""
+    try:
+        result = subprocess.run(
+            command, shell=True, capture_output=True, text=True,
+            timeout=timeout, cwd=working_dir,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        )
+        if result.returncode != 0:
+            return False, result.stderr or result.stdout
+        return True, result.stdout
+    except subprocess.TimeoutExpired:
+        return False, "Command timed out"
+    except Exception as e:
+        return False, str(e)
+
+@app.get("/api/repos")
+async def list_repos():
+    """List all connected GitHub repositories."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT repo_id, repo_url, repo_name, owner, default_branch, local_path, created_at, last_synced, status FROM github_repos ORDER BY created_at DESC")
+    rows = c.fetchall()
+    conn.close()
+    
+    repos = []
+    for row in rows:
+        repos.append({
+            "repo_id": row[0],
+            "repo_url": row[1],
+            "repo_name": row[2],
+            "owner": row[3],
+            "default_branch": row[4],
+            "local_path": row[5],
+            "created_at": row[6],
+            "last_synced": row[7],
+            "status": row[8],
+            "has_token": bool(row[1])  # Don't expose actual token
+        })
+    return {"repos": repos}
+
+@app.post("/api/repos")
+async def add_repo(request: AddRepoRequest):
+    """Add a new GitHub repository."""
+    try:
+        owner, repo_name = parse_github_url(request.repo_url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    repo_id = str(uuid.uuid4())[:8]
+    local_path = os.path.join(REPOS_DIR, f"{owner}_{repo_name}_{repo_id}")
+    now = datetime.utcnow().isoformat()
+    
+    # Normalize repo URL
+    normalized_url = f"https://github.com/{owner}/{repo_name}.git"
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""INSERT INTO github_repos 
+                 (repo_id, repo_url, repo_name, owner, github_token, local_path, default_branch, created_at, status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+              (repo_id, normalized_url, repo_name, owner, request.github_token, local_path, request.branch, now, "pending"))
+    conn.commit()
+    conn.close()
+    
+    return {
+        "repo_id": repo_id,
+        "repo_url": normalized_url,
+        "repo_name": repo_name,
+        "owner": owner,
+        "local_path": local_path,
+        "status": "pending",
+        "message": "Repository added. Use POST /api/repos/{repo_id}/clone to clone it."
+    }
+
+@app.get("/api/repos/{repo_id}")
+async def get_repo(repo_id: str):
+    """Get repository details."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT repo_id, repo_url, repo_name, owner, default_branch, local_path, created_at, last_synced, status FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    # Check if local path exists and get git status
+    local_status = None
+    current_branch = None
+    if row[5] and os.path.exists(row[5]):
+        success, output = execute_git_command("git status --porcelain", row[5])
+        if success:
+            local_status = "clean" if not output.strip() else "modified"
+        success, branch_output = execute_git_command("git branch --show-current", row[5])
+        if success:
+            current_branch = branch_output.strip()
+    
+    return {
+        "repo_id": row[0],
+        "repo_url": row[1],
+        "repo_name": row[2],
+        "owner": row[3],
+        "default_branch": row[4],
+        "local_path": row[5],
+        "created_at": row[6],
+        "last_synced": row[7],
+        "status": row[8],
+        "local_status": local_status,
+        "current_branch": current_branch
+    }
+
+@app.delete("/api/repos/{repo_id}")
+async def delete_repo(repo_id: str):
+    """Delete a repository and its local clone."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    local_path = row[0]
+    
+    # Delete from database
+    c.execute("DELETE FROM session_repos WHERE repo_id=?", (repo_id,))
+    c.execute("DELETE FROM github_repos WHERE repo_id=?", (repo_id,))
+    conn.commit()
+    conn.close()
+    
+    # Delete local clone if exists
+    if local_path and os.path.exists(local_path):
+        import shutil
+        shutil.rmtree(local_path, ignore_errors=True)
+    
+    return {"status": "deleted", "repo_id": repo_id}
+
+@app.post("/api/repos/{repo_id}/clone")
+async def clone_repo(repo_id: str):
+    """Clone a repository to local storage."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT repo_url, github_token, local_path, default_branch FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    repo_url, token, local_path, default_branch = row
+    
+    # Check if already cloned
+    if os.path.exists(local_path):
+        conn.close()
+        return {"status": "already_cloned", "local_path": local_path}
+    
+    # Clone the repository
+    clone_url = get_repo_clone_url(repo_url, token)
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    
+    success, output = execute_git_command(f"git clone --branch {default_branch} {clone_url} {local_path}", "/tmp", timeout=300)
+    
+    if not success:
+        c.execute("UPDATE github_repos SET status=? WHERE repo_id=?", ("clone_failed", repo_id))
+        conn.commit()
+        conn.close()
+        raise HTTPException(status_code=500, detail=f"Clone failed: {output}")
+    
+    # Update status
+    now = datetime.utcnow().isoformat()
+    c.execute("UPDATE github_repos SET status=?, last_synced=? WHERE repo_id=?", ("cloned", now, repo_id))
+    conn.commit()
+    conn.close()
+    
+    return {"status": "cloned", "local_path": local_path, "message": "Repository cloned successfully"}
+
+@app.post("/api/repos/{repo_id}/pull")
+async def pull_repo(repo_id: str):
+    """Pull latest changes from remote."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path, github_token, repo_url FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    local_path, token, repo_url = row
+    
+    if not os.path.exists(local_path):
+        conn.close()
+        raise HTTPException(status_code=400, detail="Repository not cloned yet")
+    
+    # Set remote URL with token if needed
+    if token:
+        clone_url = get_repo_clone_url(repo_url, token)
+        execute_git_command(f"git remote set-url origin {clone_url}", local_path)
+    
+    success, output = execute_git_command("git pull", local_path)
+    
+    if not success:
+        conn.close()
+        raise HTTPException(status_code=500, detail=f"Pull failed: {output}")
+    
+    now = datetime.utcnow().isoformat()
+    c.execute("UPDATE github_repos SET last_synced=? WHERE repo_id=?", (now, repo_id))
+    conn.commit()
+    conn.close()
+    
+    return {"status": "pulled", "output": output}
+
+@app.post("/api/repos/{repo_id}/branch")
+async def create_branch(repo_id: str, branch_name: str):
+    """Create a new branch."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    local_path = row[0]
+    if not os.path.exists(local_path):
+        raise HTTPException(status_code=400, detail="Repository not cloned yet")
+    
+    success, output = execute_git_command(f"git checkout -b {branch_name}", local_path)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail=f"Branch creation failed: {output}")
+    
+    return {"status": "created", "branch": branch_name}
+
+@app.post("/api/repos/{repo_id}/checkout")
+async def checkout_branch(repo_id: str, branch_name: str):
+    """Checkout an existing branch."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    local_path = row[0]
+    if not os.path.exists(local_path):
+        raise HTTPException(status_code=400, detail="Repository not cloned yet")
+    
+    success, output = execute_git_command(f"git checkout {branch_name}", local_path)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail=f"Checkout failed: {output}")
+    
+    return {"status": "checked_out", "branch": branch_name}
+
+@app.post("/api/repos/{repo_id}/commit")
+async def commit_changes(repo_id: str, message: str):
+    """Commit all changes."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    local_path = row[0]
+    if not os.path.exists(local_path):
+        raise HTTPException(status_code=400, detail="Repository not cloned yet")
+    
+    # Stage all changes
+    execute_git_command("git add -A", local_path)
+    
+    # Commit
+    success, output = execute_git_command(f'git commit -m "{message}"', local_path)
+    
+    if not success:
+        if "nothing to commit" in output:
+            return {"status": "no_changes", "message": "Nothing to commit"}
+        raise HTTPException(status_code=500, detail=f"Commit failed: {output}")
+    
+    return {"status": "committed", "message": message, "output": output}
+
+@app.post("/api/repos/{repo_id}/push")
+async def push_changes(repo_id: str, branch: Optional[str] = None):
+    """Push changes to remote."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path, github_token, repo_url FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    local_path, token, repo_url = row
+    conn.close()
+    
+    if not os.path.exists(local_path):
+        raise HTTPException(status_code=400, detail="Repository not cloned yet")
+    
+    # Set remote URL with token if needed
+    if token:
+        clone_url = get_repo_clone_url(repo_url, token)
+        execute_git_command(f"git remote set-url origin {clone_url}", local_path)
+    
+    # Get current branch if not specified
+    if not branch:
+        success, branch = execute_git_command("git branch --show-current", local_path)
+        if success:
+            branch = branch.strip()
+        else:
+            branch = "main"
+    
+    success, output = execute_git_command(f"git push -u origin {branch}", local_path)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail=f"Push failed: {output}")
+    
+    return {"status": "pushed", "branch": branch, "output": output}
+
+@app.post("/api/repos/{repo_id}/pr")
+async def create_pull_request(repo_id: str, title: str, body: str = "", base_branch: str = "main", head_branch: Optional[str] = None):
+    """Create a pull request on GitHub."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path, github_token, owner, repo_name FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    local_path, token, owner, repo_name = row
+    
+    if not token:
+        raise HTTPException(status_code=400, detail="GitHub token required to create PR")
+    
+    if not os.path.exists(local_path):
+        raise HTTPException(status_code=400, detail="Repository not cloned yet")
+    
+    # Get current branch if not specified
+    if not head_branch:
+        success, head_branch = execute_git_command("git branch --show-current", local_path)
+        if success:
+            head_branch = head_branch.strip()
+        else:
+            raise HTTPException(status_code=500, detail="Could not determine current branch")
+    
+    # Create PR using GitHub API
+    import urllib.request
+    
+    pr_data = json.dumps({
+        "title": title,
+        "body": body,
+        "head": head_branch,
+        "base": base_branch
+    }).encode('utf-8')
+    
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{owner}/{repo_name}/pulls",
+        data=pr_data,
+        headers={
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json",
+            "Content-Type": "application/json"
+        },
+        method="POST"
+    )
+    
+    try:
+        with urllib.request.urlopen(req) as response:
+            pr_response = json.loads(response.read().decode('utf-8'))
+            return {
+                "status": "created",
+                "pr_number": pr_response.get("number"),
+                "pr_url": pr_response.get("html_url"),
+                "title": title
+            }
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8')
+        raise HTTPException(status_code=e.code, detail=f"GitHub API error: {error_body}")
+
+@app.post("/api/sessions/{session_id}/repos")
+async def link_repo_to_session(session_id: str, request: LinkRepoRequest):
+    """Link a repository to a session."""
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Verify session exists
+    c.execute("SELECT session_id FROM sessions WHERE session_id=?", (session_id,))
+    if not c.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Verify repo exists
+    c.execute("SELECT repo_id, local_path FROM github_repos WHERE repo_id=?", (request.repo_id,))
+    repo_row = c.fetchone()
+    if not repo_row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    now = datetime.utcnow().isoformat()
+    c.execute("""INSERT OR REPLACE INTO session_repos (session_id, repo_id, branch, linked_at)
+                 VALUES (?, ?, ?, ?)""", (session_id, request.repo_id, request.branch, now))
+    
+    # Update session working directory to repo path
+    c.execute("UPDATE sessions SET working_directory=? WHERE session_id=?", (repo_row[1], session_id))
+    
+    conn.commit()
+    conn.close()
+    
+    return {"status": "linked", "session_id": session_id, "repo_id": request.repo_id, "branch": request.branch}
+
+@app.get("/api/sessions/{session_id}/repos")
+async def get_session_repos(session_id: str):
+    """Get repositories linked to a session."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT r.repo_id, r.repo_url, r.repo_name, r.owner, r.local_path, sr.branch, sr.linked_at
+                 FROM session_repos sr
+                 JOIN github_repos r ON sr.repo_id = r.repo_id
+                 WHERE sr.session_id=?""", (session_id,))
+    rows = c.fetchall()
+    conn.close()
+    
+    repos = []
+    for row in rows:
+        repos.append({
+            "repo_id": row[0],
+            "repo_url": row[1],
+            "repo_name": row[2],
+            "owner": row[3],
+            "local_path": row[4],
+            "branch": row[5],
+            "linked_at": row[6]
+        })
+    
+    return {"repos": repos}
