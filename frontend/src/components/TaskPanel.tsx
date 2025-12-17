@@ -36,24 +36,65 @@ export function TaskPanel({ session }: TaskPanelProps) {
   };
 
   const handleWebSocketMessage = useCallback((message: WebSocketMessage) => {
+    const data = message.data || {};
+    
     switch (message.type) {
       case 'token':
         setIsStreaming(true);
-        setStreamingContent(prev => prev + (message.data.content as string || ''));
+        setStreamingContent(prev => prev + (data.content as string || ''));
         break;
         
       case 'tokens_batch':
         setIsStreaming(true);
-        setStreamingContent(prev => prev + (message.data.content as string || ''));
+        setStreamingContent(prev => prev + (data.content as string || ''));
         break;
+
+      case 'connected':
+        console.log('WebSocket connected to session:', message.session_id);
+        break;
+
+      case 'thinking':
+        setIsStreaming(true);
+        setStreamingContent(prev => prev + `--- Thinking ---\n${message.content || data.content || ''}\n\n`);
+        break;
+
+      case 'response':
+        setIsStreaming(true);
+        setStreamingContent(prev => prev + `--- Agent Response ---\n${message.content || data.content || ''}\n\n`);
+        break;
+
+      case 'iteration':
+        setStreamingContent(prev => prev + `\n--- Iteration ${message.iteration || data.iteration}/${message.max || data.max} ---\n`);
+        break;
+
+      case 'tool_result': {
+        const result = message.result || (data.result as { tool: string; success: boolean; output: string; error?: string });
+        if (result) {
+          const toolOutput = `**Tool: ${result.tool}** (${result.success ? 'Success' : 'Failed'})\n\`\`\`\n${result.output || result.error || ''}\n\`\`\`\n\n`;
+          setStreamingContent(prev => prev + toolOutput);
+          
+          const newExecution: ToolExecution = {
+            id: `${Date.now()}-${result.tool}`,
+            tool: result.tool,
+            input: {},
+            status: result.success ? 'completed' : 'failed',
+            output: { stdout: result.output },
+            error: result.error,
+            startTime: new Date().toISOString(),
+            endTime: new Date().toISOString(),
+          };
+          setToolExecutions(prev => [...prev, newExecution]);
+        }
+        break;
+      }
         
       case 'tool_started': {
         const newExecution: ToolExecution = {
-          id: `${Date.now()}-${message.data.tool}`,
-          tool: message.data.tool as string,
-          input: message.data.input as Record<string, unknown>,
+          id: `${Date.now()}-${data.tool}`,
+          tool: data.tool as string,
+          input: data.input as Record<string, unknown>,
           status: 'running',
-          startTime: message.timestamp,
+          startTime: message.timestamp || new Date().toISOString(),
         };
         setToolExecutions(prev => [...prev, newExecution]);
         break;
@@ -61,13 +102,13 @@ export function TaskPanel({ session }: TaskPanelProps) {
         
       case 'tool_completed': {
         setToolExecutions(prev => prev.map(exec => {
-          if (exec.tool === message.data.tool && exec.status === 'running') {
+          if (exec.tool === data.tool && exec.status === 'running') {
             return {
               ...exec,
               status: 'completed',
-              output: message.data.output as Record<string, unknown>,
+              output: data.output as Record<string, unknown>,
               endTime: message.timestamp,
-              durationMs: message.data.duration_ms as number,
+              durationMs: data.duration_ms as number,
             };
           }
           return exec;
@@ -77,11 +118,11 @@ export function TaskPanel({ session }: TaskPanelProps) {
         
       case 'tool_failed': {
         setToolExecutions(prev => prev.map(exec => {
-          if (exec.tool === message.data.tool && exec.status === 'running') {
+          if (exec.tool === data.tool && exec.status === 'running') {
             return {
               ...exec,
               status: 'failed',
-              error: message.data.error as string,
+              error: data.error as string,
               endTime: message.timestamp,
             };
           }
@@ -92,13 +133,13 @@ export function TaskPanel({ session }: TaskPanelProps) {
         
       case 'tool_output': {
         setToolExecutions(prev => prev.map(exec => {
-          if (exec.tool === message.data.tool && exec.status === 'running') {
+          if (exec.tool === data.tool && exec.status === 'running') {
             const currentOutput = exec.output || {};
             return {
               ...exec,
               output: {
                 ...currentOutput,
-                stdout: ((currentOutput.stdout as string) || '') + (message.data.output as string || ''),
+                stdout: ((currentOutput.stdout as string) || '') + (data.output as string || ''),
               },
             };
           }
@@ -108,7 +149,7 @@ export function TaskPanel({ session }: TaskPanelProps) {
       }
         
       case 'plan_created': {
-        const planData = message.data.plan as Record<string, unknown>;
+        const planData = data.plan as Record<string, unknown>;
         const steps = (planData.steps as Array<Record<string, unknown>> || []).map((step, index) => ({
           id: `step-${index}`,
           description: step.description as string || `Step ${index + 1}`,
@@ -137,7 +178,7 @@ export function TaskPanel({ session }: TaskPanelProps) {
         setCurrentPlan(prev => {
           if (!prev) return prev;
           
-          const stepIndex = message.data.step_index as number;
+          const stepIndex = data.step_index as number;
           const updatedSteps = prev.steps.map((step, index) => {
             if (index === stepIndex) {
               return { ...step, status: 'completed' as const };
@@ -159,11 +200,11 @@ export function TaskPanel({ session }: TaskPanelProps) {
       }
         
       case 'phase_changed':
-        setStreamingContent(prev => prev + `\n\n--- Phase: ${message.data.phase} ---\n\n`);
+        setStreamingContent(prev => prev + `\n\n--- Phase: ${data.phase} ---\n\n`);
         break;
         
       case 'iteration_started':
-        setStreamingContent(prev => prev + `\n--- Iteration ${message.data.iteration} ---\n`);
+        setStreamingContent(prev => prev + `\n--- Iteration ${data.iteration} ---\n`);
         break;
         
       case 'task_started':
@@ -175,13 +216,13 @@ export function TaskPanel({ session }: TaskPanelProps) {
         
       case 'task_completed':
         setIsStreaming(false);
-        setStreamingContent(prev => prev + `\n\n--- Task Completed ---\nSummary: ${message.data.summary || 'Done'}`);
+        setStreamingContent(prev => prev + `\n\n--- Task Completed ---\nSummary: ${data.summary || 'Done'}`);
         loadTasks();
         break;
         
       case 'task_failed':
         setIsStreaming(false);
-        setStreamingContent(prev => prev + `\n\n--- Task Failed ---\nError: ${message.data.error || 'Unknown error'}`);
+        setStreamingContent(prev => prev + `\n\n--- Task Failed ---\nError: ${data.error || 'Unknown error'}`);
         loadTasks();
         break;
         
@@ -190,7 +231,7 @@ export function TaskPanel({ session }: TaskPanelProps) {
         break;
         
       case 'verification_completed': {
-        const passed = message.data.passed as boolean;
+        const passed = data.passed as boolean;
         setStreamingContent(prev => prev + `\nVerification ${passed ? 'PASSED' : 'FAILED'}\n`);
         break;
       }

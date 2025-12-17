@@ -17,11 +17,12 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   const reconnectTimeoutRef = useRef<number | null>(null);
 
   const connect = useCallback(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
+    const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+    const wsProtocol = apiUrl.startsWith('https') ? 'wss:' : 'ws:';
+    const apiHost = apiUrl.replace(/^https?:\/\//, '');
     const wsUrl = sessionId
-      ? `${protocol}//${host}/ws/${sessionId}`
-      : `${protocol}//${host}/ws`;
+      ? `${wsProtocol}//${apiHost}/ws/${sessionId}`
+      : `${wsProtocol}//${apiHost}/ws`;
 
     const ws = new WebSocket(wsUrl);
 
