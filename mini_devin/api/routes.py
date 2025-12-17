@@ -9,6 +9,9 @@ This module provides REST API endpoints for:
 """
 
 
+import json
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
 from pydantic import BaseModel, Field
 
@@ -329,14 +332,435 @@ async def get_status(req: Request):
 
 
 @router.get("/models")
-async def list_models():
-    """List available LLM models."""
+async def list_models(
+    provider: str | None = None,
+    supports_tools: bool | None = None,
+    only_configured: bool = False,
+):
+    """
+    List available LLM models.
+    
+    Args:
+        provider: Filter by provider (openai, anthropic, ollama, azure)
+        supports_tools: Filter by tool support capability
+        only_configured: Only return models from configured providers
+    """
+    from mini_devin.core.providers import get_model_registry, Provider
+    
+    registry = get_model_registry()
+    
+    provider_enum = None
+    if provider:
+        try:
+            provider_enum = Provider(provider)
+        except ValueError:
+            pass
+    
+    models = registry.list_models(
+        provider=provider_enum,
+        supports_tools=supports_tools,
+        only_configured=only_configured,
+    )
+    
     return {
         "models": [
-            {"id": "gpt-4o", "name": "GPT-4o", "provider": "openai"},
-            {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "provider": "openai"},
-            {"id": "gpt-4-turbo", "name": "GPT-4 Turbo", "provider": "openai"},
-            {"id": "claude-3-5-sonnet-20241022", "name": "Claude 3.5 Sonnet", "provider": "anthropic"},
-            {"id": "claude-3-opus-20240229", "name": "Claude 3 Opus", "provider": "anthropic"},
+            {
+                "id": m.id,
+                "name": m.name,
+                "provider": m.provider.value,
+                "context_window": m.context_window,
+                "supports_tools": m.supports_tools,
+                "supports_vision": m.supports_vision,
+                "max_output_tokens": m.max_output_tokens,
+                "description": m.description,
+            }
+            for m in models
         ]
     }
+
+
+@router.get("/providers")
+async def list_providers():
+    """List all providers and their configuration status."""
+    from mini_devin.core.providers import get_model_registry, Provider
+    
+    registry = get_model_registry()
+    
+    providers = []
+    for p in Provider:
+        config = registry.get_provider_config(p)
+        providers.append({
+            "id": p.value,
+            "name": p.name,
+            "configured": registry.is_provider_configured(p),
+            "enabled": config.enabled if config else False,
+        })
+    
+    return {
+        "providers": providers,
+        "default_model": registry.get_default_model(),
+    }
+
+
+# Skills Endpoints
+
+class CreateSkillRequest(BaseModel):
+    """Request to create a custom skill."""
+    name: str = Field(..., description="Unique skill name")
+    description: str = Field(..., description="Skill description")
+    steps: list[dict] = Field(..., description="List of skill steps")
+    parameters: list[dict] = Field(default_factory=list, description="Skill parameters")
+    tags: list[str] = Field(default_factory=list, description="Skill tags")
+
+
+class UpdateSkillRequest(BaseModel):
+    """Request to update a custom skill."""
+    description: str | None = Field(None, description="Skill description")
+    steps: list[dict] | None = Field(None, description="List of skill steps")
+    parameters: list[dict] | None = Field(None, description="Skill parameters")
+    tags: list[str] | None = Field(None, description="Skill tags")
+
+
+class SkillInfo(BaseModel):
+    """Information about a skill."""
+    name: str
+    description: str
+    version: str
+    tags: list[str]
+    required_tools: list[str]
+    parameters: list[dict]
+    is_custom: bool = False
+
+
+class ExecuteSkillRequest(BaseModel):
+    """Request to execute a skill."""
+    parameters: dict = Field(default_factory=dict, description="Skill parameters")
+    workspace_path: str = Field(default=".", description="Workspace path")
+    dry_run: bool = Field(default=False, description="Preview changes without executing")
+
+
+@router.get("/skills")
+async def list_skills(
+    tag: str | None = None,
+    search: str | None = None,
+    include_builtin: bool = True,
+    include_custom: bool = True,
+):
+    """
+    List available skills.
+    
+    Args:
+        tag: Filter by tag
+        search: Search by name or description
+        include_builtin: Include built-in skills
+        include_custom: Include custom user-created skills
+    """
+    from mini_devin.skills.registry import get_registry
+    
+    registry = get_registry()
+    
+    if tag:
+        skill_names = registry.list_by_tag(tag)
+    elif search:
+        skill_names = registry.search(search)
+    else:
+        skill_names = registry.list_skills()
+    
+    skills = []
+    custom_skills = _get_custom_skills()
+    
+    for name in skill_names:
+        info = registry.get_skill_info(name)
+        if info:
+            if include_builtin:
+                skills.append({**info, "is_custom": False})
+    
+    if include_custom:
+        for skill in custom_skills.values():
+            if tag and tag not in skill.get("tags", []):
+                continue
+            if search and search.lower() not in skill["name"].lower() and search.lower() not in skill.get("description", "").lower():
+                continue
+            skills.append({**skill, "is_custom": True})
+    
+    return {"skills": skills, "total": len(skills)}
+
+
+@router.get("/skills/tags")
+async def list_skill_tags():
+    """List all available skill tags."""
+    from mini_devin.skills.registry import get_registry
+    
+    registry = get_registry()
+    builtin_tags = registry.list_tags()
+    
+    custom_skills = _get_custom_skills()
+    custom_tags = set()
+    for skill in custom_skills.values():
+        custom_tags.update(skill.get("tags", []))
+    
+    all_tags = list(set(builtin_tags) | custom_tags)
+    return {"tags": sorted(all_tags)}
+
+
+@router.get("/skills/{skill_name}")
+async def get_skill(skill_name: str):
+    """Get detailed information about a skill."""
+    from mini_devin.skills.registry import get_registry
+    
+    registry = get_registry()
+    
+    custom_skills = _get_custom_skills()
+    if skill_name in custom_skills:
+        return {**custom_skills[skill_name], "is_custom": True}
+    
+    info = registry.get_skill_info(skill_name)
+    if not info:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    
+    return {**info, "is_custom": False}
+
+
+@router.post("/skills", response_model=SkillInfo)
+async def create_skill(request: CreateSkillRequest):
+    """Create a new custom skill."""
+    from mini_devin.skills.registry import get_registry
+    
+    registry = get_registry()
+    
+    if registry.get(request.name):
+        raise HTTPException(status_code=400, detail="A built-in skill with this name already exists")
+    
+    custom_skills = _get_custom_skills()
+    if request.name in custom_skills:
+        raise HTTPException(status_code=400, detail="A custom skill with this name already exists")
+    
+    skill_data = {
+        "name": request.name,
+        "description": request.description,
+        "version": "1.0.0",
+        "steps": request.steps,
+        "parameters": request.parameters,
+        "tags": request.tags,
+        "required_tools": _extract_required_tools(request.steps),
+    }
+    
+    custom_skills[request.name] = skill_data
+    _save_custom_skills(custom_skills)
+    
+    return SkillInfo(
+        name=skill_data["name"],
+        description=skill_data["description"],
+        version=skill_data["version"],
+        tags=skill_data["tags"],
+        required_tools=skill_data["required_tools"],
+        parameters=skill_data["parameters"],
+        is_custom=True,
+    )
+
+
+@router.put("/skills/{skill_name}")
+async def update_skill(skill_name: str, request: UpdateSkillRequest):
+    """Update a custom skill."""
+    custom_skills = _get_custom_skills()
+    
+    if skill_name not in custom_skills:
+        from mini_devin.skills.registry import get_registry
+        registry = get_registry()
+        if registry.get(skill_name):
+            raise HTTPException(status_code=400, detail="Cannot modify built-in skills")
+        raise HTTPException(status_code=404, detail="Skill not found")
+    
+    skill = custom_skills[skill_name]
+    
+    if request.description is not None:
+        skill["description"] = request.description
+    if request.steps is not None:
+        skill["steps"] = request.steps
+        skill["required_tools"] = _extract_required_tools(request.steps)
+    if request.parameters is not None:
+        skill["parameters"] = request.parameters
+    if request.tags is not None:
+        skill["tags"] = request.tags
+    
+    version_parts = skill.get("version", "1.0.0").split(".")
+    version_parts[-1] = str(int(version_parts[-1]) + 1)
+    skill["version"] = ".".join(version_parts)
+    
+    _save_custom_skills(custom_skills)
+    
+    return {**skill, "is_custom": True}
+
+
+@router.delete("/skills/{skill_name}")
+async def delete_skill(skill_name: str):
+    """Delete a custom skill."""
+    custom_skills = _get_custom_skills()
+    
+    if skill_name not in custom_skills:
+        from mini_devin.skills.registry import get_registry
+        registry = get_registry()
+        if registry.get(skill_name):
+            raise HTTPException(status_code=400, detail="Cannot delete built-in skills")
+        raise HTTPException(status_code=404, detail="Skill not found")
+    
+    del custom_skills[skill_name]
+    _save_custom_skills(custom_skills)
+    
+    return {"status": "deleted", "skill_name": skill_name}
+
+
+@router.post("/skills/{skill_name}/execute")
+async def execute_skill(
+    skill_name: str,
+    request: ExecuteSkillRequest,
+    req: Request,
+    background_tasks: BackgroundTasks,
+):
+    """Execute a skill."""
+    from mini_devin.skills.registry import get_registry
+    from mini_devin.skills.base import SkillContext
+    
+    registry = get_registry()
+    
+    custom_skills = _get_custom_skills()
+    if skill_name in custom_skills:
+        execution_id = _execute_custom_skill(
+            custom_skills[skill_name],
+            request.parameters,
+            request.workspace_path,
+            request.dry_run,
+        )
+        return {
+            "execution_id": execution_id,
+            "skill_name": skill_name,
+            "status": "started",
+            "dry_run": request.dry_run,
+        }
+    
+    skill = registry.get(skill_name)
+    if not skill:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    
+    context = SkillContext(
+        workspace_path=request.workspace_path,
+        dry_run=request.dry_run,
+    )
+    
+    import uuid
+    execution_id = str(uuid.uuid4())
+    
+    async def run_skill():
+        try:
+            result = await registry.execute(skill_name, context, **request.parameters)
+            _store_execution_result(execution_id, result)
+        except Exception as e:
+            _store_execution_error(execution_id, str(e))
+    
+    background_tasks.add_task(run_skill)
+    
+    return {
+        "execution_id": execution_id,
+        "skill_name": skill_name,
+        "status": "started",
+        "dry_run": request.dry_run,
+    }
+
+
+@router.get("/skills/executions/{execution_id}")
+async def get_skill_execution(execution_id: str):
+    """Get the status and result of a skill execution."""
+    result = _get_execution_result(execution_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    return result
+
+
+# Helper functions for custom skills storage
+
+_CUSTOM_SKILLS_FILE = Path.home() / ".mini-devin" / "custom_skills.json"
+_EXECUTIONS: dict = {}
+
+
+def _get_custom_skills() -> dict:
+    """Load custom skills from storage."""
+    if not _CUSTOM_SKILLS_FILE.exists():
+        return {}
+    try:
+        return json.loads(_CUSTOM_SKILLS_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_custom_skills(skills: dict) -> None:
+    """Save custom skills to storage."""
+    _CUSTOM_SKILLS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _CUSTOM_SKILLS_FILE.write_text(json.dumps(skills, indent=2))
+
+
+def _extract_required_tools(steps: list[dict]) -> list[str]:
+    """Extract required tools from skill steps."""
+    tools = set()
+    for step in steps:
+        tool = step.get("tool")
+        if tool:
+            tools.add(tool)
+    return list(tools)
+
+
+def _execute_custom_skill(
+    skill: dict,
+    parameters: dict,
+    workspace_path: str,
+    dry_run: bool,
+) -> str:
+    """Execute a custom skill and return execution ID."""
+    import uuid
+    execution_id = str(uuid.uuid4())
+    
+    _EXECUTIONS[execution_id] = {
+        "execution_id": execution_id,
+        "skill_name": skill["name"],
+        "status": "running" if not dry_run else "dry_run",
+        "steps": skill.get("steps", []),
+        "parameters": parameters,
+        "workspace_path": workspace_path,
+        "dry_run": dry_run,
+        "result": None,
+        "error": None,
+    }
+    
+    if dry_run:
+        _EXECUTIONS[execution_id]["status"] = "completed"
+        _EXECUTIONS[execution_id]["result"] = {
+            "success": True,
+            "message": "Dry run completed - no changes made",
+            "steps_preview": skill.get("steps", []),
+        }
+    
+    return execution_id
+
+
+def _store_execution_result(execution_id: str, result) -> None:
+    """Store execution result."""
+    if execution_id in _EXECUTIONS:
+        _EXECUTIONS[execution_id]["status"] = "completed" if result.success else "failed"
+        _EXECUTIONS[execution_id]["result"] = {
+            "success": result.success,
+            "message": result.message,
+            "outputs": result.outputs,
+            "files_created": result.files_created,
+            "files_modified": result.files_modified,
+        }
+
+
+def _store_execution_error(execution_id: str, error: str) -> None:
+    """Store execution error."""
+    if execution_id in _EXECUTIONS:
+        _EXECUTIONS[execution_id]["status"] = "failed"
+        _EXECUTIONS[execution_id]["error"] = error
+
+
+def _get_execution_result(execution_id: str) -> dict | None:
+    """Get execution result."""
+    return _EXECUTIONS.get(execution_id)

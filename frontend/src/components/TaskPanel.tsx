@@ -1,37 +1,30 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Session, Task, WebSocketMessage } from '../types';
 import { useApi } from '../hooks/useApi';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { Send, Square, Clock, CheckCircle, XCircle, Loader } from 'lucide-react';
+import { Send, Square, Clock, CheckCircle, XCircle, Loader, Layers, Terminal, ListTodo } from 'lucide-react';
+import { StreamingOutput } from './StreamingOutput';
+import { ToolExecutionLog, ToolExecution } from './ToolExecutionLog';
+import { PlanProgress, Plan } from './PlanProgress';
 
 interface TaskPanelProps {
   session: Session;
 }
 
+type ViewTab = 'output' | 'tools' | 'plan';
+
 export function TaskPanel({ session }: TaskPanelProps) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskDescription, setTaskDescription] = useState('');
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const [streamingLogs, setStreamingLogs] = useState<string[]>([]);
+  const [activeTab, setActiveTab] = useState<ViewTab>('output');
+  
+  const [streamingContent, setStreamingContent] = useState('');
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [toolExecutions, setToolExecutions] = useState<ToolExecution[]>([]);
+  const [currentPlan, setCurrentPlan] = useState<Plan | null>(null);
   
   const api = useApi();
-
-  const handleWebSocketMessage = (message: WebSocketMessage) => {
-    const logEntry = `[${message.type}] ${JSON.stringify(message.data)}`;
-    setStreamingLogs(prev => [...prev.slice(-100), logEntry]);
-    
-    // Update task status based on message
-    if (message.task_id) {
-      if (message.type === 'task_completed' || message.type === 'task_failed') {
-        loadTasks();
-      }
-    }
-  };
-
-  const { isConnected } = useWebSocket({
-    sessionId: session.session_id,
-    onMessage: handleWebSocketMessage,
-  });
 
   const loadTasks = async () => {
     try {
@@ -42,9 +35,191 @@ export function TaskPanel({ session }: TaskPanelProps) {
     }
   };
 
+  const handleWebSocketMessage = useCallback((message: WebSocketMessage) => {
+    switch (message.type) {
+      case 'token':
+        setIsStreaming(true);
+        setStreamingContent(prev => prev + (message.data.content as string || ''));
+        break;
+        
+      case 'tokens_batch':
+        setIsStreaming(true);
+        setStreamingContent(prev => prev + (message.data.content as string || ''));
+        break;
+        
+      case 'tool_started': {
+        const newExecution: ToolExecution = {
+          id: `${Date.now()}-${message.data.tool}`,
+          tool: message.data.tool as string,
+          input: message.data.input as Record<string, unknown>,
+          status: 'running',
+          startTime: message.timestamp,
+        };
+        setToolExecutions(prev => [...prev, newExecution]);
+        break;
+      }
+        
+      case 'tool_completed': {
+        setToolExecutions(prev => prev.map(exec => {
+          if (exec.tool === message.data.tool && exec.status === 'running') {
+            return {
+              ...exec,
+              status: 'completed',
+              output: message.data.output as Record<string, unknown>,
+              endTime: message.timestamp,
+              durationMs: message.data.duration_ms as number,
+            };
+          }
+          return exec;
+        }));
+        break;
+      }
+        
+      case 'tool_failed': {
+        setToolExecutions(prev => prev.map(exec => {
+          if (exec.tool === message.data.tool && exec.status === 'running') {
+            return {
+              ...exec,
+              status: 'failed',
+              error: message.data.error as string,
+              endTime: message.timestamp,
+            };
+          }
+          return exec;
+        }));
+        break;
+      }
+        
+      case 'tool_output': {
+        setToolExecutions(prev => prev.map(exec => {
+          if (exec.tool === message.data.tool && exec.status === 'running') {
+            const currentOutput = exec.output || {};
+            return {
+              ...exec,
+              output: {
+                ...currentOutput,
+                stdout: ((currentOutput.stdout as string) || '') + (message.data.output as string || ''),
+              },
+            };
+          }
+          return exec;
+        }));
+        break;
+      }
+        
+      case 'plan_created': {
+        const planData = message.data.plan as Record<string, unknown>;
+        const steps = (planData.steps as Array<Record<string, unknown>> || []).map((step, index) => ({
+          id: `step-${index}`,
+          description: step.description as string || `Step ${index + 1}`,
+          status: 'pending' as const,
+          substeps: (step.substeps as Array<Record<string, unknown>> || []).map((sub, subIndex) => ({
+            id: `step-${index}-${subIndex}`,
+            description: sub.description as string || `Substep ${subIndex + 1}`,
+            status: 'pending' as const,
+          })),
+        }));
+        
+        setCurrentPlan({
+          id: planData.id as string || `plan-${Date.now()}`,
+          title: planData.title as string || 'Execution Plan',
+          strategy: planData.strategy as string || 'sequential',
+          steps,
+          currentStepIndex: 0,
+          totalSteps: steps.length,
+          completedSteps: 0,
+        });
+        break;
+      }
+        
+      case 'plan_updated':
+      case 'step_completed': {
+        setCurrentPlan(prev => {
+          if (!prev) return prev;
+          
+          const stepIndex = message.data.step_index as number;
+          const updatedSteps = prev.steps.map((step, index) => {
+            if (index === stepIndex) {
+              return { ...step, status: 'completed' as const };
+            }
+            if (index === stepIndex + 1) {
+              return { ...step, status: 'in_progress' as const };
+            }
+            return step;
+          });
+          
+          return {
+            ...prev,
+            steps: updatedSteps,
+            currentStepIndex: stepIndex + 1,
+            completedSteps: prev.completedSteps + 1,
+          };
+        });
+        break;
+      }
+        
+      case 'phase_changed':
+        setStreamingContent(prev => prev + `\n\n--- Phase: ${message.data.phase} ---\n\n`);
+        break;
+        
+      case 'iteration_started':
+        setStreamingContent(prev => prev + `\n--- Iteration ${message.data.iteration} ---\n`);
+        break;
+        
+      case 'task_started':
+        setIsStreaming(true);
+        setStreamingContent('');
+        setToolExecutions([]);
+        setCurrentPlan(null);
+        break;
+        
+      case 'task_completed':
+        setIsStreaming(false);
+        setStreamingContent(prev => prev + `\n\n--- Task Completed ---\nSummary: ${message.data.summary || 'Done'}`);
+        loadTasks();
+        break;
+        
+      case 'task_failed':
+        setIsStreaming(false);
+        setStreamingContent(prev => prev + `\n\n--- Task Failed ---\nError: ${message.data.error || 'Unknown error'}`);
+        loadTasks();
+        break;
+        
+      case 'verification_started':
+        setStreamingContent(prev => prev + '\n\n--- Running Verification ---\n');
+        break;
+        
+      case 'verification_completed': {
+        const passed = message.data.passed as boolean;
+        setStreamingContent(prev => prev + `\nVerification ${passed ? 'PASSED' : 'FAILED'}\n`);
+        break;
+      }
+        
+      case 'repair_started':
+        setStreamingContent(prev => prev + '\n--- Starting Repair Loop ---\n');
+        break;
+        
+      case 'repair_completed':
+        setStreamingContent(prev => prev + '\n--- Repair Complete ---\n');
+        break;
+        
+      default:
+        break;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const { isConnected } = useWebSocket({
+    sessionId: session.session_id,
+    onMessage: handleWebSocketMessage,
+  });
+
   useEffect(() => {
     loadTasks();
-    setStreamingLogs([]);
+    setStreamingContent('');
+    setToolExecutions([]);
+    setCurrentPlan(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.session_id]);
 
   const handleSubmitTask = async () => {
@@ -58,7 +233,10 @@ export function TaskPanel({ session }: TaskPanelProps) {
       setTasks([...tasks, task]);
       setTaskDescription('');
       setSelectedTask(task);
-      setStreamingLogs([]);
+      setStreamingContent('');
+      setToolExecutions([]);
+      setCurrentPlan(null);
+      setActiveTab('output');
     } catch (e) {
       console.error('Failed to create task:', e);
     }
@@ -164,7 +342,7 @@ export function TaskPanel({ session }: TaskPanelProps) {
           </div>
         </div>
 
-        {/* Task Details / Streaming Logs */}
+        {/* Task Details / Streaming Output */}
         <div className="flex-1 flex flex-col overflow-hidden">
           {selectedTask ? (
             <>
@@ -188,19 +366,67 @@ export function TaskPanel({ session }: TaskPanelProps) {
                 )}
               </div>
 
-              {/* Streaming Logs */}
-              <div className="flex-1 overflow-y-auto p-4 bg-gray-900 font-mono text-sm">
-                <h4 className="text-gray-400 mb-2">Live Logs</h4>
-                {streamingLogs.length === 0 ? (
-                  <p className="text-gray-500">Waiting for updates...</p>
-                ) : (
-                  <div className="space-y-1">
-                    {streamingLogs.map((log, i) => (
-                      <div key={i} className="text-gray-300 break-all">
-                        {log}
-                      </div>
-                    ))}
-                  </div>
+              {/* Tab Navigation */}
+              <div className="flex border-b border-gray-700">
+                <button
+                  onClick={() => setActiveTab('output')}
+                  className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                    activeTab === 'output'
+                      ? 'text-blue-400 border-b-2 border-blue-400 bg-gray-800'
+                      : 'text-gray-400 hover:text-gray-200'
+                  }`}
+                >
+                  <Terminal size={16} />
+                  Output
+                </button>
+                <button
+                  onClick={() => setActiveTab('tools')}
+                  className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                    activeTab === 'tools'
+                      ? 'text-blue-400 border-b-2 border-blue-400 bg-gray-800'
+                      : 'text-gray-400 hover:text-gray-200'
+                  }`}
+                >
+                  <Layers size={16} />
+                  Tools
+                  {toolExecutions.length > 0 && (
+                    <span className="ml-1 px-1.5 py-0.5 text-xs bg-gray-700 rounded">
+                      {toolExecutions.length}
+                    </span>
+                  )}
+                </button>
+                <button
+                  onClick={() => setActiveTab('plan')}
+                  className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                    activeTab === 'plan'
+                      ? 'text-blue-400 border-b-2 border-blue-400 bg-gray-800'
+                      : 'text-gray-400 hover:text-gray-200'
+                  }`}
+                >
+                  <ListTodo size={16} />
+                  Plan
+                  {currentPlan && (
+                    <span className="ml-1 px-1.5 py-0.5 text-xs bg-gray-700 rounded">
+                      {currentPlan.completedSteps}/{currentPlan.totalSteps}
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {/* Tab Content */}
+              <div className="flex-1 overflow-hidden">
+                {activeTab === 'output' && (
+                  <StreamingOutput 
+                    content={streamingContent} 
+                    isStreaming={isStreaming}
+                    title="Agent Output"
+                  />
+                )}
+                {activeTab === 'tools' && (
+                  <ToolExecutionLog executions={toolExecutions} />
+                )}
+                {activeTab === 'plan' && (
+                  <PlanProgress plan={currentPlan} />
                 )}
               </div>
             </>

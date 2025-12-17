@@ -231,6 +231,82 @@ MEMORY_LIMIT=4G    # Memory limit
 
 ---
 
+## Sandbox Security (Phase 6D)
+
+Mini-Devin runs in a security-hardened Docker sandbox with the following protections:
+
+### Non-Root User
+
+By default, the container runs as a non-root user (`minidevin` with UID/GID 1000) to prevent privilege escalation attacks.
+
+```bash
+# Customize user ID to match host user (for file permissions)
+USER_ID=1000 GROUP_ID=1000 docker-compose up -d
+```
+
+### Resource Limits
+
+The sandbox enforces strict resource limits to prevent resource exhaustion:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CPU_LIMIT` | `2.0` | Maximum CPU cores |
+| `MEMORY_LIMIT` | `4G` | Maximum memory |
+| `PID_LIMIT` | `256` | Maximum processes |
+| `TMP_SIZE` | `512MB` | Temporary filesystem size |
+| `NOFILE_SOFT` | `65536` | Soft limit for open files |
+| `NOFILE_HARD` | `65536` | Hard limit for open files |
+| `NPROC_SOFT` | `256` | Soft limit for processes |
+| `NPROC_HARD` | `512` | Hard limit for processes |
+
+### Capability Restrictions
+
+The container drops all Linux capabilities by default and only adds back the minimum required:
+
+- `CHOWN` - Change file ownership
+- `DAC_OVERRIDE` - Bypass file permission checks
+- `FOWNER` - Bypass permission checks for file owner
+- `SETGID` - Set group ID
+- `SETUID` - Set user ID
+
+Additional security options:
+- `no-new-privileges` - Prevents privilege escalation via setuid binaries
+
+### Read-Only Filesystem
+
+Enable read-only root filesystem for maximum security (disabled by default for compatibility):
+
+```bash
+READ_ONLY_ROOT=true docker-compose up -d
+```
+
+When enabled, only `/workspace`, `/workspace/runs`, and `/tmp` are writable.
+
+### Network Isolation
+
+Enable network isolation to restrict outbound connections:
+
+```bash
+NETWORK_ISOLATION=true docker-compose up -d
+```
+
+### Security Configuration
+
+All security settings can be configured via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SANDBOX_ENABLED` | `true` | Enable sandbox security features |
+| `RUN_AS_NON_ROOT` | `true` | Run container as non-root user |
+| `USER_ID` | `1000` | User ID for container user |
+| `GROUP_ID` | `1000` | Group ID for container user |
+| `READ_ONLY_ROOT` | `false` | Enable read-only root filesystem |
+| `NETWORK_ISOLATION` | `false` | Enable network isolation |
+| `DROP_ALL_CAPABILITIES` | `true` | Drop all Linux capabilities |
+| `NO_NEW_PRIVILEGES` | `true` | Prevent privilege escalation |
+
+---
+
 ## Safety Features
 
 Mini-Devin includes multiple safety mechanisms to prevent dangerous operations.
@@ -483,6 +559,71 @@ For better performance:
    MAX_ITERATIONS=100
    MAX_LINES_EDIT=500
    ```
+
+---
+
+## End-to-End Testing
+
+Mini-Devin includes a comprehensive end-to-end test suite that validates all components work together correctly.
+
+### Running E2E Tests Locally
+
+```bash
+# Run all E2E tests
+poetry run pytest tests/e2e/ -v
+
+# Run with detailed output
+poetry run pytest tests/e2e/ -v --tb=short
+
+# Generate a test report
+poetry run python tests/e2e/generate_report.py
+```
+
+The test report will be generated at `tests/e2e/e2e_test_report.md`.
+
+### Running E2E Tests in CI
+
+E2E tests can be triggered in CI in three ways:
+
+1. **Manual trigger (workflow_dispatch):**
+   - Go to Actions > CI > Run workflow
+   - Check "Run E2E tests" checkbox
+   - Click "Run workflow"
+
+2. **Pull request label:**
+   - Add the `run-e2e` label to your PR
+   - E2E tests will run automatically
+
+3. **Always run (E2E_REQUIRED=true):**
+   - Set the repository variable `E2E_REQUIRED` to `true`
+   - E2E tests will run on every push and PR
+
+### E2E Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `E2E_REQUIRED` | `false` | When true, E2E tests run on every CI and block merge on failure |
+| `E2E_TIMEOUT` | `300` | Timeout in seconds for E2E test execution |
+| `E2E_REPORT_DIR` | `./tests/e2e` | Directory for E2E test reports |
+
+### E2E Test Categories
+
+The E2E test suite covers:
+
+1. **Terminal & Editor Tools:** Tests for command execution, file operations, and integration between terminal and editor.
+
+2. **Browser Tools:** Tests for browser tool registration and schemas (search, fetch, interactive).
+
+3. **Gates Integration:** Tests for planner and reviewer gates in the execution flow, including configuration via environment variables.
+
+### Viewing E2E Test Reports
+
+When E2E tests run in CI, the test report is uploaded as an artifact:
+
+1. Go to the workflow run in GitHub Actions
+2. Scroll to "Artifacts" section
+3. Download `e2e-test-report`
+4. Open `e2e_test_report.md` to view results
 
 ---
 

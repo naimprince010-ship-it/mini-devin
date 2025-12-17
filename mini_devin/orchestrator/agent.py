@@ -42,6 +42,11 @@ from ..memory import (
     create_vector_store,
     create_retrieval_manager,
     create_working_memory,
+    ConversationMemory,
+    ConversationEntryType,
+    Importance,
+    TaskSummary,
+    create_conversation_memory,
 )
 from ..agents import (
     ReviewerAgent,
@@ -51,6 +56,15 @@ from ..agents import (
     PlanningResult,
     PlanningStrategy,
     create_planner_agent,
+)
+from ..core.parallel_executor import (
+    ParallelExecutor,
+    BatchToolCaller,
+    ToolCall,
+    ToolCallResult,
+    ParallelExecutionResult,
+    create_parallel_executor,
+    create_batch_caller,
 )
 
 
@@ -124,6 +138,8 @@ class Agent:
         max_repair_iterations: int = 3,
         safety_policy: SafetyPolicy | None = None,
         artifact_dir: str = "runs",
+        enable_parallel_execution: bool = True,
+        max_parallel_tools: int = 5,
     ):
         self.llm = llm_client or create_llm_client()
         self.registry = tool_registry or get_global_registry()
@@ -164,6 +180,16 @@ class Agent:
         
         # Planner agent (Phase 9B)
         self._planner_agent: PlannerAgent | None = None
+        
+        # Conversation memory for cross-session learning (Phase 18)
+        self._conversation_memory: ConversationMemory | None = None
+        self._use_conversation_memory: bool = True
+        
+        # Parallel execution (Phase 19)
+        self._enable_parallel_execution = enable_parallel_execution
+        self._max_parallel_tools = max_parallel_tools
+        self._parallel_executor: ParallelExecutor | None = None
+        self._batch_caller: BatchToolCaller | None = None
         
         # Register default tools
         self._register_default_tools()
@@ -1030,7 +1056,258 @@ class Agent:
             "working_memory": self.get_working_memory().get_statistics(),
             "retrieval": self.get_retrieval_manager().get_statistics() if self._memory_indexed else {},
             "indexed": self._memory_indexed,
+            "conversation_memory": self.get_conversation_memory().get_statistics() if self._conversation_memory else {},
         }
+    
+    # Conversation Memory Methods (Phase 18)
+    
+    def get_conversation_memory(self) -> ConversationMemory:
+        """
+        Get or create the conversation memory for cross-session learning.
+        
+        Returns:
+            ConversationMemory instance
+        """
+        if self._conversation_memory is None:
+            from pathlib import Path
+            storage_path = Path.home() / ".mini-devin" / "conversation_memory.json"
+            self._conversation_memory = create_conversation_memory(
+                storage_path=str(storage_path),
+                max_entries=1000,
+            )
+        return self._conversation_memory
+    
+    def enable_conversation_memory(self, enabled: bool = True) -> None:
+        """Enable or disable conversation memory for this agent."""
+        self._use_conversation_memory = enabled
+    
+    def get_context_from_memory(self, task_description: str) -> str:
+        """
+        Get relevant context from conversation memory for a task.
+        
+        Args:
+            task_description: Description of the current task
+            
+        Returns:
+            Context string with relevant past experiences
+        """
+        if not self._use_conversation_memory:
+            return ""
+        
+        memory = self.get_conversation_memory()
+        return memory.get_context_for_task(task_description, max_entries=5)
+    
+    def add_lesson_to_memory(
+        self,
+        lesson: str,
+        context: str = "",
+        importance: str = "medium",
+        tags: list[str] | None = None,
+    ) -> str:
+        """
+        Add a lesson learned to conversation memory.
+        
+        Args:
+            lesson: The lesson content
+            context: Context about when this lesson applies
+            importance: Importance level (low, medium, high, critical)
+            tags: Optional tags for categorization
+            
+        Returns:
+            Entry ID
+        """
+        if not self._use_conversation_memory:
+            return ""
+        
+        importance_map = {
+            "low": Importance.LOW,
+            "medium": Importance.MEDIUM,
+            "high": Importance.HIGH,
+            "critical": Importance.CRITICAL,
+        }
+        
+        memory = self.get_conversation_memory()
+        result = memory.add_lesson(
+            lesson=lesson,
+            context=context or "General",
+            importance=importance_map.get(importance, Importance.MEDIUM),
+            tags=tags or [],
+            session_id=self.state.session_id,
+        )
+        return result or ""
+    
+    def add_error_pattern_to_memory(
+        self,
+        error: str,
+        cause: str,
+        solution: str,
+        tags: list[str] | None = None,
+    ) -> str:
+        """
+        Add an error pattern and its solution to memory.
+        
+        Args:
+            error: The error message or type
+            cause: What caused the error
+            solution: How the error was solved
+            tags: Optional tags for categorization
+            
+        Returns:
+            Entry ID
+        """
+        if not self._use_conversation_memory:
+            return ""
+        
+        memory = self.get_conversation_memory()
+        result = memory.add_error_pattern(
+            error=error,
+            cause=cause,
+            solution=solution,
+            tags=tags or [],
+            session_id=self.state.session_id,
+        )
+        return result or ""
+    
+    def add_solution_pattern_to_memory(
+        self,
+        problem: str,
+        solution: str,
+        code_example: str | None = None,
+        tags: list[str] | None = None,
+    ) -> str:
+        """
+        Add a solution pattern to memory.
+        
+        Args:
+            problem: Description of the problem
+            solution: The solution that worked
+            code_example: Optional code example
+            tags: Optional tags for categorization
+            
+        Returns:
+            Entry ID
+        """
+        if not self._use_conversation_memory:
+            return ""
+        
+        memory = self.get_conversation_memory()
+        result = memory.add_solution_pattern(
+            problem=problem,
+            solution=solution,
+            code_example=code_example,
+            tags=tags or [],
+            session_id=self.state.session_id,
+        )
+        return result or ""
+    
+    def get_error_solutions(self, error_message: str) -> list[str]:
+        """
+        Get solutions for similar errors from memory.
+        
+        Args:
+            error_message: The error message to find solutions for
+            
+        Returns:
+            List of solution strings
+        """
+        if not self._use_conversation_memory:
+            return []
+        
+        memory = self.get_conversation_memory()
+        return memory.get_error_solutions(error_message)
+    
+    def save_task_summary(
+        self,
+        task: "TaskState",
+        summary: str,
+        lessons_learned: list[str] | None = None,
+    ) -> str:
+        """
+        Save a task summary to conversation memory.
+        
+        Args:
+            task: The completed task
+            summary: Summary of what was done
+            lessons_learned: Optional list of lessons learned
+            
+        Returns:
+            Entry ID
+        """
+        if not self._use_conversation_memory:
+            return ""
+        
+        memory = self.get_conversation_memory()
+        
+        task_summary = TaskSummary(
+            task_id=task.task_id,
+            session_id=self.state.session_id,
+            description=task.goal.description,
+            outcome=summary,
+            success=task.status == TaskStatus.COMPLETED,
+            duration_seconds=int((task.completed_at - task.started_at).total_seconds()) if task.completed_at and task.started_at else 0,
+            tools_used=list(task.commands_executed or []),
+            files_modified=[fc.path for fc in task.files_changed] if task.files_changed else [],
+            errors_encountered=[task.last_error] if task.last_error else [],
+            lessons=lessons_learned or [],
+        )
+        
+        result = memory.add_task_summary(task_summary)
+        return result or ""
+    
+    def get_recent_lessons(self, limit: int = 10) -> list[str]:
+        """
+        Get recent lessons learned from memory.
+        
+        Args:
+            limit: Maximum number of lessons to return
+            
+        Returns:
+            List of lesson strings
+        """
+        if not self._use_conversation_memory:
+            return []
+        
+        memory = self.get_conversation_memory()
+        entries = memory.get_recent_lessons(limit=limit)
+        return [e.content for e in entries]
+    
+    def search_memory(
+        self,
+        query: str,
+        entry_type: str | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """
+        Search conversation memory.
+        
+        Args:
+            query: Search query
+            entry_type: Optional filter by entry type
+            limit: Maximum results to return
+            
+        Returns:
+            List of matching entries as dicts
+        """
+        if not self._use_conversation_memory:
+            return []
+        
+        memory = self.get_conversation_memory()
+        
+        type_filter = None
+        if entry_type:
+            type_map = {
+                "task_summary": ConversationEntryType.TASK_SUMMARY,
+                "lesson": ConversationEntryType.LESSON_LEARNED,
+                "error": ConversationEntryType.ERROR_PATTERN,
+                "solution": ConversationEntryType.SOLUTION_PATTERN,
+                "preference": ConversationEntryType.USER_PREFERENCE,
+                "feedback": ConversationEntryType.FEEDBACK,
+            }
+            type_filter = type_map.get(entry_type)
+        
+        entry_types = [type_filter] if type_filter else None
+        entries = memory.search(query, entry_types=entry_types, limit=limit)
+        return [e.to_dict() for e in entries]
     
     def get_reviewer_agent(self, strict_mode: bool = False) -> ReviewerAgent:
         """
@@ -1426,6 +1703,235 @@ class Agent:
         planner = self.get_planner_agent()
         self.state.current_plan = planner.create_minimal_plan(task_to_plan)
     
+    def get_parallel_executor(self) -> ParallelExecutor:
+        """
+        Get or create the parallel executor.
+        
+        Returns:
+            ParallelExecutor instance
+        """
+        if self._parallel_executor is None:
+            async def execute_tool(tool_name: str, arguments: dict) -> str:
+                return await self._execute_tool(tool_name, arguments)
+            
+            self._parallel_executor = create_parallel_executor(
+                execute_fn=execute_tool,
+                max_concurrent=self._max_parallel_tools,
+                fail_fast=False,
+            )
+        return self._parallel_executor
+    
+    def get_batch_caller(self) -> BatchToolCaller:
+        """
+        Get or create the batch tool caller.
+        
+        Returns:
+            BatchToolCaller instance for fluent API
+        """
+        if self._batch_caller is None:
+            async def execute_tool(tool_name: str, arguments: dict) -> str:
+                return await self._execute_tool(tool_name, arguments)
+            
+            self._batch_caller = create_batch_caller(
+                execute_fn=execute_tool,
+                max_concurrent=self._max_parallel_tools,
+            )
+        return self._batch_caller
+    
+    def enable_parallel_execution(self, enabled: bool = True) -> None:
+        """
+        Enable or disable parallel tool execution.
+        
+        Args:
+            enabled: Whether to enable parallel execution
+        """
+        self._enable_parallel_execution = enabled
+    
+    def set_max_parallel_tools(self, max_tools: int) -> None:
+        """
+        Set the maximum number of parallel tool executions.
+        
+        Args:
+            max_tools: Maximum number of concurrent tool calls
+        """
+        self._max_parallel_tools = max_tools
+        self._parallel_executor = None
+        self._batch_caller = None
+    
+    async def execute_tools_parallel(
+        self,
+        tool_calls: list[dict],
+    ) -> ParallelExecutionResult:
+        """
+        Execute multiple tool calls in parallel when possible.
+        
+        Analyzes dependencies between calls and executes independent
+        calls concurrently for improved performance.
+        
+        Args:
+            tool_calls: List of tool call dicts with 'name' and 'arguments'
+            
+        Returns:
+            ParallelExecutionResult with all results and timing info
+        """
+        if not self._enable_parallel_execution or len(tool_calls) <= 1:
+            results = []
+            for tc in tool_calls:
+                from datetime import datetime
+                started_at = datetime.utcnow()
+                try:
+                    result = await self._execute_tool(tc["name"], tc["arguments"])
+                    completed_at = datetime.utcnow()
+                    duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+                    success = "Error" not in str(result) and "BLOCKED" not in str(result)
+                    results.append(ToolCallResult(
+                        call_id=tc.get("id", str(len(results))),
+                        tool_name=tc["name"],
+                        success=success,
+                        result=result,
+                        error=None if success else result,
+                        started_at=started_at,
+                        completed_at=completed_at,
+                        duration_ms=duration_ms,
+                    ))
+                except Exception as e:
+                    completed_at = datetime.utcnow()
+                    duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+                    results.append(ToolCallResult(
+                        call_id=tc.get("id", str(len(results))),
+                        tool_name=tc["name"],
+                        success=False,
+                        result=None,
+                        error=str(e),
+                        started_at=started_at,
+                        completed_at=completed_at,
+                        duration_ms=duration_ms,
+                    ))
+            
+            total_duration = sum(r.duration_ms for r in results)
+            return ParallelExecutionResult(
+                results=results,
+                total_duration_ms=total_duration,
+                parallel_speedup=1.0,
+                execution_order=[[r.call_id for r in results]],
+            )
+        
+        calls = [
+            ToolCall.create(
+                tool_name=tc["name"],
+                arguments=tc["arguments"],
+            )
+            for tc in tool_calls
+        ]
+        
+        executor = self.get_parallel_executor()
+        return await executor.execute(calls)
+    
+    async def batch_read_files(self, paths: list[str]) -> dict[str, str]:
+        """
+        Read multiple files in parallel.
+        
+        Args:
+            paths: List of file paths to read
+            
+        Returns:
+            Dict mapping paths to file contents
+        """
+        tool_calls = [
+            {"name": "editor", "arguments": {"action": "read_file", "path": path}}
+            for path in paths
+        ]
+        
+        result = await self.execute_tools_parallel(tool_calls)
+        
+        contents = {}
+        for i, path in enumerate(paths):
+            if i < len(result.results):
+                r = result.results[i]
+                contents[path] = r.result if r.success else f"Error: {r.error}"
+            else:
+                contents[path] = "Error: No result"
+        
+        return contents
+    
+    async def batch_search(
+        self,
+        patterns: list[str],
+        path: str,
+    ) -> dict[str, str]:
+        """
+        Search for multiple patterns in parallel.
+        
+        Args:
+            patterns: List of search patterns
+            path: Directory to search in
+            
+        Returns:
+            Dict mapping patterns to search results
+        """
+        tool_calls = [
+            {"name": "editor", "arguments": {"action": "search", "pattern": pattern, "path": path}}
+            for pattern in patterns
+        ]
+        
+        result = await self.execute_tools_parallel(tool_calls)
+        
+        results = {}
+        for i, pattern in enumerate(patterns):
+            if i < len(result.results):
+                r = result.results[i]
+                results[pattern] = r.result if r.success else f"Error: {r.error}"
+            else:
+                results[pattern] = "Error: No result"
+        
+        return results
+    
+    async def batch_terminal_commands(
+        self,
+        commands: list[str],
+        working_directory: str | None = None,
+    ) -> list[ToolCallResult]:
+        """
+        Execute multiple terminal commands.
+        
+        Note: Commands are analyzed for dependencies and may be
+        executed sequentially if they depend on each other.
+        
+        Args:
+            commands: List of shell commands
+            working_directory: Optional working directory
+            
+        Returns:
+            List of ToolCallResult for each command
+        """
+        tool_calls = [
+            {
+                "name": "terminal",
+                "arguments": {
+                    "command": cmd,
+                    **({"working_directory": working_directory} if working_directory else {}),
+                },
+            }
+            for cmd in commands
+        ]
+        
+        result = await self.execute_tools_parallel(tool_calls)
+        return result.results
+    
+    def get_parallel_execution_stats(self) -> dict:
+        """
+        Get statistics about parallel execution.
+        
+        Returns:
+            Dict with parallel execution configuration and stats
+        """
+        return {
+            "enabled": self._enable_parallel_execution,
+            "max_parallel_tools": self._max_parallel_tools,
+            "executor_initialized": self._parallel_executor is not None,
+            "batch_caller_initialized": self._batch_caller is not None,
+        }
+    
     def _update_phase(self, new_phase: AgentPhase) -> None:
         """Update the agent phase."""
         old_phase = self.state.phase
@@ -1466,6 +1972,19 @@ Working Directory: {self.working_directory or 'current directory'}
 Please start by exploring the codebase if needed, then create a plan and execute it."""
         
         self.llm.add_user_message(task_message)
+        
+        # Retrieve relevant context from conversation memory (Phase 18)
+        memory_context = ""
+        if self._use_conversation_memory:
+            try:
+                memory_context = self.get_context_from_memory(task.goal.description)
+                if memory_context:
+                    self._log("Retrieved relevant context from conversation memory")
+                    self.llm.add_user_message(
+                        f"Here is relevant context from past experiences that may help:\n\n{memory_context}"
+                    )
+            except Exception as e:
+                self._log(f"Warning: Failed to retrieve memory context: {e}")
         
         # Main agent loop
         iteration = 0
@@ -1584,6 +2103,18 @@ Please start by exploring the codebase if needed, then create a plan and execute
             self._artifact_logger.complete(status=status, summary=summary)
             
             self._log(f"Artifacts saved to: {self._artifact_logger.get_run_dir()}")
+        
+        # Save task summary to conversation memory (Phase 18)
+        if self._use_conversation_memory:
+            try:
+                self.save_task_summary(
+                    task=task,
+                    summary=summary,
+                    lessons_learned=[],
+                )
+                self._log("Task summary saved to conversation memory")
+            except Exception as e:
+                self._log(f"Warning: Failed to save task summary to memory: {e}")
         
         return task
     
