@@ -104,38 +104,38 @@ def init_db():
         uploaded_at TEXT,
         FOREIGN KEY (session_id) REFERENCES sessions(session_id)
     )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS agent_memory (
-            memory_id TEXT PRIMARY KEY,
-            session_id TEXT,
-            memory_type TEXT,
-            content TEXT,
-            created_at TEXT,
-            last_accessed TEXT,
-            access_count INTEGER DEFAULT 0,
-            FOREIGN KEY (session_id) REFERENCES sessions(session_id)
-        )''')
-        # Phase 41: GitHub Repo Integration
-        c.execute('''CREATE TABLE IF NOT EXISTS github_repos (
-            repo_id TEXT PRIMARY KEY,
-            repo_url TEXT NOT NULL,
-            repo_name TEXT NOT NULL,
-            owner TEXT NOT NULL,
-            github_token TEXT,
-            local_path TEXT,
-            default_branch TEXT DEFAULT 'main',
-            created_at TEXT,
-            last_synced TEXT,
-            status TEXT DEFAULT 'pending'
-        )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS session_repos (
-            session_id TEXT,
-            repo_id TEXT,
-            branch TEXT DEFAULT 'main',
-            linked_at TEXT,
-            PRIMARY KEY (session_id, repo_id),
-            FOREIGN KEY (session_id) REFERENCES sessions(session_id),
-            FOREIGN KEY (repo_id) REFERENCES github_repos(repo_id)
-        )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS agent_memory (
+        memory_id TEXT PRIMARY KEY,
+        session_id TEXT,
+        memory_type TEXT,
+        content TEXT,
+        created_at TEXT,
+        last_accessed TEXT,
+        access_count INTEGER DEFAULT 0,
+        FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+    )''')
+    # Phase 41: GitHub Repo Integration
+    c.execute('''CREATE TABLE IF NOT EXISTS github_repos (
+        repo_id TEXT PRIMARY KEY,
+        repo_url TEXT NOT NULL,
+        repo_name TEXT NOT NULL,
+        owner TEXT NOT NULL,
+        github_token TEXT,
+        local_path TEXT,
+        default_branch TEXT DEFAULT 'main',
+        created_at TEXT,
+        last_synced TEXT,
+        status TEXT DEFAULT 'pending'
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS session_repos (
+        session_id TEXT,
+        repo_id TEXT,
+        branch TEXT DEFAULT 'main',
+        linked_at TEXT,
+        PRIMARY KEY (session_id, repo_id),
+        FOREIGN KEY (session_id) REFERENCES sessions(session_id),
+        FOREIGN KEY (repo_id) REFERENCES github_repos(repo_id)
+    )''')
     try:
         c.execute("ALTER TABLE sessions ADD COLUMN provider TEXT DEFAULT 'openai'")
     except:
