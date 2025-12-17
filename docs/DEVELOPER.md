@@ -491,6 +491,97 @@ Check the `runs/<task_id>/` directory for:
 - `verification_results.json` - Lint/test results
 - `diff.patch` - Code changes
 
+## Production Deployment
+
+### VPS Deployment (DigitalOcean)
+
+Mini-Devin is deployed on a DigitalOcean VPS with the following configuration:
+
+**URLs:**
+- Frontend: https://jomiye.com
+- Backend API: https://api.jomiye.com
+- API Docs: https://api.jomiye.com/docs
+
+**Server Stack:**
+- Ubuntu 22.04 LTS
+- Caddy (reverse proxy with automatic SSL)
+- Python 3.12 + Poetry
+- Systemd service for backend
+
+**Directory Structure on VPS:**
+```
+/root/mini-devin/          # Backend application
+/var/www/jomiye.com/       # Frontend static files
+/etc/caddy/Caddyfile       # Caddy configuration
+```
+
+**Caddy Configuration:**
+```
+api.jomiye.com {
+    reverse_proxy localhost:8000
+}
+
+jomiye.com {
+    root * /var/www/jomiye.com
+    file_server
+    try_files {path} /index.html
+}
+
+www.jomiye.com {
+    redir https://jomiye.com{uri}
+}
+```
+
+**Systemd Service:**
+The backend runs as a systemd service (`mini-devin.service`) that starts automatically on boot.
+
+### Deploying Updates
+
+**Backend Updates:**
+```bash
+# SSH into VPS
+ssh root@165.22.223.43
+
+# Pull latest code
+cd /root/mini-devin
+git pull origin main
+
+# Install dependencies
+poetry install
+
+# Restart service
+systemctl restart mini-devin
+```
+
+**Frontend Updates:**
+```bash
+# Build frontend locally
+cd frontend
+npm run build
+
+# Upload to VPS
+scp -r dist/* root@165.22.223.43:/var/www/jomiye.com/
+
+# Reload Caddy (if config changed)
+ssh root@165.22.223.43 "systemctl reload caddy"
+```
+
+### DNS Configuration
+
+Configure these DNS records in your domain registrar (GoDaddy):
+
+| Type | Name | Value | TTL |
+|------|------|-------|-----|
+| A | @ | 165.22.223.43 | 1/2 Hour |
+| A | api | 165.22.223.43 | 1/2 Hour |
+
+### Environment Variables
+
+Set these on the VPS in `/root/mini-devin/.env`:
+- `OPENAI_API_KEY` - OpenAI API key for LLM
+- `DATABASE_URL` - PostgreSQL connection string (optional)
+- `SECRET_KEY` - JWT secret key
+
 ## Pull Request Guidelines
 
 1. **Create a feature branch** from the main branch
