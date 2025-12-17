@@ -56,26 +56,42 @@ export type MessageType =
   | 'phase_changed'
   | 'iteration_started'
   | 'iteration_completed'
+  | 'iteration'
   | 'token'
   | 'tokens_batch'
+  | 'thinking'
+  | 'response'
   | 'tool_started'
   | 'tool_completed'
   | 'tool_failed'
   | 'tool_output'
+  | 'tool_result'
   | 'plan_created'
   | 'plan_updated'
   | 'step_completed'
   | 'verification_started'
   | 'verification_completed'
   | 'repair_started'
-  | 'repair_completed';
+  | 'repair_completed'
+  | 'pong';
+
+export interface ToolResultData {
+  tool: string;
+  success: boolean;
+  output: string;
+  error?: string;
+}
 
 export interface WebSocketMessage {
   type: MessageType;
-  data: Record<string, unknown>;
-  timestamp: string;
-  session_id: string | null;
-  task_id: string | null;
+  data?: Record<string, unknown>;
+  timestamp?: string;
+  session_id?: string | null;
+  task_id?: string | null;
+  content?: string;
+  iteration?: number;
+  max?: number;
+  result?: ToolResultData;
 }
 
 export interface SystemStatus {
