@@ -1185,11 +1185,17 @@ def parse_github_url(url: str) -> tuple[str, str]:
     raise ValueError(f"Invalid GitHub URL: {url}")
 
 def get_repo_clone_url(repo_url: str, token: Optional[str] = None) -> str:
-    """Get clone URL with token for authentication."""
-    if token:
-        # Insert token into URL for authentication
+    """Get clone URL with token for authentication.
+    
+    Uses x-access-token as username with the PAT as password for proper
+    GitHub authentication. This format works with GitHub PATs and avoids
+    the 'could not read Username' error when terminal prompts are disabled.
+    """
+    if token and token.strip():
+        # Use x-access-token:TOKEN@ format for GitHub PAT authentication
+        # This is the recommended format that works without interactive prompts
         if repo_url.startswith("https://"):
-            return repo_url.replace("https://", f"https://{token}@")
+            return repo_url.replace("https://", f"https://x-access-token:{token}@")
     return repo_url
 
 def execute_git_command(command: str, working_dir: str, timeout: int = 120) -> tuple[bool, str]:
