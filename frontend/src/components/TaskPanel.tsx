@@ -2,16 +2,19 @@ import { useState, useEffect, useCallback } from 'react';
 import { Session, Task, WebSocketMessage } from '../types';
 import { useApi } from '../hooks/useApi';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { Send, Square, Clock, CheckCircle, XCircle, Loader, Layers, Terminal, ListTodo } from 'lucide-react';
+import { Send, Square, Clock, CheckCircle, XCircle, Loader, Layers, Terminal, ListTodo, FolderOpen, AlertTriangle } from 'lucide-react';
 import { StreamingOutput } from './StreamingOutput';
 import { ToolExecutionLog, ToolExecution } from './ToolExecutionLog';
 import { PlanProgress, Plan } from './PlanProgress';
+import { FileUpload } from './FileUpload';
+import { MemoryView } from './MemoryView';
+import { ExportButtons } from './ExportButtons';
 
 interface TaskPanelProps {
   session: Session;
 }
 
-type ViewTab = 'output' | 'tools' | 'plan';
+type ViewTab = 'output' | 'tools' | 'plan' | 'files';
 
 export function TaskPanel({ session }: TaskPanelProps) {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -462,21 +465,30 @@ export function TaskPanel({ session }: TaskPanelProps) {
             <>
               {/* Task Header */}
               <div className="p-4 border-b border-gray-700">
-                <div className="flex items-center gap-2 mb-2">
-                  {getStatusIcon(selectedTask.status)}
-                  <span className="font-medium text-white">{selectedTask.task_id}</span>
-                  <span className={`px-2 py-0.5 rounded text-xs ${
-                    selectedTask.status === 'completed' ? 'bg-green-900 text-green-300' :
-                    selectedTask.status === 'failed' ? 'bg-red-900 text-red-300' :
-                    selectedTask.status === 'running' ? 'bg-blue-900 text-blue-300' :
-                    'bg-gray-700 text-gray-300'
-                  }`}>
-                    {selectedTask.status}
-                  </span>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    {getStatusIcon(selectedTask.status)}
+                    <span className="font-medium text-white">{selectedTask.task_id}</span>
+                    <span className={`px-2 py-0.5 rounded text-xs ${
+                      selectedTask.status === 'completed' ? 'bg-green-900 text-green-300' :
+                      selectedTask.status === 'failed' ? 'bg-red-900 text-red-300' :
+                      selectedTask.status === 'running' ? 'bg-blue-900 text-blue-300' :
+                      'bg-gray-700 text-gray-300'
+                    }`}>
+                      {selectedTask.status}
+                    </span>
+                  </div>
+                  <ExportButtons sessionId={session.session_id} />
                 </div>
                 <p className="text-gray-300 text-sm">{selectedTask.description}</p>
                 {selectedTask.error_message && (
-                  <p className="text-red-400 text-sm mt-2">{selectedTask.error_message}</p>
+                  <div className="mt-2 p-2 bg-red-900/30 border border-red-800 rounded">
+                    <div className="flex items-center gap-2 text-red-400 text-sm">
+                      <AlertTriangle size={14} />
+                      <span className="font-medium">Error</span>
+                    </div>
+                    <p className="text-red-300 text-sm mt-1">{selectedTask.error_message}</p>
+                  </div>
                 )}
               </div>
 
@@ -525,6 +537,17 @@ export function TaskPanel({ session }: TaskPanelProps) {
                     </span>
                   )}
                 </button>
+                <button
+                  onClick={() => setActiveTab('files')}
+                  className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                    activeTab === 'files'
+                      ? 'text-blue-400 border-b-2 border-blue-400 bg-gray-800'
+                      : 'text-gray-400 hover:text-gray-200'
+                  }`}
+                >
+                  <FolderOpen size={16} />
+                  Files & Memory
+                </button>
               </div>
 
               {/* Tab Content */}
@@ -541,6 +564,12 @@ export function TaskPanel({ session }: TaskPanelProps) {
                 )}
                 {activeTab === 'plan' && (
                   <PlanProgress plan={currentPlan} />
+                )}
+                {activeTab === 'files' && (
+                  <div className="h-full overflow-y-auto p-4 space-y-4">
+                    <FileUpload sessionId={session.session_id} />
+                    <MemoryView sessionId={session.session_id} />
+                  </div>
                 )}
               </div>
             </>

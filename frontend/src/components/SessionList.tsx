@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Session } from '../types';
 import { useApi } from '../hooks/useApi';
 import { Plus, Trash2, RefreshCw } from 'lucide-react';
-import { ModelSelector } from './ModelSelector';
+import { ProviderSelector } from './ProviderSelector';
 
 interface SessionListProps {
   onSelectSession: (session: Session) => void;
@@ -13,7 +13,8 @@ export function SessionList({ onSelectSession, selectedSessionId }: SessionListP
   const [sessions, setSessions] = useState<Session[]>([]);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [workingDir, setWorkingDir] = useState('.');
-  const [model, setModel] = useState('gpt-4o');
+  const [provider, setProvider] = useState('openai');
+  const [model, setModel] = useState('gpt-4o-mini');
   const [maxIterations, setMaxIterations] = useState(50);
   
   const api = useApi();
@@ -104,14 +105,12 @@ export function SessionList({ onSelectSession, selectedSessionId }: SessionListP
                 placeholder="/path/to/repo"
               />
             </div>
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">Model</label>
-              <ModelSelector
-                value={model}
-                onChange={setModel}
-                showDetails={true}
-              />
-            </div>
+            <ProviderSelector
+              selectedProvider={provider}
+              selectedModel={model}
+              onProviderChange={setProvider}
+              onModelChange={setModel}
+            />
             <div>
               <label className="block text-sm text-gray-300 mb-1">Max Iterations</label>
               <input
