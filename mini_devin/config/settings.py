@@ -122,6 +122,24 @@ class ArtifactSettings:
 
 
 @dataclass
+class E2ESettings:
+    """End-to-End testing settings."""
+    
+    e2e_required: bool = False
+    e2e_timeout: int = 300
+    e2e_report_dir: str = "./tests/e2e"
+    
+    @classmethod
+    def from_env(cls) -> "E2ESettings":
+        """Load E2E settings from environment variables."""
+        return cls(
+            e2e_required=os.environ.get("E2E_REQUIRED", "false").lower() == "true",
+            e2e_timeout=int(os.environ.get("E2E_TIMEOUT", "300")),
+            e2e_report_dir=os.environ.get("E2E_REPORT_DIR", "./tests/e2e"),
+        )
+
+
+@dataclass
 class Settings:
     """
     Centralized settings for Mini-Devin.
@@ -135,6 +153,7 @@ class Settings:
     llm: LLMSettings = field(default_factory=LLMSettings)
     browser: BrowserSettings = field(default_factory=BrowserSettings)
     artifacts: ArtifactSettings = field(default_factory=ArtifactSettings)
+    e2e: E2ESettings = field(default_factory=E2ESettings)
     workspace_dir: str = "/workspace"
     
     def __post_init__(self):
@@ -158,6 +177,7 @@ class Settings:
             llm=LLMSettings.from_env(),
             browser=BrowserSettings.from_env(),
             artifacts=ArtifactSettings.from_env(),
+            e2e=E2ESettings.from_env(),
             workspace_dir=os.environ.get("WORKSPACE_DIR", "/workspace"),
         )
     
@@ -229,6 +249,11 @@ class Settings:
                 "artifact_dir": self.artifacts.artifact_dir,
                 "verbose": self.artifacts.verbose,
                 "log_level": self.artifacts.log_level,
+            },
+            "e2e": {
+                "e2e_required": self.e2e.e2e_required,
+                "e2e_timeout": self.e2e.e2e_timeout,
+                "e2e_report_dir": self.e2e.e2e_report_dir,
             },
             "workspace_dir": self.workspace_dir,
         }
