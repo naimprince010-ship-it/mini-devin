@@ -105,7 +105,7 @@ function App() {
                 selectedSessionId={selectedSession?.session_id}
               />
             ) : (
-              <SkillsManager apiBaseUrl={import.meta.env.VITE_API_URL || 'http://localhost:8000/api'} />
+              <SkillsManager apiBaseUrl={import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : 'http://localhost:8000/api'} />
             )}
           </div>
         </aside>
