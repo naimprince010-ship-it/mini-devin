@@ -9,7 +9,7 @@ import {
   Model,
 } from '../types';
 
-const API_BASE = '/api';
+const API_BASE = import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : '/api';
 
 async function fetchApi<T>(
   endpoint: string,
@@ -59,7 +59,8 @@ export function useApi() {
     setLoading(true);
     setError(null);
     try {
-      return await fetchApi<Session[]>('/sessions');
+      const result = await fetchApi<{ sessions: Session[] } | Session[]>('/sessions');
+      return Array.isArray(result) ? result : result.sessions;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to list sessions');
       throw e;
@@ -118,7 +119,8 @@ export function useApi() {
     setLoading(true);
     setError(null);
     try {
-      return await fetchApi<Task[]>(`/sessions/${sessionId}/tasks`);
+      const result = await fetchApi<{ tasks: Task[] } | Task[]>(`/sessions/${sessionId}/tasks`);
+      return Array.isArray(result) ? result : result.tasks;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to list tasks');
       throw e;
@@ -153,6 +155,17 @@ export function useApi() {
       throw e;
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const getTaskOutput = useCallback(async (
+    sessionId: string,
+    taskId: string
+  ): Promise<{ task_id: string; status: string; outputs: Array<{ type: string; content: string }>; result: string | null }> => {
+    try {
+      return await fetchApi(`/sessions/${sessionId}/tasks/${taskId}/output`);
+    } catch (e) {
+      throw e;
     }
   }, []);
 
@@ -251,6 +264,7 @@ export function useApi() {
     listTasks,
     getTask,
     getTaskResult,
+    getTaskOutput,
     cancelTask,
     // Artifacts
     listArtifacts,
