@@ -486,6 +486,502 @@ def execute_create_github_repo(name: str, description: str, private: bool, githu
     except Exception as e:
         return ToolResult(tool="create_github_repo", success=False, output="", error=f"Failed to create repo: {str(e)}", error_code="unknown_error")
 
+# ============================================
+# GitHub API Tools for Agent (Features 1-7)
+# ============================================
+
+def get_github_token_for_session(session_id: str) -> Optional[str]:
+    """Get GitHub token from session's linked repo."""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""SELECT gr.github_token FROM github_repos gr
+                     JOIN session_repos sr ON gr.repo_id = sr.repo_id
+                     WHERE sr.session_id = ?""", (session_id,))
+        row = c.fetchone()
+        conn.close()
+        if row and row[0]:
+            return row[0]
+        return None
+    except:
+        return None
+
+def get_repo_info_for_session(session_id: str) -> Optional[dict]:
+    """Get repo info from session's linked repo."""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""SELECT gr.repo_id, gr.owner, gr.repo_name, gr.github_token, gr.local_path, gr.default_branch
+                     FROM github_repos gr
+                     JOIN session_repos sr ON gr.repo_id = sr.repo_id
+                     WHERE sr.session_id = ?""", (session_id,))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return {
+                "repo_id": row[0],
+                "owner": row[1],
+                "repo_name": row[2],
+                "github_token": row[3],
+                "local_path": row[4],
+                "default_branch": row[5]
+            }
+        return None
+    except:
+        return None
+
+def execute_github_api(method: str, endpoint: str, token: str, data: Optional[dict] = None) -> tuple[bool, dict]:
+    """Execute GitHub API request."""
+    import httpx
+    
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            url = f"https://api.github.com{endpoint}"
+            if method == "GET":
+                response = client.get(url, headers=headers)
+            elif method == "POST":
+                response = client.post(url, headers=headers, json=data or {})
+            elif method == "PATCH":
+                response = client.patch(url, headers=headers, json=data or {})
+            elif method == "PUT":
+                response = client.put(url, headers=headers, json=data or {})
+            elif method == "DELETE":
+                response = client.delete(url, headers=headers)
+            else:
+                return False, {"error": f"Unknown method: {method}"}
+            
+            if response.status_code in [200, 201, 204]:
+                if response.status_code == 204:
+                    return True, {"message": "Success"}
+                return True, response.json()
+            else:
+                error_data = response.json() if response.text else {"message": "Unknown error"}
+                return False, {"error": error_data.get("message", str(error_data)), "status_code": response.status_code}
+    except httpx.TimeoutException:
+        return False, {"error": "GitHub API request timed out"}
+    except Exception as e:
+        return False, {"error": str(e)}
+
+# Feature 1: PR Creation Tool
+def execute_create_pr(owner: str, repo: str, title: str, head: str, base: str, body: str, token: str) -> ToolResult:
+    """Create a pull request on GitHub."""
+    if not token:
+        return ToolResult(tool="create_pr", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    data = {
+        "title": title,
+        "head": head,
+        "base": base,
+        "body": body or ""
+    }
+    
+    success, result = execute_github_api("POST", f"/repos/{owner}/{repo}/pulls", token, data)
+    
+    if success:
+        pr_data = {
+            "pr_number": result.get("number"),
+            "html_url": result.get("html_url"),
+            "state": result.get("state"),
+            "title": result.get("title"),
+            "head": result.get("head", {}).get("ref"),
+            "base": result.get("base", {}).get("ref")
+        }
+        return ToolResult(tool="create_pr", success=True, output=json.dumps(pr_data, indent=2))
+    else:
+        return ToolResult(tool="create_pr", success=False, output="", error=result.get("error", "Failed to create PR"), error_code="api_error")
+
+# Feature 2: PR Review/Merge Tools
+def execute_list_prs(owner: str, repo: str, state: str, token: str) -> ToolResult:
+    """List pull requests on GitHub."""
+    if not token:
+        return ToolResult(tool="list_prs", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    success, result = execute_github_api("GET", f"/repos/{owner}/{repo}/pulls?state={state}&per_page=20", token)
+    
+    if success:
+        prs = []
+        for pr in result:
+            prs.append({
+                "number": pr.get("number"),
+                "title": pr.get("title"),
+                "state": pr.get("state"),
+                "user": pr.get("user", {}).get("login"),
+                "head": pr.get("head", {}).get("ref"),
+                "base": pr.get("base", {}).get("ref"),
+                "html_url": pr.get("html_url"),
+                "created_at": pr.get("created_at"),
+                "mergeable": pr.get("mergeable")
+            })
+        return ToolResult(tool="list_prs", success=True, output=json.dumps(prs, indent=2))
+    else:
+        return ToolResult(tool="list_prs", success=False, output="", error=result.get("error", "Failed to list PRs"), error_code="api_error")
+
+def execute_view_pr(owner: str, repo: str, pr_number: int, token: str) -> ToolResult:
+    """View a specific pull request."""
+    if not token:
+        return ToolResult(tool="view_pr", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    success, result = execute_github_api("GET", f"/repos/{owner}/{repo}/pulls/{pr_number}", token)
+    
+    if success:
+        pr_data = {
+            "number": result.get("number"),
+            "title": result.get("title"),
+            "body": result.get("body"),
+            "state": result.get("state"),
+            "user": result.get("user", {}).get("login"),
+            "head": result.get("head", {}).get("ref"),
+            "base": result.get("base", {}).get("ref"),
+            "html_url": result.get("html_url"),
+            "created_at": result.get("created_at"),
+            "updated_at": result.get("updated_at"),
+            "mergeable": result.get("mergeable"),
+            "mergeable_state": result.get("mergeable_state"),
+            "additions": result.get("additions"),
+            "deletions": result.get("deletions"),
+            "changed_files": result.get("changed_files"),
+            "commits": result.get("commits"),
+            "comments": result.get("comments"),
+            "review_comments": result.get("review_comments")
+        }
+        return ToolResult(tool="view_pr", success=True, output=json.dumps(pr_data, indent=2))
+    else:
+        return ToolResult(tool="view_pr", success=False, output="", error=result.get("error", "Failed to view PR"), error_code="api_error")
+
+def execute_merge_pr(owner: str, repo: str, pr_number: int, merge_method: str, token: str) -> ToolResult:
+    """Merge a pull request."""
+    if not token:
+        return ToolResult(tool="merge_pr", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    if merge_method not in ["merge", "squash", "rebase"]:
+        merge_method = "merge"
+    
+    data = {"merge_method": merge_method}
+    
+    success, result = execute_github_api("PUT", f"/repos/{owner}/{repo}/pulls/{pr_number}/merge", token, data)
+    
+    if success:
+        return ToolResult(tool="merge_pr", success=True, output=f"PR #{pr_number} merged successfully. SHA: {result.get('sha', 'N/A')}")
+    else:
+        return ToolResult(tool="merge_pr", success=False, output="", error=result.get("error", "Failed to merge PR"), error_code="api_error")
+
+# Feature 3: Issue Management
+def execute_list_issues(owner: str, repo: str, state: str, token: str) -> ToolResult:
+    """List issues on GitHub."""
+    if not token:
+        return ToolResult(tool="list_issues", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    success, result = execute_github_api("GET", f"/repos/{owner}/{repo}/issues?state={state}&per_page=20", token)
+    
+    if success:
+        issues = []
+        for issue in result:
+            if "pull_request" not in issue:  # Filter out PRs
+                issues.append({
+                    "number": issue.get("number"),
+                    "title": issue.get("title"),
+                    "state": issue.get("state"),
+                    "user": issue.get("user", {}).get("login"),
+                    "labels": [l.get("name") for l in issue.get("labels", [])],
+                    "html_url": issue.get("html_url"),
+                    "created_at": issue.get("created_at"),
+                    "comments": issue.get("comments")
+                })
+        return ToolResult(tool="list_issues", success=True, output=json.dumps(issues, indent=2))
+    else:
+        return ToolResult(tool="list_issues", success=False, output="", error=result.get("error", "Failed to list issues"), error_code="api_error")
+
+def execute_create_issue(owner: str, repo: str, title: str, body: str, labels: List[str], token: str) -> ToolResult:
+    """Create an issue on GitHub."""
+    if not token:
+        return ToolResult(tool="create_issue", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    data = {
+        "title": title,
+        "body": body or ""
+    }
+    if labels:
+        data["labels"] = labels
+    
+    success, result = execute_github_api("POST", f"/repos/{owner}/{repo}/issues", token, data)
+    
+    if success:
+        issue_data = {
+            "number": result.get("number"),
+            "title": result.get("title"),
+            "html_url": result.get("html_url"),
+            "state": result.get("state")
+        }
+        return ToolResult(tool="create_issue", success=True, output=json.dumps(issue_data, indent=2))
+    else:
+        return ToolResult(tool="create_issue", success=False, output="", error=result.get("error", "Failed to create issue"), error_code="api_error")
+
+def execute_close_issue(owner: str, repo: str, issue_number: int, token: str) -> ToolResult:
+    """Close an issue on GitHub."""
+    if not token:
+        return ToolResult(tool="close_issue", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    data = {"state": "closed"}
+    
+    success, result = execute_github_api("PATCH", f"/repos/{owner}/{repo}/issues/{issue_number}", token, data)
+    
+    if success:
+        return ToolResult(tool="close_issue", success=True, output=f"Issue #{issue_number} closed successfully")
+    else:
+        return ToolResult(tool="close_issue", success=False, output="", error=result.get("error", "Failed to close issue"), error_code="api_error")
+
+# Feature 4: Branch Management
+def execute_list_branches(owner: str, repo: str, token: str) -> ToolResult:
+    """List branches on GitHub."""
+    if not token:
+        return ToolResult(tool="list_branches", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    success, result = execute_github_api("GET", f"/repos/{owner}/{repo}/branches?per_page=50", token)
+    
+    if success:
+        branches = []
+        for branch in result:
+            branches.append({
+                "name": branch.get("name"),
+                "protected": branch.get("protected"),
+                "sha": branch.get("commit", {}).get("sha", "")[:7]
+            })
+        return ToolResult(tool="list_branches", success=True, output=json.dumps(branches, indent=2))
+    else:
+        return ToolResult(tool="list_branches", success=False, output="", error=result.get("error", "Failed to list branches"), error_code="api_error")
+
+def execute_delete_branch(owner: str, repo: str, branch: str, token: str) -> ToolResult:
+    """Delete a branch on GitHub."""
+    if not token:
+        return ToolResult(tool="delete_branch", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    if branch in ["main", "master"]:
+        return ToolResult(tool="delete_branch", success=False, output="", error="Cannot delete main/master branch", error_code="protected_branch")
+    
+    success, result = execute_github_api("DELETE", f"/repos/{owner}/{repo}/git/refs/heads/{branch}", token)
+    
+    if success:
+        return ToolResult(tool="delete_branch", success=True, output=f"Branch '{branch}' deleted successfully")
+    else:
+        return ToolResult(tool="delete_branch", success=False, output="", error=result.get("error", "Failed to delete branch"), error_code="api_error")
+
+# Feature 5: GitHub Actions Integration
+def execute_ci_status(owner: str, repo: str, ref: str, token: str) -> ToolResult:
+    """Get CI status for a ref (branch/commit)."""
+    if not token:
+        return ToolResult(tool="ci_status", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    # Get check runs
+    success, result = execute_github_api("GET", f"/repos/{owner}/{repo}/commits/{ref}/check-runs", token)
+    
+    if success:
+        check_runs = []
+        for run in result.get("check_runs", []):
+            check_runs.append({
+                "name": run.get("name"),
+                "status": run.get("status"),
+                "conclusion": run.get("conclusion"),
+                "started_at": run.get("started_at"),
+                "completed_at": run.get("completed_at"),
+                "html_url": run.get("html_url")
+            })
+        
+        # Also get workflow runs
+        success2, result2 = execute_github_api("GET", f"/repos/{owner}/{repo}/actions/runs?head_sha={ref}&per_page=10", token)
+        
+        workflow_runs = []
+        if success2:
+            for run in result2.get("workflow_runs", []):
+                workflow_runs.append({
+                    "id": run.get("id"),
+                    "name": run.get("name"),
+                    "status": run.get("status"),
+                    "conclusion": run.get("conclusion"),
+                    "html_url": run.get("html_url"),
+                    "created_at": run.get("created_at")
+                })
+        
+        output = {
+            "ref": ref,
+            "check_runs": check_runs,
+            "workflow_runs": workflow_runs,
+            "total_checks": len(check_runs),
+            "total_workflows": len(workflow_runs)
+        }
+        return ToolResult(tool="ci_status", success=True, output=json.dumps(output, indent=2))
+    else:
+        return ToolResult(tool="ci_status", success=False, output="", error=result.get("error", "Failed to get CI status"), error_code="api_error")
+
+def execute_view_workflow_logs(owner: str, repo: str, run_id: int, token: str) -> ToolResult:
+    """View workflow run logs."""
+    if not token:
+        return ToolResult(tool="view_workflow_logs", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    # Get workflow run details
+    success, result = execute_github_api("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}", token)
+    
+    if success:
+        run_data = {
+            "id": result.get("id"),
+            "name": result.get("name"),
+            "status": result.get("status"),
+            "conclusion": result.get("conclusion"),
+            "html_url": result.get("html_url"),
+            "logs_url": result.get("logs_url"),
+            "created_at": result.get("created_at"),
+            "updated_at": result.get("updated_at"),
+            "head_branch": result.get("head_branch"),
+            "head_sha": result.get("head_sha")[:7] if result.get("head_sha") else None
+        }
+        
+        # Get jobs for this run
+        success2, result2 = execute_github_api("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}/jobs", token)
+        
+        if success2:
+            jobs = []
+            for job in result2.get("jobs", []):
+                steps = []
+                for step in job.get("steps", []):
+                    steps.append({
+                        "name": step.get("name"),
+                        "status": step.get("status"),
+                        "conclusion": step.get("conclusion"),
+                        "number": step.get("number")
+                    })
+                jobs.append({
+                    "id": job.get("id"),
+                    "name": job.get("name"),
+                    "status": job.get("status"),
+                    "conclusion": job.get("conclusion"),
+                    "steps": steps
+                })
+            run_data["jobs"] = jobs
+        
+        return ToolResult(tool="view_workflow_logs", success=True, output=json.dumps(run_data, indent=2))
+    else:
+        return ToolResult(tool="view_workflow_logs", success=False, output="", error=result.get("error", "Failed to get workflow logs"), error_code="api_error")
+
+# Feature 6: Code Review Comments
+def execute_add_pr_comment(owner: str, repo: str, pr_number: int, body: str, token: str) -> ToolResult:
+    """Add a comment to a pull request."""
+    if not token:
+        return ToolResult(tool="add_pr_comment", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    data = {"body": body}
+    
+    success, result = execute_github_api("POST", f"/repos/{owner}/{repo}/issues/{pr_number}/comments", token, data)
+    
+    if success:
+        comment_data = {
+            "id": result.get("id"),
+            "html_url": result.get("html_url"),
+            "body": result.get("body")[:200] + "..." if len(result.get("body", "")) > 200 else result.get("body")
+        }
+        return ToolResult(tool="add_pr_comment", success=True, output=json.dumps(comment_data, indent=2))
+    else:
+        return ToolResult(tool="add_pr_comment", success=False, output="", error=result.get("error", "Failed to add comment"), error_code="api_error")
+
+def execute_add_review_comment(owner: str, repo: str, pr_number: int, body: str, commit_id: str, path: str, line: int, token: str) -> ToolResult:
+    """Add an inline review comment to a pull request."""
+    if not token:
+        return ToolResult(tool="add_review_comment", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    data = {
+        "body": body,
+        "commit_id": commit_id,
+        "path": path,
+        "line": line
+    }
+    
+    success, result = execute_github_api("POST", f"/repos/{owner}/{repo}/pulls/{pr_number}/comments", token, data)
+    
+    if success:
+        comment_data = {
+            "id": result.get("id"),
+            "html_url": result.get("html_url"),
+            "path": result.get("path"),
+            "line": result.get("line")
+        }
+        return ToolResult(tool="add_review_comment", success=True, output=json.dumps(comment_data, indent=2))
+    else:
+        return ToolResult(tool="add_review_comment", success=False, output="", error=result.get("error", "Failed to add review comment"), error_code="api_error")
+
+def execute_list_pr_comments(owner: str, repo: str, pr_number: int, token: str) -> ToolResult:
+    """List comments on a pull request."""
+    if not token:
+        return ToolResult(tool="list_pr_comments", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    # Get issue comments (general comments)
+    success, result = execute_github_api("GET", f"/repos/{owner}/{repo}/issues/{pr_number}/comments", token)
+    
+    comments = []
+    if success:
+        for comment in result:
+            comments.append({
+                "id": comment.get("id"),
+                "type": "general",
+                "user": comment.get("user", {}).get("login"),
+                "body": comment.get("body")[:200] + "..." if len(comment.get("body", "")) > 200 else comment.get("body"),
+                "created_at": comment.get("created_at"),
+                "html_url": comment.get("html_url")
+            })
+    
+    # Get review comments (inline comments)
+    success2, result2 = execute_github_api("GET", f"/repos/{owner}/{repo}/pulls/{pr_number}/comments", token)
+    
+    if success2:
+        for comment in result2:
+            comments.append({
+                "id": comment.get("id"),
+                "type": "review",
+                "user": comment.get("user", {}).get("login"),
+                "body": comment.get("body")[:200] + "..." if len(comment.get("body", "")) > 200 else comment.get("body"),
+                "path": comment.get("path"),
+                "line": comment.get("line"),
+                "created_at": comment.get("created_at"),
+                "html_url": comment.get("html_url")
+            })
+    
+    return ToolResult(tool="list_pr_comments", success=True, output=json.dumps(comments, indent=2))
+
+# Feature 7: Better Error Handling - Helper function
+def execute_github_tool_with_session(tool_name: str, tool_func, session_id: str, **kwargs) -> ToolResult:
+    """Execute a GitHub tool with automatic token retrieval from session."""
+    repo_info = get_repo_info_for_session(session_id)
+    
+    if not repo_info:
+        return ToolResult(
+            tool=tool_name, 
+            success=False, 
+            output="", 
+            error="No GitHub repository linked to this session. Use the web interface to add and link a repo first.",
+            error_code="no_repo_linked",
+            suggestions=["Add a GitHub repo via the web interface", "Link the repo to your session", "Provide repo details manually"]
+        )
+    
+    if not repo_info.get("github_token"):
+        return ToolResult(
+            tool=tool_name,
+            success=False,
+            output="",
+            error="No GitHub token configured for this repository. Add a token when adding the repo.",
+            error_code="missing_token",
+            suggestions=["Update the repo with a GitHub Personal Access Token", "Create a new token at github.com/settings/tokens"]
+        )
+    
+    # Add repo info to kwargs
+    kwargs["owner"] = repo_info["owner"]
+    kwargs["repo"] = repo_info["repo_name"]
+    kwargs["token"] = repo_info["github_token"]
+    
+    return tool_func(**kwargs)
+
 def get_llm_client(provider: str):
     if provider == "openai":
         api_key = os.environ.get("OPENAI_API_KEY")
@@ -571,6 +1067,8 @@ When you need to perform an action, you MUST output a JSON block like this:
 
 ## Available Tools
 
+### Basic Tools
+
 1. **terminal** - Run shell commands (including git commit, push, etc.)
    ```json
    {"tool": "terminal", "command": "ls -la"}
@@ -617,9 +1115,84 @@ When you need to perform an action, you MUST output a JSON block like this:
    {"tool": "memory_recall", "key": "user_preference"}
    ```
 
+### GitHub Tools (automatically uses linked repo's token)
+
 10. **create_github_repo** - Create a new GitHub repository
     ```json
     {"tool": "create_github_repo", "name": "my-repo", "description": "My project", "private": false, "github_token": "ghp_xxx"}
+    ```
+
+11. **create_pr** - Create a pull request
+    ```json
+    {"tool": "create_pr", "title": "Add feature", "head": "feature-branch", "base": "main", "body": "Description of changes"}
+    ```
+
+12. **list_prs** - List pull requests
+    ```json
+    {"tool": "list_prs", "state": "open"}
+    ```
+    state can be: "open", "closed", "all"
+
+13. **view_pr** - View a specific pull request
+    ```json
+    {"tool": "view_pr", "pr_number": 1}
+    ```
+
+14. **merge_pr** - Merge a pull request
+    ```json
+    {"tool": "merge_pr", "pr_number": 1, "merge_method": "merge"}
+    ```
+    merge_method can be: "merge", "squash", "rebase"
+
+15. **list_issues** - List issues
+    ```json
+    {"tool": "list_issues", "state": "open"}
+    ```
+
+16. **create_issue** - Create an issue
+    ```json
+    {"tool": "create_issue", "title": "Bug report", "body": "Description", "labels": ["bug"]}
+    ```
+
+17. **close_issue** - Close an issue
+    ```json
+    {"tool": "close_issue", "issue_number": 1}
+    ```
+
+18. **list_branches** - List branches on GitHub
+    ```json
+    {"tool": "list_branches"}
+    ```
+
+19. **delete_branch** - Delete a branch on GitHub
+    ```json
+    {"tool": "delete_branch", "branch": "feature-branch"}
+    ```
+
+20. **ci_status** - Get CI/GitHub Actions status
+    ```json
+    {"tool": "ci_status", "ref": "main"}
+    ```
+    ref can be a branch name or commit SHA
+
+21. **view_workflow_logs** - View GitHub Actions workflow logs
+    ```json
+    {"tool": "view_workflow_logs", "run_id": 12345}
+    ```
+
+22. **add_pr_comment** - Add a comment to a PR
+    ```json
+    {"tool": "add_pr_comment", "pr_number": 1, "body": "LGTM!"}
+    ```
+
+23. **add_review_comment** - Add an inline review comment
+    ```json
+    {"tool": "add_review_comment", "pr_number": 1, "body": "Consider refactoring", "commit_id": "abc123", "path": "src/main.py", "line": 42}
+    ```
+
+24. **list_pr_comments** - List all comments on a PR
+    ```json
+    {"tool": "list_pr_comments", "pr_number": 1}
     ```
 
 ## Working Directory
@@ -636,7 +1209,9 @@ You are working in a git repository. The remote 'origin' is ALREADY configured w
 3. Make changes using file_write
 4. Stage and commit: `git add . && git commit -m "Add feature"`
 5. Push to remote: `git push -u origin feature/my-feature`
-6. The PR can be created via GitHub web interface or API
+6. Create PR using: `{"tool": "create_pr", "title": "My Feature", "head": "feature/my-feature", "base": "main", "body": "Description"}`
+7. Check CI status: `{"tool": "ci_status", "ref": "feature/my-feature"}`
+8. Merge when ready: `{"tool": "merge_pr", "pr_number": 1}`
 
 ## Error Handling
 If a tool fails, you'll receive an error message with suggestions. Use these to fix the issue and try again.
@@ -648,7 +1223,8 @@ If a tool fails, you'll receive an error message with suggestions. Use these to 
 4. Continue using tools until the task is complete
 5. For git operations, ALWAYS use terminal tool (not the read-only git tool)
 6. The git remote is ALREADY configured - do NOT try to add a new remote
-7. Provide a summary when done
+7. Use GitHub tools (create_pr, merge_pr, etc.) for GitHub API operations
+8. Provide a summary when done
 
 REMEMBER: Always output the JSON tool block, never just describe what you would do!"""
 
@@ -705,6 +1281,162 @@ def execute_tool(tool_call: dict, session_id: str = "", default_working_dir: str
                 private=tool_call.get("private", False),
                 github_token=tool_call.get("github_token", ""),
                 auto_init=tool_call.get("auto_init", True)
+            )
+        # Feature 1: PR Creation
+        elif tool == "create_pr":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="create_pr", success=False, output="", error="No repo linked to session", error_code="no_repo_linked", suggestions=["Link a GitHub repo to this session first"])
+            return execute_create_pr(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                title=tool_call.get("title", ""),
+                head=tool_call.get("head", ""),
+                base=tool_call.get("base", repo_info.get("default_branch", "main")),
+                body=tool_call.get("body", ""),
+                token=tool_call.get("token", repo_info.get("github_token", ""))
+            )
+        # Feature 2: PR Review/Merge
+        elif tool == "list_prs":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_prs", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_prs(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                state=tool_call.get("state", "open"),
+                token=repo_info.get("github_token", "")
+            )
+        elif tool == "view_pr":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="view_pr", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_view_pr(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                pr_number=tool_call.get("pr_number", 0),
+                token=repo_info.get("github_token", "")
+            )
+        elif tool == "merge_pr":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="merge_pr", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_merge_pr(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                pr_number=tool_call.get("pr_number", 0),
+                merge_method=tool_call.get("merge_method", "merge"),
+                token=repo_info.get("github_token", "")
+            )
+        # Feature 3: Issue Management
+        elif tool == "list_issues":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_issues", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_issues(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                state=tool_call.get("state", "open"),
+                token=repo_info.get("github_token", "")
+            )
+        elif tool == "create_issue":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="create_issue", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_create_issue(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                title=tool_call.get("title", ""),
+                body=tool_call.get("body", ""),
+                labels=tool_call.get("labels", []),
+                token=repo_info.get("github_token", "")
+            )
+        elif tool == "close_issue":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="close_issue", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_close_issue(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                issue_number=tool_call.get("issue_number", 0),
+                token=repo_info.get("github_token", "")
+            )
+        # Feature 4: Branch Management
+        elif tool == "list_branches":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_branches", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_branches(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", "")
+            )
+        elif tool == "delete_branch":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="delete_branch", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_delete_branch(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                branch=tool_call.get("branch", ""),
+                token=repo_info.get("github_token", "")
+            )
+        # Feature 5: GitHub Actions/CI
+        elif tool == "ci_status":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="ci_status", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_ci_status(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                ref=tool_call.get("ref", "main"),
+                token=repo_info.get("github_token", "")
+            )
+        elif tool == "view_workflow_logs":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="view_workflow_logs", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_view_workflow_logs(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                run_id=tool_call.get("run_id", 0),
+                token=repo_info.get("github_token", "")
+            )
+        # Feature 6: PR Comments
+        elif tool == "add_pr_comment":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="add_pr_comment", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_add_pr_comment(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                pr_number=tool_call.get("pr_number", 0),
+                body=tool_call.get("body", ""),
+                token=repo_info.get("github_token", "")
+            )
+        elif tool == "add_review_comment":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="add_review_comment", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_add_review_comment(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                pr_number=tool_call.get("pr_number", 0),
+                body=tool_call.get("body", ""),
+                commit_id=tool_call.get("commit_id", ""),
+                path=tool_call.get("path", ""),
+                line=tool_call.get("line", 0),
+                token=repo_info.get("github_token", "")
+            )
+        elif tool == "list_pr_comments":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_pr_comments", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_pr_comments(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                pr_number=tool_call.get("pr_number", 0),
+                token=repo_info.get("github_token", "")
             )
         else:
             return ToolResult(tool=str(tool), success=False, output="", error=f"Unknown tool: {tool}", error_code="unknown_tool", suggestions=get_error_suggestions("unknown_tool"))
