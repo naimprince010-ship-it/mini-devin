@@ -1,5 +1,5 @@
 """
-Mini-Devin API Server v5.5
+Mini-Devin API Server v5.6
 Phase 34: Better Error Handling
 Phase 35: Task History & Export
 Phase 36: Multi-Model Support (OpenAI, Anthropic, Ollama)
@@ -10,6 +10,7 @@ Phase 43: Database Connection Pooling (SQLAlchemy)
 Phase 44: Background Task Queue with Retry/Failure Recovery
 Phase 45: Logging & Monitoring (Structured JSON, Prometheus, Sentry)
 Phase 46: GitHub OAuth Integration (OAuth login, automatic repo access, webhooks)
+Phase 47: Code Review Features (PR diff analysis, inline suggestions, auto-fix, approve/request changes)
 """
 
 import os
@@ -2132,6 +2133,523 @@ def execute_list_pr_comments(owner: str, repo: str, pr_number: int, token: str) 
     
     return ToolResult(tool="list_pr_comments", success=True, output=json.dumps(comments, indent=2))
 
+# ============================================================================
+# Phase 47: Code Review Features
+# ============================================================================
+
+# Pydantic models for code review
+class ReviewFinding(BaseModel):
+    """A single finding from code review."""
+    id: str
+    path: str
+    line: int
+    severity: str  # "error", "warning", "suggestion", "info"
+    category: str  # "bug", "security", "performance", "style", "logic", "best_practice"
+    message: str
+    suggestion: Optional[str] = None  # Suggested fix code
+    confidence: float = 0.8  # 0.0 to 1.0
+
+class ReviewResult(BaseModel):
+    """Complete code review result."""
+    pr: dict  # {owner, repo, number, head_sha}
+    summary: str
+    verdict: str  # "approve", "request_changes", "comment_only"
+    findings: List[ReviewFinding]
+    analyzed_at: str
+    model_used: str
+
+class AnalyzePRRequest(BaseModel):
+    """Request to analyze a PR."""
+    include_suggestions: bool = True
+    focus_areas: Optional[List[str]] = None  # ["security", "performance", "style", etc.]
+    max_files: int = 50
+
+class SubmitReviewRequest(BaseModel):
+    """Request to submit a review to GitHub."""
+    review_result: ReviewResult
+    event: str = "COMMENT"  # "APPROVE", "REQUEST_CHANGES", "COMMENT"
+    include_suggestions: bool = True  # Include GitHub suggestion blocks
+
+def parse_diff_hunks(patch: str) -> List[dict]:
+    """Parse a unified diff patch into hunks with line number mappings.
+    
+    Returns a list of hunks, each containing:
+    - old_start: starting line in old file
+    - old_count: number of lines in old file
+    - new_start: starting line in new file  
+    - new_count: number of lines in new file
+    - lines: list of {type, content, old_line, new_line}
+    """
+    if not patch:
+        return []
+    
+    hunks = []
+    current_hunk = None
+    old_line = 0
+    new_line = 0
+    
+    for line in patch.split('\n'):
+        # Match hunk header: @@ -old_start,old_count +new_start,new_count @@
+        if line.startswith('@@'):
+            import re
+            match = re.match(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', line)
+            if match:
+                if current_hunk:
+                    hunks.append(current_hunk)
+                
+                old_start = int(match.group(1))
+                old_count = int(match.group(2)) if match.group(2) else 1
+                new_start = int(match.group(3))
+                new_count = int(match.group(4)) if match.group(4) else 1
+                
+                current_hunk = {
+                    'header': line,
+                    'old_start': old_start,
+                    'old_count': old_count,
+                    'new_start': new_start,
+                    'new_count': new_count,
+                    'lines': []
+                }
+                old_line = old_start
+                new_line = new_start
+        elif current_hunk is not None:
+            if line.startswith('-'):
+                current_hunk['lines'].append({
+                    'type': 'deletion',
+                    'content': line[1:],
+                    'old_line': old_line,
+                    'new_line': None
+                })
+                old_line += 1
+            elif line.startswith('+'):
+                current_hunk['lines'].append({
+                    'type': 'addition',
+                    'content': line[1:],
+                    'old_line': None,
+                    'new_line': new_line
+                })
+                new_line += 1
+            elif line.startswith(' ') or line == '':
+                current_hunk['lines'].append({
+                    'type': 'context',
+                    'content': line[1:] if line.startswith(' ') else '',
+                    'old_line': old_line,
+                    'new_line': new_line
+                })
+                old_line += 1
+                new_line += 1
+    
+    if current_hunk:
+        hunks.append(current_hunk)
+    
+    return hunks
+
+def fetch_pr_context(owner: str, repo: str, pr_number: int, token: str) -> dict:
+    """Fetch complete PR context including metadata and file changes.
+    
+    Returns:
+        {
+            "success": bool,
+            "error": str or None,
+            "pr": {owner, repo, number, title, body, author, head_sha, base_branch, head_branch},
+            "files": [{filename, status, additions, deletions, patch, hunks}],
+            "total_additions": int,
+            "total_deletions": int
+        }
+    """
+    # Fetch PR metadata
+    success, pr_data = execute_github_api("GET", f"/repos/{owner}/{repo}/pulls/{pr_number}", token)
+    
+    if not success:
+        return {"success": False, "error": pr_data.get("error", "Failed to fetch PR")}
+    
+    pr_info = {
+        "owner": owner,
+        "repo": repo,
+        "number": pr_number,
+        "title": pr_data.get("title", ""),
+        "body": pr_data.get("body", "") or "",
+        "author": pr_data.get("user", {}).get("login", ""),
+        "head_sha": pr_data.get("head", {}).get("sha", ""),
+        "base_branch": pr_data.get("base", {}).get("ref", ""),
+        "head_branch": pr_data.get("head", {}).get("ref", ""),
+        "html_url": pr_data.get("html_url", "")
+    }
+    
+    # Fetch changed files with pagination
+    files = []
+    page = 1
+    total_additions = 0
+    total_deletions = 0
+    
+    while True:
+        success, files_data = execute_github_api(
+            "GET", 
+            f"/repos/{owner}/{repo}/pulls/{pr_number}/files?per_page=100&page={page}", 
+            token
+        )
+        
+        if not success:
+            break
+        
+        if not files_data:
+            break
+        
+        for file in files_data:
+            patch = file.get("patch", "")
+            hunks = parse_diff_hunks(patch)
+            
+            files.append({
+                "filename": file.get("filename", ""),
+                "status": file.get("status", ""),  # added, removed, modified, renamed
+                "additions": file.get("additions", 0),
+                "deletions": file.get("deletions", 0),
+                "patch": patch,
+                "hunks": hunks,
+                "previous_filename": file.get("previous_filename")  # For renames
+            })
+            
+            total_additions += file.get("additions", 0)
+            total_deletions += file.get("deletions", 0)
+        
+        if len(files_data) < 100:
+            break
+        page += 1
+    
+    return {
+        "success": True,
+        "error": None,
+        "pr": pr_info,
+        "files": files,
+        "total_additions": total_additions,
+        "total_deletions": total_deletions
+    }
+
+async def analyze_pr_with_llm(pr_context: dict, options: dict = None) -> ReviewResult:
+    """Analyze PR using LLM and generate review findings.
+    
+    Args:
+        pr_context: Output from fetch_pr_context()
+        options: {include_suggestions, focus_areas, max_files}
+    
+    Returns:
+        ReviewResult with findings
+    """
+    options = options or {}
+    include_suggestions = options.get("include_suggestions", True)
+    focus_areas = options.get("focus_areas", [])
+    max_files = options.get("max_files", 50)
+    
+    pr_info = pr_context["pr"]
+    files = pr_context["files"][:max_files]
+    
+    all_findings = []
+    finding_id = 0
+    
+    # Get LLM client
+    provider = os.environ.get("LLM_PROVIDER", "openai")
+    client = get_llm_client(provider)
+    
+    if not client:
+        # Return empty review if no LLM available
+        return ReviewResult(
+            pr={"owner": pr_info["owner"], "repo": pr_info["repo"], "number": pr_info["number"], "head_sha": pr_info["head_sha"]},
+            summary="Unable to analyze PR: No LLM provider configured",
+            verdict="comment_only",
+            findings=[],
+            analyzed_at=datetime.utcnow().isoformat(),
+            model_used="none"
+        )
+    
+    # Analyze each file
+    for file in files:
+        if not file.get("patch"):
+            continue
+        
+        # Build prompt for this file
+        focus_instruction = ""
+        if focus_areas:
+            focus_instruction = f"\nFocus especially on: {', '.join(focus_areas)}"
+        
+        suggestion_instruction = ""
+        if include_suggestions:
+            suggestion_instruction = '\nFor each issue, provide a "suggestion" field with the corrected code if applicable.'
+        
+        prompt = f"""You are an expert code reviewer. Analyze the following code changes and identify issues.
+
+PR Title: {pr_info['title']}
+PR Description: {pr_info['body'][:500] if pr_info['body'] else 'No description'}
+
+File: {file['filename']}
+Status: {file['status']}
+
+Diff:
+```
+{file['patch'][:8000]}
+```
+{focus_instruction}
+{suggestion_instruction}
+
+Return a JSON array of findings. Each finding must have:
+- "line": the line number in the NEW file (from + lines in diff)
+- "severity": one of "error", "warning", "suggestion", "info"
+- "category": one of "bug", "security", "performance", "style", "logic", "best_practice"
+- "message": clear explanation of the issue
+- "suggestion": (optional) the corrected code snippet
+- "confidence": 0.0 to 1.0
+
+Only report real issues. Be specific about line numbers. Return empty array [] if no issues found.
+
+JSON array:"""
+
+        try:
+            if provider == "openai":
+                response = client.chat.completions.create(
+                    model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                    max_tokens=2000
+                )
+                content = response.choices[0].message.content
+            elif provider == "anthropic":
+                response = client.messages.create(
+                    model=os.environ.get("ANTHROPIC_MODEL", "claude-3-haiku-20240307"),
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                content = response.content[0].text
+            else:
+                continue
+            
+            # Parse JSON from response
+            content = content.strip()
+            if content.startswith("```"):
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+            
+            findings_data = json.loads(content)
+            
+            # Validate and add findings
+            for f in findings_data:
+                if not isinstance(f, dict):
+                    continue
+                
+                line = f.get("line")
+                if not isinstance(line, int) or line < 1:
+                    continue
+                
+                # Validate line exists in the diff
+                valid_line = False
+                for hunk in file.get("hunks", []):
+                    for hunk_line in hunk.get("lines", []):
+                        if hunk_line.get("new_line") == line:
+                            valid_line = True
+                            break
+                    if valid_line:
+                        break
+                
+                if not valid_line:
+                    # Try to find closest valid line
+                    closest_line = None
+                    min_diff = float('inf')
+                    for hunk in file.get("hunks", []):
+                        for hunk_line in hunk.get("lines", []):
+                            nl = hunk_line.get("new_line")
+                            if nl and abs(nl - line) < min_diff:
+                                min_diff = abs(nl - line)
+                                closest_line = nl
+                    if closest_line and min_diff <= 5:
+                        line = closest_line
+                    else:
+                        continue
+                
+                finding_id += 1
+                all_findings.append(ReviewFinding(
+                    id=f"f{finding_id}",
+                    path=file["filename"],
+                    line=line,
+                    severity=f.get("severity", "suggestion"),
+                    category=f.get("category", "style"),
+                    message=f.get("message", "Issue found"),
+                    suggestion=f.get("suggestion") if include_suggestions else None,
+                    confidence=min(1.0, max(0.0, f.get("confidence", 0.8)))
+                ))
+                
+        except Exception as e:
+            logger.warning(f"Failed to analyze file {file['filename']}: {e}")
+            continue
+    
+    # Generate summary
+    error_count = sum(1 for f in all_findings if f.severity == "error")
+    warning_count = sum(1 for f in all_findings if f.severity == "warning")
+    suggestion_count = sum(1 for f in all_findings if f.severity in ["suggestion", "info"])
+    
+    if error_count > 0:
+        verdict = "request_changes"
+        summary = f"Found {error_count} error(s), {warning_count} warning(s), and {suggestion_count} suggestion(s) that need attention."
+    elif warning_count > 0:
+        verdict = "comment_only"
+        summary = f"Found {warning_count} warning(s) and {suggestion_count} suggestion(s). Please review before merging."
+    elif suggestion_count > 0:
+        verdict = "comment_only"
+        summary = f"Found {suggestion_count} minor suggestion(s). Overall looks good!"
+    else:
+        verdict = "approve"
+        summary = "Code looks good! No issues found."
+    
+    model_used = os.environ.get("OPENAI_MODEL", "gpt-4o-mini") if provider == "openai" else os.environ.get("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
+    
+    return ReviewResult(
+        pr={"owner": pr_info["owner"], "repo": pr_info["repo"], "number": pr_info["number"], "head_sha": pr_info["head_sha"]},
+        summary=summary,
+        verdict=verdict,
+        findings=all_findings,
+        analyzed_at=datetime.utcnow().isoformat(),
+        model_used=model_used
+    )
+
+def post_github_review(owner: str, repo: str, pr_number: int, token: str, review_result: ReviewResult, event: str = "COMMENT", include_suggestions: bool = True) -> ToolResult:
+    """Post a code review to GitHub with inline comments.
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        pr_number: Pull request number
+        token: GitHub token
+        review_result: ReviewResult from analyze_pr_with_llm
+        event: "APPROVE", "REQUEST_CHANGES", or "COMMENT"
+        include_suggestions: Whether to format suggestions as GitHub suggestion blocks
+    
+    Returns:
+        ToolResult with review URL
+    """
+    if not token:
+        return ToolResult(tool="submit_pr_review", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    # Map verdict to event if not specified
+    if event == "COMMENT":
+        if review_result.verdict == "approve":
+            event = "APPROVE"
+        elif review_result.verdict == "request_changes":
+            event = "REQUEST_CHANGES"
+    
+    # Build review comments
+    comments = []
+    for finding in review_result.findings:
+        body = f"**{finding.severity.upper()}** ({finding.category}): {finding.message}"
+        
+        # Add GitHub suggestion block if available
+        if include_suggestions and finding.suggestion:
+            body += f"\n\n```suggestion\n{finding.suggestion}\n```"
+        
+        comments.append({
+            "path": finding.path,
+            "line": finding.line,
+            "side": "RIGHT",  # Always comment on new code
+            "body": body
+        })
+    
+    # Build review body
+    review_body = f"## Code Review Summary\n\n{review_result.summary}\n\n"
+    review_body += f"*Analyzed by Mini-Devin using {review_result.model_used}*"
+    
+    # Create the review
+    data = {
+        "commit_id": review_result.pr["head_sha"],
+        "body": review_body,
+        "event": event,
+        "comments": comments
+    }
+    
+    success, result = execute_github_api("POST", f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews", token, data)
+    
+    if success:
+        return ToolResult(
+            tool="submit_pr_review",
+            success=True,
+            output=json.dumps({
+                "review_id": result.get("id"),
+                "html_url": result.get("html_url"),
+                "state": result.get("state"),
+                "comments_count": len(comments),
+                "verdict": review_result.verdict
+            }, indent=2)
+        )
+    else:
+        return ToolResult(
+            tool="submit_pr_review",
+            success=False,
+            output="",
+            error=result.get("error", "Failed to submit review"),
+            error_code="api_error",
+            suggestions=result.get("suggestions", [])
+        )
+
+def execute_review_pr(owner: str, repo: str, pr_number: int, token: str, include_suggestions: bool = True, focus_areas: Optional[List[str]] = None) -> ToolResult:
+    """Agent tool: Analyze a PR and return review findings without posting.
+    
+    This tool fetches the PR diff, analyzes it with LLM, and returns findings.
+    Use submit_pr_review to post the review to GitHub.
+    """
+    if not token:
+        return ToolResult(tool="review_pr", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    # Fetch PR context
+    pr_context = fetch_pr_context(owner, repo, pr_number, token)
+    
+    if not pr_context["success"]:
+        return ToolResult(
+            tool="review_pr",
+            success=False,
+            output="",
+            error=pr_context.get("error", "Failed to fetch PR"),
+            error_code="fetch_error"
+        )
+    
+    # Analyze with LLM (run async in sync context)
+    import asyncio
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    review_result = loop.run_until_complete(analyze_pr_with_llm(
+        pr_context,
+        {"include_suggestions": include_suggestions, "focus_areas": focus_areas or []}
+    ))
+    
+    return ToolResult(
+        tool="review_pr",
+        success=True,
+        output=json.dumps(review_result.model_dump(), indent=2)
+    )
+
+def execute_submit_pr_review(owner: str, repo: str, pr_number: int, token: str, review_json: str, event: str = "COMMENT") -> ToolResult:
+    """Agent tool: Submit a previously generated review to GitHub.
+    
+    Args:
+        review_json: JSON string of ReviewResult from review_pr tool
+        event: "APPROVE", "REQUEST_CHANGES", or "COMMENT"
+    """
+    if not token:
+        return ToolResult(tool="submit_pr_review", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    try:
+        review_data = json.loads(review_json)
+        review_result = ReviewResult(**review_data)
+    except Exception as e:
+        return ToolResult(
+            tool="submit_pr_review",
+            success=False,
+            output="",
+            error=f"Invalid review JSON: {e}",
+            error_code="invalid_input"
+        )
+    
+    return post_github_review(owner, repo, pr_number, token, review_result, event)
+
 # Feature 7: Better Error Handling - Helper function
 def execute_github_tool_with_session(tool_name: str, tool_func, session_id: str, **kwargs) -> ToolResult:
     """Execute a GitHub tool with automatic token retrieval from session."""
@@ -2627,6 +3145,31 @@ def execute_tool(tool_call: dict, session_id: str = "", default_working_dir: str
                 repo=tool_call.get("repo", repo_info.get("repo_name", "")),
                 pr_number=tool_call.get("pr_number", 0),
                 token=repo_info.get("github_token", "")
+            )
+        # Phase 47: Code Review Tools
+        elif tool == "review_pr":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="review_pr", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_review_pr(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                pr_number=tool_call.get("pr_number", 0),
+                token=repo_info.get("github_token", ""),
+                include_suggestions=tool_call.get("include_suggestions", True),
+                focus_areas=tool_call.get("focus_areas", None)
+            )
+        elif tool == "submit_pr_review":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="submit_pr_review", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_submit_pr_review(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                pr_number=tool_call.get("pr_number", 0),
+                token=repo_info.get("github_token", ""),
+                review_json=tool_call.get("review_json", ""),
+                event=tool_call.get("event", "COMMENT")
             )
         else:
             return ToolResult(tool=str(tool), success=False, output="", error=f"Unknown tool: {tool}", error_code="unknown_tool", suggestions=get_error_suggestions("unknown_tool"))
@@ -3741,6 +4284,166 @@ async def list_github_repos(user: dict = Depends(require_auth)):
             
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="GitHub API request timed out")
+
+# ============================================================================
+# Phase 47: Code Review API Endpoints
+# ============================================================================
+
+@app.get("/api/github/prs/{owner}/{repo}/{pr_number}/context")
+async def get_pr_context(owner: str, repo: str, pr_number: int, user: dict = Depends(require_auth)):
+    """Get PR context including diff and file changes.
+    
+    Returns PR metadata and all changed files with parsed hunks.
+    """
+    user_id = user.get("user_id")
+    token = get_github_oauth_token_for_user(user_id)
+    
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail="GitHub not connected. Please connect your GitHub account first."
+        )
+    
+    pr_context = fetch_pr_context(owner, repo, pr_number, token)
+    
+    if not pr_context["success"]:
+        raise HTTPException(
+            status_code=400,
+            detail=pr_context.get("error", "Failed to fetch PR context")
+        )
+    
+    return pr_context
+
+@app.post("/api/github/prs/{owner}/{repo}/{pr_number}/review/analyze")
+async def analyze_pr(owner: str, repo: str, pr_number: int, request: AnalyzePRRequest = None, user: dict = Depends(require_auth)):
+    """Analyze a PR and generate review findings.
+    
+    This endpoint fetches the PR diff, analyzes it with LLM, and returns findings.
+    Does NOT post the review to GitHub - use /review/submit for that.
+    """
+    user_id = user.get("user_id")
+    token = get_github_oauth_token_for_user(user_id)
+    
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail="GitHub not connected. Please connect your GitHub account first."
+        )
+    
+    # Fetch PR context
+    pr_context = fetch_pr_context(owner, repo, pr_number, token)
+    
+    if not pr_context["success"]:
+        raise HTTPException(
+            status_code=400,
+            detail=pr_context.get("error", "Failed to fetch PR context")
+        )
+    
+    # Analyze with LLM
+    options = {}
+    if request:
+        options = {
+            "include_suggestions": request.include_suggestions,
+            "focus_areas": request.focus_areas or [],
+            "max_files": request.max_files
+        }
+    
+    review_result = await analyze_pr_with_llm(pr_context, options)
+    
+    return review_result.model_dump()
+
+@app.post("/api/github/prs/{owner}/{repo}/{pr_number}/review/submit")
+async def submit_pr_review(owner: str, repo: str, pr_number: int, request: SubmitReviewRequest, user: dict = Depends(require_auth)):
+    """Submit a code review to GitHub.
+    
+    Takes a ReviewResult (from /review/analyze) and posts it to GitHub
+    with inline comments and the specified event (APPROVE, REQUEST_CHANGES, COMMENT).
+    """
+    user_id = user.get("user_id")
+    token = get_github_oauth_token_for_user(user_id)
+    
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail="GitHub not connected. Please connect your GitHub account first."
+        )
+    
+    result = post_github_review(
+        owner, repo, pr_number, token,
+        request.review_result,
+        request.event,
+        request.include_suggestions
+    )
+    
+    if not result.success:
+        raise HTTPException(
+            status_code=400,
+            detail=result.error or "Failed to submit review"
+        )
+    
+    return json.loads(result.output)
+
+@app.post("/api/github/prs/{owner}/{repo}/{pr_number}/review/quick")
+async def quick_review_pr(owner: str, repo: str, pr_number: int, request: AnalyzePRRequest = None, user: dict = Depends(require_auth)):
+    """Analyze and submit a PR review in one step.
+    
+    Convenience endpoint that combines analyze + submit.
+    Automatically determines the event based on findings.
+    """
+    user_id = user.get("user_id")
+    token = get_github_oauth_token_for_user(user_id)
+    
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail="GitHub not connected. Please connect your GitHub account first."
+        )
+    
+    # Fetch PR context
+    pr_context = fetch_pr_context(owner, repo, pr_number, token)
+    
+    if not pr_context["success"]:
+        raise HTTPException(
+            status_code=400,
+            detail=pr_context.get("error", "Failed to fetch PR context")
+        )
+    
+    # Analyze with LLM
+    options = {}
+    if request:
+        options = {
+            "include_suggestions": request.include_suggestions,
+            "focus_areas": request.focus_areas or [],
+            "max_files": request.max_files
+        }
+    
+    review_result = await analyze_pr_with_llm(pr_context, options)
+    
+    # Determine event based on verdict
+    event = "COMMENT"
+    if review_result.verdict == "approve":
+        event = "APPROVE"
+    elif review_result.verdict == "request_changes":
+        event = "REQUEST_CHANGES"
+    
+    # Submit to GitHub
+    result = post_github_review(
+        owner, repo, pr_number, token,
+        review_result,
+        event,
+        True  # include_suggestions
+    )
+    
+    if not result.success:
+        raise HTTPException(
+            status_code=400,
+            detail=result.error or "Failed to submit review"
+        )
+    
+    return {
+        "review": review_result.model_dump(),
+        "submission": json.loads(result.output)
+    }
 
 @app.get("/api/status")
 async def get_status():
