@@ -3171,6 +3171,150 @@ def execute_tool(tool_call: dict, session_id: str = "", default_working_dir: str
                 review_json=tool_call.get("review_json", ""),
                 event=tool_call.get("event", "COMMENT")
             )
+        # Phase 48: Advanced Git Operations
+        elif tool == "git_rebase":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_rebase(
+                working_dir=working_dir,
+                target_branch=tool_call.get("target_branch", "main"),
+                interactive=tool_call.get("interactive", False),
+                onto=tool_call.get("onto")
+            )
+        elif tool == "git_rebase_continue":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_rebase_continue(working_dir=working_dir)
+        elif tool == "git_rebase_abort":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_rebase_abort(working_dir=working_dir)
+        elif tool == "git_rebase_skip":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_rebase_skip(working_dir=working_dir)
+        elif tool == "git_cherry_pick":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            commits = tool_call.get("commits", [])
+            if isinstance(commits, str):
+                commits = [commits]
+            return execute_git_cherry_pick(
+                working_dir=working_dir,
+                commits=commits,
+                no_commit=tool_call.get("no_commit", False)
+            )
+        elif tool == "git_cherry_pick_continue":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_cherry_pick_continue(working_dir=working_dir)
+        elif tool == "git_cherry_pick_abort":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_cherry_pick_abort(working_dir=working_dir)
+        elif tool == "git_get_conflicts":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_get_conflicts(working_dir=working_dir)
+        elif tool == "git_resolve_conflict":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_resolve_conflict(
+                working_dir=working_dir,
+                filepath=tool_call.get("filepath", ""),
+                resolution=tool_call.get("resolution", "manual")
+            )
+        elif tool == "git_stash":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_stash(
+                working_dir=working_dir,
+                message=tool_call.get("message"),
+                include_untracked=tool_call.get("include_untracked", False)
+            )
+        elif tool == "git_stash_pop":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_stash_pop(working_dir=working_dir, index=tool_call.get("index", 0))
+        elif tool == "git_stash_apply":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_stash_apply(working_dir=working_dir, index=tool_call.get("index", 0))
+        elif tool == "git_stash_list":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_stash_list(working_dir=working_dir)
+        elif tool == "git_stash_show":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_stash_show(working_dir=working_dir, index=tool_call.get("index", 0), patch=tool_call.get("patch", False))
+        elif tool == "git_stash_drop":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_stash_drop(working_dir=working_dir, index=tool_call.get("index", 0))
+        elif tool == "git_stash_clear":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_stash_clear(working_dir=working_dir)
+        elif tool == "git_blame":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_blame(
+                working_dir=working_dir,
+                filepath=tool_call.get("filepath", ""),
+                start_line=tool_call.get("start_line"),
+                end_line=tool_call.get("end_line")
+            )
+        elif tool == "git_log_file":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_log_file(
+                working_dir=working_dir,
+                filepath=tool_call.get("filepath", ""),
+                max_count=tool_call.get("max_count", 20),
+                follow=tool_call.get("follow", True)
+            )
+        elif tool == "git_show_commit":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_show_commit(
+                working_dir=working_dir,
+                commit=tool_call.get("commit", "HEAD"),
+                stat_only=tool_call.get("stat_only", False)
+            )
+        elif tool == "git_diff_commits":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_diff_commits(
+                working_dir=working_dir,
+                commit1=tool_call.get("commit1", "HEAD~1"),
+                commit2=tool_call.get("commit2", "HEAD"),
+                filepath=tool_call.get("filepath")
+            )
+        elif tool == "git_reflog":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_reflog(working_dir=working_dir, max_count=tool_call.get("max_count", 20))
+        elif tool == "git_bisect_start":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_bisect_start(
+                working_dir=working_dir,
+                bad_commit=tool_call.get("bad_commit", "HEAD"),
+                good_commit=tool_call.get("good_commit", "")
+            )
+        elif tool == "git_bisect_good":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_bisect_good(working_dir=working_dir)
+        elif tool == "git_bisect_bad":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_bisect_bad(working_dir=working_dir)
+        elif tool == "git_bisect_reset":
+            repo_info = get_repo_info_for_session(session_id)
+            working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
+            return execute_git_bisect_reset(working_dir=working_dir)
         else:
             return ToolResult(tool=str(tool), success=False, output="", error=f"Unknown tool: {tool}", error_code="unknown_tool", suggestions=get_error_suggestions("unknown_tool"))
     except Exception as e:
@@ -5397,3 +5541,974 @@ async def get_session_repos(session_id: str):
         })
     
     return {"repos": repos}
+
+# ============================================================================
+# Phase 48: Advanced Git Operations
+# ============================================================================
+
+def execute_git_rebase(working_dir: str, target_branch: str, interactive: bool = False, onto: Optional[str] = None) -> ToolResult:
+    """Execute git rebase operation.
+    
+    Args:
+        working_dir: Repository working directory
+        target_branch: Branch to rebase onto (e.g., 'main', 'origin/main')
+        interactive: If True, returns rebase plan for review (non-interactive in automation)
+        onto: Optional commit/branch for --onto rebase
+    """
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_rebase", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        # Check for uncommitted changes
+        status_result = subprocess.run("git status --porcelain", shell=True, capture_output=True, text=True, cwd=working_dir)
+        if status_result.stdout.strip():
+            return ToolResult(tool="git_rebase", success=False, output="", error="Uncommitted changes detected. Please commit or stash changes before rebasing.", error_code="uncommitted_changes", suggestions=["Use git_stash to save changes", "Commit your changes first"])
+        
+        # Check if already in rebase
+        rebase_dir = os.path.join(working_dir, ".git", "rebase-merge")
+        rebase_apply = os.path.join(working_dir, ".git", "rebase-apply")
+        if os.path.exists(rebase_dir) or os.path.exists(rebase_apply):
+            return ToolResult(tool="git_rebase", success=False, output="", error="Rebase already in progress. Use git_rebase_continue, git_rebase_abort, or git_rebase_skip.", error_code="rebase_in_progress")
+        
+        if interactive:
+            # For interactive rebase, show the commit log that would be rebased
+            log_cmd = f"git log --oneline {target_branch}..HEAD"
+            log_result = subprocess.run(log_cmd, shell=True, capture_output=True, text=True, cwd=working_dir)
+            commits = log_result.stdout.strip()
+            if not commits:
+                return ToolResult(tool="git_rebase", success=True, output="No commits to rebase. Branch is already up to date with target.")
+            return ToolResult(tool="git_rebase", success=True, output=f"Commits that would be rebased:\n{commits}\n\nTo proceed with non-interactive rebase, call git_rebase with interactive=False")
+        
+        # Build rebase command
+        if onto:
+            cmd = f"git rebase --onto {onto} {target_branch}"
+        else:
+            cmd = f"git rebase {target_branch}"
+        
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=300, cwd=working_dir, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        
+        if result.returncode != 0:
+            # Check for conflicts
+            if "CONFLICT" in result.stdout or "CONFLICT" in result.stderr:
+                # Get conflict details
+                conflict_files = subprocess.run("git diff --name-only --diff-filter=U", shell=True, capture_output=True, text=True, cwd=working_dir)
+                return ToolResult(tool="git_rebase", success=False, output=result.stdout, error=f"Rebase conflict detected.\nConflicting files:\n{conflict_files.stdout}", error_code="rebase_conflict", suggestions=["Use git_get_conflicts to see conflict details", "Resolve conflicts manually then use git_rebase_continue", "Use git_rebase_abort to cancel"])
+            return ToolResult(tool="git_rebase", success=False, output="", error=result.stderr or result.stdout, error_code="rebase_failed")
+        
+        return ToolResult(tool="git_rebase", success=True, output=f"Rebase completed successfully.\n{result.stdout}")
+    except subprocess.TimeoutExpired:
+        return ToolResult(tool="git_rebase", success=False, output="", error="Rebase timed out", error_code="timeout")
+    except Exception as e:
+        return ToolResult(tool="git_rebase", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_rebase_continue(working_dir: str) -> ToolResult:
+    """Continue a rebase after resolving conflicts."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_rebase_continue", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        # Check if rebase is in progress
+        rebase_dir = os.path.join(working_dir, ".git", "rebase-merge")
+        rebase_apply = os.path.join(working_dir, ".git", "rebase-apply")
+        if not os.path.exists(rebase_dir) and not os.path.exists(rebase_apply):
+            return ToolResult(tool="git_rebase_continue", success=False, output="", error="No rebase in progress", error_code="no_rebase")
+        
+        # Check for unresolved conflicts
+        conflict_check = subprocess.run("git diff --name-only --diff-filter=U", shell=True, capture_output=True, text=True, cwd=working_dir)
+        if conflict_check.stdout.strip():
+            return ToolResult(tool="git_rebase_continue", success=False, output="", error=f"Unresolved conflicts in:\n{conflict_check.stdout}", error_code="unresolved_conflicts", suggestions=["Resolve conflicts first", "Use git_get_conflicts to see details"])
+        
+        result = subprocess.run("git rebase --continue", shell=True, capture_output=True, text=True, timeout=300, cwd=working_dir, env={**os.environ, "GIT_EDITOR": "true", "GIT_TERMINAL_PROMPT": "0"})
+        
+        if result.returncode != 0:
+            if "CONFLICT" in result.stdout or "CONFLICT" in result.stderr:
+                conflict_files = subprocess.run("git diff --name-only --diff-filter=U", shell=True, capture_output=True, text=True, cwd=working_dir)
+                return ToolResult(tool="git_rebase_continue", success=False, output=result.stdout, error=f"New conflict detected.\nConflicting files:\n{conflict_files.stdout}", error_code="rebase_conflict")
+            return ToolResult(tool="git_rebase_continue", success=False, output="", error=result.stderr or result.stdout, error_code="continue_failed")
+        
+        return ToolResult(tool="git_rebase_continue", success=True, output=f"Rebase continued successfully.\n{result.stdout}")
+    except Exception as e:
+        return ToolResult(tool="git_rebase_continue", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_rebase_abort(working_dir: str) -> ToolResult:
+    """Abort a rebase in progress."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_rebase_abort", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        result = subprocess.run("git rebase --abort", shell=True, capture_output=True, text=True, timeout=60, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_rebase_abort", success=False, output="", error=result.stderr or "No rebase in progress", error_code="abort_failed")
+        
+        return ToolResult(tool="git_rebase_abort", success=True, output="Rebase aborted. Repository restored to pre-rebase state.")
+    except Exception as e:
+        return ToolResult(tool="git_rebase_abort", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_rebase_skip(working_dir: str) -> ToolResult:
+    """Skip the current commit during rebase."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_rebase_skip", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        result = subprocess.run("git rebase --skip", shell=True, capture_output=True, text=True, timeout=300, cwd=working_dir, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        
+        if result.returncode != 0:
+            if "CONFLICT" in result.stdout or "CONFLICT" in result.stderr:
+                return ToolResult(tool="git_rebase_skip", success=False, output=result.stdout, error="New conflict after skip", error_code="rebase_conflict")
+            return ToolResult(tool="git_rebase_skip", success=False, output="", error=result.stderr or result.stdout, error_code="skip_failed")
+        
+        return ToolResult(tool="git_rebase_skip", success=True, output=f"Commit skipped.\n{result.stdout}")
+    except Exception as e:
+        return ToolResult(tool="git_rebase_skip", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_cherry_pick(working_dir: str, commits: List[str], no_commit: bool = False) -> ToolResult:
+    """Cherry-pick one or more commits.
+    
+    Args:
+        working_dir: Repository working directory
+        commits: List of commit SHAs to cherry-pick
+        no_commit: If True, apply changes without committing
+    """
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_cherry_pick", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        if not commits:
+            return ToolResult(tool="git_cherry_pick", success=False, output="", error="No commits specified", error_code="invalid_input")
+        
+        # Check for uncommitted changes
+        status_result = subprocess.run("git status --porcelain", shell=True, capture_output=True, text=True, cwd=working_dir)
+        if status_result.stdout.strip():
+            return ToolResult(tool="git_cherry_pick", success=False, output="", error="Uncommitted changes detected. Please commit or stash changes first.", error_code="uncommitted_changes")
+        
+        # Build command
+        commit_str = " ".join(commits)
+        cmd = f"git cherry-pick {'-n ' if no_commit else ''}{commit_str}"
+        
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=300, cwd=working_dir, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        
+        if result.returncode != 0:
+            if "CONFLICT" in result.stdout or "CONFLICT" in result.stderr:
+                conflict_files = subprocess.run("git diff --name-only --diff-filter=U", shell=True, capture_output=True, text=True, cwd=working_dir)
+                return ToolResult(tool="git_cherry_pick", success=False, output=result.stdout, error=f"Cherry-pick conflict.\nConflicting files:\n{conflict_files.stdout}", error_code="cherry_pick_conflict", suggestions=["Resolve conflicts then use git_cherry_pick_continue", "Use git_cherry_pick_abort to cancel"])
+            return ToolResult(tool="git_cherry_pick", success=False, output="", error=result.stderr or result.stdout, error_code="cherry_pick_failed")
+        
+        return ToolResult(tool="git_cherry_pick", success=True, output=f"Cherry-pick successful.\n{result.stdout}")
+    except Exception as e:
+        return ToolResult(tool="git_cherry_pick", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_cherry_pick_continue(working_dir: str) -> ToolResult:
+    """Continue cherry-pick after resolving conflicts."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_cherry_pick_continue", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        # Check for unresolved conflicts
+        conflict_check = subprocess.run("git diff --name-only --diff-filter=U", shell=True, capture_output=True, text=True, cwd=working_dir)
+        if conflict_check.stdout.strip():
+            return ToolResult(tool="git_cherry_pick_continue", success=False, output="", error=f"Unresolved conflicts in:\n{conflict_check.stdout}", error_code="unresolved_conflicts")
+        
+        result = subprocess.run("git cherry-pick --continue", shell=True, capture_output=True, text=True, timeout=60, cwd=working_dir, env={**os.environ, "GIT_EDITOR": "true", "GIT_TERMINAL_PROMPT": "0"})
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_cherry_pick_continue", success=False, output="", error=result.stderr or result.stdout, error_code="continue_failed")
+        
+        return ToolResult(tool="git_cherry_pick_continue", success=True, output=f"Cherry-pick continued.\n{result.stdout}")
+    except Exception as e:
+        return ToolResult(tool="git_cherry_pick_continue", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_cherry_pick_abort(working_dir: str) -> ToolResult:
+    """Abort cherry-pick in progress."""
+    try:
+        result = subprocess.run("git cherry-pick --abort", shell=True, capture_output=True, text=True, timeout=60, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_cherry_pick_abort", success=False, output="", error=result.stderr or "No cherry-pick in progress", error_code="abort_failed")
+        
+        return ToolResult(tool="git_cherry_pick_abort", success=True, output="Cherry-pick aborted.")
+    except Exception as e:
+        return ToolResult(tool="git_cherry_pick_abort", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_get_conflicts(working_dir: str) -> ToolResult:
+    """Get detailed information about merge/rebase conflicts."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_get_conflicts", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        # Get list of conflicting files
+        conflict_files = subprocess.run("git diff --name-only --diff-filter=U", shell=True, capture_output=True, text=True, cwd=working_dir)
+        files = conflict_files.stdout.strip().split('\n') if conflict_files.stdout.strip() else []
+        
+        if not files:
+            return ToolResult(tool="git_get_conflicts", success=True, output="No conflicts detected.")
+        
+        result_parts = [f"Found {len(files)} conflicting file(s):\n"]
+        
+        for filepath in files[:10]:  # Limit to 10 files
+            result_parts.append(f"\n=== {filepath} ===")
+            # Get the conflict markers
+            try:
+                full_path = os.path.join(working_dir, filepath)
+                with open(full_path, 'r') as f:
+                    content = f.read()
+                
+                # Extract conflict sections
+                conflict_sections = []
+                in_conflict = False
+                current_section = []
+                for line in content.split('\n'):
+                    if line.startswith('<<<<<<<'):
+                        in_conflict = True
+                        current_section = [line]
+                    elif line.startswith('>>>>>>>') and in_conflict:
+                        current_section.append(line)
+                        conflict_sections.append('\n'.join(current_section))
+                        in_conflict = False
+                        current_section = []
+                    elif in_conflict:
+                        current_section.append(line)
+                
+                if conflict_sections:
+                    for i, section in enumerate(conflict_sections[:3], 1):  # Limit to 3 conflicts per file
+                        result_parts.append(f"\nConflict {i}:\n{section[:500]}")
+                else:
+                    result_parts.append("\n(Could not parse conflict markers)")
+            except Exception as e:
+                result_parts.append(f"\n(Error reading file: {e})")
+        
+        if len(files) > 10:
+            result_parts.append(f"\n... and {len(files) - 10} more files")
+        
+        return ToolResult(tool="git_get_conflicts", success=True, output='\n'.join(result_parts))
+    except Exception as e:
+        return ToolResult(tool="git_get_conflicts", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_resolve_conflict(working_dir: str, filepath: str, resolution: str) -> ToolResult:
+    """Resolve a conflict by choosing a resolution strategy.
+    
+    Args:
+        working_dir: Repository working directory
+        filepath: Path to the conflicting file
+        resolution: One of 'ours', 'theirs', or 'manual' (marks as resolved)
+    """
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_resolve_conflict", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        full_path = os.path.join(working_dir, filepath)
+        if not os.path.exists(full_path):
+            return ToolResult(tool="git_resolve_conflict", success=False, output="", error=f"File not found: {filepath}", error_code="file_not_found")
+        
+        if resolution == 'ours':
+            cmd = f"git checkout --ours -- {filepath} && git add {filepath}"
+        elif resolution == 'theirs':
+            cmd = f"git checkout --theirs -- {filepath} && git add {filepath}"
+        elif resolution == 'manual':
+            # Just mark as resolved (assumes user has manually edited the file)
+            cmd = f"git add {filepath}"
+        else:
+            return ToolResult(tool="git_resolve_conflict", success=False, output="", error=f"Invalid resolution: {resolution}. Use 'ours', 'theirs', or 'manual'", error_code="invalid_input")
+        
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_resolve_conflict", success=False, output="", error=result.stderr, error_code="resolve_failed")
+        
+        return ToolResult(tool="git_resolve_conflict", success=True, output=f"Conflict resolved for {filepath} using '{resolution}' strategy.")
+    except Exception as e:
+        return ToolResult(tool="git_resolve_conflict", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_stash(working_dir: str, message: Optional[str] = None, include_untracked: bool = False) -> ToolResult:
+    """Stash current changes."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_stash", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        # Check if there are changes to stash
+        status_result = subprocess.run("git status --porcelain", shell=True, capture_output=True, text=True, cwd=working_dir)
+        if not status_result.stdout.strip():
+            return ToolResult(tool="git_stash", success=True, output="No changes to stash.")
+        
+        cmd_parts = ["git", "stash", "push"]
+        if include_untracked:
+            cmd_parts.append("-u")
+        if message:
+            cmd_parts.extend(["-m", message])
+        
+        cmd = " ".join(cmd_parts) if not message else f"git stash push {'-u ' if include_untracked else ''}-m \"{message}\""
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_stash", success=False, output="", error=result.stderr, error_code="stash_failed")
+        
+        return ToolResult(tool="git_stash", success=True, output=result.stdout or "Changes stashed successfully.")
+    except Exception as e:
+        return ToolResult(tool="git_stash", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_stash_pop(working_dir: str, index: int = 0) -> ToolResult:
+    """Pop a stash entry."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_stash_pop", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        cmd = f"git stash pop stash@{{{index}}}"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60, cwd=working_dir)
+        
+        if result.returncode != 0:
+            if "CONFLICT" in result.stdout or "CONFLICT" in result.stderr:
+                return ToolResult(tool="git_stash_pop", success=False, output=result.stdout, error="Conflict while applying stash", error_code="stash_conflict", suggestions=["Resolve conflicts manually", "Use git_stash_drop to discard stash"])
+            return ToolResult(tool="git_stash_pop", success=False, output="", error=result.stderr or "No stash entries", error_code="pop_failed")
+        
+        return ToolResult(tool="git_stash_pop", success=True, output=result.stdout or "Stash applied and dropped.")
+    except Exception as e:
+        return ToolResult(tool="git_stash_pop", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_stash_apply(working_dir: str, index: int = 0) -> ToolResult:
+    """Apply a stash entry without removing it."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_stash_apply", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        cmd = f"git stash apply stash@{{{index}}}"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60, cwd=working_dir)
+        
+        if result.returncode != 0:
+            if "CONFLICT" in result.stdout or "CONFLICT" in result.stderr:
+                return ToolResult(tool="git_stash_apply", success=False, output=result.stdout, error="Conflict while applying stash", error_code="stash_conflict")
+            return ToolResult(tool="git_stash_apply", success=False, output="", error=result.stderr or "No stash entries", error_code="apply_failed")
+        
+        return ToolResult(tool="git_stash_apply", success=True, output=result.stdout or "Stash applied (kept in stash list).")
+    except Exception as e:
+        return ToolResult(tool="git_stash_apply", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_stash_list(working_dir: str) -> ToolResult:
+    """List all stash entries."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_stash_list", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        result = subprocess.run("git stash list", shell=True, capture_output=True, text=True, timeout=30, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_stash_list", success=False, output="", error=result.stderr, error_code="list_failed")
+        
+        if not result.stdout.strip():
+            return ToolResult(tool="git_stash_list", success=True, output="No stash entries.")
+        
+        return ToolResult(tool="git_stash_list", success=True, output=result.stdout)
+    except Exception as e:
+        return ToolResult(tool="git_stash_list", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_stash_show(working_dir: str, index: int = 0, patch: bool = False) -> ToolResult:
+    """Show contents of a stash entry."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_stash_show", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        cmd = f"git stash show {'-p ' if patch else ''}stash@{{{index}}}"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_stash_show", success=False, output="", error=result.stderr or "Stash not found", error_code="show_failed")
+        
+        return ToolResult(tool="git_stash_show", success=True, output=result.stdout[:5000])
+    except Exception as e:
+        return ToolResult(tool="git_stash_show", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_stash_drop(working_dir: str, index: int = 0) -> ToolResult:
+    """Drop a stash entry."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_stash_drop", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        cmd = f"git stash drop stash@{{{index}}}"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_stash_drop", success=False, output="", error=result.stderr or "Stash not found", error_code="drop_failed")
+        
+        return ToolResult(tool="git_stash_drop", success=True, output=result.stdout or f"Dropped stash@{{{index}}}")
+    except Exception as e:
+        return ToolResult(tool="git_stash_drop", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_stash_clear(working_dir: str) -> ToolResult:
+    """Clear all stash entries."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_stash_clear", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        result = subprocess.run("git stash clear", shell=True, capture_output=True, text=True, timeout=30, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_stash_clear", success=False, output="", error=result.stderr, error_code="clear_failed")
+        
+        return ToolResult(tool="git_stash_clear", success=True, output="All stash entries cleared.")
+    except Exception as e:
+        return ToolResult(tool="git_stash_clear", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_blame(working_dir: str, filepath: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> ToolResult:
+    """Show git blame for a file."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_blame", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        full_path = os.path.join(working_dir, filepath)
+        if not os.path.exists(full_path):
+            return ToolResult(tool="git_blame", success=False, output="", error=f"File not found: {filepath}", error_code="file_not_found")
+        
+        cmd = "git blame"
+        if start_line and end_line:
+            cmd += f" -L {start_line},{end_line}"
+        elif start_line:
+            cmd += f" -L {start_line},"
+        cmd += f" -- {filepath}"
+        
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_blame", success=False, output="", error=result.stderr, error_code="blame_failed")
+        
+        return ToolResult(tool="git_blame", success=True, output=result.stdout[:10000])
+    except Exception as e:
+        return ToolResult(tool="git_blame", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_log_file(working_dir: str, filepath: str, max_count: int = 20, follow: bool = True) -> ToolResult:
+    """Show commit history for a specific file."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_log_file", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        cmd = f"git log {'--follow ' if follow else ''}-n {max_count} --pretty=format:'%h | %an | %ad | %s' --date=short -- {filepath}"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_log_file", success=False, output="", error=result.stderr, error_code="log_failed")
+        
+        if not result.stdout.strip():
+            return ToolResult(tool="git_log_file", success=True, output=f"No commit history found for {filepath}")
+        
+        return ToolResult(tool="git_log_file", success=True, output=f"Commit history for {filepath}:\n{result.stdout}")
+    except Exception as e:
+        return ToolResult(tool="git_log_file", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_show_commit(working_dir: str, commit: str, stat_only: bool = False) -> ToolResult:
+    """Show details of a specific commit."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_show_commit", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        cmd = f"git show {'--stat ' if stat_only else ''}{commit}"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_show_commit", success=False, output="", error=result.stderr or "Commit not found", error_code="show_failed")
+        
+        return ToolResult(tool="git_show_commit", success=True, output=result.stdout[:10000])
+    except Exception as e:
+        return ToolResult(tool="git_show_commit", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_diff_commits(working_dir: str, commit1: str, commit2: str, filepath: Optional[str] = None) -> ToolResult:
+    """Show diff between two commits."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_diff_commits", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        cmd = f"git diff {commit1}..{commit2}"
+        if filepath:
+            cmd += f" -- {filepath}"
+        
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_diff_commits", success=False, output="", error=result.stderr, error_code="diff_failed")
+        
+        if not result.stdout.strip():
+            return ToolResult(tool="git_diff_commits", success=True, output="No differences found.")
+        
+        return ToolResult(tool="git_diff_commits", success=True, output=result.stdout[:10000])
+    except Exception as e:
+        return ToolResult(tool="git_diff_commits", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_reflog(working_dir: str, max_count: int = 20) -> ToolResult:
+    """Show git reflog (history of HEAD changes)."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_reflog", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        cmd = f"git reflog -n {max_count}"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_reflog", success=False, output="", error=result.stderr, error_code="reflog_failed")
+        
+        return ToolResult(tool="git_reflog", success=True, output=result.stdout)
+    except Exception as e:
+        return ToolResult(tool="git_reflog", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_bisect_start(working_dir: str, bad_commit: str, good_commit: str) -> ToolResult:
+    """Start git bisect to find a bug-introducing commit."""
+    try:
+        if not os.path.exists(working_dir):
+            return ToolResult(tool="git_bisect_start", success=False, output="", error=f"Directory not found: {working_dir}", error_code="dir_not_found")
+        
+        cmd = f"git bisect start {bad_commit} {good_commit}"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_bisect_start", success=False, output="", error=result.stderr, error_code="bisect_failed")
+        
+        return ToolResult(tool="git_bisect_start", success=True, output=result.stdout or "Bisect started. Test the current commit and use git_bisect_good or git_bisect_bad.")
+    except Exception as e:
+        return ToolResult(tool="git_bisect_start", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_bisect_good(working_dir: str) -> ToolResult:
+    """Mark current commit as good during bisect."""
+    try:
+        result = subprocess.run("git bisect good", shell=True, capture_output=True, text=True, timeout=60, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_bisect_good", success=False, output="", error=result.stderr, error_code="bisect_failed")
+        
+        return ToolResult(tool="git_bisect_good", success=True, output=result.stdout)
+    except Exception as e:
+        return ToolResult(tool="git_bisect_good", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_bisect_bad(working_dir: str) -> ToolResult:
+    """Mark current commit as bad during bisect."""
+    try:
+        result = subprocess.run("git bisect bad", shell=True, capture_output=True, text=True, timeout=60, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_bisect_bad", success=False, output="", error=result.stderr, error_code="bisect_failed")
+        
+        return ToolResult(tool="git_bisect_bad", success=True, output=result.stdout)
+    except Exception as e:
+        return ToolResult(tool="git_bisect_bad", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_git_bisect_reset(working_dir: str) -> ToolResult:
+    """End bisect session and return to original HEAD."""
+    try:
+        result = subprocess.run("git bisect reset", shell=True, capture_output=True, text=True, timeout=60, cwd=working_dir)
+        
+        if result.returncode != 0:
+            return ToolResult(tool="git_bisect_reset", success=False, output="", error=result.stderr, error_code="bisect_failed")
+        
+        return ToolResult(tool="git_bisect_reset", success=True, output=result.stdout or "Bisect session ended.")
+    except Exception as e:
+        return ToolResult(tool="git_bisect_reset", success=False, output="", error=str(e), error_code="unknown_error")
+
+# ============================================================================
+# Phase 48: Advanced Git Operations - API Endpoints
+# ============================================================================
+
+class GitRebaseRequest(BaseModel):
+    target_branch: str
+    interactive: bool = False
+    onto: Optional[str] = None
+
+class GitCherryPickRequest(BaseModel):
+    commits: List[str]
+    no_commit: bool = False
+
+class GitResolveConflictRequest(BaseModel):
+    filepath: str
+    resolution: str  # 'ours', 'theirs', 'manual'
+
+class GitStashRequest(BaseModel):
+    message: Optional[str] = None
+    include_untracked: bool = False
+
+class GitBlameRequest(BaseModel):
+    filepath: str
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
+
+class GitLogFileRequest(BaseModel):
+    filepath: str
+    max_count: int = 20
+    follow: bool = True
+
+class GitDiffCommitsRequest(BaseModel):
+    commit1: str
+    commit2: str
+    filepath: Optional[str] = None
+
+class GitBisectStartRequest(BaseModel):
+    bad_commit: str
+    good_commit: str
+
+@app.post("/api/repos/{repo_id}/git/rebase")
+async def api_git_rebase(repo_id: str, request: GitRebaseRequest):
+    """Rebase current branch onto target branch."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_rebase(row[0], request.target_branch, request.interactive, request.onto)
+    return {"success": result.success, "output": result.output, "error": result.error, "error_code": result.error_code}
+
+@app.post("/api/repos/{repo_id}/git/rebase/continue")
+async def api_git_rebase_continue(repo_id: str):
+    """Continue rebase after resolving conflicts."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_rebase_continue(row[0])
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/git/rebase/abort")
+async def api_git_rebase_abort(repo_id: str):
+    """Abort rebase in progress."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_rebase_abort(row[0])
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/git/rebase/skip")
+async def api_git_rebase_skip(repo_id: str):
+    """Skip current commit during rebase."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_rebase_skip(row[0])
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/git/cherry-pick")
+async def api_git_cherry_pick(repo_id: str, request: GitCherryPickRequest):
+    """Cherry-pick commits."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_cherry_pick(row[0], request.commits, request.no_commit)
+    return {"success": result.success, "output": result.output, "error": result.error, "error_code": result.error_code}
+
+@app.post("/api/repos/{repo_id}/git/cherry-pick/continue")
+async def api_git_cherry_pick_continue(repo_id: str):
+    """Continue cherry-pick after resolving conflicts."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_cherry_pick_continue(row[0])
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/git/cherry-pick/abort")
+async def api_git_cherry_pick_abort(repo_id: str):
+    """Abort cherry-pick in progress."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_cherry_pick_abort(row[0])
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/git/conflicts")
+async def api_git_get_conflicts(repo_id: str):
+    """Get details of merge/rebase conflicts."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_get_conflicts(row[0])
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/git/conflicts/resolve")
+async def api_git_resolve_conflict(repo_id: str, request: GitResolveConflictRequest):
+    """Resolve a conflict using specified strategy."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_resolve_conflict(row[0], request.filepath, request.resolution)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/git/stash")
+async def api_git_stash(repo_id: str, request: GitStashRequest):
+    """Stash current changes."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_stash(row[0], request.message, request.include_untracked)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/git/stash")
+async def api_git_stash_list(repo_id: str):
+    """List all stash entries."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_stash_list(row[0])
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/git/stash/{index}")
+async def api_git_stash_show(repo_id: str, index: int, patch: bool = False):
+    """Show contents of a stash entry."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_stash_show(row[0], index, patch)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/git/stash/{index}/pop")
+async def api_git_stash_pop(repo_id: str, index: int):
+    """Pop a stash entry."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_stash_pop(row[0], index)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/git/stash/{index}/apply")
+async def api_git_stash_apply(repo_id: str, index: int):
+    """Apply a stash entry without removing it."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_stash_apply(row[0], index)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.delete("/api/repos/{repo_id}/git/stash/{index}")
+async def api_git_stash_drop(repo_id: str, index: int):
+    """Drop a stash entry."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_stash_drop(row[0], index)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.delete("/api/repos/{repo_id}/git/stash")
+async def api_git_stash_clear(repo_id: str):
+    """Clear all stash entries."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_stash_clear(row[0])
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/git/blame")
+async def api_git_blame(repo_id: str, request: GitBlameRequest):
+    """Show git blame for a file."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_blame(row[0], request.filepath, request.start_line, request.end_line)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/git/log/file")
+async def api_git_log_file(repo_id: str, request: GitLogFileRequest):
+    """Show commit history for a file."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_log_file(row[0], request.filepath, request.max_count, request.follow)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/git/show/{commit}")
+async def api_git_show_commit(repo_id: str, commit: str, stat_only: bool = False):
+    """Show details of a commit."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_show_commit(row[0], commit, stat_only)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/git/diff")
+async def api_git_diff_commits(repo_id: str, request: GitDiffCommitsRequest):
+    """Show diff between two commits."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_diff_commits(row[0], request.commit1, request.commit2, request.filepath)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/git/reflog")
+async def api_git_reflog(repo_id: str, max_count: int = 20):
+    """Show git reflog."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_reflog(row[0], max_count)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/git/bisect/start")
+async def api_git_bisect_start(repo_id: str, request: GitBisectStartRequest):
+    """Start git bisect."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_bisect_start(row[0], request.bad_commit, request.good_commit)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/git/bisect/good")
+async def api_git_bisect_good(repo_id: str):
+    """Mark current commit as good during bisect."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_bisect_good(row[0])
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/git/bisect/bad")
+async def api_git_bisect_bad(repo_id: str):
+    """Mark current commit as bad during bisect."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_bisect_bad(row[0])
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/git/bisect/reset")
+async def api_git_bisect_reset(repo_id: str):
+    """End bisect session."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_git_bisect_reset(row[0])
+    return {"success": result.success, "output": result.output, "error": result.error}
