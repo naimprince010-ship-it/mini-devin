@@ -3315,6 +3315,157 @@ def execute_tool(tool_call: dict, session_id: str = "", default_working_dir: str
             repo_info = get_repo_info_for_session(session_id)
             working_dir = tool_call.get("working_dir") or (repo_info.get("local_path") if repo_info else "/tmp")
             return execute_git_bisect_reset(working_dir=working_dir)
+        # Phase 49: CI/CD Integration Tools
+        elif tool == "list_workflows":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_workflows", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_workflows(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", "")
+            )
+        elif tool == "trigger_workflow":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="trigger_workflow", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            inputs = tool_call.get("inputs")
+            if isinstance(inputs, str):
+                try:
+                    inputs = json.loads(inputs)
+                except:
+                    inputs = None
+            return execute_trigger_workflow(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                workflow_id=str(tool_call.get("workflow_id", "")),
+                ref=tool_call.get("ref", "main"),
+                inputs=inputs
+            )
+        elif tool == "list_workflow_runs":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_workflow_runs", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_workflow_runs(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                workflow_id=tool_call.get("workflow_id"),
+                status=tool_call.get("status"),
+                per_page=tool_call.get("per_page", 10)
+            )
+        elif tool == "get_workflow_run":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="get_workflow_run", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_get_workflow_run(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                run_id=int(tool_call.get("run_id", 0))
+            )
+        elif tool == "rerun_workflow":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="rerun_workflow", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_rerun_workflow(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                run_id=int(tool_call.get("run_id", 0)),
+                failed_only=tool_call.get("failed_only", False)
+            )
+        elif tool == "cancel_workflow_run":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="cancel_workflow_run", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_cancel_workflow_run(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                run_id=int(tool_call.get("run_id", 0))
+            )
+        elif tool == "list_workflow_jobs":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_workflow_jobs", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_workflow_jobs(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                run_id=int(tool_call.get("run_id", 0))
+            )
+        elif tool == "rerun_job":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="rerun_job", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_rerun_job(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                job_id=int(tool_call.get("job_id", 0))
+            )
+        elif tool == "list_artifacts":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_artifacts", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_artifacts(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                run_id=tool_call.get("run_id")
+            )
+        elif tool == "download_artifact":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="download_artifact", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_download_artifact(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                artifact_id=int(tool_call.get("artifact_id", 0)),
+                output_dir=tool_call.get("output_dir", "/tmp")
+            )
+        elif tool == "delete_artifact":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="delete_artifact", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_delete_artifact(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                artifact_id=int(tool_call.get("artifact_id", 0))
+            )
+        elif tool == "get_deployment_status":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="get_deployment_status", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_get_deployment_status(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                environment=tool_call.get("environment")
+            )
+        elif tool == "list_environments":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_environments", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_environments(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", "")
+            )
+        elif tool == "get_workflow_usage":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="get_workflow_usage", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_get_workflow_usage(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                workflow_id=str(tool_call.get("workflow_id", ""))
+            )
         else:
             return ToolResult(tool=str(tool), success=False, output="", error=f"Unknown tool: {tool}", error_code="unknown_tool", suggestions=get_error_suggestions("unknown_tool"))
     except Exception as e:
@@ -6511,4 +6662,568 @@ async def api_git_bisect_reset(repo_id: str):
         raise HTTPException(status_code=404, detail="Repository not found")
     
     result = execute_git_bisect_reset(row[0])
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+# ============================================================================
+# Phase 49: CI/CD Integration
+# ============================================================================
+
+def execute_list_workflows(owner: str, repo: str, token: str) -> ToolResult:
+    """List all workflows in a repository."""
+    try:
+        success, data = execute_github_api("GET", f"/repos/{owner}/{repo}/actions/workflows", token)
+        if not success:
+            return ToolResult(tool="list_workflows", success=False, output="", error=data.get("message", "Failed to list workflows"), error_code="api_error")
+        
+        workflows = data.get("workflows", [])
+        if not workflows:
+            return ToolResult(tool="list_workflows", success=True, output="No workflows found in this repository.")
+        
+        result_lines = [f"Found {len(workflows)} workflow(s):\n"]
+        for wf in workflows:
+            state = wf.get("state", "unknown")
+            result_lines.append(f"- {wf['name']} (ID: {wf['id']}) - {wf['path']} [{state}]")
+        
+        return ToolResult(tool="list_workflows", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="list_workflows", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_trigger_workflow(owner: str, repo: str, token: str, workflow_id: str, ref: str = "main", inputs: Optional[dict] = None) -> ToolResult:
+    """Trigger a workflow dispatch event."""
+    try:
+        payload = {"ref": ref}
+        if inputs:
+            payload["inputs"] = inputs
+        
+        success, data = execute_github_api("POST", f"/repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches", token, payload)
+        
+        if not success:
+            error_msg = data.get("message", "Failed to trigger workflow")
+            if "Workflow does not have 'workflow_dispatch' trigger" in str(data):
+                return ToolResult(tool="trigger_workflow", success=False, output="", error="Workflow does not have 'workflow_dispatch' trigger. Add it to the workflow YAML.", error_code="no_dispatch_trigger")
+            return ToolResult(tool="trigger_workflow", success=False, output="", error=error_msg, error_code="api_error")
+        
+        return ToolResult(tool="trigger_workflow", success=True, output=f"Workflow {workflow_id} triggered successfully on ref '{ref}'. Check workflow runs for status.")
+    except Exception as e:
+        return ToolResult(tool="trigger_workflow", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_list_workflow_runs(owner: str, repo: str, token: str, workflow_id: Optional[str] = None, status: Optional[str] = None, per_page: int = 10) -> ToolResult:
+    """List workflow runs, optionally filtered by workflow ID and status."""
+    try:
+        endpoint = f"/repos/{owner}/{repo}/actions/runs"
+        params = [f"per_page={per_page}"]
+        if status:
+            params.append(f"status={status}")
+        if params:
+            endpoint += "?" + "&".join(params)
+        
+        success, data = execute_github_api("GET", endpoint, token)
+        if not success:
+            return ToolResult(tool="list_workflow_runs", success=False, output="", error=data.get("message", "Failed to list workflow runs"), error_code="api_error")
+        
+        runs = data.get("workflow_runs", [])
+        
+        # Filter by workflow_id if specified
+        if workflow_id:
+            runs = [r for r in runs if str(r.get("workflow_id")) == str(workflow_id)]
+        
+        if not runs:
+            return ToolResult(tool="list_workflow_runs", success=True, output="No workflow runs found.")
+        
+        result_lines = [f"Found {len(runs)} workflow run(s):\n"]
+        for run in runs[:20]:
+            status_icon = {"completed": "done", "in_progress": "running", "queued": "queued"}.get(run.get("status", ""), run.get("status", ""))
+            conclusion = run.get("conclusion", "pending") or "pending"
+            result_lines.append(f"- Run #{run['run_number']} (ID: {run['id']}) - {run['name']}")
+            result_lines.append(f"  Status: {status_icon} | Conclusion: {conclusion}")
+            result_lines.append(f"  Branch: {run.get('head_branch', 'N/A')} | Commit: {run.get('head_sha', 'N/A')[:7]}")
+            result_lines.append(f"  URL: {run.get('html_url', 'N/A')}")
+            result_lines.append("")
+        
+        return ToolResult(tool="list_workflow_runs", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="list_workflow_runs", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_get_workflow_run(owner: str, repo: str, token: str, run_id: int) -> ToolResult:
+    """Get details of a specific workflow run."""
+    try:
+        success, data = execute_github_api("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}", token)
+        if not success:
+            return ToolResult(tool="get_workflow_run", success=False, output="", error=data.get("message", "Failed to get workflow run"), error_code="api_error")
+        
+        result_lines = [
+            f"Workflow Run #{data['run_number']} - {data['name']}",
+            f"ID: {data['id']}",
+            f"Status: {data.get('status', 'unknown')}",
+            f"Conclusion: {data.get('conclusion', 'pending') or 'pending'}",
+            f"Branch: {data.get('head_branch', 'N/A')}",
+            f"Commit: {data.get('head_sha', 'N/A')}",
+            f"Event: {data.get('event', 'N/A')}",
+            f"Created: {data.get('created_at', 'N/A')}",
+            f"Updated: {data.get('updated_at', 'N/A')}",
+            f"URL: {data.get('html_url', 'N/A')}",
+        ]
+        
+        return ToolResult(tool="get_workflow_run", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="get_workflow_run", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_rerun_workflow(owner: str, repo: str, token: str, run_id: int, failed_only: bool = False) -> ToolResult:
+    """Re-run a workflow run (all jobs or failed jobs only)."""
+    try:
+        endpoint = f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun"
+        if failed_only:
+            endpoint = f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs"
+        
+        success, data = execute_github_api("POST", endpoint, token)
+        
+        if not success:
+            error_msg = data.get("message", "Failed to re-run workflow")
+            return ToolResult(tool="rerun_workflow", success=False, output="", error=error_msg, error_code="api_error")
+        
+        action = "failed jobs" if failed_only else "all jobs"
+        return ToolResult(tool="rerun_workflow", success=True, output=f"Workflow run {run_id} re-run triggered ({action}).")
+    except Exception as e:
+        return ToolResult(tool="rerun_workflow", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_cancel_workflow_run(owner: str, repo: str, token: str, run_id: int) -> ToolResult:
+    """Cancel a workflow run."""
+    try:
+        success, data = execute_github_api("POST", f"/repos/{owner}/{repo}/actions/runs/{run_id}/cancel", token)
+        
+        if not success:
+            error_msg = data.get("message", "Failed to cancel workflow run")
+            return ToolResult(tool="cancel_workflow_run", success=False, output="", error=error_msg, error_code="api_error")
+        
+        return ToolResult(tool="cancel_workflow_run", success=True, output=f"Workflow run {run_id} cancellation requested.")
+    except Exception as e:
+        return ToolResult(tool="cancel_workflow_run", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_list_workflow_jobs(owner: str, repo: str, token: str, run_id: int) -> ToolResult:
+    """List jobs for a workflow run."""
+    try:
+        success, data = execute_github_api("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}/jobs", token)
+        if not success:
+            return ToolResult(tool="list_workflow_jobs", success=False, output="", error=data.get("message", "Failed to list jobs"), error_code="api_error")
+        
+        jobs = data.get("jobs", [])
+        if not jobs:
+            return ToolResult(tool="list_workflow_jobs", success=True, output="No jobs found for this workflow run.")
+        
+        result_lines = [f"Found {len(jobs)} job(s) for run {run_id}:\n"]
+        for job in jobs:
+            status = job.get("status", "unknown")
+            conclusion = job.get("conclusion", "pending") or "pending"
+            result_lines.append(f"- {job['name']} (ID: {job['id']})")
+            result_lines.append(f"  Status: {status} | Conclusion: {conclusion}")
+            
+            # Show steps if available
+            steps = job.get("steps", [])
+            if steps:
+                result_lines.append(f"  Steps ({len(steps)}):")
+                for step in steps[:10]:
+                    step_status = step.get("conclusion", step.get("status", "pending"))
+                    result_lines.append(f"    - {step['name']}: {step_status}")
+            result_lines.append("")
+        
+        return ToolResult(tool="list_workflow_jobs", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="list_workflow_jobs", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_rerun_job(owner: str, repo: str, token: str, job_id: int) -> ToolResult:
+    """Re-run a specific job."""
+    try:
+        success, data = execute_github_api("POST", f"/repos/{owner}/{repo}/actions/jobs/{job_id}/rerun", token)
+        
+        if not success:
+            error_msg = data.get("message", "Failed to re-run job")
+            return ToolResult(tool="rerun_job", success=False, output="", error=error_msg, error_code="api_error")
+        
+        return ToolResult(tool="rerun_job", success=True, output=f"Job {job_id} re-run triggered.")
+    except Exception as e:
+        return ToolResult(tool="rerun_job", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_list_artifacts(owner: str, repo: str, token: str, run_id: Optional[int] = None) -> ToolResult:
+    """List artifacts for a repository or specific workflow run."""
+    try:
+        if run_id:
+            endpoint = f"/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts"
+        else:
+            endpoint = f"/repos/{owner}/{repo}/actions/artifacts"
+        
+        success, data = execute_github_api("GET", endpoint, token)
+        if not success:
+            return ToolResult(tool="list_artifacts", success=False, output="", error=data.get("message", "Failed to list artifacts"), error_code="api_error")
+        
+        artifacts = data.get("artifacts", [])
+        if not artifacts:
+            return ToolResult(tool="list_artifacts", success=True, output="No artifacts found.")
+        
+        result_lines = [f"Found {len(artifacts)} artifact(s):\n"]
+        for artifact in artifacts[:30]:
+            size_mb = artifact.get("size_in_bytes", 0) / (1024 * 1024)
+            expired = "expired" if artifact.get("expired", False) else "active"
+            result_lines.append(f"- {artifact['name']} (ID: {artifact['id']})")
+            result_lines.append(f"  Size: {size_mb:.2f} MB | Status: {expired}")
+            result_lines.append(f"  Created: {artifact.get('created_at', 'N/A')}")
+            result_lines.append(f"  Expires: {artifact.get('expires_at', 'N/A')}")
+            result_lines.append("")
+        
+        return ToolResult(tool="list_artifacts", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="list_artifacts", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_download_artifact(owner: str, repo: str, token: str, artifact_id: int, output_dir: str = "/tmp") -> ToolResult:
+    """Download an artifact."""
+    try:
+        import httpx
+        
+        # Get download URL
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
+        
+        download_url = f"https://api.github.com/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip"
+        
+        with httpx.Client(follow_redirects=True, timeout=120.0) as client:
+            response = client.get(download_url, headers=headers)
+            
+            if response.status_code != 200:
+                return ToolResult(tool="download_artifact", success=False, output="", error=f"Failed to download artifact: {response.status_code}", error_code="download_failed")
+            
+            # Save to file
+            output_path = os.path.join(output_dir, f"artifact_{artifact_id}.zip")
+            with open(output_path, "wb") as f:
+                f.write(response.content)
+            
+            return ToolResult(tool="download_artifact", success=True, output=f"Artifact downloaded to: {output_path}")
+    except Exception as e:
+        return ToolResult(tool="download_artifact", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_delete_artifact(owner: str, repo: str, token: str, artifact_id: int) -> ToolResult:
+    """Delete an artifact."""
+    try:
+        success, data = execute_github_api("DELETE", f"/repos/{owner}/{repo}/actions/artifacts/{artifact_id}", token)
+        
+        if not success:
+            error_msg = data.get("message", "Failed to delete artifact")
+            return ToolResult(tool="delete_artifact", success=False, output="", error=error_msg, error_code="api_error")
+        
+        return ToolResult(tool="delete_artifact", success=True, output=f"Artifact {artifact_id} deleted.")
+    except Exception as e:
+        return ToolResult(tool="delete_artifact", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_get_deployment_status(owner: str, repo: str, token: str, environment: Optional[str] = None) -> ToolResult:
+    """Get deployment status for a repository."""
+    try:
+        endpoint = f"/repos/{owner}/{repo}/deployments"
+        if environment:
+            endpoint += f"?environment={environment}"
+        
+        success, data = execute_github_api("GET", endpoint, token)
+        if not success:
+            return ToolResult(tool="get_deployment_status", success=False, output="", error=data.get("message", "Failed to get deployments"), error_code="api_error")
+        
+        deployments = data if isinstance(data, list) else []
+        if not deployments:
+            return ToolResult(tool="get_deployment_status", success=True, output="No deployments found.")
+        
+        result_lines = [f"Found {len(deployments)} deployment(s):\n"]
+        for dep in deployments[:20]:
+            result_lines.append(f"- Deployment {dep['id']} to {dep.get('environment', 'N/A')}")
+            result_lines.append(f"  Ref: {dep.get('ref', 'N/A')}")
+            result_lines.append(f"  Created: {dep.get('created_at', 'N/A')}")
+            result_lines.append(f"  Creator: {dep.get('creator', {}).get('login', 'N/A')}")
+            
+            # Get deployment status
+            status_success, status_data = execute_github_api("GET", f"/repos/{owner}/{repo}/deployments/{dep['id']}/statuses", token)
+            if status_success and status_data:
+                statuses = status_data if isinstance(status_data, list) else []
+                if statuses:
+                    latest = statuses[0]
+                    result_lines.append(f"  Status: {latest.get('state', 'unknown')}")
+                    if latest.get('environment_url'):
+                        result_lines.append(f"  Preview URL: {latest.get('environment_url')}")
+            result_lines.append("")
+        
+        return ToolResult(tool="get_deployment_status", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="get_deployment_status", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_list_environments(owner: str, repo: str, token: str) -> ToolResult:
+    """List deployment environments for a repository."""
+    try:
+        success, data = execute_github_api("GET", f"/repos/{owner}/{repo}/environments", token)
+        if not success:
+            return ToolResult(tool="list_environments", success=False, output="", error=data.get("message", "Failed to list environments"), error_code="api_error")
+        
+        environments = data.get("environments", [])
+        if not environments:
+            return ToolResult(tool="list_environments", success=True, output="No environments configured.")
+        
+        result_lines = [f"Found {len(environments)} environment(s):\n"]
+        for env in environments:
+            result_lines.append(f"- {env['name']} (ID: {env['id']})")
+            result_lines.append(f"  Created: {env.get('created_at', 'N/A')}")
+            result_lines.append(f"  Updated: {env.get('updated_at', 'N/A')}")
+            
+            # Protection rules
+            protection = env.get("protection_rules", [])
+            if protection:
+                result_lines.append(f"  Protection rules: {len(protection)}")
+            
+            # Deployment branch policy
+            policy = env.get("deployment_branch_policy")
+            if policy:
+                result_lines.append(f"  Branch policy: protected_branches={policy.get('protected_branches', False)}")
+            result_lines.append("")
+        
+        return ToolResult(tool="list_environments", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="list_environments", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_get_workflow_usage(owner: str, repo: str, token: str, workflow_id: str) -> ToolResult:
+    """Get usage statistics for a workflow."""
+    try:
+        success, data = execute_github_api("GET", f"/repos/{owner}/{repo}/actions/workflows/{workflow_id}/timing", token)
+        if not success:
+            return ToolResult(tool="get_workflow_usage", success=False, output="", error=data.get("message", "Failed to get workflow usage"), error_code="api_error")
+        
+        billable = data.get("billable", {})
+        result_lines = ["Workflow Usage Statistics:\n"]
+        
+        for runner_type, stats in billable.items():
+            total_ms = stats.get("total_ms", 0)
+            total_mins = total_ms / 60000
+            result_lines.append(f"- {runner_type}: {total_mins:.2f} minutes")
+        
+        if not billable:
+            result_lines.append("No usage data available.")
+        
+        return ToolResult(tool="get_workflow_usage", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="get_workflow_usage", success=False, output="", error=str(e), error_code="unknown_error")
+
+# ============================================================================
+# Phase 49: CI/CD Integration - API Endpoints
+# ============================================================================
+
+class TriggerWorkflowRequest(BaseModel):
+    workflow_id: str
+    ref: str = "main"
+    inputs: Optional[dict] = None
+
+class RerunWorkflowRequest(BaseModel):
+    failed_only: bool = False
+
+@app.get("/api/repos/{repo_id}/workflows")
+async def api_list_workflows(repo_id: str):
+    """List all workflows in a repository."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_list_workflows(row[0], row[1], row[2])
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/workflows/trigger")
+async def api_trigger_workflow(repo_id: str, request: TriggerWorkflowRequest):
+    """Trigger a workflow dispatch event."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_trigger_workflow(row[0], row[1], row[2], request.workflow_id, request.ref, request.inputs)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/workflow-runs")
+async def api_list_workflow_runs(repo_id: str, workflow_id: Optional[str] = None, status: Optional[str] = None, per_page: int = 10):
+    """List workflow runs."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_list_workflow_runs(row[0], row[1], row[2], workflow_id, status, per_page)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/workflow-runs/{run_id}")
+async def api_get_workflow_run(repo_id: str, run_id: int):
+    """Get details of a specific workflow run."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_get_workflow_run(row[0], row[1], row[2], run_id)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/workflow-runs/{run_id}/rerun")
+async def api_rerun_workflow(repo_id: str, run_id: int, request: RerunWorkflowRequest):
+    """Re-run a workflow run."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_rerun_workflow(row[0], row[1], row[2], run_id, request.failed_only)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/workflow-runs/{run_id}/cancel")
+async def api_cancel_workflow_run(repo_id: str, run_id: int):
+    """Cancel a workflow run."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_cancel_workflow_run(row[0], row[1], row[2], run_id)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/workflow-runs/{run_id}/jobs")
+async def api_list_workflow_jobs(repo_id: str, run_id: int):
+    """List jobs for a workflow run."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_list_workflow_jobs(row[0], row[1], row[2], run_id)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/jobs/{job_id}/rerun")
+async def api_rerun_job(repo_id: str, job_id: int):
+    """Re-run a specific job."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_rerun_job(row[0], row[1], row[2], job_id)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/artifacts")
+async def api_list_artifacts(repo_id: str, run_id: Optional[int] = None):
+    """List artifacts for a repository or specific workflow run."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_list_artifacts(row[0], row[1], row[2], run_id)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/artifacts/{artifact_id}/download")
+async def api_download_artifact(repo_id: str, artifact_id: int):
+    """Download an artifact."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_download_artifact(row[0], row[1], row[2], artifact_id)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.delete("/api/repos/{repo_id}/artifacts/{artifact_id}")
+async def api_delete_artifact(repo_id: str, artifact_id: int):
+    """Delete an artifact."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_delete_artifact(row[0], row[1], row[2], artifact_id)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/deployments")
+async def api_get_deployment_status(repo_id: str, environment: Optional[str] = None):
+    """Get deployment status for a repository."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_get_deployment_status(row[0], row[1], row[2], environment)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/environments")
+async def api_list_environments(repo_id: str):
+    """List deployment environments for a repository."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_list_environments(row[0], row[1], row[2])
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/workflows/{workflow_id}/usage")
+async def api_get_workflow_usage(repo_id: str, workflow_id: str):
+    """Get usage statistics for a workflow."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_get_workflow_usage(row[0], row[1], row[2], workflow_id)
     return {"success": result.success, "output": result.output, "error": result.error}
