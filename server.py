@@ -1,5 +1,5 @@
 """
-Mini-Devin API Server v5.2
+Mini-Devin API Server v5.3
 Phase 34: Better Error Handling
 Phase 35: Task History & Export
 Phase 36: Multi-Model Support (OpenAI, Anthropic, Ollama)
@@ -7,6 +7,7 @@ Phase 37: File Upload
 Phase 38: Agent Memory (cross-session)
 Phase 42: Authentication & Security (JWT, Rate Limiting, Session Timeout)
 Phase 43: Database Connection Pooling (SQLAlchemy)
+Phase 44: Background Task Queue with Retry/Failure Recovery
 """
 
 import os
@@ -128,6 +129,322 @@ def get_db_pool_stats() -> Dict[str, Any]:
         "overflow": pool.overflow(),
         "invalid": pool.invalidatedcount() if hasattr(pool, 'invalidatedcount') else 0
     }
+
+# ============================================================================
+# Phase 44: Background Task Queue with Retry/Failure Recovery
+# ============================================================================
+TASK_QUEUE_MAX_WORKERS = int(os.environ.get("TASK_QUEUE_MAX_WORKERS", "3"))
+TASK_QUEUE_MAX_RETRIES = int(os.environ.get("TASK_QUEUE_MAX_RETRIES", "3"))
+TASK_QUEUE_RETRY_DELAY = float(os.environ.get("TASK_QUEUE_RETRY_DELAY", "5.0"))
+TASK_QUEUE_RETRY_BACKOFF = float(os.environ.get("TASK_QUEUE_RETRY_BACKOFF", "2.0"))
+TASK_QUEUE_MAX_RETRY_DELAY = float(os.environ.get("TASK_QUEUE_MAX_RETRY_DELAY", "300.0"))
+
+class TaskStatus:
+    PENDING = "pending"
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    RETRYING = "retrying"
+    CANCELLED = "cancelled"
+
+class QueuedTask:
+    """Represents a task in the background queue."""
+    def __init__(self, task_id: str, session_id: str, description: str, 
+                 model: str, provider: str = "openai", max_iterations: int = 10,
+                 priority: int = 0):
+        self.task_id = task_id
+        self.session_id = session_id
+        self.description = description
+        self.model = model
+        self.provider = provider
+        self.max_iterations = max_iterations
+        self.priority = priority
+        self.retry_count = 0
+        self.last_error: Optional[str] = None
+        self.queued_at = datetime.utcnow()
+        self.started_at: Optional[datetime] = None
+        self.next_retry_at: Optional[datetime] = None
+
+class BackgroundTaskQueue:
+    """In-memory background task queue with retry and failure recovery."""
+    
+    def __init__(self, max_workers: int = TASK_QUEUE_MAX_WORKERS):
+        self.max_workers = max_workers
+        self.queue: asyncio.Queue[QueuedTask] = asyncio.Queue()
+        self.active_tasks: Dict[str, QueuedTask] = {}
+        self.completed_tasks: Dict[str, Dict[str, Any]] = {}
+        self.failed_tasks: Dict[str, Dict[str, Any]] = {}
+        self.cancelled_tasks: set = set()
+        self.workers: List[asyncio.Task] = []
+        self.running = False
+        self.stats = {
+            "total_queued": 0,
+            "total_completed": 0,
+            "total_failed": 0,
+            "total_retried": 0,
+            "total_cancelled": 0
+        }
+        self._lock = asyncio.Lock()
+    
+    async def start(self):
+        """Start the background task queue workers."""
+        if self.running:
+            return
+        self.running = True
+        for i in range(self.max_workers):
+            worker = asyncio.create_task(self._worker(i))
+            self.workers.append(worker)
+        print(f"Background task queue started with {self.max_workers} workers")
+    
+    async def stop(self):
+        """Stop all workers gracefully."""
+        self.running = False
+        for worker in self.workers:
+            worker.cancel()
+        await asyncio.gather(*self.workers, return_exceptions=True)
+        self.workers.clear()
+        print("Background task queue stopped")
+    
+    async def enqueue(self, task: QueuedTask) -> str:
+        """Add a task to the queue."""
+        async with self._lock:
+            self.stats["total_queued"] += 1
+            await self.queue.put(task)
+            # Update task status in database
+            self._update_task_status(task.task_id, TaskStatus.QUEUED, 
+                                    queue_position=self.queue.qsize())
+        return task.task_id
+    
+    async def cancel(self, task_id: str) -> bool:
+        """Cancel a task if it's still pending or queued."""
+        async with self._lock:
+            self.cancelled_tasks.add(task_id)
+            if task_id in self.active_tasks:
+                # Task is running, mark for cancellation
+                self.stats["total_cancelled"] += 1
+                self._update_task_status(task_id, TaskStatus.CANCELLED)
+                return True
+            # Check if in queue (can't easily remove from asyncio.Queue)
+            self.stats["total_cancelled"] += 1
+            self._update_task_status(task_id, TaskStatus.CANCELLED)
+            return True
+    
+    async def retry(self, task_id: str) -> bool:
+        """Manually retry a failed task."""
+        if task_id not in self.failed_tasks:
+            return False
+        
+        task_info = self.failed_tasks.pop(task_id)
+        new_task = QueuedTask(
+            task_id=task_id,
+            session_id=task_info["session_id"],
+            description=task_info["description"],
+            model=task_info["model"],
+            provider=task_info["provider"],
+            max_iterations=task_info["max_iterations"]
+        )
+        new_task.retry_count = task_info.get("retry_count", 0)
+        await self.enqueue(new_task)
+        return True
+    
+    def _update_task_status(self, task_id: str, status: str, 
+                           queue_position: Optional[int] = None,
+                           retry_count: Optional[int] = None,
+                           error: Optional[str] = None,
+                           next_retry_at: Optional[str] = None):
+        """Update task status in database."""
+        try:
+            conn = get_db()
+            c = conn.cursor()
+            updates = ["status=?"]
+            params = [status]
+            
+            if queue_position is not None:
+                updates.append("queue_position=?")
+                params.append(queue_position)
+            if retry_count is not None:
+                updates.append("retry_count=?")
+                params.append(retry_count)
+            if error is not None:
+                updates.append("error_message=?")
+                params.append(error)
+            if next_retry_at is not None:
+                updates.append("next_retry_at=?")
+                params.append(next_retry_at)
+            
+            params.append(task_id)
+            c.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE task_id=?", params)
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Error updating task status: {e}")
+    
+    async def _worker(self, worker_id: int):
+        """Worker coroutine that processes tasks from the queue."""
+        print(f"Worker {worker_id} started")
+        while self.running:
+            try:
+                # Wait for a task with timeout
+                try:
+                    task = await asyncio.wait_for(self.queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+                
+                # Check if task was cancelled
+                if task.task_id in self.cancelled_tasks:
+                    self.cancelled_tasks.discard(task.task_id)
+                    self.queue.task_done()
+                    continue
+                
+                # Check if task should wait for retry
+                if task.next_retry_at and datetime.utcnow() < task.next_retry_at:
+                    wait_time = (task.next_retry_at - datetime.utcnow()).total_seconds()
+                    if wait_time > 0:
+                        await asyncio.sleep(min(wait_time, 1.0))
+                        await self.queue.put(task)
+                        self.queue.task_done()
+                        continue
+                
+                # Process the task
+                async with self._lock:
+                    self.active_tasks[task.task_id] = task
+                    task.started_at = datetime.utcnow()
+                
+                self._update_task_status(task.task_id, TaskStatus.RUNNING, 
+                                        retry_count=task.retry_count)
+                
+                try:
+                    # Execute the actual task
+                    await execute_agent_task(
+                        task.session_id, 
+                        task.task_id, 
+                        task.description,
+                        task.model,
+                        task.provider,
+                        task.max_iterations
+                    )
+                    
+                    # Task completed successfully
+                    async with self._lock:
+                        self.active_tasks.pop(task.task_id, None)
+                        self.completed_tasks[task.task_id] = {
+                            "session_id": task.session_id,
+                            "completed_at": datetime.utcnow().isoformat(),
+                            "retry_count": task.retry_count
+                        }
+                        self.stats["total_completed"] += 1
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    task.last_error = error_msg
+                    task.retry_count += 1
+                    
+                    async with self._lock:
+                        self.active_tasks.pop(task.task_id, None)
+                    
+                    # Check if we should retry
+                    if task.retry_count < TASK_QUEUE_MAX_RETRIES:
+                        # Calculate retry delay with exponential backoff
+                        delay = min(
+                            TASK_QUEUE_RETRY_DELAY * (TASK_QUEUE_RETRY_BACKOFF ** (task.retry_count - 1)),
+                            TASK_QUEUE_MAX_RETRY_DELAY
+                        )
+                        task.next_retry_at = datetime.utcnow() + timedelta(seconds=delay)
+                        
+                        self._update_task_status(
+                            task.task_id, 
+                            TaskStatus.RETRYING,
+                            retry_count=task.retry_count,
+                            error=error_msg,
+                            next_retry_at=task.next_retry_at.isoformat()
+                        )
+                        
+                        async with self._lock:
+                            self.stats["total_retried"] += 1
+                        
+                        # Re-queue for retry
+                        await self.queue.put(task)
+                        print(f"Task {task.task_id} scheduled for retry {task.retry_count}/{TASK_QUEUE_MAX_RETRIES} in {delay}s")
+                    else:
+                        # Max retries exceeded, mark as failed
+                        async with self._lock:
+                            self.failed_tasks[task.task_id] = {
+                                "session_id": task.session_id,
+                                "description": task.description,
+                                "model": task.model,
+                                "provider": task.provider,
+                                "max_iterations": task.max_iterations,
+                                "error": error_msg,
+                                "retry_count": task.retry_count,
+                                "failed_at": datetime.utcnow().isoformat()
+                            }
+                            self.stats["total_failed"] += 1
+                        
+                        self._update_task_status(
+                            task.task_id, 
+                            TaskStatus.FAILED,
+                            retry_count=task.retry_count,
+                            error=f"Max retries exceeded: {error_msg}"
+                        )
+                        print(f"Task {task.task_id} failed after {task.retry_count} retries: {error_msg}")
+                
+                self.queue.task_done()
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"Worker {worker_id} error: {e}")
+                await asyncio.sleep(1)
+        
+        print(f"Worker {worker_id} stopped")
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get queue statistics."""
+        return {
+            "running": self.running,
+            "max_workers": self.max_workers,
+            "queue_size": self.queue.qsize(),
+            "active_tasks": len(self.active_tasks),
+            "completed_tasks": len(self.completed_tasks),
+            "failed_tasks": len(self.failed_tasks),
+            "stats": self.stats.copy(),
+            "config": {
+                "max_retries": TASK_QUEUE_MAX_RETRIES,
+                "retry_delay": TASK_QUEUE_RETRY_DELAY,
+                "retry_backoff": TASK_QUEUE_RETRY_BACKOFF,
+                "max_retry_delay": TASK_QUEUE_MAX_RETRY_DELAY
+            }
+        }
+    
+    def get_task_info(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Get information about a specific task."""
+        if task_id in self.active_tasks:
+            task = self.active_tasks[task_id]
+            return {
+                "status": TaskStatus.RUNNING,
+                "session_id": task.session_id,
+                "retry_count": task.retry_count,
+                "started_at": task.started_at.isoformat() if task.started_at else None,
+                "last_error": task.last_error
+            }
+        if task_id in self.completed_tasks:
+            return {"status": TaskStatus.COMPLETED, **self.completed_tasks[task_id]}
+        if task_id in self.failed_tasks:
+            return {"status": TaskStatus.FAILED, **self.failed_tasks[task_id]}
+        if task_id in self.cancelled_tasks:
+            return {"status": TaskStatus.CANCELLED}
+        return None
+
+# Global task queue instance
+task_queue: Optional[BackgroundTaskQueue] = None
+
+def get_task_queue() -> BackgroundTaskQueue:
+    """Get the global task queue instance."""
+    global task_queue
+    if task_queue is None:
+        task_queue = BackgroundTaskQueue(max_workers=TASK_QUEUE_MAX_WORKERS)
+    return task_queue
 
 class APIError(Exception):
     def __init__(self, message: str, code: str, status_code: int = 400, details: Optional[Dict] = None):
@@ -272,6 +589,19 @@ def init_db():
         pass
     try:
         c.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT")
+    except:
+        pass
+    # Phase 44: Add retry tracking columns to tasks table
+    try:
+        c.execute("ALTER TABLE tasks ADD COLUMN retry_count INTEGER DEFAULT 0")
+    except:
+        pass
+    try:
+        c.execute("ALTER TABLE tasks ADD COLUMN queue_position INTEGER")
+    except:
+        pass
+    try:
+        c.execute("ALTER TABLE tasks ADD COLUMN next_retry_at TEXT")
     except:
         pass
     conn.commit()
@@ -2010,13 +2340,19 @@ async def execute_agent_task(session_id: str, task_id: str, description: str, mo
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    print("Starting Mini-Devin API v5.0...")
-    print("Features: Tool Execution, SQLite Storage, WebSocket, Multi-Model, File Upload, Agent Memory, Export")
+    print("Starting Mini-Devin API v5.3...")
+    print("Features: Tool Execution, SQLite Storage, WebSocket, Multi-Model, File Upload, Agent Memory, Export, Background Task Queue")
     init_db()
     print(f"SQLite database initialized at {DB_PATH}")
     print(f"Workspace directory: {WORKSPACE_DIR}")
     print(f"Uploads directory: {UPLOADS_DIR}")
     print(f"Memory directory: {MEMORY_DIR}")
+    
+    # Phase 44: Start background task queue
+    queue = get_task_queue()
+    await queue.start()
+    print(f"Background task queue started with {TASK_QUEUE_MAX_WORKERS} workers")
+    print(f"Task queue config: max_retries={TASK_QUEUE_MAX_RETRIES}, retry_delay={TASK_QUEUE_RETRY_DELAY}s, backoff={TASK_QUEUE_RETRY_BACKOFF}x")
     
     openai_key = os.environ.get("OPENAI_API_KEY")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -2039,6 +2375,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         print(f"Available providers: {', '.join(providers)}")
     
     yield
+    
+    # Phase 44: Stop background task queue gracefully
+    print("Stopping background task queue...")
+    await queue.stop()
     print("Shutting down Mini-Devin API...")
 
 app = FastAPI(title="Mini-Devin API", version="5.0.0", description="Autonomous AI Software Engineer with Multi-Model Support, File Upload, Agent Memory, and Export", lifespan=lifespan)
@@ -2343,6 +2683,81 @@ async def get_db_pool_status():
     Useful for monitoring database connection health.
     """
     return get_db_pool_stats()
+
+# ============================================================================
+# Phase 44: Task Queue Management Endpoints
+# ============================================================================
+
+@app.get("/api/task-queue")
+async def get_task_queue_status():
+    """Get background task queue statistics and configuration.
+    
+    Returns queue status, worker count, pending/active/completed/failed task counts,
+    and retry configuration.
+    """
+    queue = get_task_queue()
+    return queue.get_stats()
+
+@app.get("/api/task-queue/task/{task_id}")
+async def get_queued_task_info(task_id: str):
+    """Get detailed information about a specific task in the queue.
+    
+    Returns task status, retry count, errors, and timing information.
+    """
+    queue = get_task_queue()
+    info = queue.get_task_info(task_id)
+    if info is None:
+        raise HTTPException(status_code=404, detail="Task not found in queue")
+    return info
+
+@app.post("/api/task-queue/task/{task_id}/cancel")
+async def cancel_queued_task(task_id: str):
+    """Cancel a pending or running task.
+    
+    Marks the task as cancelled. Running tasks will be stopped at the next checkpoint.
+    """
+    queue = get_task_queue()
+    success = await queue.cancel(task_id)
+    if success:
+        return {"status": "cancelled", "task_id": task_id}
+    raise HTTPException(status_code=400, detail="Could not cancel task")
+
+@app.post("/api/task-queue/task/{task_id}/retry")
+async def retry_failed_task(task_id: str):
+    """Manually retry a failed task.
+    
+    Re-queues a failed task for execution. Only works for tasks that have failed.
+    """
+    queue = get_task_queue()
+    success = await queue.retry(task_id)
+    if success:
+        return {"status": "requeued", "task_id": task_id}
+    raise HTTPException(status_code=400, detail="Task not found in failed tasks or cannot be retried")
+
+@app.get("/api/task-queue/failed")
+async def list_failed_tasks():
+    """List all failed tasks that can be retried.
+    
+    Returns details about each failed task including error messages and retry counts.
+    """
+    queue = get_task_queue()
+    return {
+        "count": len(queue.failed_tasks),
+        "tasks": list(queue.failed_tasks.items())
+    }
+
+@app.post("/api/task-queue/retry-all")
+async def retry_all_failed_tasks():
+    """Retry all failed tasks.
+    
+    Re-queues all failed tasks for execution.
+    """
+    queue = get_task_queue()
+    retried = []
+    for task_id in list(queue.failed_tasks.keys()):
+        if await queue.retry(task_id):
+            retried.append(task_id)
+    return {"status": "requeued", "count": len(retried), "task_ids": retried}
 
 @app.get("/api/status")
 async def get_status():
