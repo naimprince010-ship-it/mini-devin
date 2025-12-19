@@ -3599,6 +3599,267 @@ def execute_tool(tool_call: dict, session_id: str = "", default_working_dir: str
                 workflow_type=str(tool_call.get("workflow_type", "")),
                 options=options
             )
+        # Phase 51: Collaboration - Reviewers, Labels, Milestones, Project Boards
+        elif tool == "request_reviewers":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="request_reviewers", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            reviewers = tool_call.get("reviewers")
+            if isinstance(reviewers, str):
+                reviewers = [r.strip() for r in reviewers.split(",")]
+            team_reviewers = tool_call.get("team_reviewers")
+            if isinstance(team_reviewers, str):
+                team_reviewers = [t.strip() for t in team_reviewers.split(",")]
+            return execute_request_reviewers(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                pr_number=int(tool_call.get("pr_number", 0)),
+                reviewers=reviewers,
+                team_reviewers=team_reviewers
+            )
+        elif tool == "remove_reviewers":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="remove_reviewers", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            reviewers = tool_call.get("reviewers")
+            if isinstance(reviewers, str):
+                reviewers = [r.strip() for r in reviewers.split(",")]
+            team_reviewers = tool_call.get("team_reviewers")
+            if isinstance(team_reviewers, str):
+                team_reviewers = [t.strip() for t in team_reviewers.split(",")]
+            return execute_remove_reviewers(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                pr_number=int(tool_call.get("pr_number", 0)),
+                reviewers=reviewers,
+                team_reviewers=team_reviewers
+            )
+        elif tool == "list_requested_reviewers":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_requested_reviewers", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_requested_reviewers(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                pr_number=int(tool_call.get("pr_number", 0))
+            )
+        elif tool == "list_labels":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_labels", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_labels(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", "")
+            )
+        elif tool == "create_label":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="create_label", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_create_label(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                name=str(tool_call.get("name", "")),
+                color=str(tool_call.get("color", "000000")),
+                description=str(tool_call.get("description", ""))
+            )
+        elif tool == "update_label":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="update_label", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_update_label(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                name=str(tool_call.get("name", "")),
+                new_name=tool_call.get("new_name"),
+                color=tool_call.get("color"),
+                description=tool_call.get("description")
+            )
+        elif tool == "delete_label":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="delete_label", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_delete_label(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                name=str(tool_call.get("name", ""))
+            )
+        elif tool == "add_labels_to_issue":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="add_labels_to_issue", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            labels = tool_call.get("labels")
+            if isinstance(labels, str):
+                labels = [l.strip() for l in labels.split(",")]
+            return execute_add_labels_to_issue(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                issue_number=int(tool_call.get("issue_number", 0)),
+                labels=labels
+            )
+        elif tool == "remove_label_from_issue":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="remove_label_from_issue", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_remove_label_from_issue(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                issue_number=int(tool_call.get("issue_number", 0)),
+                label=str(tool_call.get("label", ""))
+            )
+        elif tool == "list_milestones":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_milestones", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_milestones(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                state=str(tool_call.get("state", "open"))
+            )
+        elif tool == "create_milestone":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="create_milestone", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_create_milestone(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                title=str(tool_call.get("title", "")),
+                description=str(tool_call.get("description", "")),
+                due_on=tool_call.get("due_on"),
+                state=str(tool_call.get("state", "open"))
+            )
+        elif tool == "update_milestone":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="update_milestone", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_update_milestone(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                milestone_number=int(tool_call.get("milestone_number", 0)),
+                title=tool_call.get("title"),
+                description=tool_call.get("description"),
+                due_on=tool_call.get("due_on"),
+                state=tool_call.get("state")
+            )
+        elif tool == "delete_milestone":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="delete_milestone", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_delete_milestone(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                milestone_number=int(tool_call.get("milestone_number", 0))
+            )
+        elif tool == "set_issue_milestone":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="set_issue_milestone", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            milestone_number = tool_call.get("milestone_number")
+            if milestone_number is not None:
+                milestone_number = int(milestone_number)
+            return execute_set_issue_milestone(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                issue_number=int(tool_call.get("issue_number", 0)),
+                milestone_number=milestone_number
+            )
+        elif tool == "list_projects":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_projects", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_projects(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", "")
+            )
+        elif tool == "list_project_columns":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_project_columns", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_project_columns(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                project_id=int(tool_call.get("project_id", 0))
+            )
+        elif tool == "create_project_card":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="create_project_card", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            content_id = tool_call.get("content_id")
+            if content_id is not None:
+                content_id = int(content_id)
+            return execute_create_project_card(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                column_id=int(tool_call.get("column_id", 0)),
+                content_id=content_id,
+                content_type=tool_call.get("content_type"),
+                note=tool_call.get("note")
+            )
+        elif tool == "move_project_card":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="move_project_card", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_move_project_card(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                card_id=int(tool_call.get("card_id", 0)),
+                column_id=int(tool_call.get("column_id", 0)),
+                position=str(tool_call.get("position", "top"))
+            )
+        elif tool == "assign_issue":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="assign_issue", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            assignees = tool_call.get("assignees")
+            if isinstance(assignees, str):
+                assignees = [a.strip() for a in assignees.split(",")]
+            return execute_assign_issue(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                issue_number=int(tool_call.get("issue_number", 0)),
+                assignees=assignees
+            )
+        elif tool == "unassign_issue":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="unassign_issue", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            assignees = tool_call.get("assignees")
+            if isinstance(assignees, str):
+                assignees = [a.strip() for a in assignees.split(",")]
+            return execute_unassign_issue(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                issue_number=int(tool_call.get("issue_number", 0)),
+                assignees=assignees
+            )
+        elif tool == "list_collaborators":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_collaborators", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_collaborators(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", "")
+            )
         else:
             return ToolResult(tool=str(tool), success=False, output="", error=f"Unknown tool: {tool}", error_code="unknown_tool", suggestions=get_error_suggestions("unknown_tool"))
     except Exception as e:
@@ -8077,4 +8338,807 @@ async def api_delete_environment_secret(repo_id: str, environment_name: str, sec
 async def api_generate_workflow_template(request: GenerateWorkflowTemplateRequest):
     """Generate a workflow template based on type."""
     result = execute_generate_workflow_template(request.workflow_type, request.options)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+# ============================================================================
+# Phase 51: Collaboration - Reviewers, Labels, Milestones, Project Boards
+# ============================================================================
+
+def execute_request_reviewers(owner: str, repo: str, token: str, pr_number: int, reviewers: List[str] = None, team_reviewers: List[str] = None) -> ToolResult:
+    """Request reviewers for a pull request."""
+    try:
+        payload = {}
+        if reviewers:
+            payload["reviewers"] = reviewers
+        if team_reviewers:
+            payload["team_reviewers"] = team_reviewers
+        
+        if not payload:
+            return ToolResult(tool="request_reviewers", success=False, output="", error="Must specify at least one reviewer or team_reviewer", error_code="invalid_params")
+        
+        success, data = execute_github_api("POST", f"/repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers", token, payload)
+        
+        if not success:
+            return ToolResult(tool="request_reviewers", success=False, output="", error=data.get("message", "Failed to request reviewers"), error_code="api_error")
+        
+        requested = data.get("requested_reviewers", [])
+        teams = data.get("requested_teams", [])
+        
+        result_lines = [f"Reviewers requested for PR #{pr_number}:"]
+        if requested:
+            result_lines.append(f"Users: {', '.join([r['login'] for r in requested])}")
+        if teams:
+            result_lines.append(f"Teams: {', '.join([t['name'] for t in teams])}")
+        
+        return ToolResult(tool="request_reviewers", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="request_reviewers", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_remove_reviewers(owner: str, repo: str, token: str, pr_number: int, reviewers: List[str] = None, team_reviewers: List[str] = None) -> ToolResult:
+    """Remove requested reviewers from a pull request."""
+    try:
+        payload = {}
+        if reviewers:
+            payload["reviewers"] = reviewers
+        if team_reviewers:
+            payload["team_reviewers"] = team_reviewers
+        
+        if not payload:
+            return ToolResult(tool="remove_reviewers", success=False, output="", error="Must specify at least one reviewer or team_reviewer", error_code="invalid_params")
+        
+        success, data = execute_github_api("DELETE", f"/repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers", token, payload)
+        
+        if not success:
+            return ToolResult(tool="remove_reviewers", success=False, output="", error=data.get("message", "Failed to remove reviewers"), error_code="api_error")
+        
+        return ToolResult(tool="remove_reviewers", success=True, output=f"Reviewers removed from PR #{pr_number}")
+    except Exception as e:
+        return ToolResult(tool="remove_reviewers", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_list_requested_reviewers(owner: str, repo: str, token: str, pr_number: int) -> ToolResult:
+    """List requested reviewers for a pull request."""
+    try:
+        success, data = execute_github_api("GET", f"/repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers", token)
+        
+        if not success:
+            return ToolResult(tool="list_requested_reviewers", success=False, output="", error=data.get("message", "Failed to list reviewers"), error_code="api_error")
+        
+        users = data.get("users", [])
+        teams = data.get("teams", [])
+        
+        if not users and not teams:
+            return ToolResult(tool="list_requested_reviewers", success=True, output=f"No reviewers requested for PR #{pr_number}")
+        
+        result_lines = [f"Requested reviewers for PR #{pr_number}:"]
+        if users:
+            result_lines.append("\nUsers:")
+            for user in users:
+                result_lines.append(f"  - {user['login']}")
+        if teams:
+            result_lines.append("\nTeams:")
+            for team in teams:
+                result_lines.append(f"  - {team['name']} ({team.get('slug', '')})")
+        
+        return ToolResult(tool="list_requested_reviewers", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="list_requested_reviewers", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_list_labels(owner: str, repo: str, token: str) -> ToolResult:
+    """List all labels in a repository."""
+    try:
+        success, data = execute_github_api("GET", f"/repos/{owner}/{repo}/labels?per_page=100", token)
+        
+        if not success:
+            return ToolResult(tool="list_labels", success=False, output="", error=data.get("message", "Failed to list labels"), error_code="api_error")
+        
+        if not data:
+            return ToolResult(tool="list_labels", success=True, output="No labels found in repository")
+        
+        result_lines = [f"Found {len(data)} label(s):\n"]
+        for label in data:
+            result_lines.append(f"- {label['name']} (#{label.get('color', 'N/A')})")
+            if label.get('description'):
+                result_lines.append(f"  Description: {label['description']}")
+        
+        return ToolResult(tool="list_labels", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="list_labels", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_create_label(owner: str, repo: str, token: str, name: str, color: str, description: str = "") -> ToolResult:
+    """Create a new label in a repository."""
+    try:
+        # Remove # from color if present
+        color = color.lstrip('#')
+        
+        payload = {
+            "name": name,
+            "color": color
+        }
+        if description:
+            payload["description"] = description
+        
+        success, data = execute_github_api("POST", f"/repos/{owner}/{repo}/labels", token, payload)
+        
+        if not success:
+            error_msg = data.get("message", "Failed to create label")
+            if "already_exists" in str(data).lower():
+                return ToolResult(tool="create_label", success=False, output="", error=f"Label '{name}' already exists", error_code="label_exists")
+            return ToolResult(tool="create_label", success=False, output="", error=error_msg, error_code="api_error")
+        
+        return ToolResult(tool="create_label", success=True, output=f"Label '{name}' created with color #{color}")
+    except Exception as e:
+        return ToolResult(tool="create_label", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_update_label(owner: str, repo: str, token: str, name: str, new_name: str = None, color: str = None, description: str = None) -> ToolResult:
+    """Update an existing label."""
+    try:
+        payload = {}
+        if new_name:
+            payload["new_name"] = new_name
+        if color:
+            payload["color"] = color.lstrip('#')
+        if description is not None:
+            payload["description"] = description
+        
+        if not payload:
+            return ToolResult(tool="update_label", success=False, output="", error="Must specify at least one field to update", error_code="invalid_params")
+        
+        success, data = execute_github_api("PATCH", f"/repos/{owner}/{repo}/labels/{name}", token, payload)
+        
+        if not success:
+            return ToolResult(tool="update_label", success=False, output="", error=data.get("message", "Failed to update label"), error_code="api_error")
+        
+        return ToolResult(tool="update_label", success=True, output=f"Label '{name}' updated successfully")
+    except Exception as e:
+        return ToolResult(tool="update_label", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_delete_label(owner: str, repo: str, token: str, name: str) -> ToolResult:
+    """Delete a label from a repository."""
+    try:
+        success, data = execute_github_api("DELETE", f"/repos/{owner}/{repo}/labels/{name}", token)
+        
+        if not success:
+            return ToolResult(tool="delete_label", success=False, output="", error=data.get("message", "Failed to delete label"), error_code="api_error")
+        
+        return ToolResult(tool="delete_label", success=True, output=f"Label '{name}' deleted")
+    except Exception as e:
+        return ToolResult(tool="delete_label", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_add_labels_to_issue(owner: str, repo: str, token: str, issue_number: int, labels: List[str]) -> ToolResult:
+    """Add labels to an issue or pull request."""
+    try:
+        payload = {"labels": labels}
+        
+        success, data = execute_github_api("POST", f"/repos/{owner}/{repo}/issues/{issue_number}/labels", token, payload)
+        
+        if not success:
+            return ToolResult(tool="add_labels_to_issue", success=False, output="", error=data.get("message", "Failed to add labels"), error_code="api_error")
+        
+        added_labels = [l['name'] for l in data]
+        return ToolResult(tool="add_labels_to_issue", success=True, output=f"Labels added to #{issue_number}: {', '.join(added_labels)}")
+    except Exception as e:
+        return ToolResult(tool="add_labels_to_issue", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_remove_label_from_issue(owner: str, repo: str, token: str, issue_number: int, label: str) -> ToolResult:
+    """Remove a label from an issue or pull request."""
+    try:
+        success, data = execute_github_api("DELETE", f"/repos/{owner}/{repo}/issues/{issue_number}/labels/{label}", token)
+        
+        if not success:
+            return ToolResult(tool="remove_label_from_issue", success=False, output="", error=data.get("message", "Failed to remove label"), error_code="api_error")
+        
+        return ToolResult(tool="remove_label_from_issue", success=True, output=f"Label '{label}' removed from #{issue_number}")
+    except Exception as e:
+        return ToolResult(tool="remove_label_from_issue", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_list_milestones(owner: str, repo: str, token: str, state: str = "open") -> ToolResult:
+    """List milestones in a repository."""
+    try:
+        success, data = execute_github_api("GET", f"/repos/{owner}/{repo}/milestones?state={state}&per_page=100", token)
+        
+        if not success:
+            return ToolResult(tool="list_milestones", success=False, output="", error=data.get("message", "Failed to list milestones"), error_code="api_error")
+        
+        if not data:
+            return ToolResult(tool="list_milestones", success=True, output=f"No {state} milestones found")
+        
+        result_lines = [f"Found {len(data)} {state} milestone(s):\n"]
+        for m in data:
+            result_lines.append(f"#{m['number']}: {m['title']} ({m['state']})")
+            if m.get('description'):
+                result_lines.append(f"  Description: {m['description'][:100]}...")
+            if m.get('due_on'):
+                result_lines.append(f"  Due: {m['due_on'][:10]}")
+            result_lines.append(f"  Progress: {m.get('closed_issues', 0)}/{m.get('open_issues', 0) + m.get('closed_issues', 0)} issues closed")
+        
+        return ToolResult(tool="list_milestones", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="list_milestones", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_create_milestone(owner: str, repo: str, token: str, title: str, description: str = "", due_on: str = None, state: str = "open") -> ToolResult:
+    """Create a new milestone."""
+    try:
+        payload = {
+            "title": title,
+            "state": state
+        }
+        if description:
+            payload["description"] = description
+        if due_on:
+            payload["due_on"] = due_on
+        
+        success, data = execute_github_api("POST", f"/repos/{owner}/{repo}/milestones", token, payload)
+        
+        if not success:
+            return ToolResult(tool="create_milestone", success=False, output="", error=data.get("message", "Failed to create milestone"), error_code="api_error")
+        
+        return ToolResult(tool="create_milestone", success=True, output=f"Milestone '{title}' created (#{data.get('number')})")
+    except Exception as e:
+        return ToolResult(tool="create_milestone", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_update_milestone(owner: str, repo: str, token: str, milestone_number: int, title: str = None, description: str = None, due_on: str = None, state: str = None) -> ToolResult:
+    """Update an existing milestone."""
+    try:
+        payload = {}
+        if title:
+            payload["title"] = title
+        if description is not None:
+            payload["description"] = description
+        if due_on:
+            payload["due_on"] = due_on
+        if state:
+            payload["state"] = state
+        
+        if not payload:
+            return ToolResult(tool="update_milestone", success=False, output="", error="Must specify at least one field to update", error_code="invalid_params")
+        
+        success, data = execute_github_api("PATCH", f"/repos/{owner}/{repo}/milestones/{milestone_number}", token, payload)
+        
+        if not success:
+            return ToolResult(tool="update_milestone", success=False, output="", error=data.get("message", "Failed to update milestone"), error_code="api_error")
+        
+        return ToolResult(tool="update_milestone", success=True, output=f"Milestone #{milestone_number} updated")
+    except Exception as e:
+        return ToolResult(tool="update_milestone", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_delete_milestone(owner: str, repo: str, token: str, milestone_number: int) -> ToolResult:
+    """Delete a milestone."""
+    try:
+        success, data = execute_github_api("DELETE", f"/repos/{owner}/{repo}/milestones/{milestone_number}", token)
+        
+        if not success:
+            return ToolResult(tool="delete_milestone", success=False, output="", error=data.get("message", "Failed to delete milestone"), error_code="api_error")
+        
+        return ToolResult(tool="delete_milestone", success=True, output=f"Milestone #{milestone_number} deleted")
+    except Exception as e:
+        return ToolResult(tool="delete_milestone", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_set_issue_milestone(owner: str, repo: str, token: str, issue_number: int, milestone_number: int = None) -> ToolResult:
+    """Set or remove milestone for an issue/PR."""
+    try:
+        payload = {"milestone": milestone_number}
+        
+        success, data = execute_github_api("PATCH", f"/repos/{owner}/{repo}/issues/{issue_number}", token, payload)
+        
+        if not success:
+            return ToolResult(tool="set_issue_milestone", success=False, output="", error=data.get("message", "Failed to set milestone"), error_code="api_error")
+        
+        if milestone_number:
+            return ToolResult(tool="set_issue_milestone", success=True, output=f"Milestone set for #{issue_number}")
+        else:
+            return ToolResult(tool="set_issue_milestone", success=True, output=f"Milestone removed from #{issue_number}")
+    except Exception as e:
+        return ToolResult(tool="set_issue_milestone", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_list_projects(owner: str, repo: str, token: str) -> ToolResult:
+    """List projects in a repository (classic projects)."""
+    try:
+        # Classic projects API
+        success, data = execute_github_api("GET", f"/repos/{owner}/{repo}/projects?state=open&per_page=100", token)
+        
+        if not success:
+            # Try organization projects
+            success, data = execute_github_api("GET", f"/orgs/{owner}/projects?state=open&per_page=100", token)
+            if not success:
+                return ToolResult(tool="list_projects", success=False, output="", error=data.get("message", "Failed to list projects"), error_code="api_error")
+        
+        if not data:
+            return ToolResult(tool="list_projects", success=True, output="No projects found")
+        
+        result_lines = [f"Found {len(data)} project(s):\n"]
+        for p in data:
+            result_lines.append(f"#{p['number']}: {p['name']} (ID: {p['id']})")
+            if p.get('body'):
+                result_lines.append(f"  Description: {p['body'][:100]}...")
+            result_lines.append(f"  State: {p.get('state', 'N/A')}")
+            result_lines.append(f"  URL: {p.get('html_url', 'N/A')}")
+        
+        return ToolResult(tool="list_projects", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="list_projects", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_list_project_columns(owner: str, repo: str, token: str, project_id: int) -> ToolResult:
+    """List columns in a project."""
+    try:
+        success, data = execute_github_api("GET", f"/projects/{project_id}/columns", token)
+        
+        if not success:
+            return ToolResult(tool="list_project_columns", success=False, output="", error=data.get("message", "Failed to list columns"), error_code="api_error")
+        
+        if not data:
+            return ToolResult(tool="list_project_columns", success=True, output="No columns found in project")
+        
+        result_lines = [f"Found {len(data)} column(s):\n"]
+        for col in data:
+            result_lines.append(f"- {col['name']} (ID: {col['id']})")
+        
+        return ToolResult(tool="list_project_columns", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="list_project_columns", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_create_project_card(owner: str, repo: str, token: str, column_id: int, content_id: int = None, content_type: str = None, note: str = None) -> ToolResult:
+    """Create a card in a project column."""
+    try:
+        payload = {}
+        if note:
+            payload["note"] = note
+        elif content_id and content_type:
+            payload["content_id"] = content_id
+            payload["content_type"] = content_type  # "Issue" or "PullRequest"
+        else:
+            return ToolResult(tool="create_project_card", success=False, output="", error="Must specify either note or content_id+content_type", error_code="invalid_params")
+        
+        success, data = execute_github_api("POST", f"/projects/columns/{column_id}/cards", token, payload)
+        
+        if not success:
+            return ToolResult(tool="create_project_card", success=False, output="", error=data.get("message", "Failed to create card"), error_code="api_error")
+        
+        return ToolResult(tool="create_project_card", success=True, output=f"Card created (ID: {data.get('id')})")
+    except Exception as e:
+        return ToolResult(tool="create_project_card", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_move_project_card(owner: str, repo: str, token: str, card_id: int, column_id: int, position: str = "top") -> ToolResult:
+    """Move a card to a different column or position."""
+    try:
+        payload = {
+            "position": position,
+            "column_id": column_id
+        }
+        
+        success, data = execute_github_api("POST", f"/projects/columns/cards/{card_id}/moves", token, payload)
+        
+        if not success:
+            return ToolResult(tool="move_project_card", success=False, output="", error=data.get("message", "Failed to move card"), error_code="api_error")
+        
+        return ToolResult(tool="move_project_card", success=True, output=f"Card moved to column {column_id}")
+    except Exception as e:
+        return ToolResult(tool="move_project_card", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_assign_issue(owner: str, repo: str, token: str, issue_number: int, assignees: List[str]) -> ToolResult:
+    """Assign users to an issue or pull request."""
+    try:
+        payload = {"assignees": assignees}
+        
+        success, data = execute_github_api("POST", f"/repos/{owner}/{repo}/issues/{issue_number}/assignees", token, payload)
+        
+        if not success:
+            return ToolResult(tool="assign_issue", success=False, output="", error=data.get("message", "Failed to assign users"), error_code="api_error")
+        
+        assigned = [a['login'] for a in data.get('assignees', [])]
+        return ToolResult(tool="assign_issue", success=True, output=f"Assigned to #{issue_number}: {', '.join(assigned)}")
+    except Exception as e:
+        return ToolResult(tool="assign_issue", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_unassign_issue(owner: str, repo: str, token: str, issue_number: int, assignees: List[str]) -> ToolResult:
+    """Remove assignees from an issue or pull request."""
+    try:
+        payload = {"assignees": assignees}
+        
+        success, data = execute_github_api("DELETE", f"/repos/{owner}/{repo}/issues/{issue_number}/assignees", token, payload)
+        
+        if not success:
+            return ToolResult(tool="unassign_issue", success=False, output="", error=data.get("message", "Failed to unassign users"), error_code="api_error")
+        
+        return ToolResult(tool="unassign_issue", success=True, output=f"Unassigned from #{issue_number}: {', '.join(assignees)}")
+    except Exception as e:
+        return ToolResult(tool="unassign_issue", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_list_collaborators(owner: str, repo: str, token: str) -> ToolResult:
+    """List collaborators for a repository."""
+    try:
+        success, data = execute_github_api("GET", f"/repos/{owner}/{repo}/collaborators?per_page=100", token)
+        
+        if not success:
+            return ToolResult(tool="list_collaborators", success=False, output="", error=data.get("message", "Failed to list collaborators"), error_code="api_error")
+        
+        if not data:
+            return ToolResult(tool="list_collaborators", success=True, output="No collaborators found")
+        
+        result_lines = [f"Found {len(data)} collaborator(s):\n"]
+        for c in data:
+            perms = c.get('permissions', {})
+            perm_str = []
+            if perms.get('admin'):
+                perm_str.append('admin')
+            elif perms.get('maintain'):
+                perm_str.append('maintain')
+            elif perms.get('push'):
+                perm_str.append('write')
+            elif perms.get('pull'):
+                perm_str.append('read')
+            result_lines.append(f"- {c['login']} ({', '.join(perm_str) if perm_str else 'N/A'})")
+        
+        return ToolResult(tool="list_collaborators", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="list_collaborators", success=False, output="", error=str(e), error_code="unknown_error")
+
+# ============================================================================
+# Phase 51: Collaboration - API Endpoints
+# ============================================================================
+
+class RequestReviewersRequest(BaseModel):
+    pr_number: int
+    reviewers: Optional[List[str]] = None
+    team_reviewers: Optional[List[str]] = None
+
+class CreateLabelRequest(BaseModel):
+    name: str
+    color: str
+    description: str = ""
+
+class UpdateLabelRequest(BaseModel):
+    name: str
+    new_name: Optional[str] = None
+    color: Optional[str] = None
+    description: Optional[str] = None
+
+class AddLabelsRequest(BaseModel):
+    issue_number: int
+    labels: List[str]
+
+class CreateMilestoneRequest(BaseModel):
+    title: str
+    description: str = ""
+    due_on: Optional[str] = None
+    state: str = "open"
+
+class UpdateMilestoneRequest(BaseModel):
+    milestone_number: int
+    title: Optional[str] = None
+    description: Optional[str] = None
+    due_on: Optional[str] = None
+    state: Optional[str] = None
+
+class SetMilestoneRequest(BaseModel):
+    issue_number: int
+    milestone_number: Optional[int] = None
+
+class CreateProjectCardRequest(BaseModel):
+    column_id: int
+    content_id: Optional[int] = None
+    content_type: Optional[str] = None
+    note: Optional[str] = None
+
+class MoveProjectCardRequest(BaseModel):
+    card_id: int
+    column_id: int
+    position: str = "top"
+
+class AssignIssueRequest(BaseModel):
+    issue_number: int
+    assignees: List[str]
+
+@app.post("/api/repos/{repo_id}/pulls/{pr_number}/reviewers")
+async def api_request_reviewers(repo_id: str, pr_number: int, request: RequestReviewersRequest):
+    """Request reviewers for a pull request."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_request_reviewers(row[0], row[1], row[2], pr_number, request.reviewers, request.team_reviewers)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.delete("/api/repos/{repo_id}/pulls/{pr_number}/reviewers")
+async def api_remove_reviewers(repo_id: str, pr_number: int, request: RequestReviewersRequest):
+    """Remove requested reviewers from a pull request."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_remove_reviewers(row[0], row[1], row[2], pr_number, request.reviewers, request.team_reviewers)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/pulls/{pr_number}/reviewers")
+async def api_list_requested_reviewers(repo_id: str, pr_number: int):
+    """List requested reviewers for a pull request."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_list_requested_reviewers(row[0], row[1], row[2], pr_number)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/labels")
+async def api_list_labels(repo_id: str):
+    """List all labels in a repository."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_list_labels(row[0], row[1], row[2])
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/labels")
+async def api_create_label(repo_id: str, request: CreateLabelRequest):
+    """Create a new label."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_create_label(row[0], row[1], row[2], request.name, request.color, request.description)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.patch("/api/repos/{repo_id}/labels")
+async def api_update_label(repo_id: str, request: UpdateLabelRequest):
+    """Update an existing label."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_update_label(row[0], row[1], row[2], request.name, request.new_name, request.color, request.description)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.delete("/api/repos/{repo_id}/labels/{label_name}")
+async def api_delete_label(repo_id: str, label_name: str):
+    """Delete a label."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_delete_label(row[0], row[1], row[2], label_name)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/issues/{issue_number}/labels")
+async def api_add_labels_to_issue(repo_id: str, issue_number: int, request: AddLabelsRequest):
+    """Add labels to an issue or pull request."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_add_labels_to_issue(row[0], row[1], row[2], issue_number, request.labels)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.delete("/api/repos/{repo_id}/issues/{issue_number}/labels/{label_name}")
+async def api_remove_label_from_issue(repo_id: str, issue_number: int, label_name: str):
+    """Remove a label from an issue or pull request."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_remove_label_from_issue(row[0], row[1], row[2], issue_number, label_name)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/milestones")
+async def api_list_milestones(repo_id: str, state: str = "open"):
+    """List milestones in a repository."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_list_milestones(row[0], row[1], row[2], state)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/milestones")
+async def api_create_milestone(repo_id: str, request: CreateMilestoneRequest):
+    """Create a new milestone."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_create_milestone(row[0], row[1], row[2], request.title, request.description, request.due_on, request.state)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.patch("/api/repos/{repo_id}/milestones/{milestone_number}")
+async def api_update_milestone(repo_id: str, milestone_number: int, request: UpdateMilestoneRequest):
+    """Update an existing milestone."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_update_milestone(row[0], row[1], row[2], milestone_number, request.title, request.description, request.due_on, request.state)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.delete("/api/repos/{repo_id}/milestones/{milestone_number}")
+async def api_delete_milestone(repo_id: str, milestone_number: int):
+    """Delete a milestone."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_delete_milestone(row[0], row[1], row[2], milestone_number)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.patch("/api/repos/{repo_id}/issues/{issue_number}/milestone")
+async def api_set_issue_milestone(repo_id: str, issue_number: int, request: SetMilestoneRequest):
+    """Set or remove milestone for an issue/PR."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_set_issue_milestone(row[0], row[1], row[2], issue_number, request.milestone_number)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/projects")
+async def api_list_projects(repo_id: str):
+    """List projects in a repository."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_list_projects(row[0], row[1], row[2])
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/projects/{project_id}/columns")
+async def api_list_project_columns(repo_id: str, project_id: int):
+    """List columns in a project."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_list_project_columns(row[0], row[1], row[2], project_id)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/projects/cards")
+async def api_create_project_card(repo_id: str, request: CreateProjectCardRequest):
+    """Create a card in a project column."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_create_project_card(row[0], row[1], row[2], request.column_id, request.content_id, request.content_type, request.note)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/projects/cards/move")
+async def api_move_project_card(repo_id: str, request: MoveProjectCardRequest):
+    """Move a card to a different column or position."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_move_project_card(row[0], row[1], row[2], request.card_id, request.column_id, request.position)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/issues/{issue_number}/assignees")
+async def api_assign_issue(repo_id: str, issue_number: int, request: AssignIssueRequest):
+    """Assign users to an issue or pull request."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_assign_issue(row[0], row[1], row[2], issue_number, request.assignees)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.delete("/api/repos/{repo_id}/issues/{issue_number}/assignees")
+async def api_unassign_issue(repo_id: str, issue_number: int, request: AssignIssueRequest):
+    """Remove assignees from an issue or pull request."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_unassign_issue(row[0], row[1], row[2], issue_number, request.assignees)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/collaborators")
+async def api_list_collaborators(repo_id: str):
+    """List collaborators for a repository."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_list_collaborators(row[0], row[1], row[2])
     return {"success": result.success, "output": result.output, "error": result.error}
