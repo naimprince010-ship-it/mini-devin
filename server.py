@@ -492,6 +492,7 @@ def execute_create_github_repo(name: str, description: str, private: bool, githu
 
 def get_github_token_for_session(session_id: str) -> Optional[str]:
     """Get GitHub token from session's linked repo."""
+    conn = None
     try:
         conn = get_db()
         c = conn.cursor()
@@ -499,15 +500,22 @@ def get_github_token_for_session(session_id: str) -> Optional[str]:
                      JOIN session_repos sr ON gr.repo_id = sr.repo_id
                      WHERE sr.session_id = ?""", (session_id,))
         row = c.fetchone()
-        conn.close()
         if row and row[0]:
             return row[0]
         return None
-    except:
+    except sqlite3.Error as e:
+        print(f"Database error in get_github_token_for_session: {e}")
         return None
+    except Exception as e:
+        print(f"Unexpected error in get_github_token_for_session: {e}")
+        return None
+    finally:
+        if conn:
+            conn.close()
 
 def get_repo_info_for_session(session_id: str) -> Optional[dict]:
     """Get repo info from session's linked repo."""
+    conn = None
     try:
         conn = get_db()
         c = conn.cursor()
@@ -516,7 +524,6 @@ def get_repo_info_for_session(session_id: str) -> Optional[dict]:
                      JOIN session_repos sr ON gr.repo_id = sr.repo_id
                      WHERE sr.session_id = ?""", (session_id,))
         row = c.fetchone()
-        conn.close()
         if row:
             return {
                 "repo_id": row[0],
@@ -524,15 +531,55 @@ def get_repo_info_for_session(session_id: str) -> Optional[dict]:
                 "repo_name": row[2],
                 "github_token": row[3],
                 "local_path": row[4],
-                "default_branch": row[5]
+                "default_branch": row[5] or "main"
             }
         return None
-    except:
+    except sqlite3.Error as e:
+        print(f"Database error in get_repo_info_for_session: {e}")
         return None
+    except Exception as e:
+        print(f"Unexpected error in get_repo_info_for_session: {e}")
+        return None
+    finally:
+        if conn:
+            conn.close()
 
-def execute_github_api(method: str, endpoint: str, token: str, data: Optional[dict] = None) -> tuple[bool, dict]:
-    """Execute GitHub API request."""
+def get_github_error_suggestions(status_code: int, error_message: str) -> List[str]:
+    """Get actionable suggestions based on GitHub API error."""
+    suggestions = []
+    error_lower = error_message.lower()
+    
+    if status_code == 401:
+        suggestions.append("Check if your GitHub token is valid and not expired")
+        suggestions.append("Generate a new token at github.com/settings/tokens")
+    elif status_code == 403:
+        if "rate limit" in error_lower:
+            suggestions.append("GitHub API rate limit exceeded. Wait a few minutes and try again")
+            suggestions.append("Consider using a token with higher rate limits")
+        elif "abuse" in error_lower:
+            suggestions.append("GitHub abuse detection triggered. Wait and retry with smaller requests")
+        else:
+            suggestions.append("Check if your token has the required permissions/scopes")
+            suggestions.append("For Actions: enable 'actions:read' scope")
+            suggestions.append("For PRs/Issues: enable 'repo' scope")
+            suggestions.append("For fine-grained tokens: grant access to this specific repository")
+    elif status_code == 404:
+        suggestions.append("Check if the repository exists and is accessible")
+        suggestions.append("Verify the owner/repo name is correct")
+        suggestions.append("For private repos: ensure your token has access")
+    elif status_code == 422:
+        suggestions.append("Check the request parameters are valid")
+        if "branch" in error_lower:
+            suggestions.append("Verify the branch name exists")
+        if "already exists" in error_lower:
+            suggestions.append("The resource already exists")
+    
+    return suggestions
+
+def execute_github_api(method: str, endpoint: str, token: str, data: Optional[dict] = None, max_retries: int = 3) -> tuple[bool, dict]:
+    """Execute GitHub API request with retry logic and better error handling."""
     import httpx
+    import time
     
     headers = {
         "Authorization": f"Bearer {token}",
@@ -540,33 +587,57 @@ def execute_github_api(method: str, endpoint: str, token: str, data: Optional[di
         "X-GitHub-Api-Version": "2022-11-28"
     }
     
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            url = f"https://api.github.com{endpoint}"
-            if method == "GET":
-                response = client.get(url, headers=headers)
-            elif method == "POST":
-                response = client.post(url, headers=headers, json=data or {})
-            elif method == "PATCH":
-                response = client.patch(url, headers=headers, json=data or {})
-            elif method == "PUT":
-                response = client.put(url, headers=headers, json=data or {})
-            elif method == "DELETE":
-                response = client.delete(url, headers=headers)
-            else:
-                return False, {"error": f"Unknown method: {method}"}
-            
-            if response.status_code in [200, 201, 204]:
-                if response.status_code == 204:
-                    return True, {"message": "Success"}
-                return True, response.json()
-            else:
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                url = f"https://api.github.com{endpoint}"
+                if method == "GET":
+                    response = client.get(url, headers=headers)
+                elif method == "POST":
+                    response = client.post(url, headers=headers, json=data or {})
+                elif method == "PATCH":
+                    response = client.patch(url, headers=headers, json=data or {})
+                elif method == "PUT":
+                    response = client.put(url, headers=headers, json=data or {})
+                elif method == "DELETE":
+                    response = client.delete(url, headers=headers)
+                else:
+                    return False, {"error": f"Unknown method: {method}"}
+                
+                if response.status_code in [200, 201, 204]:
+                    if response.status_code == 204:
+                        return True, {"message": "Success"}
+                    return True, response.json()
+                elif response.status_code == 429 or (response.status_code == 403 and "rate limit" in response.text.lower()):
+                    retry_after = int(response.headers.get("Retry-After", 60))
+                    if attempt < max_retries - 1:
+                        time.sleep(min(retry_after, 30))
+                        continue
+                elif response.status_code >= 500 and attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                
                 error_data = response.json() if response.text else {"message": "Unknown error"}
-                return False, {"error": error_data.get("message", str(error_data)), "status_code": response.status_code}
-    except httpx.TimeoutException:
-        return False, {"error": "GitHub API request timed out"}
-    except Exception as e:
-        return False, {"error": str(e)}
+                error_msg = error_data.get("message", str(error_data))
+                suggestions = get_github_error_suggestions(response.status_code, error_msg)
+                return False, {
+                    "error": error_msg, 
+                    "status_code": response.status_code,
+                    "suggestions": suggestions
+                }
+        except httpx.TimeoutException:
+            last_error = "GitHub API request timed out"
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+        except Exception as e:
+            last_error = str(e)
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
+    
+    return False, {"error": last_error or "Request failed after retries"}
 
 # Feature 1: PR Creation Tool
 def execute_create_pr(owner: str, repo: str, title: str, head: str, base: str, body: str, token: str) -> ToolResult:
@@ -597,12 +668,13 @@ def execute_create_pr(owner: str, repo: str, title: str, head: str, base: str, b
         return ToolResult(tool="create_pr", success=False, output="", error=result.get("error", "Failed to create PR"), error_code="api_error")
 
 # Feature 2: PR Review/Merge Tools
-def execute_list_prs(owner: str, repo: str, state: str, token: str) -> ToolResult:
-    """List pull requests on GitHub."""
+def execute_list_prs(owner: str, repo: str, state: str, token: str, page: int = 1, per_page: int = 30) -> ToolResult:
+    """List pull requests on GitHub with pagination support."""
     if not token:
         return ToolResult(tool="list_prs", success=False, output="", error="GitHub token required", error_code="missing_token")
     
-    success, result = execute_github_api("GET", f"/repos/{owner}/{repo}/pulls?state={state}&per_page=20", token)
+    per_page = min(per_page, 100)
+    success, result = execute_github_api("GET", f"/repos/{owner}/{repo}/pulls?state={state}&per_page={per_page}&page={page}", token)
     
     if success:
         prs = []
@@ -618,9 +690,16 @@ def execute_list_prs(owner: str, repo: str, state: str, token: str) -> ToolResul
                 "created_at": pr.get("created_at"),
                 "mergeable": pr.get("mergeable")
             })
-        return ToolResult(tool="list_prs", success=True, output=json.dumps(prs, indent=2))
+        output = {
+            "prs": prs,
+            "page": page,
+            "per_page": per_page,
+            "count": len(prs),
+            "has_more": len(prs) == per_page
+        }
+        return ToolResult(tool="list_prs", success=True, output=json.dumps(output, indent=2))
     else:
-        return ToolResult(tool="list_prs", success=False, output="", error=result.get("error", "Failed to list PRs"), error_code="api_error")
+        return ToolResult(tool="list_prs", success=False, output="", error=result.get("error", "Failed to list PRs"), error_code="api_error", suggestions=result.get("suggestions", []))
 
 def execute_view_pr(owner: str, repo: str, pr_number: int, token: str) -> ToolResult:
     """View a specific pull request."""
@@ -672,17 +751,18 @@ def execute_merge_pr(owner: str, repo: str, pr_number: int, merge_method: str, t
         return ToolResult(tool="merge_pr", success=False, output="", error=result.get("error", "Failed to merge PR"), error_code="api_error")
 
 # Feature 3: Issue Management
-def execute_list_issues(owner: str, repo: str, state: str, token: str) -> ToolResult:
-    """List issues on GitHub."""
+def execute_list_issues(owner: str, repo: str, state: str, token: str, page: int = 1, per_page: int = 30) -> ToolResult:
+    """List issues on GitHub with pagination support."""
     if not token:
         return ToolResult(tool="list_issues", success=False, output="", error="GitHub token required", error_code="missing_token")
     
-    success, result = execute_github_api("GET", f"/repos/{owner}/{repo}/issues?state={state}&per_page=20", token)
+    per_page = min(per_page, 100)
+    success, result = execute_github_api("GET", f"/repos/{owner}/{repo}/issues?state={state}&per_page={per_page}&page={page}", token)
     
     if success:
         issues = []
         for issue in result:
-            if "pull_request" not in issue:  # Filter out PRs
+            if "pull_request" not in issue:
                 issues.append({
                     "number": issue.get("number"),
                     "title": issue.get("title"),
@@ -693,9 +773,16 @@ def execute_list_issues(owner: str, repo: str, state: str, token: str) -> ToolRe
                     "created_at": issue.get("created_at"),
                     "comments": issue.get("comments")
                 })
-        return ToolResult(tool="list_issues", success=True, output=json.dumps(issues, indent=2))
+        output = {
+            "issues": issues,
+            "page": page,
+            "per_page": per_page,
+            "count": len(issues),
+            "has_more": len(result) == per_page
+        }
+        return ToolResult(tool="list_issues", success=True, output=json.dumps(output, indent=2))
     else:
-        return ToolResult(tool="list_issues", success=False, output="", error=result.get("error", "Failed to list issues"), error_code="api_error")
+        return ToolResult(tool="list_issues", success=False, output="", error=result.get("error", "Failed to list issues"), error_code="api_error", suggestions=result.get("suggestions", []))
 
 def execute_create_issue(owner: str, repo: str, title: str, body: str, labels: List[str], token: str) -> ToolResult:
     """Create an issue on GitHub."""
@@ -737,12 +824,13 @@ def execute_close_issue(owner: str, repo: str, issue_number: int, token: str) ->
         return ToolResult(tool="close_issue", success=False, output="", error=result.get("error", "Failed to close issue"), error_code="api_error")
 
 # Feature 4: Branch Management
-def execute_list_branches(owner: str, repo: str, token: str) -> ToolResult:
-    """List branches on GitHub."""
+def execute_list_branches(owner: str, repo: str, token: str, page: int = 1, per_page: int = 30) -> ToolResult:
+    """List branches on GitHub with pagination support."""
     if not token:
         return ToolResult(tool="list_branches", success=False, output="", error="GitHub token required", error_code="missing_token")
     
-    success, result = execute_github_api("GET", f"/repos/{owner}/{repo}/branches?per_page=50", token)
+    per_page = min(per_page, 100)
+    success, result = execute_github_api("GET", f"/repos/{owner}/{repo}/branches?per_page={per_page}&page={page}", token)
     
     if success:
         branches = []
@@ -752,24 +840,39 @@ def execute_list_branches(owner: str, repo: str, token: str) -> ToolResult:
                 "protected": branch.get("protected"),
                 "sha": branch.get("commit", {}).get("sha", "")[:7]
             })
-        return ToolResult(tool="list_branches", success=True, output=json.dumps(branches, indent=2))
+        output = {
+            "branches": branches,
+            "page": page,
+            "per_page": per_page,
+            "count": len(branches),
+            "has_more": len(branches) == per_page
+        }
+        return ToolResult(tool="list_branches", success=True, output=json.dumps(output, indent=2))
     else:
-        return ToolResult(tool="list_branches", success=False, output="", error=result.get("error", "Failed to list branches"), error_code="api_error")
+        return ToolResult(tool="list_branches", success=False, output="", error=result.get("error", "Failed to list branches"), error_code="api_error", suggestions=result.get("suggestions", []))
 
-def execute_delete_branch(owner: str, repo: str, branch: str, token: str) -> ToolResult:
-    """Delete a branch on GitHub."""
+def execute_delete_branch(owner: str, repo: str, branch: str, token: str, default_branch: str = "main") -> ToolResult:
+    """Delete a branch on GitHub with proper safeguards."""
     if not token:
         return ToolResult(tool="delete_branch", success=False, output="", error="GitHub token required", error_code="missing_token")
     
-    if branch in ["main", "master"]:
-        return ToolResult(tool="delete_branch", success=False, output="", error="Cannot delete main/master branch", error_code="protected_branch")
+    protected_branches = ["main", "master", default_branch]
+    if branch in protected_branches:
+        return ToolResult(
+            tool="delete_branch", 
+            success=False, 
+            output="", 
+            error=f"Cannot delete protected branch '{branch}'. Protected branches: {', '.join(set(protected_branches))}", 
+            error_code="protected_branch",
+            suggestions=["Use a different branch name", "Check if this is the default branch for the repo"]
+        )
     
     success, result = execute_github_api("DELETE", f"/repos/{owner}/{repo}/git/refs/heads/{branch}", token)
     
     if success:
         return ToolResult(tool="delete_branch", success=True, output=f"Branch '{branch}' deleted successfully")
     else:
-        return ToolResult(tool="delete_branch", success=False, output="", error=result.get("error", "Failed to delete branch"), error_code="api_error")
+        return ToolResult(tool="delete_branch", success=False, output="", error=result.get("error", "Failed to delete branch"), error_code="api_error", suggestions=result.get("suggestions", []))
 
 # Feature 5: GitHub Actions Integration
 def execute_ci_status(owner: str, repo: str, ref: str, token: str) -> ToolResult:
@@ -887,16 +990,24 @@ def execute_add_pr_comment(owner: str, repo: str, pr_number: int, body: str, tok
     else:
         return ToolResult(tool="add_pr_comment", success=False, output="", error=result.get("error", "Failed to add comment"), error_code="api_error")
 
-def execute_add_review_comment(owner: str, repo: str, pr_number: int, body: str, commit_id: str, path: str, line: int, token: str) -> ToolResult:
-    """Add an inline review comment to a pull request."""
+def execute_add_review_comment(owner: str, repo: str, pr_number: int, body: str, commit_id: str, path: str, line: int, token: str, side: str = "RIGHT") -> ToolResult:
+    """Add an inline review comment to a pull request.
+    
+    Args:
+        side: Which side of the diff to comment on. 'LEFT' for old code, 'RIGHT' for new code (default).
+    """
     if not token:
         return ToolResult(tool="add_review_comment", success=False, output="", error="GitHub token required", error_code="missing_token")
+    
+    if side not in ["LEFT", "RIGHT"]:
+        side = "RIGHT"
     
     data = {
         "body": body,
         "commit_id": commit_id,
         "path": path,
-        "line": line
+        "line": line,
+        "side": side
     }
     
     success, result = execute_github_api("POST", f"/repos/{owner}/{repo}/pulls/{pr_number}/comments", token, data)
@@ -906,11 +1017,12 @@ def execute_add_review_comment(owner: str, repo: str, pr_number: int, body: str,
             "id": result.get("id"),
             "html_url": result.get("html_url"),
             "path": result.get("path"),
-            "line": result.get("line")
+            "line": result.get("line"),
+            "side": result.get("side")
         }
         return ToolResult(tool="add_review_comment", success=True, output=json.dumps(comment_data, indent=2))
     else:
-        return ToolResult(tool="add_review_comment", success=False, output="", error=result.get("error", "Failed to add review comment"), error_code="api_error")
+        return ToolResult(tool="add_review_comment", success=False, output="", error=result.get("error", "Failed to add review comment"), error_code="api_error", suggestions=result.get("suggestions", []))
 
 def execute_list_pr_comments(owner: str, repo: str, pr_number: int, token: str) -> ToolResult:
     """List comments on a pull request."""
@@ -1305,7 +1417,9 @@ def execute_tool(tool_call: dict, session_id: str = "", default_working_dir: str
                 owner=tool_call.get("owner", repo_info.get("owner", "")),
                 repo=tool_call.get("repo", repo_info.get("repo_name", "")),
                 state=tool_call.get("state", "open"),
-                token=repo_info.get("github_token", "")
+                token=repo_info.get("github_token", ""),
+                page=tool_call.get("page", 1),
+                per_page=tool_call.get("per_page", 30)
             )
         elif tool == "view_pr":
             repo_info = get_repo_info_for_session(session_id)
@@ -1337,7 +1451,9 @@ def execute_tool(tool_call: dict, session_id: str = "", default_working_dir: str
                 owner=tool_call.get("owner", repo_info.get("owner", "")),
                 repo=tool_call.get("repo", repo_info.get("repo_name", "")),
                 state=tool_call.get("state", "open"),
-                token=repo_info.get("github_token", "")
+                token=repo_info.get("github_token", ""),
+                page=tool_call.get("page", 1),
+                per_page=tool_call.get("per_page", 30)
             )
         elif tool == "create_issue":
             repo_info = get_repo_info_for_session(session_id)
@@ -1369,7 +1485,9 @@ def execute_tool(tool_call: dict, session_id: str = "", default_working_dir: str
             return execute_list_branches(
                 owner=tool_call.get("owner", repo_info.get("owner", "")),
                 repo=tool_call.get("repo", repo_info.get("repo_name", "")),
-                token=repo_info.get("github_token", "")
+                token=repo_info.get("github_token", ""),
+                page=tool_call.get("page", 1),
+                per_page=tool_call.get("per_page", 30)
             )
         elif tool == "delete_branch":
             repo_info = get_repo_info_for_session(session_id)
@@ -1379,7 +1497,8 @@ def execute_tool(tool_call: dict, session_id: str = "", default_working_dir: str
                 owner=tool_call.get("owner", repo_info.get("owner", "")),
                 repo=tool_call.get("repo", repo_info.get("repo_name", "")),
                 branch=tool_call.get("branch", ""),
-                token=repo_info.get("github_token", "")
+                token=repo_info.get("github_token", ""),
+                default_branch=repo_info.get("default_branch", "main")
             )
         # Feature 5: GitHub Actions/CI
         elif tool == "ci_status":
@@ -1426,7 +1545,8 @@ def execute_tool(tool_call: dict, session_id: str = "", default_working_dir: str
                 commit_id=tool_call.get("commit_id", ""),
                 path=tool_call.get("path", ""),
                 line=tool_call.get("line", 0),
-                token=repo_info.get("github_token", "")
+                token=repo_info.get("github_token", ""),
+                side=tool_call.get("side", "RIGHT")
             )
         elif tool == "list_pr_comments":
             repo_info = get_repo_info_for_session(session_id)
