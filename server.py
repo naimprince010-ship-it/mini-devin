@@ -3860,6 +3860,82 @@ def execute_tool(tool_call: dict, session_id: str = "", default_working_dir: str
                 repo=tool_call.get("repo", repo_info.get("repo_name", "")),
                 token=repo_info.get("github_token", "")
             )
+        # Phase 52: Webhook Events
+        elif tool == "list_webhook_events":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_webhook_events", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_webhook_events(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                limit=int(tool_call.get("limit", 50)),
+                event_type=tool_call.get("event_type")
+            )
+        elif tool == "subscribe_webhooks":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="subscribe_webhooks", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_subscribe_webhooks(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                session_id=session_id
+            )
+        elif tool == "unsubscribe_webhooks":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="unsubscribe_webhooks", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_unsubscribe_webhooks(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                session_id=session_id
+            )
+        elif tool == "create_webhook":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="create_webhook", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            events = tool_call.get("events")
+            if isinstance(events, str):
+                events = [e.strip() for e in events.split(",")]
+            return execute_create_webhook(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                webhook_url=str(tool_call.get("webhook_url", "")),
+                events=events,
+                secret=tool_call.get("secret")
+            )
+        elif tool == "list_webhooks":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_webhooks", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_webhooks(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", "")
+            )
+        elif tool == "delete_webhook":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="delete_webhook", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_delete_webhook(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                hook_id=int(tool_call.get("hook_id", 0))
+            )
+        elif tool == "test_webhook":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="test_webhook", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_test_webhook(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                hook_id=int(tool_call.get("hook_id", 0))
+            )
         else:
             return ToolResult(tool=str(tool), success=False, output="", error=f"Unknown tool: {tool}", error_code="unknown_tool", suggestions=get_error_suggestions("unknown_tool"))
     except Exception as e:
@@ -9142,3 +9218,529 @@ async def api_list_collaborators(repo_id: str):
     
     result = execute_list_collaborators(row[0], row[1], row[2])
     return {"success": result.success, "output": result.output, "error": result.error}
+
+# ============================================================================
+# Phase 52: Webhook Events - PR/Issue Notifications, CI Alerts, Real-time Updates
+# ============================================================================
+
+# Store webhook events in memory (can be persisted to DB if needed)
+webhook_events: Dict[str, List[dict]] = {}  # repo_id -> list of events
+webhook_subscriptions: Dict[str, Set[str]] = {}  # repo_id -> set of session_ids
+
+class WebhookEvent(BaseModel):
+    event_type: str
+    action: str
+    repo_full_name: str
+    timestamp: str
+    data: dict
+    summary: str
+
+def process_pr_event(payload: dict, action: str) -> WebhookEvent:
+    """Process pull request webhook events."""
+    pr = payload.get("pull_request", {})
+    repo = payload.get("repository", {})
+    sender = payload.get("sender", {})
+    
+    pr_number = pr.get("number")
+    pr_title = pr.get("title", "")
+    pr_state = pr.get("state", "")
+    pr_merged = pr.get("merged", False)
+    author = pr.get("user", {}).get("login", "")
+    
+    if action == "opened":
+        summary = f"PR #{pr_number} opened by {author}: {pr_title}"
+    elif action == "closed" and pr_merged:
+        summary = f"PR #{pr_number} merged by {sender.get('login', '')}: {pr_title}"
+    elif action == "closed":
+        summary = f"PR #{pr_number} closed by {sender.get('login', '')}: {pr_title}"
+    elif action == "reopened":
+        summary = f"PR #{pr_number} reopened by {sender.get('login', '')}: {pr_title}"
+    elif action == "review_requested":
+        reviewer = payload.get("requested_reviewer", {}).get("login", "")
+        summary = f"Review requested from {reviewer} on PR #{pr_number}: {pr_title}"
+    elif action == "synchronize":
+        summary = f"PR #{pr_number} updated with new commits: {pr_title}"
+    else:
+        summary = f"PR #{pr_number} {action}: {pr_title}"
+    
+    return WebhookEvent(
+        event_type="pull_request",
+        action=action,
+        repo_full_name=repo.get("full_name", ""),
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        data={
+            "pr_number": pr_number,
+            "title": pr_title,
+            "state": pr_state,
+            "merged": pr_merged,
+            "author": author,
+            "sender": sender.get("login", ""),
+            "html_url": pr.get("html_url", ""),
+            "head_branch": pr.get("head", {}).get("ref", ""),
+            "base_branch": pr.get("base", {}).get("ref", "")
+        },
+        summary=summary
+    )
+
+def process_issue_event(payload: dict, action: str) -> WebhookEvent:
+    """Process issue webhook events."""
+    issue = payload.get("issue", {})
+    repo = payload.get("repository", {})
+    sender = payload.get("sender", {})
+    
+    issue_number = issue.get("number")
+    issue_title = issue.get("title", "")
+    author = issue.get("user", {}).get("login", "")
+    
+    if action == "opened":
+        summary = f"Issue #{issue_number} opened by {author}: {issue_title}"
+    elif action == "closed":
+        summary = f"Issue #{issue_number} closed by {sender.get('login', '')}: {issue_title}"
+    elif action == "reopened":
+        summary = f"Issue #{issue_number} reopened by {sender.get('login', '')}: {issue_title}"
+    elif action == "assigned":
+        assignee = payload.get("assignee", {}).get("login", "")
+        summary = f"Issue #{issue_number} assigned to {assignee}: {issue_title}"
+    elif action == "labeled":
+        label = payload.get("label", {}).get("name", "")
+        summary = f"Label '{label}' added to issue #{issue_number}: {issue_title}"
+    else:
+        summary = f"Issue #{issue_number} {action}: {issue_title}"
+    
+    return WebhookEvent(
+        event_type="issues",
+        action=action,
+        repo_full_name=repo.get("full_name", ""),
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        data={
+            "issue_number": issue_number,
+            "title": issue_title,
+            "state": issue.get("state", ""),
+            "author": author,
+            "sender": sender.get("login", ""),
+            "html_url": issue.get("html_url", ""),
+            "labels": [l.get("name") for l in issue.get("labels", [])]
+        },
+        summary=summary
+    )
+
+def process_workflow_run_event(payload: dict, action: str) -> WebhookEvent:
+    """Process workflow run (CI) webhook events."""
+    workflow_run = payload.get("workflow_run", {})
+    repo = payload.get("repository", {})
+    
+    run_id = workflow_run.get("id")
+    workflow_name = workflow_run.get("name", "")
+    conclusion = workflow_run.get("conclusion")
+    status = workflow_run.get("status", "")
+    branch = workflow_run.get("head_branch", "")
+    
+    if action == "completed":
+        if conclusion == "success":
+            summary = f"CI passed: {workflow_name} on {branch}"
+        elif conclusion == "failure":
+            summary = f"CI failed: {workflow_name} on {branch}"
+        elif conclusion == "cancelled":
+            summary = f"CI cancelled: {workflow_name} on {branch}"
+        else:
+            summary = f"CI {conclusion}: {workflow_name} on {branch}"
+    elif action == "requested":
+        summary = f"CI started: {workflow_name} on {branch}"
+    elif action == "in_progress":
+        summary = f"CI running: {workflow_name} on {branch}"
+    else:
+        summary = f"Workflow {action}: {workflow_name} on {branch}"
+    
+    return WebhookEvent(
+        event_type="workflow_run",
+        action=action,
+        repo_full_name=repo.get("full_name", ""),
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        data={
+            "run_id": run_id,
+            "workflow_name": workflow_name,
+            "status": status,
+            "conclusion": conclusion,
+            "branch": branch,
+            "html_url": workflow_run.get("html_url", ""),
+            "run_number": workflow_run.get("run_number")
+        },
+        summary=summary
+    )
+
+def process_check_run_event(payload: dict, action: str) -> WebhookEvent:
+    """Process check run webhook events."""
+    check_run = payload.get("check_run", {})
+    repo = payload.get("repository", {})
+    
+    check_name = check_run.get("name", "")
+    conclusion = check_run.get("conclusion")
+    status = check_run.get("status", "")
+    
+    if action == "completed":
+        if conclusion == "success":
+            summary = f"Check passed: {check_name}"
+        elif conclusion == "failure":
+            summary = f"Check failed: {check_name}"
+        else:
+            summary = f"Check {conclusion}: {check_name}"
+    else:
+        summary = f"Check {action}: {check_name}"
+    
+    return WebhookEvent(
+        event_type="check_run",
+        action=action,
+        repo_full_name=repo.get("full_name", ""),
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        data={
+            "check_run_id": check_run.get("id"),
+            "name": check_name,
+            "status": status,
+            "conclusion": conclusion,
+            "html_url": check_run.get("html_url", "")
+        },
+        summary=summary
+    )
+
+def process_push_event(payload: dict) -> WebhookEvent:
+    """Process push webhook events."""
+    repo = payload.get("repository", {})
+    pusher = payload.get("pusher", {})
+    commits = payload.get("commits", [])
+    ref = payload.get("ref", "")
+    branch = ref.replace("refs/heads/", "") if ref.startswith("refs/heads/") else ref
+    
+    commit_count = len(commits)
+    summary = f"{pusher.get('name', 'Someone')} pushed {commit_count} commit(s) to {branch}"
+    
+    return WebhookEvent(
+        event_type="push",
+        action="push",
+        repo_full_name=repo.get("full_name", ""),
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        data={
+            "branch": branch,
+            "pusher": pusher.get("name", ""),
+            "commit_count": commit_count,
+            "commits": [{"sha": c.get("id", "")[:7], "message": c.get("message", "").split("\n")[0]} for c in commits[:5]],
+            "compare_url": payload.get("compare", "")
+        },
+        summary=summary
+    )
+
+def process_issue_comment_event(payload: dict, action: str) -> WebhookEvent:
+    """Process issue comment webhook events."""
+    comment = payload.get("comment", {})
+    issue = payload.get("issue", {})
+    repo = payload.get("repository", {})
+    
+    commenter = comment.get("user", {}).get("login", "")
+    issue_number = issue.get("number")
+    is_pr = "pull_request" in issue
+    
+    item_type = "PR" if is_pr else "Issue"
+    
+    if action == "created":
+        summary = f"{commenter} commented on {item_type} #{issue_number}"
+    elif action == "edited":
+        summary = f"{commenter} edited comment on {item_type} #{issue_number}"
+    elif action == "deleted":
+        summary = f"Comment deleted on {item_type} #{issue_number}"
+    else:
+        summary = f"Comment {action} on {item_type} #{issue_number}"
+    
+    return WebhookEvent(
+        event_type="issue_comment",
+        action=action,
+        repo_full_name=repo.get("full_name", ""),
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        data={
+            "issue_number": issue_number,
+            "is_pr": is_pr,
+            "commenter": commenter,
+            "body_preview": comment.get("body", "")[:200],
+            "html_url": comment.get("html_url", "")
+        },
+        summary=summary
+    )
+
+async def broadcast_webhook_event(repo_full_name: str, event: WebhookEvent):
+    """Broadcast webhook event to all subscribed WebSocket connections."""
+    # Find repo_id from repo_full_name
+    conn = get_db()
+    c = conn.cursor()
+    owner, repo_name = repo_full_name.split("/") if "/" in repo_full_name else ("", repo_full_name)
+    c.execute("SELECT repo_id FROM github_repos WHERE owner=? AND repo_name=?", (owner, repo_name))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        return
+    
+    repo_id = row[0]
+    
+    # Store event
+    if repo_id not in webhook_events:
+        webhook_events[repo_id] = []
+    webhook_events[repo_id].append(event.dict())
+    # Keep only last 100 events per repo
+    if len(webhook_events[repo_id]) > 100:
+        webhook_events[repo_id] = webhook_events[repo_id][-100:]
+    
+    # Broadcast to subscribed sessions
+    if repo_id in webhook_subscriptions:
+        for session_id in webhook_subscriptions[repo_id]:
+            await broadcast_to_session(session_id, {
+                "type": "webhook_event",
+                "event": event.dict()
+            })
+
+@app.post("/api/webhooks/github")
+async def github_webhook(request: Request):
+    """Handle incoming GitHub webhook events."""
+    # Get headers
+    event_type = request.headers.get("X-GitHub-Event", "")
+    delivery_id = request.headers.get("X-GitHub-Delivery", "")
+    signature = request.headers.get("X-Hub-Signature-256", "")
+    
+    # Get body
+    body = await request.body()
+    
+    # Verify signature if webhook secret is configured
+    webhook_secret = os.environ.get("GITHUB_WEBHOOK_SECRET", "")
+    if webhook_secret and signature:
+        if not verify_webhook_signature(body, signature, webhook_secret):
+            raise HTTPException(status_code=401, detail="Invalid signature")
+    
+    # Parse payload
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+    
+    action = payload.get("action", "")
+    repo_full_name = payload.get("repository", {}).get("full_name", "")
+    
+    # Process event based on type
+    event = None
+    if event_type == "pull_request":
+        event = process_pr_event(payload, action)
+    elif event_type == "issues":
+        event = process_issue_event(payload, action)
+    elif event_type == "workflow_run":
+        event = process_workflow_run_event(payload, action)
+    elif event_type == "check_run":
+        event = process_check_run_event(payload, action)
+    elif event_type == "push":
+        event = process_push_event(payload)
+    elif event_type == "issue_comment":
+        event = process_issue_comment_event(payload, action)
+    elif event_type == "ping":
+        return {"status": "ok", "message": "Webhook configured successfully"}
+    
+    if event:
+        # Broadcast to WebSocket clients
+        await broadcast_webhook_event(repo_full_name, event)
+        
+        return {
+            "status": "ok",
+            "event_type": event_type,
+            "action": action,
+            "summary": event.summary
+        }
+    
+    return {"status": "ok", "event_type": event_type, "action": action}
+
+@app.get("/api/repos/{repo_id}/webhook-events")
+async def get_webhook_events(repo_id: str, limit: int = 50, event_type: str = None):
+    """Get recent webhook events for a repository."""
+    events = webhook_events.get(repo_id, [])
+    
+    if event_type:
+        events = [e for e in events if e.get("event_type") == event_type]
+    
+    # Return most recent events first
+    return {
+        "events": events[-limit:][::-1],
+        "total": len(events)
+    }
+
+@app.post("/api/repos/{repo_id}/webhook-subscribe")
+async def subscribe_to_webhooks(repo_id: str, session_id: str):
+    """Subscribe a session to webhook events for a repository."""
+    if repo_id not in webhook_subscriptions:
+        webhook_subscriptions[repo_id] = set()
+    webhook_subscriptions[repo_id].add(session_id)
+    
+    return {"status": "subscribed", "repo_id": repo_id, "session_id": session_id}
+
+@app.post("/api/repos/{repo_id}/webhook-unsubscribe")
+async def unsubscribe_from_webhooks(repo_id: str, session_id: str):
+    """Unsubscribe a session from webhook events."""
+    if repo_id in webhook_subscriptions:
+        webhook_subscriptions[repo_id].discard(session_id)
+    
+    return {"status": "unsubscribed", "repo_id": repo_id, "session_id": session_id}
+
+def execute_list_webhook_events(owner: str, repo: str, token: str, limit: int = 50, event_type: str = None) -> ToolResult:
+    """List recent webhook events for a repository."""
+    try:
+        # Find repo_id
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT repo_id FROM github_repos WHERE owner=? AND repo_name=?", (owner, repo))
+        row = c.fetchone()
+        conn.close()
+        
+        if not row:
+            return ToolResult(tool="list_webhook_events", success=False, output="", error="Repository not found", error_code="not_found")
+        
+        repo_id = row[0]
+        events = webhook_events.get(repo_id, [])
+        
+        if event_type:
+            events = [e for e in events if e.get("event_type") == event_type]
+        
+        events = events[-limit:][::-1]
+        
+        if not events:
+            return ToolResult(tool="list_webhook_events", success=True, output="No webhook events found")
+        
+        result_lines = [f"Found {len(events)} recent webhook event(s):\n"]
+        for e in events:
+            result_lines.append(f"[{e.get('timestamp', '')[:19]}] {e.get('event_type')}/{e.get('action')}")
+            result_lines.append(f"  {e.get('summary', '')}")
+        
+        return ToolResult(tool="list_webhook_events", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="list_webhook_events", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_subscribe_webhooks(owner: str, repo: str, token: str, session_id: str) -> ToolResult:
+    """Subscribe to webhook events for a repository."""
+    try:
+        # Find repo_id
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT repo_id FROM github_repos WHERE owner=? AND repo_name=?", (owner, repo))
+        row = c.fetchone()
+        conn.close()
+        
+        if not row:
+            return ToolResult(tool="subscribe_webhooks", success=False, output="", error="Repository not found", error_code="not_found")
+        
+        repo_id = row[0]
+        
+        if repo_id not in webhook_subscriptions:
+            webhook_subscriptions[repo_id] = set()
+        webhook_subscriptions[repo_id].add(session_id)
+        
+        return ToolResult(tool="subscribe_webhooks", success=True, output=f"Subscribed to webhook events for {owner}/{repo}")
+    except Exception as e:
+        return ToolResult(tool="subscribe_webhooks", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_unsubscribe_webhooks(owner: str, repo: str, token: str, session_id: str) -> ToolResult:
+    """Unsubscribe from webhook events for a repository."""
+    try:
+        # Find repo_id
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT repo_id FROM github_repos WHERE owner=? AND repo_name=?", (owner, repo))
+        row = c.fetchone()
+        conn.close()
+        
+        if not row:
+            return ToolResult(tool="unsubscribe_webhooks", success=False, output="", error="Repository not found", error_code="not_found")
+        
+        repo_id = row[0]
+        
+        if repo_id in webhook_subscriptions:
+            webhook_subscriptions[repo_id].discard(session_id)
+        
+        return ToolResult(tool="unsubscribe_webhooks", success=True, output=f"Unsubscribed from webhook events for {owner}/{repo}")
+    except Exception as e:
+        return ToolResult(tool="unsubscribe_webhooks", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_create_webhook(owner: str, repo: str, token: str, webhook_url: str, events: List[str] = None, secret: str = None) -> ToolResult:
+    """Create a webhook for a repository."""
+    try:
+        if events is None:
+            events = ["push", "pull_request", "issues", "workflow_run", "check_run", "issue_comment"]
+        
+        payload = {
+            "name": "web",
+            "active": True,
+            "events": events,
+            "config": {
+                "url": webhook_url,
+                "content_type": "json",
+                "insecure_ssl": "0"
+            }
+        }
+        
+        if secret:
+            payload["config"]["secret"] = secret
+        
+        success, data = execute_github_api("POST", f"/repos/{owner}/{repo}/hooks", token, payload)
+        
+        if not success:
+            return ToolResult(tool="create_webhook", success=False, output="", error=data.get("message", "Failed to create webhook"), error_code="api_error")
+        
+        result_lines = [
+            f"Webhook created successfully!",
+            f"ID: {data.get('id')}",
+            f"URL: {webhook_url}",
+            f"Events: {', '.join(events)}",
+            f"Active: {data.get('active', True)}"
+        ]
+        
+        return ToolResult(tool="create_webhook", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="create_webhook", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_list_webhooks(owner: str, repo: str, token: str) -> ToolResult:
+    """List webhooks for a repository."""
+    try:
+        success, data = execute_github_api("GET", f"/repos/{owner}/{repo}/hooks", token)
+        
+        if not success:
+            return ToolResult(tool="list_webhooks", success=False, output="", error=data.get("message", "Failed to list webhooks"), error_code="api_error")
+        
+        if not data:
+            return ToolResult(tool="list_webhooks", success=True, output="No webhooks configured")
+        
+        result_lines = [f"Found {len(data)} webhook(s):\n"]
+        for hook in data:
+            config = hook.get("config", {})
+            result_lines.append(f"ID: {hook.get('id')}")
+            result_lines.append(f"  URL: {config.get('url', 'N/A')}")
+            result_lines.append(f"  Events: {', '.join(hook.get('events', []))}")
+            result_lines.append(f"  Active: {hook.get('active', False)}")
+            result_lines.append("")
+        
+        return ToolResult(tool="list_webhooks", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="list_webhooks", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_delete_webhook(owner: str, repo: str, token: str, hook_id: int) -> ToolResult:
+    """Delete a webhook from a repository."""
+    try:
+        success, data = execute_github_api("DELETE", f"/repos/{owner}/{repo}/hooks/{hook_id}", token)
+        
+        if not success:
+            return ToolResult(tool="delete_webhook", success=False, output="", error=data.get("message", "Failed to delete webhook"), error_code="api_error")
+        
+        return ToolResult(tool="delete_webhook", success=True, output=f"Webhook {hook_id} deleted successfully")
+    except Exception as e:
+        return ToolResult(tool="delete_webhook", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_test_webhook(owner: str, repo: str, token: str, hook_id: int) -> ToolResult:
+    """Test a webhook by sending a ping event."""
+    try:
+        success, data = execute_github_api("POST", f"/repos/{owner}/{repo}/hooks/{hook_id}/pings", token)
+        
+        if not success:
+            return ToolResult(tool="test_webhook", success=False, output="", error=data.get("message", "Failed to test webhook"), error_code="api_error")
+        
+        return ToolResult(tool="test_webhook", success=True, output=f"Ping sent to webhook {hook_id}")
+    except Exception as e:
+        return ToolResult(tool="test_webhook", success=False, output="", error=str(e), error_code="unknown_error")
