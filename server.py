@@ -1,5 +1,5 @@
 """
-Mini-Devin API Server v5.3
+Mini-Devin API Server v5.4
 Phase 34: Better Error Handling
 Phase 35: Task History & Export
 Phase 36: Multi-Model Support (OpenAI, Anthropic, Ollama)
@@ -8,6 +8,7 @@ Phase 38: Agent Memory (cross-session)
 Phase 42: Authentication & Security (JWT, Rate Limiting, Session Timeout)
 Phase 43: Database Connection Pooling (SQLAlchemy)
 Phase 44: Background Task Queue with Retry/Failure Recovery
+Phase 45: Logging & Monitoring (Structured JSON, Prometheus, Sentry)
 """
 
 import os
@@ -21,22 +22,344 @@ import traceback
 import hashlib
 import secrets
 import time
+import logging
+import sys
 from collections import defaultdict
 from contextlib import asynccontextmanager, contextmanager
-from typing import AsyncGenerator, Optional, List, Dict, Any, Generator
+from typing import AsyncGenerator, Optional, List, Dict, Any, Generator, Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Depends, Request, Header
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Depends, Request, Header, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # SQLAlchemy for connection pooling
 from sqlalchemy import create_engine, text, event
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.engine import Engine
+
+# ============================================================================
+# Phase 45: Logging & Monitoring Configuration
+# ============================================================================
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+LOG_FORMAT = os.environ.get("LOG_FORMAT", "json")  # json or text
+SENTRY_DSN = os.environ.get("SENTRY_DSN", "")
+ENABLE_METRICS = os.environ.get("ENABLE_METRICS", "true").lower() == "true"
+
+# Initialize Sentry if DSN is provided
+sentry_sdk = None
+if SENTRY_DSN:
+    try:
+        import sentry_sdk as _sentry_sdk
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+        from sentry_sdk.integrations.starlette import StarletteIntegration
+        _sentry_sdk.init(
+            dsn=SENTRY_DSN,
+            integrations=[FastApiIntegration(), StarletteIntegration()],
+            traces_sample_rate=0.1,
+            profiles_sample_rate=0.1,
+            environment=os.environ.get("ENVIRONMENT", "production"),
+            release=os.environ.get("RELEASE_VERSION", "5.4.0")
+        )
+        sentry_sdk = _sentry_sdk
+        print(f"Sentry initialized with DSN: {SENTRY_DSN[:20]}...")
+    except ImportError:
+        print("Warning: sentry-sdk not installed, error tracking disabled")
+    except Exception as e:
+        print(f"Warning: Failed to initialize Sentry: {e}")
+
+class JSONFormatter(logging.Formatter):
+    """Custom JSON formatter for structured logging."""
+    
+    def format(self, record: logging.LogRecord) -> str:
+        log_data = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno
+        }
+        
+        # Add extra fields if present
+        if hasattr(record, "request_id"):
+            log_data["request_id"] = record.request_id
+        if hasattr(record, "session_id"):
+            log_data["session_id"] = record.session_id
+        if hasattr(record, "task_id"):
+            log_data["task_id"] = record.task_id
+        if hasattr(record, "user_id"):
+            log_data["user_id"] = record.user_id
+        if hasattr(record, "duration_ms"):
+            log_data["duration_ms"] = record.duration_ms
+        if hasattr(record, "status_code"):
+            log_data["status_code"] = record.status_code
+        if hasattr(record, "method"):
+            log_data["method"] = record.method
+        if hasattr(record, "path"):
+            log_data["path"] = record.path
+        if hasattr(record, "client_ip"):
+            log_data["client_ip"] = record.client_ip
+        
+        # Add exception info if present
+        if record.exc_info:
+            log_data["exception"] = {
+                "type": record.exc_info[0].__name__ if record.exc_info[0] else None,
+                "message": str(record.exc_info[1]) if record.exc_info[1] else None,
+                "traceback": self.formatException(record.exc_info)
+            }
+        
+        return json.dumps(log_data)
+
+def setup_logging() -> logging.Logger:
+    """Setup structured logging with JSON or text format."""
+    logger = logging.getLogger("mini_devin")
+    logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+    
+    # Remove existing handlers
+    logger.handlers.clear()
+    
+    # Create console handler
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+    
+    if LOG_FORMAT == "json":
+        handler.setFormatter(JSONFormatter())
+    else:
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        ))
+    
+    logger.addHandler(handler)
+    return logger
+
+# Initialize logger
+logger = setup_logging()
+
+# ============================================================================
+# Phase 45: Prometheus Metrics
+# ============================================================================
+class PrometheusMetrics:
+    """Simple Prometheus metrics collector."""
+    
+    def __init__(self):
+        self.counters: Dict[str, int] = defaultdict(int)
+        self.gauges: Dict[str, float] = {}
+        self.histograms: Dict[str, List[float]] = defaultdict(list)
+        self.labels: Dict[str, Dict[str, Any]] = defaultdict(dict)
+        self._lock = asyncio.Lock()
+    
+    def inc(self, name: str, value: int = 1, labels: Optional[Dict[str, str]] = None):
+        """Increment a counter."""
+        key = self._make_key(name, labels)
+        self.counters[key] += value
+        if labels:
+            self.labels[key] = labels
+    
+    def set_gauge(self, name: str, value: float, labels: Optional[Dict[str, str]] = None):
+        """Set a gauge value."""
+        key = self._make_key(name, labels)
+        self.gauges[key] = value
+        if labels:
+            self.labels[key] = labels
+    
+    def observe(self, name: str, value: float, labels: Optional[Dict[str, str]] = None):
+        """Record a histogram observation."""
+        key = self._make_key(name, labels)
+        self.histograms[key].append(value)
+        # Keep only last 1000 observations per metric
+        if len(self.histograms[key]) > 1000:
+            self.histograms[key] = self.histograms[key][-1000:]
+        if labels:
+            self.labels[key] = labels
+    
+    def _make_key(self, name: str, labels: Optional[Dict[str, str]] = None) -> str:
+        """Create a unique key for a metric with labels."""
+        if not labels:
+            return name
+        label_str = ",".join(f'{k}="{v}"' for k, v in sorted(labels.items()))
+        return f"{name}{{{label_str}}}"
+    
+    def _format_histogram(self, name: str, values: List[float], labels_str: str) -> str:
+        """Format histogram data in Prometheus format."""
+        if not values:
+            return ""
+        
+        lines = []
+        buckets = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, float('inf')]
+        
+        for bucket in buckets:
+            count = sum(1 for v in values if v <= bucket)
+            bucket_label = f'le="{bucket}"' if bucket != float('inf') else 'le="+Inf"'
+            if labels_str:
+                lines.append(f'{name}_bucket{{{labels_str},{bucket_label}}} {count}')
+            else:
+                lines.append(f'{name}_bucket{{{bucket_label}}} {count}')
+        
+        if labels_str:
+            lines.append(f'{name}_sum{{{labels_str}}} {sum(values)}')
+            lines.append(f'{name}_count{{{labels_str}}} {len(values)}')
+        else:
+            lines.append(f'{name}_sum {sum(values)}')
+            lines.append(f'{name}_count {len(values)}')
+        
+        return "\n".join(lines)
+    
+    def export(self) -> str:
+        """Export metrics in Prometheus text format."""
+        lines = []
+        
+        # Export counters
+        for key, value in self.counters.items():
+            lines.append(f"# TYPE {key.split('{')[0]} counter")
+            lines.append(f"{key} {value}")
+        
+        # Export gauges
+        for key, value in self.gauges.items():
+            lines.append(f"# TYPE {key.split('{')[0]} gauge")
+            lines.append(f"{key} {value}")
+        
+        # Export histograms
+        exported_histograms = set()
+        for key, values in self.histograms.items():
+            base_name = key.split('{')[0]
+            if base_name not in exported_histograms:
+                lines.append(f"# TYPE {base_name} histogram")
+                exported_histograms.add(base_name)
+            
+            labels_str = ""
+            if '{' in key:
+                labels_str = key[key.index('{')+1:key.index('}')]
+            
+            lines.append(self._format_histogram(base_name, values, labels_str))
+        
+        return "\n".join(lines)
+
+# Global metrics instance
+metrics = PrometheusMetrics() if ENABLE_METRICS else None
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """Middleware for logging requests and collecting metrics."""
+    
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        request_id = str(uuid.uuid4())[:8]
+        start_time = time.time()
+        
+        # Add request_id to request state
+        request.state.request_id = request_id
+        
+        # Log request start
+        client_ip = request.client.host if request.client else "unknown"
+        logger.info(
+            f"Request started: {request.method} {request.url.path}",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "client_ip": client_ip
+            }
+        )
+        
+        # Process request
+        try:
+            response = await call_next(request)
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # Log request completion
+            logger.info(
+                f"Request completed: {request.method} {request.url.path} - {response.status_code}",
+                extra={
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": response.status_code,
+                    "duration_ms": round(duration_ms, 2),
+                    "client_ip": client_ip
+                }
+            )
+            
+            # Record metrics
+            if metrics:
+                metrics.inc("http_requests_total", labels={
+                    "method": request.method,
+                    "path": request.url.path.split("/")[1] if "/" in request.url.path else request.url.path,
+                    "status": str(response.status_code)
+                })
+                metrics.observe("http_request_duration_seconds", duration_ms / 1000, labels={
+                    "method": request.method,
+                    "path": request.url.path.split("/")[1] if "/" in request.url.path else request.url.path
+                })
+            
+            # Add request ID to response headers
+            response.headers["X-Request-ID"] = request_id
+            return response
+            
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # Log error
+            logger.error(
+                f"Request failed: {request.method} {request.url.path} - {str(e)}",
+                extra={
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "duration_ms": round(duration_ms, 2),
+                    "client_ip": client_ip
+                },
+                exc_info=True
+            )
+            
+            # Record error metrics
+            if metrics:
+                metrics.inc("http_requests_total", labels={
+                    "method": request.method,
+                    "path": request.url.path.split("/")[1] if "/" in request.url.path else request.url.path,
+                    "status": "500"
+                })
+            
+            # Report to Sentry
+            if sentry_sdk:
+                sentry_sdk.capture_exception(e)
+            
+            raise
+
+def log_task_event(event_type: str, task_id: str, session_id: str, **kwargs):
+    """Log task-related events with structured data."""
+    logger.info(
+        f"Task event: {event_type}",
+        extra={
+            "task_id": task_id,
+            "session_id": session_id,
+            **kwargs
+        }
+    )
+    
+    if metrics:
+        metrics.inc(f"task_events_total", labels={"event": event_type})
+
+def log_error(error: Exception, context: Optional[Dict[str, Any]] = None):
+    """Log an error with context and optionally report to Sentry."""
+    logger.error(
+        f"Error: {str(error)}",
+        extra=context or {},
+        exc_info=True
+    )
+    
+    if metrics:
+        metrics.inc("errors_total", labels={"type": type(error).__name__})
+    
+    if sentry_sdk:
+        with sentry_sdk.push_scope() as scope:
+            if context:
+                for key, value in context.items():
+                    scope.set_extra(key, value)
+            sentry_sdk.capture_exception(error)
 
 # JWT Configuration
 JWT_SECRET = os.environ.get("JWT_SECRET", secrets.token_hex(32))
@@ -2340,19 +2663,35 @@ async def execute_agent_task(session_id: str, task_id: str, description: str, mo
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    print("Starting Mini-Devin API v5.3...")
-    print("Features: Tool Execution, SQLite Storage, WebSocket, Multi-Model, File Upload, Agent Memory, Export, Background Task Queue")
+    # Phase 45: Use structured logging for startup
+    logger.info("Starting Mini-Devin API v5.4", extra={"version": "5.4.0"})
+    logger.info("Features: Tool Execution, SQLite Storage, WebSocket, Multi-Model, File Upload, Agent Memory, Export, Background Task Queue, Monitoring")
+    
     init_db()
-    print(f"SQLite database initialized at {DB_PATH}")
-    print(f"Workspace directory: {WORKSPACE_DIR}")
-    print(f"Uploads directory: {UPLOADS_DIR}")
-    print(f"Memory directory: {MEMORY_DIR}")
+    logger.info(f"SQLite database initialized", extra={"db_path": DB_PATH})
+    logger.info(f"Directories configured", extra={
+        "workspace": WORKSPACE_DIR,
+        "uploads": UPLOADS_DIR,
+        "memory": MEMORY_DIR
+    })
+    
+    # Phase 45: Log monitoring configuration
+    logger.info("Monitoring configured", extra={
+        "log_level": LOG_LEVEL,
+        "log_format": LOG_FORMAT,
+        "sentry_enabled": bool(SENTRY_DSN),
+        "metrics_enabled": ENABLE_METRICS
+    })
     
     # Phase 44: Start background task queue
     queue = get_task_queue()
     await queue.start()
-    print(f"Background task queue started with {TASK_QUEUE_MAX_WORKERS} workers")
-    print(f"Task queue config: max_retries={TASK_QUEUE_MAX_RETRIES}, retry_delay={TASK_QUEUE_RETRY_DELAY}s, backoff={TASK_QUEUE_RETRY_BACKOFF}x")
+    logger.info("Background task queue started", extra={
+        "workers": TASK_QUEUE_MAX_WORKERS,
+        "max_retries": TASK_QUEUE_MAX_RETRIES,
+        "retry_delay": TASK_QUEUE_RETRY_DELAY,
+        "retry_backoff": TASK_QUEUE_RETRY_BACKOFF
+    })
     
     openai_key = os.environ.get("OPENAI_API_KEY")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -2361,28 +2700,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     providers = []
     if openai_key:
         providers.append("openai")
-        print(f"OpenAI API key configured")
+        logger.info("OpenAI API key configured")
     if anthropic_key:
         providers.append("anthropic")
-        print(f"Anthropic API key configured")
+        logger.info("Anthropic API key configured")
     if ollama_url:
         providers.append("ollama")
-        print(f"Ollama URL configured: {ollama_url}")
+        logger.info(f"Ollama URL configured", extra={"ollama_url": ollama_url})
     
     if not providers:
-        print("Warning: No LLM providers configured - set OPENAI_API_KEY, ANTHROPIC_API_KEY, or OLLAMA_URL")
+        logger.warning("No LLM providers configured - set OPENAI_API_KEY, ANTHROPIC_API_KEY, or OLLAMA_URL")
     else:
-        print(f"Available providers: {', '.join(providers)}")
+        logger.info(f"Available providers: {', '.join(providers)}", extra={"providers": providers})
     
     yield
     
     # Phase 44: Stop background task queue gracefully
-    print("Stopping background task queue...")
+    logger.info("Stopping background task queue...")
     await queue.stop()
-    print("Shutting down Mini-Devin API...")
+    logger.info("Shutting down Mini-Devin API...")
 
-app = FastAPI(title="Mini-Devin API", version="5.0.0", description="Autonomous AI Software Engineer with Multi-Model Support, File Upload, Agent Memory, and Export", lifespan=lifespan)
+app = FastAPI(title="Mini-Devin API", version="5.4.0", description="Autonomous AI Software Engineer with Multi-Model Support, File Upload, Agent Memory, Export, and Monitoring", lifespan=lifespan)
 
+# Phase 45: Add request logging middleware (before CORS)
+app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 def get_configured_providers():
@@ -2683,6 +3024,101 @@ async def get_db_pool_status():
     Useful for monitoring database connection health.
     """
     return get_db_pool_stats()
+
+# ============================================================================
+# Phase 45: Logging & Monitoring Endpoints
+# ============================================================================
+
+@app.get("/metrics", response_class=PlainTextResponse)
+async def prometheus_metrics():
+    """Export Prometheus metrics in text format.
+    
+    Returns all collected metrics in Prometheus exposition format.
+    Scrape this endpoint with Prometheus for monitoring.
+    """
+    if not metrics:
+        return PlainTextResponse("# Metrics disabled\n", status_code=200)
+    
+    # Add system metrics
+    queue = get_task_queue()
+    queue_stats = queue.get_stats()
+    metrics.set_gauge("task_queue_pending", queue_stats["queue_size"])
+    metrics.set_gauge("task_queue_active", queue_stats["active_tasks"])
+    metrics.set_gauge("task_queue_completed", queue_stats["completed_tasks"])
+    metrics.set_gauge("task_queue_failed", queue_stats["failed_tasks"])
+    metrics.set_gauge("task_queue_workers", queue_stats["max_workers"])
+    
+    # Add DB pool metrics
+    pool_stats = get_db_pool_stats()
+    metrics.set_gauge("db_pool_size", pool_stats["pool_size"])
+    metrics.set_gauge("db_pool_checked_out", pool_stats["checked_out"])
+    metrics.set_gauge("db_pool_overflow", pool_stats["overflow"])
+    
+    return PlainTextResponse(metrics.export(), media_type="text/plain")
+
+@app.get("/api/logs/config")
+async def get_logging_config():
+    """Get current logging configuration.
+    
+    Returns log level, format, and monitoring status.
+    """
+    return {
+        "log_level": LOG_LEVEL,
+        "log_format": LOG_FORMAT,
+        "sentry_enabled": bool(SENTRY_DSN),
+        "metrics_enabled": ENABLE_METRICS,
+        "environment": os.environ.get("ENVIRONMENT", "production"),
+        "version": "5.4.0"
+    }
+
+@app.get("/api/metrics/summary")
+async def get_metrics_summary():
+    """Get a JSON summary of key metrics.
+    
+    Returns aggregated metrics in JSON format for dashboards.
+    """
+    if not metrics:
+        return {"enabled": False, "message": "Metrics disabled"}
+    
+    # Calculate request stats
+    total_requests = sum(v for k, v in metrics.counters.items() if k.startswith("http_requests_total"))
+    error_count = sum(v for k, v in metrics.counters.items() if "errors_total" in k)
+    
+    # Calculate latency stats
+    all_latencies = []
+    for k, v in metrics.histograms.items():
+        if "http_request_duration" in k:
+            all_latencies.extend(v)
+    
+    avg_latency = sum(all_latencies) / len(all_latencies) if all_latencies else 0
+    p95_latency = sorted(all_latencies)[int(len(all_latencies) * 0.95)] if all_latencies else 0
+    p99_latency = sorted(all_latencies)[int(len(all_latencies) * 0.99)] if all_latencies else 0
+    
+    # Get queue stats
+    queue = get_task_queue()
+    queue_stats = queue.get_stats()
+    
+    return {
+        "enabled": True,
+        "requests": {
+            "total": total_requests,
+            "errors": error_count,
+            "error_rate": error_count / total_requests if total_requests > 0 else 0
+        },
+        "latency": {
+            "avg_ms": round(avg_latency * 1000, 2),
+            "p95_ms": round(p95_latency * 1000, 2),
+            "p99_ms": round(p99_latency * 1000, 2),
+            "samples": len(all_latencies)
+        },
+        "task_queue": {
+            "pending": queue_stats["queue_size"],
+            "active": queue_stats["active_tasks"],
+            "completed": queue_stats["completed_tasks"],
+            "failed": queue_stats["failed_tasks"]
+        },
+        "db_pool": get_db_pool_stats()
+    }
 
 # ============================================================================
 # Phase 44: Task Queue Management Endpoints
