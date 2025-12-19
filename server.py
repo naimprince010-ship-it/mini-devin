@@ -3466,6 +3466,139 @@ def execute_tool(tool_call: dict, session_id: str = "", default_working_dir: str
                 token=repo_info.get("github_token", ""),
                 workflow_id=str(tool_call.get("workflow_id", ""))
             )
+        # Phase 50: GitHub Actions - Workflow Files, Debugging, Secrets
+        elif tool == "get_workflow_file":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="get_workflow_file", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_get_workflow_file(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                workflow_path=str(tool_call.get("workflow_path", ""))
+            )
+        elif tool == "create_workflow_file":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="create_workflow_file", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_create_workflow_file(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                workflow_name=str(tool_call.get("workflow_name", "")),
+                content=str(tool_call.get("content", "")),
+                message=str(tool_call.get("message", "Create workflow file")),
+                branch=str(tool_call.get("branch", "main"))
+            )
+        elif tool == "update_workflow_file":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="update_workflow_file", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_update_workflow_file(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                workflow_path=str(tool_call.get("workflow_path", "")),
+                content=str(tool_call.get("content", "")),
+                message=str(tool_call.get("message", "Update workflow file")),
+                branch=str(tool_call.get("branch", "main"))
+            )
+        elif tool == "delete_workflow_file":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="delete_workflow_file", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_delete_workflow_file(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                workflow_path=str(tool_call.get("workflow_path", "")),
+                message=str(tool_call.get("message", "Delete workflow file")),
+                branch=str(tool_call.get("branch", "main"))
+            )
+        elif tool == "debug_workflow_failure":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="debug_workflow_failure", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_debug_workflow_failure(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                run_id=int(tool_call.get("run_id", 0))
+            )
+        elif tool == "list_repo_secrets":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_repo_secrets", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_repo_secrets(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", "")
+            )
+        elif tool == "create_or_update_secret":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="create_or_update_secret", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_create_or_update_secret(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                secret_name=str(tool_call.get("secret_name", "")),
+                secret_value=str(tool_call.get("secret_value", ""))
+            )
+        elif tool == "delete_secret":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="delete_secret", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_delete_secret(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                secret_name=str(tool_call.get("secret_name", ""))
+            )
+        elif tool == "list_environment_secrets":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="list_environment_secrets", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_list_environment_secrets(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                environment_name=str(tool_call.get("environment_name", ""))
+            )
+        elif tool == "create_or_update_environment_secret":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="create_or_update_environment_secret", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_create_or_update_environment_secret(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                environment_name=str(tool_call.get("environment_name", "")),
+                secret_name=str(tool_call.get("secret_name", "")),
+                secret_value=str(tool_call.get("secret_value", ""))
+            )
+        elif tool == "delete_environment_secret":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="delete_environment_secret", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return execute_delete_environment_secret(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                environment_name=str(tool_call.get("environment_name", "")),
+                secret_name=str(tool_call.get("secret_name", ""))
+            )
+        elif tool == "generate_workflow_template":
+            options = tool_call.get("options")
+            if isinstance(options, str):
+                try:
+                    options = json.loads(options)
+                except:
+                    options = None
+            return execute_generate_workflow_template(
+                workflow_type=str(tool_call.get("workflow_type", "")),
+                options=options
+            )
         else:
             return ToolResult(tool=str(tool), success=False, output="", error=f"Unknown tool: {tool}", error_code="unknown_tool", suggestions=get_error_suggestions("unknown_tool"))
     except Exception as e:
@@ -7226,4 +7359,722 @@ async def api_get_workflow_usage(repo_id: str, workflow_id: str):
         raise HTTPException(status_code=404, detail="Repository not found")
     
     result = execute_get_workflow_usage(row[0], row[1], row[2], workflow_id)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+# ============================================================================
+# Phase 50: GitHub Actions - Workflow Files, Debugging, Secrets
+# ============================================================================
+
+def execute_get_workflow_file(owner: str, repo: str, token: str, workflow_path: str) -> ToolResult:
+    """Get the content of a workflow file."""
+    try:
+        # Ensure path starts with .github/workflows/
+        if not workflow_path.startswith(".github/workflows/"):
+            workflow_path = f".github/workflows/{workflow_path}"
+        
+        success, data = execute_github_api("GET", f"/repos/{owner}/{repo}/contents/{workflow_path}", token)
+        if not success:
+            return ToolResult(tool="get_workflow_file", success=False, output="", error=data.get("message", "Failed to get workflow file"), error_code="api_error")
+        
+        import base64
+        content = base64.b64decode(data.get("content", "")).decode("utf-8")
+        
+        result_lines = [
+            f"Workflow File: {workflow_path}",
+            f"SHA: {data.get('sha', 'N/A')}",
+            f"Size: {data.get('size', 0)} bytes",
+            "",
+            "Content:",
+            "```yaml",
+            content,
+            "```"
+        ]
+        
+        return ToolResult(tool="get_workflow_file", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="get_workflow_file", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_create_workflow_file(owner: str, repo: str, token: str, workflow_name: str, content: str, message: str = "Create workflow file", branch: str = "main") -> ToolResult:
+    """Create a new workflow file."""
+    try:
+        import base64
+        
+        # Ensure path starts with .github/workflows/
+        if not workflow_name.endswith(".yml") and not workflow_name.endswith(".yaml"):
+            workflow_name = f"{workflow_name}.yml"
+        workflow_path = f".github/workflows/{workflow_name}"
+        
+        encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+        
+        payload = {
+            "message": message,
+            "content": encoded_content,
+            "branch": branch
+        }
+        
+        success, data = execute_github_api("PUT", f"/repos/{owner}/{repo}/contents/{workflow_path}", token, payload)
+        
+        if not success:
+            error_msg = data.get("message", "Failed to create workflow file")
+            if "sha" in str(data).lower():
+                return ToolResult(tool="create_workflow_file", success=False, output="", error="File already exists. Use update_workflow_file instead.", error_code="file_exists")
+            return ToolResult(tool="create_workflow_file", success=False, output="", error=error_msg, error_code="api_error")
+        
+        return ToolResult(tool="create_workflow_file", success=True, output=f"Workflow file created: {workflow_path}\nCommit: {data.get('commit', {}).get('sha', 'N/A')[:7]}")
+    except Exception as e:
+        return ToolResult(tool="create_workflow_file", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_update_workflow_file(owner: str, repo: str, token: str, workflow_path: str, content: str, message: str = "Update workflow file", branch: str = "main") -> ToolResult:
+    """Update an existing workflow file."""
+    try:
+        import base64
+        
+        # Ensure path starts with .github/workflows/
+        if not workflow_path.startswith(".github/workflows/"):
+            workflow_path = f".github/workflows/{workflow_path}"
+        
+        # Get current file SHA
+        success, current_data = execute_github_api("GET", f"/repos/{owner}/{repo}/contents/{workflow_path}?ref={branch}", token)
+        if not success:
+            return ToolResult(tool="update_workflow_file", success=False, output="", error="File not found. Use create_workflow_file instead.", error_code="file_not_found")
+        
+        current_sha = current_data.get("sha", "")
+        encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+        
+        payload = {
+            "message": message,
+            "content": encoded_content,
+            "sha": current_sha,
+            "branch": branch
+        }
+        
+        success, data = execute_github_api("PUT", f"/repos/{owner}/{repo}/contents/{workflow_path}", token, payload)
+        
+        if not success:
+            return ToolResult(tool="update_workflow_file", success=False, output="", error=data.get("message", "Failed to update workflow file"), error_code="api_error")
+        
+        return ToolResult(tool="update_workflow_file", success=True, output=f"Workflow file updated: {workflow_path}\nCommit: {data.get('commit', {}).get('sha', 'N/A')[:7]}")
+    except Exception as e:
+        return ToolResult(tool="update_workflow_file", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_delete_workflow_file(owner: str, repo: str, token: str, workflow_path: str, message: str = "Delete workflow file", branch: str = "main") -> ToolResult:
+    """Delete a workflow file."""
+    try:
+        # Ensure path starts with .github/workflows/
+        if not workflow_path.startswith(".github/workflows/"):
+            workflow_path = f".github/workflows/{workflow_path}"
+        
+        # Get current file SHA
+        success, current_data = execute_github_api("GET", f"/repos/{owner}/{repo}/contents/{workflow_path}?ref={branch}", token)
+        if not success:
+            return ToolResult(tool="delete_workflow_file", success=False, output="", error="File not found.", error_code="file_not_found")
+        
+        current_sha = current_data.get("sha", "")
+        
+        payload = {
+            "message": message,
+            "sha": current_sha,
+            "branch": branch
+        }
+        
+        success, data = execute_github_api("DELETE", f"/repos/{owner}/{repo}/contents/{workflow_path}", token, payload)
+        
+        if not success:
+            return ToolResult(tool="delete_workflow_file", success=False, output="", error=data.get("message", "Failed to delete workflow file"), error_code="api_error")
+        
+        return ToolResult(tool="delete_workflow_file", success=True, output=f"Workflow file deleted: {workflow_path}")
+    except Exception as e:
+        return ToolResult(tool="delete_workflow_file", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_debug_workflow_failure(owner: str, repo: str, token: str, run_id: int) -> ToolResult:
+    """Debug a failed workflow run by analyzing logs and providing suggestions."""
+    try:
+        # Get workflow run details
+        success, run_data = execute_github_api("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}", token)
+        if not success:
+            return ToolResult(tool="debug_workflow_failure", success=False, output="", error=run_data.get("message", "Failed to get workflow run"), error_code="api_error")
+        
+        if run_data.get("conclusion") != "failure":
+            return ToolResult(tool="debug_workflow_failure", success=True, output=f"Workflow run {run_id} did not fail. Status: {run_data.get('status')}, Conclusion: {run_data.get('conclusion')}")
+        
+        # Get jobs for this run
+        success, jobs_data = execute_github_api("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}/jobs", token)
+        if not success:
+            return ToolResult(tool="debug_workflow_failure", success=False, output="", error="Failed to get workflow jobs", error_code="api_error")
+        
+        result_lines = [
+            f"Debugging Workflow Run #{run_data.get('run_number')} (ID: {run_id})",
+            f"Workflow: {run_data.get('name')}",
+            f"Branch: {run_data.get('head_branch')}",
+            f"Commit: {run_data.get('head_sha', '')[:7]}",
+            f"Event: {run_data.get('event')}",
+            "",
+            "Failed Jobs Analysis:",
+            "=" * 50
+        ]
+        
+        failed_jobs = [j for j in jobs_data.get("jobs", []) if j.get("conclusion") == "failure"]
+        
+        for job in failed_jobs:
+            result_lines.append(f"\nJob: {job['name']} (ID: {job['id']})")
+            result_lines.append(f"Runner: {job.get('runner_name', 'N/A')}")
+            result_lines.append(f"Started: {job.get('started_at', 'N/A')}")
+            result_lines.append(f"Completed: {job.get('completed_at', 'N/A')}")
+            
+            # Analyze failed steps
+            failed_steps = [s for s in job.get("steps", []) if s.get("conclusion") == "failure"]
+            if failed_steps:
+                result_lines.append("\nFailed Steps:")
+                for step in failed_steps:
+                    result_lines.append(f"  - Step {step.get('number')}: {step['name']}")
+                    result_lines.append(f"    Status: {step.get('status')} | Conclusion: {step.get('conclusion')}")
+            
+            # Get job logs (first 5000 chars of failed job)
+            try:
+                import httpx
+                headers = {
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28"
+                }
+                log_url = f"https://api.github.com/repos/{owner}/{repo}/actions/jobs/{job['id']}/logs"
+                with httpx.Client(follow_redirects=True, timeout=30.0) as client:
+                    response = client.get(log_url, headers=headers)
+                    if response.status_code == 200:
+                        log_content = response.text
+                        # Find error patterns
+                        error_lines = []
+                        for line in log_content.split("\n"):
+                            line_lower = line.lower()
+                            if any(kw in line_lower for kw in ["error", "failed", "exception", "fatal", "cannot", "not found", "permission denied"]):
+                                error_lines.append(line.strip())
+                        
+                        if error_lines:
+                            result_lines.append("\nKey Error Lines from Logs:")
+                            for line in error_lines[:20]:  # Limit to 20 error lines
+                                result_lines.append(f"  {line[:200]}")  # Limit line length
+            except:
+                pass
+        
+        # Add debugging suggestions
+        result_lines.append("\n" + "=" * 50)
+        result_lines.append("Debugging Suggestions:")
+        result_lines.append("1. Check the failed step's configuration in the workflow YAML")
+        result_lines.append("2. Verify all required secrets are set in repository settings")
+        result_lines.append("3. Check if dependencies/versions are compatible")
+        result_lines.append("4. Review the full logs using list_workflow_jobs and view_workflow_logs")
+        result_lines.append("5. Try re-running the failed jobs with rerun_workflow(failed_only=True)")
+        
+        return ToolResult(tool="debug_workflow_failure", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="debug_workflow_failure", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_list_repo_secrets(owner: str, repo: str, token: str) -> ToolResult:
+    """List repository secrets (names only, not values)."""
+    try:
+        success, data = execute_github_api("GET", f"/repos/{owner}/{repo}/actions/secrets", token)
+        if not success:
+            return ToolResult(tool="list_repo_secrets", success=False, output="", error=data.get("message", "Failed to list secrets"), error_code="api_error")
+        
+        secrets = data.get("secrets", [])
+        if not secrets:
+            return ToolResult(tool="list_repo_secrets", success=True, output="No repository secrets configured.")
+        
+        result_lines = [f"Found {len(secrets)} repository secret(s):\n"]
+        for secret in secrets:
+            result_lines.append(f"- {secret['name']}")
+            result_lines.append(f"  Created: {secret.get('created_at', 'N/A')}")
+            result_lines.append(f"  Updated: {secret.get('updated_at', 'N/A')}")
+        
+        return ToolResult(tool="list_repo_secrets", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="list_repo_secrets", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_create_or_update_secret(owner: str, repo: str, token: str, secret_name: str, secret_value: str) -> ToolResult:
+    """Create or update a repository secret."""
+    try:
+        from nacl import encoding, public
+        
+        # Get repository public key
+        success, key_data = execute_github_api("GET", f"/repos/{owner}/{repo}/actions/secrets/public-key", token)
+        if not success:
+            return ToolResult(tool="create_or_update_secret", success=False, output="", error="Failed to get repository public key", error_code="api_error")
+        
+        public_key = key_data.get("key", "")
+        key_id = key_data.get("key_id", "")
+        
+        # Encrypt the secret
+        public_key_bytes = public.PublicKey(public_key.encode("utf-8"), encoding.Base64Encoder())
+        sealed_box = public.SealedBox(public_key_bytes)
+        encrypted = sealed_box.encrypt(secret_value.encode("utf-8"))
+        encrypted_value = encoding.Base64Encoder().encode(encrypted).decode("utf-8")
+        
+        payload = {
+            "encrypted_value": encrypted_value,
+            "key_id": key_id
+        }
+        
+        success, data = execute_github_api("PUT", f"/repos/{owner}/{repo}/actions/secrets/{secret_name}", token, payload)
+        
+        if not success:
+            return ToolResult(tool="create_or_update_secret", success=False, output="", error=data.get("message", "Failed to create/update secret"), error_code="api_error")
+        
+        return ToolResult(tool="create_or_update_secret", success=True, output=f"Secret '{secret_name}' created/updated successfully.")
+    except ImportError:
+        return ToolResult(tool="create_or_update_secret", success=False, output="", error="PyNaCl library not installed. Install with: pip install pynacl", error_code="missing_dependency")
+    except Exception as e:
+        return ToolResult(tool="create_or_update_secret", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_delete_secret(owner: str, repo: str, token: str, secret_name: str) -> ToolResult:
+    """Delete a repository secret."""
+    try:
+        success, data = execute_github_api("DELETE", f"/repos/{owner}/{repo}/actions/secrets/{secret_name}", token)
+        
+        if not success:
+            return ToolResult(tool="delete_secret", success=False, output="", error=data.get("message", "Failed to delete secret"), error_code="api_error")
+        
+        return ToolResult(tool="delete_secret", success=True, output=f"Secret '{secret_name}' deleted successfully.")
+    except Exception as e:
+        return ToolResult(tool="delete_secret", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_list_environment_secrets(owner: str, repo: str, token: str, environment_name: str) -> ToolResult:
+    """List secrets for a specific environment."""
+    try:
+        # First get repository ID
+        success, repo_data = execute_github_api("GET", f"/repos/{owner}/{repo}", token)
+        if not success:
+            return ToolResult(tool="list_environment_secrets", success=False, output="", error="Failed to get repository info", error_code="api_error")
+        
+        repo_id = repo_data.get("id")
+        
+        success, data = execute_github_api("GET", f"/repositories/{repo_id}/environments/{environment_name}/secrets", token)
+        if not success:
+            return ToolResult(tool="list_environment_secrets", success=False, output="", error=data.get("message", "Failed to list environment secrets"), error_code="api_error")
+        
+        secrets = data.get("secrets", [])
+        if not secrets:
+            return ToolResult(tool="list_environment_secrets", success=True, output=f"No secrets configured for environment '{environment_name}'.")
+        
+        result_lines = [f"Found {len(secrets)} secret(s) for environment '{environment_name}':\n"]
+        for secret in secrets:
+            result_lines.append(f"- {secret['name']}")
+            result_lines.append(f"  Created: {secret.get('created_at', 'N/A')}")
+            result_lines.append(f"  Updated: {secret.get('updated_at', 'N/A')}")
+        
+        return ToolResult(tool="list_environment_secrets", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="list_environment_secrets", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_create_or_update_environment_secret(owner: str, repo: str, token: str, environment_name: str, secret_name: str, secret_value: str) -> ToolResult:
+    """Create or update an environment secret."""
+    try:
+        from nacl import encoding, public
+        
+        # First get repository ID
+        success, repo_data = execute_github_api("GET", f"/repos/{owner}/{repo}", token)
+        if not success:
+            return ToolResult(tool="create_or_update_environment_secret", success=False, output="", error="Failed to get repository info", error_code="api_error")
+        
+        repo_id = repo_data.get("id")
+        
+        # Get environment public key
+        success, key_data = execute_github_api("GET", f"/repositories/{repo_id}/environments/{environment_name}/secrets/public-key", token)
+        if not success:
+            return ToolResult(tool="create_or_update_environment_secret", success=False, output="", error="Failed to get environment public key", error_code="api_error")
+        
+        public_key = key_data.get("key", "")
+        key_id = key_data.get("key_id", "")
+        
+        # Encrypt the secret
+        public_key_bytes = public.PublicKey(public_key.encode("utf-8"), encoding.Base64Encoder())
+        sealed_box = public.SealedBox(public_key_bytes)
+        encrypted = sealed_box.encrypt(secret_value.encode("utf-8"))
+        encrypted_value = encoding.Base64Encoder().encode(encrypted).decode("utf-8")
+        
+        payload = {
+            "encrypted_value": encrypted_value,
+            "key_id": key_id
+        }
+        
+        success, data = execute_github_api("PUT", f"/repositories/{repo_id}/environments/{environment_name}/secrets/{secret_name}", token, payload)
+        
+        if not success:
+            return ToolResult(tool="create_or_update_environment_secret", success=False, output="", error=data.get("message", "Failed to create/update environment secret"), error_code="api_error")
+        
+        return ToolResult(tool="create_or_update_environment_secret", success=True, output=f"Environment secret '{secret_name}' created/updated in '{environment_name}'.")
+    except ImportError:
+        return ToolResult(tool="create_or_update_environment_secret", success=False, output="", error="PyNaCl library not installed. Install with: pip install pynacl", error_code="missing_dependency")
+    except Exception as e:
+        return ToolResult(tool="create_or_update_environment_secret", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_delete_environment_secret(owner: str, repo: str, token: str, environment_name: str, secret_name: str) -> ToolResult:
+    """Delete an environment secret."""
+    try:
+        # First get repository ID
+        success, repo_data = execute_github_api("GET", f"/repos/{owner}/{repo}", token)
+        if not success:
+            return ToolResult(tool="delete_environment_secret", success=False, output="", error="Failed to get repository info", error_code="api_error")
+        
+        repo_id = repo_data.get("id")
+        
+        success, data = execute_github_api("DELETE", f"/repositories/{repo_id}/environments/{environment_name}/secrets/{secret_name}", token)
+        
+        if not success:
+            return ToolResult(tool="delete_environment_secret", success=False, output="", error=data.get("message", "Failed to delete environment secret"), error_code="api_error")
+        
+        return ToolResult(tool="delete_environment_secret", success=True, output=f"Environment secret '{secret_name}' deleted from '{environment_name}'.")
+    except Exception as e:
+        return ToolResult(tool="delete_environment_secret", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_generate_workflow_template(workflow_type: str, options: Optional[dict] = None) -> ToolResult:
+    """Generate a workflow template based on type."""
+    try:
+        options = options or {}
+        
+        templates = {
+            "node": """name: Node.js CI
+
+on:
+  push:
+    branches: [ {branch} ]
+  pull_request:
+    branches: [ {branch} ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [{node_versions}]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Use Node.js ${{{{ matrix.node-version }}}}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{{{ matrix.node-version }}}}
+        cache: 'npm'
+    
+    - run: npm ci
+    - run: npm run build --if-present
+    - run: npm test
+""",
+            "python": """name: Python CI
+
+on:
+  push:
+    branches: [ {branch} ]
+  pull_request:
+    branches: [ {branch} ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        python-version: [{python_versions}]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{{{ matrix.python-version }}}}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{{{ matrix.python-version }}}}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+    
+    - name: Run tests
+      run: pytest
+""",
+            "docker": """name: Docker Build
+
+on:
+  push:
+    branches: [ {branch} ]
+  pull_request:
+    branches: [ {branch} ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{{{ secrets.DOCKERHUB_USERNAME }}}}
+        password: ${{{{ secrets.DOCKERHUB_TOKEN }}}}
+    
+    - name: Build and push
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: ${{{{ github.event_name != 'pull_request' }}}}
+        tags: {docker_image}:latest
+""",
+            "deploy": """name: Deploy
+
+on:
+  push:
+    branches: [ {branch} ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: {environment}
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Deploy to server
+      run: |
+        echo "Deploying to {environment}..."
+        # Add your deployment commands here
+"""
+        }
+        
+        if workflow_type not in templates:
+            available = ", ".join(templates.keys())
+            return ToolResult(tool="generate_workflow_template", success=False, output="", error=f"Unknown workflow type. Available: {available}", error_code="invalid_type")
+        
+        template = templates[workflow_type]
+        
+        # Apply options
+        branch = options.get("branch", "main")
+        template = template.replace("{branch}", branch)
+        
+        if workflow_type == "node":
+            node_versions = options.get("node_versions", "18.x, 20.x")
+            template = template.replace("{node_versions}", node_versions)
+        elif workflow_type == "python":
+            python_versions = options.get("python_versions", "'3.10', '3.11', '3.12'")
+            template = template.replace("{python_versions}", python_versions)
+        elif workflow_type == "docker":
+            docker_image = options.get("docker_image", "username/app")
+            template = template.replace("{docker_image}", docker_image)
+        elif workflow_type == "deploy":
+            environment = options.get("environment", "production")
+            template = template.replace("{environment}", environment)
+        
+        return ToolResult(tool="generate_workflow_template", success=True, output=template)
+    except Exception as e:
+        return ToolResult(tool="generate_workflow_template", success=False, output="", error=str(e), error_code="unknown_error")
+
+# ============================================================================
+# Phase 50: GitHub Actions - API Endpoints
+# ============================================================================
+
+class CreateWorkflowFileRequest(BaseModel):
+    workflow_name: str
+    content: str
+    message: str = "Create workflow file"
+    branch: str = "main"
+
+class UpdateWorkflowFileRequest(BaseModel):
+    workflow_path: str
+    content: str
+    message: str = "Update workflow file"
+    branch: str = "main"
+
+class DeleteWorkflowFileRequest(BaseModel):
+    workflow_path: str
+    message: str = "Delete workflow file"
+    branch: str = "main"
+
+class CreateSecretRequest(BaseModel):
+    secret_name: str
+    secret_value: str
+
+class CreateEnvironmentSecretRequest(BaseModel):
+    environment_name: str
+    secret_name: str
+    secret_value: str
+
+class GenerateWorkflowTemplateRequest(BaseModel):
+    workflow_type: str
+    options: Optional[dict] = None
+
+@app.get("/api/repos/{repo_id}/workflow-files/{workflow_path:path}")
+async def api_get_workflow_file(repo_id: str, workflow_path: str):
+    """Get the content of a workflow file."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_get_workflow_file(row[0], row[1], row[2], workflow_path)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/repos/{repo_id}/workflow-files")
+async def api_create_workflow_file(repo_id: str, request: CreateWorkflowFileRequest):
+    """Create a new workflow file."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_create_workflow_file(row[0], row[1], row[2], request.workflow_name, request.content, request.message, request.branch)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.put("/api/repos/{repo_id}/workflow-files")
+async def api_update_workflow_file(repo_id: str, request: UpdateWorkflowFileRequest):
+    """Update an existing workflow file."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_update_workflow_file(row[0], row[1], row[2], request.workflow_path, request.content, request.message, request.branch)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.delete("/api/repos/{repo_id}/workflow-files")
+async def api_delete_workflow_file(repo_id: str, request: DeleteWorkflowFileRequest):
+    """Delete a workflow file."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_delete_workflow_file(row[0], row[1], row[2], request.workflow_path, request.message, request.branch)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/workflow-runs/{run_id}/debug")
+async def api_debug_workflow_failure(repo_id: str, run_id: int):
+    """Debug a failed workflow run."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_debug_workflow_failure(row[0], row[1], row[2], run_id)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/secrets")
+async def api_list_repo_secrets(repo_id: str):
+    """List repository secrets (names only)."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_list_repo_secrets(row[0], row[1], row[2])
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.put("/api/repos/{repo_id}/secrets")
+async def api_create_or_update_secret(repo_id: str, request: CreateSecretRequest):
+    """Create or update a repository secret."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_create_or_update_secret(row[0], row[1], row[2], request.secret_name, request.secret_value)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.delete("/api/repos/{repo_id}/secrets/{secret_name}")
+async def api_delete_secret(repo_id: str, secret_name: str):
+    """Delete a repository secret."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_delete_secret(row[0], row[1], row[2], secret_name)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/environments/{environment_name}/secrets")
+async def api_list_environment_secrets(repo_id: str, environment_name: str):
+    """List secrets for a specific environment."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_list_environment_secrets(row[0], row[1], row[2], environment_name)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.put("/api/repos/{repo_id}/environments/secrets")
+async def api_create_or_update_environment_secret(repo_id: str, request: CreateEnvironmentSecretRequest):
+    """Create or update an environment secret."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_create_or_update_environment_secret(row[0], row[1], row[2], request.environment_name, request.secret_name, request.secret_value)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.delete("/api/repos/{repo_id}/environments/{environment_name}/secrets/{secret_name}")
+async def api_delete_environment_secret(repo_id: str, environment_name: str, secret_name: str):
+    """Delete an environment secret."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT owner, repo_name, github_token FROM github_repos WHERE repo_id=?", (repo_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    result = execute_delete_environment_secret(row[0], row[1], row[2], environment_name, secret_name)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/workflow-templates/generate")
+async def api_generate_workflow_template(request: GenerateWorkflowTemplateRequest):
+    """Generate a workflow template based on type."""
+    result = execute_generate_workflow_template(request.workflow_type, request.options)
     return {"success": result.success, "output": result.output, "error": result.error}
