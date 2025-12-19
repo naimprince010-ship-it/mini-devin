@@ -3042,10 +3042,10 @@ async def prometheus_metrics():
     # Add system metrics
     queue = get_task_queue()
     queue_stats = queue.get_stats()
-    metrics.set_gauge("task_queue_pending", queue_stats["pending_count"])
-    metrics.set_gauge("task_queue_active", queue_stats["active_count"])
-    metrics.set_gauge("task_queue_completed", queue_stats["completed_count"])
-    metrics.set_gauge("task_queue_failed", queue_stats["failed_count"])
+    metrics.set_gauge("task_queue_pending", queue_stats["queue_size"])
+    metrics.set_gauge("task_queue_active", queue_stats["active_tasks"])
+    metrics.set_gauge("task_queue_completed", queue_stats["completed_tasks"])
+    metrics.set_gauge("task_queue_failed", queue_stats["failed_tasks"])
     metrics.set_gauge("task_queue_workers", queue_stats["max_workers"])
     
     # Add DB pool metrics
@@ -3112,10 +3112,10 @@ async def get_metrics_summary():
             "samples": len(all_latencies)
         },
         "task_queue": {
-            "pending": queue_stats["pending_count"],
-            "active": queue_stats["active_count"],
-            "completed": queue_stats["completed_count"],
-            "failed": queue_stats["failed_count"]
+            "pending": queue_stats["queue_size"],
+            "active": queue_stats["active_tasks"],
+            "completed": queue_stats["completed_tasks"],
+            "failed": queue_stats["failed_tasks"]
         },
         "db_pool": get_db_pool_stats()
     }
