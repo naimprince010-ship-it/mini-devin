@@ -215,7 +215,7 @@ DANGEROUS_COMMANDS = [
     "wget http", "curl http", "nc -e", "bash -i", "/dev/tcp"
 ]
 
-ALLOWED_DIRS = ["/tmp", WORKSPACE_DIR, UPLOADS_DIR]
+ALLOWED_DIRS = ["/tmp", WORKSPACE_DIR, UPLOADS_DIR, REPOS_DIR]
 
 def is_path_allowed(path: str) -> bool:
     abs_path = os.path.abspath(path)
@@ -571,10 +571,11 @@ When you need to perform an action, you MUST output a JSON block like this:
 
 ## Available Tools
 
-1. **terminal** - Run shell commands
+1. **terminal** - Run shell commands (including git commit, push, etc.)
    ```json
    {"tool": "terminal", "command": "ls -la"}
    ```
+   Use terminal for ALL git write operations: git add, git commit, git push, git checkout -b, etc.
 
 2. **file_write** - Create or overwrite a file
    ```json
@@ -616,8 +617,26 @@ When you need to perform an action, you MUST output a JSON block like this:
    {"tool": "memory_recall", "key": "user_preference"}
    ```
 
+10. **create_github_repo** - Create a new GitHub repository
+    ```json
+    {"tool": "create_github_repo", "name": "my-repo", "description": "My project", "private": false, "github_token": "ghp_xxx"}
+    ```
+
 ## Working Directory
-You can create and modify files in: /tmp and the workspace directory.
+You are working in a git repository. The remote 'origin' is ALREADY configured with authentication.
+- Use `git remote -v` to see the remote URL
+- You can directly push with `git push origin <branch>` - NO need to add remote again
+- Create branches with `git checkout -b <branch-name>`
+- Commit with `git add . && git commit -m "message"`
+- Push with `git push -u origin <branch-name>`
+
+## Git Workflow for PRs
+1. First check current status: `git status` and `git remote -v`
+2. Create a new branch: `git checkout -b feature/my-feature`
+3. Make changes using file_write
+4. Stage and commit: `git add . && git commit -m "Add feature"`
+5. Push to remote: `git push -u origin feature/my-feature`
+6. The PR can be created via GitHub web interface or API
 
 ## Error Handling
 If a tool fails, you'll receive an error message with suggestions. Use these to fix the issue and try again.
@@ -627,7 +646,9 @@ If a tool fails, you'll receive an error message with suggestions. Use these to 
 2. After each tool execution, you'll see the results
 3. If a tool fails, read the error and suggestions, then try a different approach
 4. Continue using tools until the task is complete
-5. Provide a summary when done
+5. For git operations, ALWAYS use terminal tool (not the read-only git tool)
+6. The git remote is ALREADY configured - do NOT try to add a new remote
+7. Provide a summary when done
 
 REMEMBER: Always output the JSON tool block, never just describe what you would do!"""
 
@@ -656,11 +677,11 @@ def parse_tool_calls(response: str) -> list:
     
     return tools
 
-def execute_tool(tool_call: dict, session_id: str = "") -> ToolResult:
+def execute_tool(tool_call: dict, session_id: str = "", default_working_dir: str = "/tmp") -> ToolResult:
     tool = tool_call.get("tool")
     try:
         if tool == "terminal":
-            return execute_terminal(tool_call.get("command", ""), tool_call.get("working_dir", "/tmp"))
+            return execute_terminal(tool_call.get("command", ""), tool_call.get("working_dir", default_working_dir))
         elif tool == "file_read":
             return execute_file_read(tool_call.get("path", ""))
         elif tool == "file_write":
@@ -704,6 +725,11 @@ async def broadcast_to_session(session_id: str, message: dict):
 async def execute_agent_task(session_id: str, task_id: str, description: str, model: str, provider: str = "openai", max_iterations: int = 10):
     conn = get_db()
     c = conn.cursor()
+    
+    # Get session's working directory
+    c.execute("SELECT working_dir FROM sessions WHERE session_id=?", (session_id,))
+    session_row = c.fetchone()
+    working_dir = session_row[0] if session_row and session_row[0] else "/tmp"
     
     llm_client = get_llm_client(provider)
     if not llm_client:
@@ -765,7 +791,7 @@ async def execute_agent_task(session_id: str, task_id: str, description: str, mo
             for tool_call in tool_calls:
                 await broadcast_to_session(session_id, {"type": "tool_started", "task_id": task_id, "tool": tool_call})
                 
-                result = execute_tool(tool_call, session_id)
+                result = execute_tool(tool_call, session_id, working_dir)
                 tool_results.append(result)
                 
                 tool_output = {"tool": result.tool, "success": result.success, "output": result.output[:5000], "error": result.error, "error_code": result.error_code, "suggestions": result.suggestions}
