@@ -1,5 +1,5 @@
 """
-Mini-Devin API Server v5.4
+Mini-Devin API Server v5.5
 Phase 34: Better Error Handling
 Phase 35: Task History & Export
 Phase 36: Multi-Model Support (OpenAI, Anthropic, Ollama)
@@ -9,6 +9,7 @@ Phase 42: Authentication & Security (JWT, Rate Limiting, Session Timeout)
 Phase 43: Database Connection Pooling (SQLAlchemy)
 Phase 44: Background Task Queue with Retry/Failure Recovery
 Phase 45: Logging & Monitoring (Structured JSON, Prometheus, Sentry)
+Phase 46: GitHub OAuth Integration (OAuth login, automatic repo access, webhooks)
 """
 
 import os
@@ -24,15 +25,18 @@ import secrets
 import time
 import logging
 import sys
+import hmac
+import base64
 from collections import defaultdict
 from contextlib import asynccontextmanager, contextmanager
 from typing import AsyncGenerator, Optional, List, Dict, Any, Generator, Callable
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlencode, parse_qs
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Depends, Request, Header, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -41,6 +45,59 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy import create_engine, text, event
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.engine import Engine
+
+# ============================================================================
+# Phase 46: GitHub OAuth Configuration
+# ============================================================================
+GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
+GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
+GITHUB_OAUTH_REDIRECT_URI = os.environ.get("GITHUB_OAUTH_REDIRECT_URI", "https://api.jomiye.com/api/github/oauth/callback")
+GITHUB_WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET", "")
+GITHUB_TOKEN_ENCRYPTION_KEY = os.environ.get("GITHUB_TOKEN_ENCRYPTION_KEY", secrets.token_hex(32))
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://jomiye.com")
+
+# GitHub OAuth scopes for full repo access
+GITHUB_OAUTH_SCOPES = "repo user:email read:org workflow"
+
+# In-memory OAuth state storage (use Redis in production for multi-instance)
+oauth_states: Dict[str, Dict[str, Any]] = {}
+
+def encrypt_token(token: str) -> str:
+    """Simple encryption for storing tokens. Uses XOR with key for basic protection."""
+    if not token:
+        return ""
+    key = GITHUB_TOKEN_ENCRYPTION_KEY.encode()
+    token_bytes = token.encode()
+    encrypted = bytes(a ^ b for a, b in zip(token_bytes, (key * (len(token_bytes) // len(key) + 1))[:len(token_bytes)]))
+    return base64.b64encode(encrypted).decode()
+
+def decrypt_token(encrypted: str) -> str:
+    """Decrypt a stored token."""
+    if not encrypted:
+        return ""
+    try:
+        key = GITHUB_TOKEN_ENCRYPTION_KEY.encode()
+        encrypted_bytes = base64.b64decode(encrypted.encode())
+        decrypted = bytes(a ^ b for a, b in zip(encrypted_bytes, (key * (len(encrypted_bytes) // len(key) + 1))[:len(encrypted_bytes)]))
+        return decrypted.decode()
+    except Exception:
+        return ""
+
+def verify_webhook_signature(payload: bytes, signature: str) -> bool:
+    """Verify GitHub webhook signature using HMAC-SHA256."""
+    if not GITHUB_WEBHOOK_SECRET or not signature:
+        return False
+    
+    if signature.startswith("sha256="):
+        signature = signature[7:]
+    
+    expected = hmac.new(
+        GITHUB_WEBHOOK_SECRET.encode(),
+        payload,
+        hashlib.sha256
+    ).hexdigest()
+    
+    return hmac.compare_digest(expected, signature)
 
 # ============================================================================
 # Phase 45: Logging & Monitoring Configuration
@@ -927,6 +984,32 @@ def init_db():
         c.execute("ALTER TABLE tasks ADD COLUMN next_retry_at TEXT")
     except:
         pass
+    # Phase 46: GitHub OAuth Integration - Store OAuth tokens per user
+    c.execute('''CREATE TABLE IF NOT EXISTS github_oauth (
+        user_id TEXT PRIMARY KEY,
+        access_token_enc TEXT NOT NULL,
+        refresh_token_enc TEXT,
+        token_type TEXT DEFAULT 'bearer',
+        scopes TEXT,
+        github_user_id TEXT,
+        github_login TEXT,
+        github_email TEXT,
+        github_avatar_url TEXT,
+        connected_at TEXT,
+        expires_at TEXT,
+        last_used TEXT,
+        FOREIGN KEY (user_id) REFERENCES users(user_id)
+    )''')
+    # Phase 46: GitHub Webhook Events - Store webhook events for processing
+    c.execute('''CREATE TABLE IF NOT EXISTS github_webhook_events (
+        event_id TEXT PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        repo_full_name TEXT,
+        payload TEXT,
+        received_at TEXT,
+        processed INTEGER DEFAULT 0,
+        processed_at TEXT
+    )''')
     conn.commit()
     conn.close()
 
@@ -3194,6 +3277,470 @@ async def retry_all_failed_tasks():
         if await queue.retry(task_id):
             retried.append(task_id)
     return {"status": "requeued", "count": len(retried), "task_ids": retried}
+
+# ============================================================================
+# Phase 46: GitHub OAuth Integration Endpoints
+# ============================================================================
+
+@app.get("/api/github/oauth/start")
+async def github_oauth_start(
+    request: Request,
+    user: Optional[dict] = Depends(get_current_user)
+):
+    """Start GitHub OAuth flow.
+    
+    Returns the GitHub authorization URL that the frontend should redirect to.
+    The state parameter is used for CSRF protection.
+    """
+    if not GITHUB_CLIENT_ID:
+        raise HTTPException(
+            status_code=503,
+            detail="GitHub OAuth not configured. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET environment variables."
+        )
+    
+    # Generate state for CSRF protection
+    state = secrets.token_urlsafe(32)
+    
+    # Store state with user info and expiry (10 minutes)
+    oauth_states[state] = {
+        "user_id": user.get("user_id") if user else None,
+        "created_at": datetime.utcnow().isoformat(),
+        "expires_at": (datetime.utcnow() + timedelta(minutes=10)).isoformat(),
+        "ip": get_client_ip(request)
+    }
+    
+    # Build GitHub authorization URL
+    params = {
+        "client_id": GITHUB_CLIENT_ID,
+        "redirect_uri": GITHUB_OAUTH_REDIRECT_URI,
+        "scope": GITHUB_OAUTH_SCOPES,
+        "state": state,
+        "allow_signup": "true"
+    }
+    
+    auth_url = f"https://github.com/login/oauth/authorize?{urlencode(params)}"
+    
+    return {
+        "auth_url": auth_url,
+        "state": state,
+        "expires_in": 600  # 10 minutes
+    }
+
+@app.get("/api/github/oauth/callback")
+async def github_oauth_callback(
+    code: str,
+    state: str,
+    request: Request
+):
+    """Handle GitHub OAuth callback.
+    
+    Exchanges the authorization code for an access token and stores it.
+    Redirects to the frontend with success/error status.
+    """
+    import httpx
+    
+    # Validate state (CSRF protection)
+    if state not in oauth_states:
+        return RedirectResponse(
+            url=f"{FRONTEND_URL}?github_oauth=error&message=Invalid+state+parameter",
+            status_code=302
+        )
+    
+    state_data = oauth_states.pop(state)
+    
+    # Check if state expired
+    if datetime.fromisoformat(state_data["expires_at"]) < datetime.utcnow():
+        return RedirectResponse(
+            url=f"{FRONTEND_URL}?github_oauth=error&message=OAuth+session+expired",
+            status_code=302
+        )
+    
+    user_id = state_data.get("user_id")
+    
+    # Exchange code for access token
+    try:
+        async with httpx.AsyncClient() as client:
+            token_response = await client.post(
+                "https://github.com/login/oauth/access_token",
+                data={
+                    "client_id": GITHUB_CLIENT_ID,
+                    "client_secret": GITHUB_CLIENT_SECRET,
+                    "code": code,
+                    "redirect_uri": GITHUB_OAUTH_REDIRECT_URI
+                },
+                headers={"Accept": "application/json"},
+                timeout=30.0
+            )
+            
+            if token_response.status_code != 200:
+                return RedirectResponse(
+                    url=f"{FRONTEND_URL}?github_oauth=error&message=Failed+to+exchange+code",
+                    status_code=302
+                )
+            
+            token_data = token_response.json()
+            
+            if "error" in token_data:
+                error_msg = token_data.get("error_description", token_data.get("error", "Unknown error"))
+                return RedirectResponse(
+                    url=f"{FRONTEND_URL}?github_oauth=error&message={error_msg.replace(' ', '+')}",
+                    status_code=302
+                )
+            
+            access_token = token_data.get("access_token")
+            refresh_token = token_data.get("refresh_token", "")
+            token_type = token_data.get("token_type", "bearer")
+            scopes = token_data.get("scope", "")
+            
+            # Get GitHub user info
+            user_response = await client.get(
+                "https://api.github.com/user",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/vnd.github+json"
+                },
+                timeout=30.0
+            )
+            
+            if user_response.status_code != 200:
+                return RedirectResponse(
+                    url=f"{FRONTEND_URL}?github_oauth=error&message=Failed+to+get+user+info",
+                    status_code=302
+                )
+            
+            github_user = user_response.json()
+            github_user_id = str(github_user.get("id", ""))
+            github_login = github_user.get("login", "")
+            github_email = github_user.get("email", "")
+            github_avatar = github_user.get("avatar_url", "")
+            
+            # Store encrypted token in database
+            conn = get_db()
+            c = conn.cursor()
+            now = datetime.utcnow().isoformat()
+            
+            # If no user_id from JWT, create/use a pseudo user based on GitHub ID
+            if not user_id:
+                user_id = f"github_{github_user_id}"
+                # Check if user exists, create if not
+                c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+                if not c.fetchone():
+                    c.execute("""INSERT INTO users (user_id, username, email, password_hash, created_at, role)
+                                 VALUES (?, ?, ?, ?, ?, ?)""",
+                              (user_id, github_login, github_email, "oauth_user", now, "user"))
+            
+            # Upsert OAuth token
+            c.execute("""INSERT OR REPLACE INTO github_oauth 
+                         (user_id, access_token_enc, refresh_token_enc, token_type, scopes,
+                          github_user_id, github_login, github_email, github_avatar_url,
+                          connected_at, last_used)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                      (user_id, encrypt_token(access_token), encrypt_token(refresh_token),
+                       token_type, scopes, github_user_id, github_login, github_email,
+                       github_avatar, now, now))
+            
+            conn.commit()
+            conn.close()
+            
+            # Redirect to frontend with success
+            return RedirectResponse(
+                url=f"{FRONTEND_URL}?github_oauth=success&github_login={github_login}",
+                status_code=302
+            )
+            
+    except httpx.TimeoutException:
+        return RedirectResponse(
+            url=f"{FRONTEND_URL}?github_oauth=error&message=Request+timed+out",
+            status_code=302
+        )
+    except Exception as e:
+        log_error(e, {"context": "github_oauth_callback"})
+        return RedirectResponse(
+            url=f"{FRONTEND_URL}?github_oauth=error&message=Internal+error",
+            status_code=302
+        )
+
+@app.get("/api/github/oauth/status")
+async def github_oauth_status(user: Optional[dict] = Depends(get_current_user)):
+    """Get GitHub OAuth connection status for the current user.
+    
+    Returns whether GitHub is connected and basic GitHub user info.
+    """
+    if not user:
+        return {
+            "connected": False,
+            "message": "Not authenticated"
+        }
+    
+    user_id = user.get("user_id")
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT github_login, github_email, github_avatar_url, connected_at, scopes
+                 FROM github_oauth WHERE user_id = ?""", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        return {
+            "connected": False,
+            "github_configured": bool(GITHUB_CLIENT_ID)
+        }
+    
+    return {
+        "connected": True,
+        "github_login": row[0],
+        "github_email": row[1],
+        "github_avatar_url": row[2],
+        "connected_at": row[3],
+        "scopes": row[4].split(",") if row[4] else []
+    }
+
+@app.delete("/api/github/oauth/disconnect")
+async def github_oauth_disconnect(user: dict = Depends(require_auth)):
+    """Disconnect GitHub OAuth for the current user.
+    
+    Revokes the GitHub token and removes it from the database.
+    """
+    import httpx
+    
+    user_id = user.get("user_id")
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT access_token_enc FROM github_oauth WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="GitHub not connected")
+    
+    access_token = decrypt_token(row[0])
+    
+    # Try to revoke the token on GitHub (best effort)
+    if access_token and GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET:
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.delete(
+                    f"https://api.github.com/applications/{GITHUB_CLIENT_ID}/token",
+                    auth=(GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET),
+                    json={"access_token": access_token},
+                    timeout=10.0
+                )
+        except Exception:
+            pass  # Best effort revocation
+    
+    # Delete from database
+    c.execute("DELETE FROM github_oauth WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    
+    return {"status": "disconnected", "message": "GitHub account disconnected successfully"}
+
+@app.post("/api/github/webhook")
+async def github_webhook(request: Request):
+    """Handle GitHub webhook events.
+    
+    Receives and processes webhook events from GitHub.
+    Verifies the webhook signature for security.
+    """
+    # Get the raw body for signature verification
+    body = await request.body()
+    
+    # Verify webhook signature
+    signature = request.headers.get("X-Hub-Signature-256", "")
+    
+    if GITHUB_WEBHOOK_SECRET and not verify_webhook_signature(body, signature):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+    
+    # Parse the event
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+    
+    event_type = request.headers.get("X-GitHub-Event", "unknown")
+    delivery_id = request.headers.get("X-GitHub-Delivery", str(uuid.uuid4()))
+    
+    # Extract repo info
+    repo_full_name = ""
+    if "repository" in payload:
+        repo_full_name = payload["repository"].get("full_name", "")
+    
+    # Store the event
+    conn = get_db()
+    c = conn.cursor()
+    now = datetime.utcnow().isoformat()
+    
+    c.execute("""INSERT INTO github_webhook_events 
+                 (event_id, event_type, repo_full_name, payload, received_at)
+                 VALUES (?, ?, ?, ?, ?)""",
+              (delivery_id, event_type, repo_full_name, json.dumps(payload), now))
+    
+    conn.commit()
+    conn.close()
+    
+    # Broadcast to connected WebSocket clients if relevant
+    # This enables real-time updates in the UI
+    if event_type in ["push", "pull_request", "issues", "workflow_run"]:
+        await broadcast_webhook_event(event_type, repo_full_name, payload)
+    
+    return {"status": "received", "event_type": event_type, "delivery_id": delivery_id}
+
+async def broadcast_webhook_event(event_type: str, repo_full_name: str, payload: dict):
+    """Broadcast webhook event to connected WebSocket clients."""
+    # Find sessions linked to this repo
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT sr.session_id FROM session_repos sr
+                 JOIN github_repos gr ON sr.repo_id = gr.repo_id
+                 WHERE gr.owner || '/' || gr.repo_name = ?""", (repo_full_name,))
+    sessions = [row[0] for row in c.fetchall()]
+    conn.close()
+    
+    # Prepare event message
+    event_message = {
+        "type": "github_webhook",
+        "event_type": event_type,
+        "repo": repo_full_name,
+        "summary": _summarize_webhook_event(event_type, payload)
+    }
+    
+    # Broadcast to each session
+    for session_id in sessions:
+        await broadcast_to_session(session_id, event_message)
+
+def _summarize_webhook_event(event_type: str, payload: dict) -> str:
+    """Create a human-readable summary of a webhook event."""
+    if event_type == "push":
+        pusher = payload.get("pusher", {}).get("name", "Someone")
+        commits = payload.get("commits", [])
+        branch = payload.get("ref", "").replace("refs/heads/", "")
+        return f"{pusher} pushed {len(commits)} commit(s) to {branch}"
+    
+    elif event_type == "pull_request":
+        action = payload.get("action", "")
+        pr = payload.get("pull_request", {})
+        user = pr.get("user", {}).get("login", "Someone")
+        title = pr.get("title", "")
+        return f"{user} {action} PR: {title}"
+    
+    elif event_type == "issues":
+        action = payload.get("action", "")
+        issue = payload.get("issue", {})
+        user = issue.get("user", {}).get("login", "Someone")
+        title = issue.get("title", "")
+        return f"{user} {action} issue: {title}"
+    
+    elif event_type == "workflow_run":
+        workflow = payload.get("workflow_run", {})
+        name = workflow.get("name", "Workflow")
+        conclusion = workflow.get("conclusion", "")
+        return f"{name} {conclusion}"
+    
+    return f"GitHub {event_type} event received"
+
+def get_github_oauth_token_for_user(user_id: str) -> Optional[str]:
+    """Get decrypted GitHub OAuth token for a user."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT access_token_enc FROM github_oauth WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        return None
+    
+    return decrypt_token(row[0])
+
+def get_github_token_for_user_or_session(user_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
+    """Get GitHub token, preferring OAuth token over session-linked PAT.
+    
+    This is the credential resolver that checks:
+    1. User's OAuth token (if user_id provided)
+    2. Session's linked repo token (if session_id provided)
+    """
+    # First try OAuth token
+    if user_id:
+        oauth_token = get_github_oauth_token_for_user(user_id)
+        if oauth_token:
+            # Update last_used timestamp
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("UPDATE github_oauth SET last_used = ? WHERE user_id = ?",
+                      (datetime.utcnow().isoformat(), user_id))
+            conn.commit()
+            conn.close()
+            return oauth_token
+    
+    # Fall back to session-linked repo token
+    if session_id:
+        return get_github_token_for_session(session_id)
+    
+    return None
+
+@app.get("/api/github/repos")
+async def list_github_repos(user: dict = Depends(require_auth)):
+    """List GitHub repositories accessible to the authenticated user.
+    
+    Uses the user's OAuth token to fetch their repositories.
+    """
+    import httpx
+    
+    user_id = user.get("user_id")
+    token = get_github_oauth_token_for_user(user_id)
+    
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail="GitHub not connected. Please connect your GitHub account first."
+        )
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://api.github.com/user/repos",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json"
+                },
+                params={"per_page": 100, "sort": "updated"},
+                timeout=30.0
+            )
+            
+            if response.status_code == 401:
+                raise HTTPException(
+                    status_code=401,
+                    detail="GitHub token expired. Please reconnect your GitHub account."
+                )
+            
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"GitHub API error: {response.text}"
+                )
+            
+            repos = response.json()
+            
+            return {
+                "count": len(repos),
+                "repos": [
+                    {
+                        "id": repo["id"],
+                        "name": repo["name"],
+                        "full_name": repo["full_name"],
+                        "private": repo["private"],
+                        "html_url": repo["html_url"],
+                        "description": repo["description"],
+                        "default_branch": repo["default_branch"],
+                        "updated_at": repo["updated_at"]
+                    }
+                    for repo in repos
+                ]
+            }
+            
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="GitHub API request timed out")
 
 @app.get("/api/status")
 async def get_status():

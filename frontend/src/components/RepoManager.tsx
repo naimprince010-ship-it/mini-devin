@@ -1,5 +1,15 @@
 import { useState, useCallback, useEffect } from 'react';
-import { GitBranch, GitFork, Trash2, RefreshCw, Plus, ExternalLink, Loader2, Check, AlertCircle, Link2 } from 'lucide-react';
+import { GitBranch, GitFork, Trash2, RefreshCw, Plus, ExternalLink, Loader2, Check, AlertCircle, Link2, Github, LogOut, User } from 'lucide-react';
+
+interface GitHubOAuthStatus {
+  connected: boolean;
+  github_login?: string;
+  github_email?: string;
+  github_avatar_url?: string;
+  connected_at?: string;
+  scopes?: string[];
+  github_configured?: boolean;
+}
 
 interface Repo {
   repo_id: string;
@@ -33,6 +43,88 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
   const [adding, setAdding] = useState(false);
   const [cloning, setCloning] = useState<string | null>(null);
   const [expandedRepo, setExpandedRepo] = useState<string | null>(null);
+  const [githubStatus, setGithubStatus] = useState<GitHubOAuthStatus | null>(null);
+  const [connectingGithub, setConnectingGithub] = useState(false);
+  const [disconnectingGithub, setDisconnectingGithub] = useState(false);
+
+  const loadGitHubStatus = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('auth_token');
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      const response = await fetch(`${apiBaseUrl}/github/oauth/status`, { headers });
+      if (response.ok) {
+        const data = await response.json();
+        setGithubStatus(data);
+      }
+    } catch (e) {
+      console.error('Failed to load GitHub status:', e);
+    }
+  }, [apiBaseUrl]);
+
+  const handleConnectGitHub = async () => {
+    setConnectingGithub(true);
+    try {
+      const token = localStorage.getItem('auth_token');
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      const response = await fetch(`${apiBaseUrl}/github/oauth/start`, { headers });
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to start GitHub OAuth');
+      }
+      const data = await response.json();
+      window.location.href = data.auth_url;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to connect GitHub');
+      setConnectingGithub(false);
+    }
+  };
+
+  const handleDisconnectGitHub = async () => {
+    if (!confirm('Are you sure you want to disconnect your GitHub account?')) return;
+    
+    setDisconnectingGithub(true);
+    try {
+      const token = localStorage.getItem('auth_token');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      const response = await fetch(`${apiBaseUrl}/github/oauth/disconnect`, {
+        method: 'DELETE',
+        headers
+      });
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to disconnect GitHub');
+      }
+      setGithubStatus({ connected: false, github_configured: true });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to disconnect GitHub');
+    } finally {
+      setDisconnectingGithub(false);
+    }
+  };
+
+  useEffect(() => {
+    loadGitHubStatus();
+    
+    const urlParams = new URLSearchParams(window.location.search);
+    const oauthStatus = urlParams.get('github_oauth');
+    if (oauthStatus === 'success') {
+      loadGitHubStatus();
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (oauthStatus === 'error') {
+      const message = urlParams.get('message') || 'GitHub OAuth failed';
+      setError(message.replace(/\+/g, ' '));
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, [loadGitHubStatus]);
 
   const loadRepos = useCallback(async () => {
     setLoading(true);
@@ -201,6 +293,76 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
 
   return (
     <div className="p-4">
+      {/* GitHub OAuth Connection Section */}
+      <div className="mb-6 p-4 bg-gray-800 rounded-lg border border-gray-700">
+        <div className="flex items-center gap-2 mb-3">
+          <Github size={20} className="text-white" />
+          <h3 className="text-sm font-semibold text-white">GitHub Connection</h3>
+        </div>
+        
+        {githubStatus?.connected ? (
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              {githubStatus.github_avatar_url ? (
+                <img 
+                  src={githubStatus.github_avatar_url} 
+                  alt={githubStatus.github_login} 
+                  className="w-10 h-10 rounded-full"
+                />
+              ) : (
+                <div className="w-10 h-10 rounded-full bg-gray-600 flex items-center justify-center">
+                  <User size={20} className="text-gray-400" />
+                </div>
+              )}
+              <div>
+                <p className="text-white font-medium">{githubStatus.github_login}</p>
+                <p className="text-gray-400 text-xs">{githubStatus.github_email || 'Connected via OAuth'}</p>
+              </div>
+            </div>
+            <button
+              onClick={handleDisconnectGitHub}
+              disabled={disconnectingGithub}
+              className="flex items-center gap-2 px-3 py-1.5 bg-red-600/20 hover:bg-red-600/30 text-red-400 rounded-lg text-sm transition-colors"
+            >
+              {disconnectingGithub ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <LogOut size={14} />
+              )}
+              Disconnect
+            </button>
+          </div>
+        ) : (
+          <div>
+            <p className="text-gray-400 text-sm mb-3">
+              Connect your GitHub account to access private repositories and enable automatic authentication.
+            </p>
+            <button
+              onClick={handleConnectGitHub}
+              disabled={connectingGithub || githubStatus?.github_configured === false}
+              className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-500 text-white rounded-lg text-sm transition-colors"
+            >
+              {connectingGithub ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" />
+                  Connecting...
+                </>
+              ) : (
+                <>
+                  <Github size={16} />
+                  Connect GitHub Account
+                </>
+              )}
+            </button>
+            {githubStatus?.github_configured === false && (
+              <p className="text-yellow-400 text-xs mt-2">
+                GitHub OAuth is not configured on the server. Contact the administrator.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-white flex items-center gap-2">
           <GitFork size={20} />
@@ -228,6 +390,12 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
       {error && (
         <div className="mb-4 p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-200 text-sm">
           {error}
+          <button 
+            onClick={() => setError(null)} 
+            className="ml-2 text-red-300 hover:text-red-100"
+          >
+            Dismiss
+          </button>
         </div>
       )}
 
