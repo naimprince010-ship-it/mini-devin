@@ -1,10 +1,11 @@
 """
-Mini-Devin API Server v5.0
+Mini-Devin API Server v5.1
 Phase 34: Better Error Handling
 Phase 35: Task History & Export
 Phase 36: Multi-Model Support (OpenAI, Anthropic, Ollama)
 Phase 37: File Upload
 Phase 38: Agent Memory (cross-session)
+Phase 42: Authentication & Security (JWT, Rate Limiting, Session Timeout)
 """
 
 import os
@@ -15,15 +16,36 @@ import re
 import json
 import uuid
 import traceback
+import hashlib
+import secrets
+import time
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Depends, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
+
+# JWT Configuration
+JWT_SECRET = os.environ.get("JWT_SECRET", secrets.token_hex(32))
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRY_HOURS = int(os.environ.get("JWT_EXPIRY_HOURS", "24"))
+SESSION_TIMEOUT_MINUTES = int(os.environ.get("SESSION_TIMEOUT_MINUTES", "60"))
+
+# Rate Limiting Configuration
+RATE_LIMIT_REQUESTS = int(os.environ.get("RATE_LIMIT_REQUESTS", "100"))
+RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("RATE_LIMIT_WINDOW_SECONDS", "60"))
+
+# Security
+security = HTTPBearer(auto_error=False)
+
+# Rate limiting storage (in-memory, use Redis for production scaling)
+rate_limit_storage: Dict[str, List[float]] = defaultdict(list)
 
 DB_PATH = os.environ.get("MINI_DEVIN_DB_PATH", "/root/mini-devin/mini_devin.db")
 WORKSPACE_DIR = os.environ.get("MINI_DEVIN_WORKSPACE", "/root/mini-devin/workspace")
@@ -136,6 +158,29 @@ def init_db():
         FOREIGN KEY (session_id) REFERENCES sessions(session_id),
         FOREIGN KEY (repo_id) REFERENCES github_repos(repo_id)
     )''')
+    # Phase 42: Users table for authentication
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        user_id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        email TEXT UNIQUE,
+        password_hash TEXT NOT NULL,
+        created_at TEXT,
+        last_login TEXT,
+        is_active INTEGER DEFAULT 1,
+        role TEXT DEFAULT 'user'
+    )''')
+    # Phase 42: User sessions for JWT token management
+    c.execute('''CREATE TABLE IF NOT EXISTS user_sessions (
+        token_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        created_at TEXT,
+        expires_at TEXT,
+        last_activity TEXT,
+        is_revoked INTEGER DEFAULT 0,
+        ip_address TEXT,
+        user_agent TEXT,
+        FOREIGN KEY (user_id) REFERENCES users(user_id)
+    )''')
     try:
         c.execute("ALTER TABLE sessions ADD COLUMN provider TEXT DEFAULT 'openai'")
     except:
@@ -148,6 +193,10 @@ def init_db():
         c.execute("ALTER TABLE tasks ADD COLUMN error_code TEXT")
     except:
         pass
+    try:
+        c.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT")
+    except:
+        pass
     conn.commit()
     conn.close()
 
@@ -158,6 +207,197 @@ def get_db():
 
 active_websockets: Dict[str, List[WebSocket]] = {}
 llm_clients: Dict[str, Any] = {}
+
+# ============================================================================
+# Phase 42: Authentication & Security Functions
+# ============================================================================
+
+def hash_password(password: str) -> str:
+    """Hash password using SHA-256 with salt."""
+    salt = secrets.token_hex(16)
+    password_hash = hashlib.sha256((password + salt).encode()).hexdigest()
+    return f"{salt}:{password_hash}"
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    """Verify password against stored hash."""
+    try:
+        salt, password_hash = stored_hash.split(":")
+        return hashlib.sha256((password + salt).encode()).hexdigest() == password_hash
+    except ValueError:
+        return False
+
+def create_jwt_token(user_id: str, username: str, role: str = "user") -> dict:
+    """Create a JWT token with expiry."""
+    import base64
+    
+    now = datetime.utcnow()
+    expires_at = now + timedelta(hours=JWT_EXPIRY_HOURS)
+    token_id = str(uuid.uuid4())
+    
+    # Create payload
+    payload = {
+        "token_id": token_id,
+        "user_id": user_id,
+        "username": username,
+        "role": role,
+        "iat": int(now.timestamp()),
+        "exp": int(expires_at.timestamp())
+    }
+    
+    # Simple JWT encoding (header.payload.signature)
+    header = base64.urlsafe_b64encode(json.dumps({"alg": JWT_ALGORITHM, "typ": "JWT"}).encode()).decode().rstrip("=")
+    payload_encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    signature_input = f"{header}.{payload_encoded}"
+    signature = hashlib.sha256((signature_input + JWT_SECRET).encode()).hexdigest()
+    
+    token = f"{header}.{payload_encoded}.{signature}"
+    
+    return {
+        "token": token,
+        "token_id": token_id,
+        "expires_at": expires_at.isoformat(),
+        "expires_in": JWT_EXPIRY_HOURS * 3600
+    }
+
+def decode_jwt_token(token: str) -> Optional[dict]:
+    """Decode and verify a JWT token."""
+    import base64
+    
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        
+        header, payload_encoded, signature = parts
+        
+        # Verify signature
+        signature_input = f"{header}.{payload_encoded}"
+        expected_signature = hashlib.sha256((signature_input + JWT_SECRET).encode()).hexdigest()
+        if signature != expected_signature:
+            return None
+        
+        # Decode payload (add padding if needed)
+        padding = 4 - len(payload_encoded) % 4
+        if padding != 4:
+            payload_encoded += "=" * padding
+        
+        payload = json.loads(base64.urlsafe_b64decode(payload_encoded).decode())
+        
+        # Check expiry
+        if payload.get("exp", 0) < int(datetime.utcnow().timestamp()):
+            return None
+        
+        return payload
+    except Exception:
+        return None
+
+def check_rate_limit(identifier: str) -> tuple[bool, dict]:
+    """Check if request is within rate limit. Returns (allowed, info)."""
+    now = time.time()
+    window_start = now - RATE_LIMIT_WINDOW_SECONDS
+    
+    # Clean old entries
+    rate_limit_storage[identifier] = [t for t in rate_limit_storage[identifier] if t > window_start]
+    
+    # Check limit
+    current_count = len(rate_limit_storage[identifier])
+    if current_count >= RATE_LIMIT_REQUESTS:
+        retry_after = int(rate_limit_storage[identifier][0] - window_start) + 1
+        return False, {
+            "allowed": False,
+            "limit": RATE_LIMIT_REQUESTS,
+            "remaining": 0,
+            "reset": int(window_start + RATE_LIMIT_WINDOW_SECONDS),
+            "retry_after": retry_after
+        }
+    
+    # Add current request
+    rate_limit_storage[identifier].append(now)
+    
+    return True, {
+        "allowed": True,
+        "limit": RATE_LIMIT_REQUESTS,
+        "remaining": RATE_LIMIT_REQUESTS - current_count - 1,
+        "reset": int(now + RATE_LIMIT_WINDOW_SECONDS)
+    }
+
+async def get_current_user(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Optional[dict]:
+    """Get current user from JWT token. Returns None if not authenticated."""
+    if not credentials:
+        return None
+    
+    token = credentials.credentials
+    payload = decode_jwt_token(token)
+    
+    if not payload:
+        return None
+    
+    # Check if token is revoked
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT is_revoked FROM user_sessions WHERE token_id = ?", (payload.get("token_id"),))
+        row = c.fetchone()
+        if row and row["is_revoked"]:
+            return None
+        
+        # Update last activity
+        c.execute("UPDATE user_sessions SET last_activity = ? WHERE token_id = ?",
+                  (datetime.utcnow().isoformat(), payload.get("token_id")))
+        conn.commit()
+    finally:
+        conn.close()
+    
+    return payload
+
+async def require_auth(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> dict:
+    """Require authentication. Raises 401 if not authenticated."""
+    user = await get_current_user(request, credentials)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated. Please login first.",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    return user
+
+async def require_admin(
+    user: dict = Depends(require_auth)
+) -> dict:
+    """Require admin role. Raises 403 if not admin."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+def get_client_ip(request: Request) -> str:
+    """Get client IP address from request."""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+# Authentication request/response models
+class RegisterRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=50, description="Username")
+    password: str = Field(..., min_length=8, description="Password (min 8 characters)")
+    email: Optional[str] = Field(default=None, description="Email address")
+
+class LoginRequest(BaseModel):
+    username: str = Field(..., description="Username")
+    password: str = Field(..., description="Password")
+
+class TokenRefreshRequest(BaseModel):
+    token: str = Field(..., description="Current valid token to refresh")
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., description="Current password")
+    new_password: str = Field(..., min_length=8, description="New password (min 8 characters)")
 
 class CreateSessionRequest(BaseModel):
     working_directory: str = Field(default=".", description="Working directory")
@@ -1743,7 +1983,263 @@ async def health():
 @app.get("/api/health")
 async def api_health():
     providers = get_configured_providers()
-    return {"status": "healthy", "mode": "full-agent" if providers else "limited", "llm_configured": bool(providers), "providers": [p["id"] for p in providers], "version": "5.0.0"}
+    return {"status": "healthy", "mode": "full-agent" if providers else "limited", "llm_configured": bool(providers), "providers": [p["id"] for p in providers], "version": "5.1.0"}
+
+# ============================================================================
+# Phase 42: Authentication Endpoints
+# ============================================================================
+
+@app.post("/api/auth/register")
+async def register(request: Request, data: RegisterRequest):
+    """Register a new user account."""
+    # Rate limit by IP
+    client_ip = get_client_ip(request)
+    allowed, rate_info = check_rate_limit(f"register:{client_ip}")
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many registration attempts. Try again in {rate_info['retry_after']} seconds.",
+            headers={"Retry-After": str(rate_info["retry_after"])}
+        )
+    
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        
+        # Check if username exists
+        c.execute("SELECT user_id FROM users WHERE username = ?", (data.username,))
+        if c.fetchone():
+            raise HTTPException(status_code=400, detail="Username already exists")
+        
+        # Check if email exists (if provided)
+        if data.email:
+            c.execute("SELECT user_id FROM users WHERE email = ?", (data.email,))
+            if c.fetchone():
+                raise HTTPException(status_code=400, detail="Email already registered")
+        
+        # Create user
+        user_id = str(uuid.uuid4())
+        password_hash = hash_password(data.password)
+        now = datetime.utcnow().isoformat()
+        
+        c.execute("""INSERT INTO users (user_id, username, email, password_hash, created_at, role)
+                     VALUES (?, ?, ?, ?, ?, ?)""",
+                  (user_id, data.username, data.email, password_hash, now, "user"))
+        conn.commit()
+        
+        # Create token
+        token_data = create_jwt_token(user_id, data.username, "user")
+        
+        # Store session
+        c.execute("""INSERT INTO user_sessions (token_id, user_id, created_at, expires_at, last_activity, ip_address, user_agent)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                  (token_data["token_id"], user_id, now, token_data["expires_at"], now,
+                   client_ip, request.headers.get("User-Agent", "unknown")))
+        conn.commit()
+        
+        return {
+            "success": True,
+            "message": "Registration successful",
+            "user": {"user_id": user_id, "username": data.username, "role": "user"},
+            "token": token_data["token"],
+            "expires_at": token_data["expires_at"],
+            "expires_in": token_data["expires_in"]
+        }
+    finally:
+        conn.close()
+
+@app.post("/api/auth/login")
+async def login(request: Request, data: LoginRequest):
+    """Login and get JWT token."""
+    # Rate limit by IP
+    client_ip = get_client_ip(request)
+    allowed, rate_info = check_rate_limit(f"login:{client_ip}")
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many login attempts. Try again in {rate_info['retry_after']} seconds.",
+            headers={"Retry-After": str(rate_info["retry_after"])}
+        )
+    
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT user_id, username, password_hash, role, is_active FROM users WHERE username = ?",
+                  (data.username,))
+        user = c.fetchone()
+        
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+        
+        if not user["is_active"]:
+            raise HTTPException(status_code=403, detail="Account is disabled")
+        
+        if not verify_password(data.password, user["password_hash"]):
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+        
+        # Update last login
+        now = datetime.utcnow().isoformat()
+        c.execute("UPDATE users SET last_login = ? WHERE user_id = ?", (now, user["user_id"]))
+        
+        # Create token
+        token_data = create_jwt_token(user["user_id"], user["username"], user["role"])
+        
+        # Store session
+        c.execute("""INSERT INTO user_sessions (token_id, user_id, created_at, expires_at, last_activity, ip_address, user_agent)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                  (token_data["token_id"], user["user_id"], now, token_data["expires_at"], now,
+                   client_ip, request.headers.get("User-Agent", "unknown")))
+        conn.commit()
+        
+        return {
+            "success": True,
+            "message": "Login successful",
+            "user": {"user_id": user["user_id"], "username": user["username"], "role": user["role"]},
+            "token": token_data["token"],
+            "expires_at": token_data["expires_at"],
+            "expires_in": token_data["expires_in"]
+        }
+    finally:
+        conn.close()
+
+@app.post("/api/auth/logout")
+async def logout(user: dict = Depends(require_auth)):
+    """Logout and revoke current token."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("UPDATE user_sessions SET is_revoked = 1 WHERE token_id = ?", (user.get("token_id"),))
+        conn.commit()
+        return {"success": True, "message": "Logged out successfully"}
+    finally:
+        conn.close()
+
+@app.post("/api/auth/logout-all")
+async def logout_all(user: dict = Depends(require_auth)):
+    """Logout from all devices by revoking all tokens."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("UPDATE user_sessions SET is_revoked = 1 WHERE user_id = ?", (user.get("user_id"),))
+        conn.commit()
+        return {"success": True, "message": "Logged out from all devices"}
+    finally:
+        conn.close()
+
+@app.post("/api/auth/refresh")
+async def refresh_token(request: Request, user: dict = Depends(require_auth)):
+    """Refresh JWT token before it expires."""
+    client_ip = get_client_ip(request)
+    
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        
+        # Revoke old token
+        c.execute("UPDATE user_sessions SET is_revoked = 1 WHERE token_id = ?", (user.get("token_id"),))
+        
+        # Create new token
+        token_data = create_jwt_token(user["user_id"], user["username"], user.get("role", "user"))
+        
+        # Store new session
+        now = datetime.utcnow().isoformat()
+        c.execute("""INSERT INTO user_sessions (token_id, user_id, created_at, expires_at, last_activity, ip_address, user_agent)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                  (token_data["token_id"], user["user_id"], now, token_data["expires_at"], now,
+                   client_ip, request.headers.get("User-Agent", "unknown")))
+        conn.commit()
+        
+        return {
+            "success": True,
+            "message": "Token refreshed",
+            "token": token_data["token"],
+            "expires_at": token_data["expires_at"],
+            "expires_in": token_data["expires_in"]
+        }
+    finally:
+        conn.close()
+
+@app.get("/api/auth/me")
+async def get_current_user_info(user: dict = Depends(require_auth)):
+    """Get current user information."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT user_id, username, email, created_at, last_login, role FROM users WHERE user_id = ?",
+                  (user["user_id"],))
+        user_data = c.fetchone()
+        if not user_data:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        return {
+            "user_id": user_data["user_id"],
+            "username": user_data["username"],
+            "email": user_data["email"],
+            "created_at": user_data["created_at"],
+            "last_login": user_data["last_login"],
+            "role": user_data["role"]
+        }
+    finally:
+        conn.close()
+
+@app.post("/api/auth/change-password")
+async def change_password(data: ChangePasswordRequest, user: dict = Depends(require_auth)):
+    """Change user password."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT password_hash FROM users WHERE user_id = ?", (user["user_id"],))
+        row = c.fetchone()
+        
+        if not row or not verify_password(data.current_password, row["password_hash"]):
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
+        
+        # Update password
+        new_hash = hash_password(data.new_password)
+        c.execute("UPDATE users SET password_hash = ? WHERE user_id = ?", (new_hash, user["user_id"]))
+        
+        # Revoke all tokens except current
+        c.execute("UPDATE user_sessions SET is_revoked = 1 WHERE user_id = ? AND token_id != ?",
+                  (user["user_id"], user.get("token_id")))
+        conn.commit()
+        
+        return {"success": True, "message": "Password changed successfully"}
+    finally:
+        conn.close()
+
+@app.get("/api/auth/sessions")
+async def list_user_sessions(user: dict = Depends(require_auth)):
+    """List all active sessions for current user."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("""SELECT token_id, created_at, expires_at, last_activity, ip_address, user_agent
+                     FROM user_sessions WHERE user_id = ? AND is_revoked = 0
+                     ORDER BY last_activity DESC""", (user["user_id"],))
+        sessions = []
+        for row in c.fetchall():
+            sessions.append({
+                "token_id": row["token_id"][:8] + "...",  # Partial ID for security
+                "created_at": row["created_at"],
+                "expires_at": row["expires_at"],
+                "last_activity": row["last_activity"],
+                "ip_address": row["ip_address"],
+                "user_agent": row["user_agent"],
+                "is_current": row["token_id"] == user.get("token_id")
+            })
+        return {"sessions": sessions, "count": len(sessions)}
+    finally:
+        conn.close()
+
+@app.get("/api/rate-limit")
+async def get_rate_limit_status(request: Request):
+    """Get current rate limit status for the client."""
+    client_ip = get_client_ip(request)
+    _, rate_info = check_rate_limit(f"api:{client_ip}")
+    # Don't count this request
+    rate_limit_storage[f"api:{client_ip}"].pop()
+    rate_info["remaining"] += 1
+    return rate_info
 
 @app.get("/api/status")
 async def get_status():
