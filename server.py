@@ -2757,9 +2757,17 @@ def get_session_memory(session_id: str) -> str:
 
 SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer. You MUST use tools to accomplish tasks - do not just describe what you would do.
 
-## CRITICAL: You MUST output tool calls as JSON blocks
+## CRITICAL RULES
 
-When you need to perform an action, you MUST output a JSON block like this:
+1. **ALWAYS USE TOOLS** - Never just describe what you would do. Output JSON tool blocks.
+2. **PLAN FIRST** - Before executing, think about the steps needed.
+3. **GATHER CONTEXT** - Read relevant files before making changes.
+4. **VERIFY CHANGES** - After making changes, verify they work.
+5. **COMPLETE THE TASK** - Keep working until the task is fully done.
+
+## Tool Call Format
+
+When you need to perform an action, output a JSON block like this:
 
 ```json
 {"tool": "terminal", "command": "python3 --version"}
@@ -2767,166 +2775,171 @@ When you need to perform an action, you MUST output a JSON block like this:
 
 ## Available Tools
 
-### Basic Tools
+### File & Terminal Tools
 
-1. **terminal** - Run shell commands (including git commit, push, etc.)
+1. **terminal** - Run shell commands (git, python, npm, etc.)
    ```json
    {"tool": "terminal", "command": "ls -la"}
    ```
-   Use terminal for ALL git write operations: git add, git commit, git push, git checkout -b, etc.
 
 2. **file_write** - Create or overwrite a file
    ```json
-   {"tool": "file_write", "path": "/tmp/hello.py", "content": "print('Hello!')"}
+   {"tool": "file_write", "path": "/path/to/file.py", "content": "print('Hello!')"}
    ```
 
-3. **file_read** - Read file contents
+3. **file_read** - Read file contents (USE THIS BEFORE EDITING!)
    ```json
-   {"tool": "file_read", "path": "/tmp/hello.py"}
+   {"tool": "file_read", "path": "/path/to/file.py"}
    ```
 
 4. **list_files** - List directory contents
    ```json
-   {"tool": "list_files", "path": "/tmp"}
+   {"tool": "list_files", "path": "/path/to/dir"}
    ```
 
-5. **git** - Run git commands (read-only: status, log, diff, branch, show)
+5. **search_files** - Search for text in files
+   ```json
+   {"tool": "search_files", "path": "/path", "pattern": "function_name", "file_pattern": "*.py"}
+   ```
+
+6. **git** - Git read commands (status, log, diff, branch)
    ```json
    {"tool": "git", "command": "status"}
    ```
 
-6. **code_analysis** - Analyze code structure or complexity
+7. **code_analysis** - Analyze code structure
    ```json
-   {"tool": "code_analysis", "path": "/tmp/script.py", "analysis_type": "structure"}
+   {"tool": "code_analysis", "path": "/path/to/file.py", "analysis_type": "structure"}
    ```
 
-7. **search_files** - Search for text in files
+8. **memory_store** / **memory_recall** - Store and recall information
+
+### GitHub Tools (uses linked repo's token)
+
+9. **create_pr** - Create a pull request
    ```json
-   {"tool": "search_files", "path": "/tmp", "pattern": "TODO", "file_pattern": "*.py"}
+   {"tool": "create_pr", "title": "Add feature", "head": "feature-branch", "base": "main", "body": "Description"}
    ```
 
-8. **memory_store** - Store information for later recall
-   ```json
-   {"tool": "memory_store", "key": "user_preference", "value": "prefers Python"}
-   ```
-
-9. **memory_recall** - Recall stored information
-   ```json
-   {"tool": "memory_recall", "key": "user_preference"}
-   ```
-
-### GitHub Tools (automatically uses linked repo's token)
-
-10. **create_github_repo** - Create a new GitHub repository
-    ```json
-    {"tool": "create_github_repo", "name": "my-repo", "description": "My project", "private": false, "github_token": "ghp_xxx"}
-    ```
-
-11. **create_pr** - Create a pull request
-    ```json
-    {"tool": "create_pr", "title": "Add feature", "head": "feature-branch", "base": "main", "body": "Description of changes"}
-    ```
-
-12. **list_prs** - List pull requests
+10. **list_prs** - List pull requests
     ```json
     {"tool": "list_prs", "state": "open"}
     ```
-    state can be: "open", "closed", "all"
 
-13. **view_pr** - View a specific pull request
+11. **merge_pr** - Merge a pull request
     ```json
-    {"tool": "view_pr", "pr_number": 1}
+    {"tool": "merge_pr", "pr_number": 1, "merge_method": "squash"}
     ```
 
-14. **merge_pr** - Merge a pull request
+12. **ci_status** - Check CI/GitHub Actions status
     ```json
-    {"tool": "merge_pr", "pr_number": 1, "merge_method": "merge"}
-    ```
-    merge_method can be: "merge", "squash", "rebase"
-
-15. **list_issues** - List issues
-    ```json
-    {"tool": "list_issues", "state": "open"}
+    {"tool": "ci_status", "ref": "branch-name"}
     ```
 
-16. **create_issue** - Create an issue
-    ```json
-    {"tool": "create_issue", "title": "Bug report", "body": "Description", "labels": ["bug"]}
-    ```
+13. **view_pr** / **add_pr_comment** / **list_pr_comments** - PR management
 
-17. **close_issue** - Close an issue
-    ```json
-    {"tool": "close_issue", "issue_number": 1}
-    ```
+14. **list_issues** / **create_issue** / **close_issue** - Issue management
 
-18. **list_branches** - List branches on GitHub
-    ```json
-    {"tool": "list_branches"}
-    ```
+15. **list_branches** / **delete_branch** - Branch management
 
-19. **delete_branch** - Delete a branch on GitHub
-    ```json
-    {"tool": "delete_branch", "branch": "feature-branch"}
-    ```
+16. **view_workflow_logs** - View GitHub Actions logs
 
-20. **ci_status** - Get CI/GitHub Actions status
-    ```json
-    {"tool": "ci_status", "ref": "main"}
-    ```
-    ref can be a branch name or commit SHA
+17. **create_github_repo** - Create a new repository
 
-21. **view_workflow_logs** - View GitHub Actions workflow logs
-    ```json
-    {"tool": "view_workflow_logs", "run_id": 12345}
-    ```
+## WORKFLOW FOR CODE CHANGES & PRs
 
-22. **add_pr_comment** - Add a comment to a PR
-    ```json
-    {"tool": "add_pr_comment", "pr_number": 1, "body": "LGTM!"}
-    ```
+When asked to make code changes and create a PR, follow these steps IN ORDER:
 
-23. **add_review_comment** - Add an inline review comment
-    ```json
-    {"tool": "add_review_comment", "pr_number": 1, "body": "Consider refactoring", "commit_id": "abc123", "path": "src/main.py", "line": 42}
-    ```
+### Step 1: Understand the Codebase
+```json
+{"tool": "list_files", "path": "."}
+```
+```json
+{"tool": "git", "command": "status"}
+```
+```json
+{"tool": "git", "command": "remote -v"}
+```
 
-24. **list_pr_comments** - List all comments on a PR
-    ```json
-    {"tool": "list_pr_comments", "pr_number": 1}
-    ```
+### Step 2: Read Relevant Files
+```json
+{"tool": "file_read", "path": "path/to/relevant/file.py"}
+```
+```json
+{"tool": "search_files", "path": ".", "pattern": "function_to_modify", "file_pattern": "*.py"}
+```
 
-## Working Directory
-You are working in a git repository. The remote 'origin' is ALREADY configured with authentication.
-- Use `git remote -v` to see the remote URL
-- You can directly push with `git push origin <branch>` - NO need to add remote again
-- Create branches with `git checkout -b <branch-name>`
-- Commit with `git add . && git commit -m "message"`
-- Push with `git push -u origin <branch-name>`
+### Step 3: Create a Feature Branch
+```json
+{"tool": "terminal", "command": "git checkout -b feature/descriptive-name"}
+```
 
-## Git Workflow for PRs
-1. First check current status: `git status` and `git remote -v`
-2. Create a new branch: `git checkout -b feature/my-feature`
-3. Make changes using file_write
-4. Stage and commit: `git add . && git commit -m "Add feature"`
-5. Push to remote: `git push -u origin feature/my-feature`
-6. Create PR using: `{"tool": "create_pr", "title": "My Feature", "head": "feature/my-feature", "base": "main", "body": "Description"}`
-7. Check CI status: `{"tool": "ci_status", "ref": "feature/my-feature"}`
-8. Merge when ready: `{"tool": "merge_pr", "pr_number": 1}`
+### Step 4: Make Changes
+```json
+{"tool": "file_write", "path": "path/to/file.py", "content": "... new content ..."}
+```
 
-## Error Handling
-If a tool fails, you'll receive an error message with suggestions. Use these to fix the issue and try again.
+### Step 5: Verify Changes
+```json
+{"tool": "file_read", "path": "path/to/file.py"}
+```
+```json
+{"tool": "terminal", "command": "python -m py_compile path/to/file.py"}
+```
 
-## Instructions
-1. ALWAYS use tools - never just describe what you would do
-2. After each tool execution, you'll see the results
-3. If a tool fails, read the error and suggestions, then try a different approach
-4. Continue using tools until the task is complete
-5. For git operations, ALWAYS use terminal tool (not the read-only git tool)
-6. The git remote is ALREADY configured - do NOT try to add a new remote
-7. Use GitHub tools (create_pr, merge_pr, etc.) for GitHub API operations
-8. Provide a summary when done
+### Step 6: Commit Changes
+```json
+{"tool": "terminal", "command": "git add path/to/file.py && git commit -m 'Add feature: description'"}
+```
 
-REMEMBER: Always output the JSON tool block, never just describe what you would do!"""
+### Step 7: Push to Remote
+```json
+{"tool": "terminal", "command": "git push -u origin feature/descriptive-name"}
+```
+
+### Step 8: Create Pull Request
+```json
+{"tool": "create_pr", "title": "Add feature: description", "head": "feature/descriptive-name", "base": "main", "body": "## Changes\\n- Added X\\n- Fixed Y"}
+```
+
+### Step 9: Verify PR Created
+```json
+{"tool": "list_prs", "state": "open"}
+```
+
+## ERROR HANDLING
+
+If a tool fails:
+1. Read the error message carefully
+2. Try a different approach
+3. If git push fails, check if branch exists: `git branch -a`
+4. If file write fails, check directory exists: `list_files`
+5. If PR creation fails, verify branch was pushed: `git log origin/branch-name`
+
+## TASK COMPLETION
+
+Your task is complete when:
+- For code changes: Files are modified and verified
+- For PR creation: PR URL is returned and confirmed
+- For bug fixes: Code compiles/runs without errors
+- For features: Feature is implemented and tested
+
+When done, provide a summary with:
+- What was accomplished
+- Files changed
+- PR URL (if created)
+- Any issues encountered
+
+## IMPORTANT REMINDERS
+
+1. **Read before write**: Always read a file before modifying it
+2. **Verify after change**: Check your changes compiled/work
+3. **Use terminal for git writes**: git add, commit, push use terminal tool
+4. **GitHub tools for API**: create_pr, merge_pr, etc. use GitHub tools
+5. **Keep going**: Don't stop until the task is truly complete
+6. **Be specific**: Use exact file paths, not placeholders
+
+REMEMBER: You are an autonomous engineer. Take action, don't just describe!"""
 
 def parse_tool_calls(response: str) -> list:
     tools = []
@@ -4000,7 +4013,8 @@ async def broadcast_to_session(session_id: str, message: dict):
         for ws in dead_connections:
             active_websockets[session_id].remove(ws)
 
-async def execute_agent_task(session_id: str, task_id: str, description: str, model: str, provider: str = "openai", max_iterations: int = 10):
+async def execute_agent_task(session_id: str, task_id: str, description: str, model: str, provider: str = "openai", max_iterations: int = 30):
+    """Enhanced agent task execution with planning, context gathering, and error recovery."""
     conn = get_db()
     c = conn.cursor()
     
@@ -4026,15 +4040,21 @@ async def execute_agent_task(session_id: str, task_id: str, description: str, mo
     
     await broadcast_to_session(session_id, {"type": "task_started", "task_id": task_id})
     
-    c.execute("INSERT INTO task_outputs (task_id, output_type, content, created_at) VALUES (?, ?, ?, ?)", (task_id, "thinking", f"Analyzing task: {description}", datetime.utcnow().isoformat()))
+    # Phase 54: Detect task type for specialized handling
+    task_type = detect_task_type(description)
+    task_instructions = get_task_specific_instructions(task_type, working_dir)
+    
+    c.execute("INSERT INTO task_outputs (task_id, output_type, content, created_at) VALUES (?, ?, ?, ?)", (task_id, "thinking", f"Analyzing task: {description}\nTask type detected: {task_type}", datetime.utcnow().isoformat()))
     conn.commit()
-    await broadcast_to_session(session_id, {"type": "thinking", "task_id": task_id, "content": f"Analyzing task: {description}"})
+    await broadcast_to_session(session_id, {"type": "thinking", "task_id": task_id, "content": f"Analyzing task: {description}\nTask type: {task_type}"})
     
     memory_context = get_session_memory(session_id)
-    system_prompt = SYSTEM_PROMPT + memory_context
+    system_prompt = SYSTEM_PROMPT + task_instructions + memory_context
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": description}]
     iteration = 0
     final_response = ""
+    consecutive_errors = 0
+    max_consecutive_errors = 3
     
     try:
         while iteration < max_iterations:
@@ -4045,14 +4065,20 @@ async def execute_agent_task(session_id: str, task_id: str, description: str, mo
             await broadcast_to_session(session_id, {"type": "iteration", "task_id": task_id, "iteration": iteration, "max": max_iterations})
             
             try:
-                agent_response = await call_llm(provider, model, messages, max_tokens=2000)
+                agent_response = await call_llm(provider, model, messages, max_tokens=4000)
+                consecutive_errors = 0  # Reset on successful LLM call
             except APIError as e:
-                c.execute("UPDATE tasks SET status=?, result=?, error_message=?, error_code=? WHERE task_id=?", ("failed", e.message, e.message, e.code, task_id))
-                c.execute("INSERT INTO task_outputs (task_id, output_type, content, created_at) VALUES (?, ?, ?, ?)", (task_id, "error", json.dumps({"message": e.message, "code": e.code, "suggestions": get_error_suggestions(e.code)}), datetime.utcnow().isoformat()))
-                conn.commit()
-                await broadcast_to_session(session_id, {"type": "task_failed", "task_id": task_id, "error": e.message, "error_code": e.code, "suggestions": get_error_suggestions(e.code)})
-                conn.close()
-                return
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    c.execute("UPDATE tasks SET status=?, result=?, error_message=?, error_code=? WHERE task_id=?", ("failed", e.message, e.message, e.code, task_id))
+                    c.execute("INSERT INTO task_outputs (task_id, output_type, content, created_at) VALUES (?, ?, ?, ?)", (task_id, "error", json.dumps({"message": e.message, "code": e.code, "suggestions": get_error_suggestions(e.code)}), datetime.utcnow().isoformat()))
+                    conn.commit()
+                    await broadcast_to_session(session_id, {"type": "task_failed", "task_id": task_id, "error": e.message, "error_code": e.code, "suggestions": get_error_suggestions(e.code)})
+                    conn.close()
+                    return
+                # Retry on transient errors
+                await asyncio.sleep(2)
+                continue
             
             final_response = agent_response
             
@@ -4062,15 +4088,33 @@ async def execute_agent_task(session_id: str, task_id: str, description: str, mo
             
             tool_calls = parse_tool_calls(agent_response)
             
+            # Phase 54: Check for task completion
+            is_complete, completion_reason = check_task_completion(agent_response, task_type)
+            
             if not tool_calls:
-                break
+                if is_complete:
+                    # Task is truly complete
+                    break
+                elif iteration == 1:
+                    # First iteration with no tools - encourage context gathering
+                    context_prompt = get_context_gathering_prompt(working_dir)
+                    messages.append({"role": "assistant", "content": agent_response})
+                    messages.append({"role": "user", "content": context_prompt})
+                    continue
+                else:
+                    # No tools and not explicitly complete - might be stuck
+                    break
             
             tool_results = []
+            has_errors = False
             for tool_call in tool_calls:
                 await broadcast_to_session(session_id, {"type": "tool_started", "task_id": task_id, "tool": tool_call})
                 
                 result = execute_tool(tool_call, session_id, working_dir)
                 tool_results.append(result)
+                
+                if not result.success:
+                    has_errors = True
                 
                 tool_output = {"tool": result.tool, "success": result.success, "output": result.output[:5000], "error": result.error, "error_code": result.error_code, "suggestions": result.suggestions}
                 c.execute("INSERT INTO task_outputs (task_id, output_type, content, created_at) VALUES (?, ?, ?, ?)", (task_id, "tool", json.dumps(tool_output), datetime.utcnow().isoformat()))
@@ -4083,7 +4127,20 @@ async def execute_agent_task(session_id: str, task_id: str, description: str, mo
             ])
             
             messages.append({"role": "assistant", "content": agent_response})
-            messages.append({"role": "user", "content": f"Tool execution results:\n\n{tool_output_text}\n\nContinue with the task. If you need to use more tools, output the JSON block. If the task is complete, provide a summary."})
+            
+            # Phase 54: Enhanced follow-up prompt based on results
+            if has_errors:
+                # Add error recovery guidance
+                failed_tools = [r for r in tool_results if not r.success]
+                recovery_hints = []
+                for r in failed_tools:
+                    recovery_hints.append(get_error_recovery_prompt(r.error or "Unknown error", r.tool))
+                
+                follow_up = f"Tool execution results:\n\n{tool_output_text}\n\n{''.join(recovery_hints)}\n\nPlease recover from the errors and continue with the task."
+            else:
+                follow_up = f"Tool execution results:\n\n{tool_output_text}\n\nContinue with the task. If you need to use more tools, output the JSON block. If the task is complete, provide a summary with what was accomplished."
+            
+            messages.append({"role": "user", "content": follow_up})
         
         c.execute("UPDATE tasks SET status=?, completed_at=?, result=? WHERE task_id=?", ("completed", datetime.utcnow().isoformat(), final_response, task_id))
         conn.commit()
@@ -10473,3 +10530,400 @@ async def api_github_security_alerts(repo_id: int):
     
     result = check_github_security_alerts(owner, repo_name, token)
     return {"success": result.success, "output": result.output, "error": result.error}
+
+# ============================================================================
+# Phase 54: Agent Brain Upgrade - Planning, Context Gathering, Error Recovery
+# ============================================================================
+
+# Enhanced System Prompt with Planning and PR Workflow
+ENHANCED_SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer. You MUST use tools to accomplish tasks - do not just describe what you would do.
+
+## CRITICAL RULES
+
+1. **ALWAYS USE TOOLS** - Never just describe what you would do. Output JSON tool blocks.
+2. **PLAN FIRST** - Before executing, create a mental plan of steps needed.
+3. **GATHER CONTEXT** - Read relevant files before making changes.
+4. **VERIFY CHANGES** - After making changes, verify they work.
+5. **COMPLETE THE TASK** - Keep working until the task is fully done.
+
+## Tool Call Format
+
+When you need to perform an action, output a JSON block like this:
+
+```json
+{"tool": "terminal", "command": "python3 --version"}
+```
+
+## Available Tools
+
+### File & Terminal Tools
+
+1. **terminal** - Run shell commands (git, python, npm, etc.)
+   ```json
+   {"tool": "terminal", "command": "ls -la"}
+   ```
+
+2. **file_write** - Create or overwrite a file
+   ```json
+   {"tool": "file_write", "path": "/path/to/file.py", "content": "print('Hello!')"}
+   ```
+
+3. **file_read** - Read file contents (USE THIS BEFORE EDITING!)
+   ```json
+   {"tool": "file_read", "path": "/path/to/file.py"}
+   ```
+
+4. **list_files** - List directory contents
+   ```json
+   {"tool": "list_files", "path": "/path/to/dir"}
+   ```
+
+5. **search_files** - Search for text in files
+   ```json
+   {"tool": "search_files", "path": "/path", "pattern": "function_name", "file_pattern": "*.py"}
+   ```
+
+6. **git** - Git read commands (status, log, diff, branch)
+   ```json
+   {"tool": "git", "command": "status"}
+   ```
+
+7. **code_analysis** - Analyze code structure
+   ```json
+   {"tool": "code_analysis", "path": "/path/to/file.py", "analysis_type": "structure"}
+   ```
+
+### GitHub Tools (uses linked repo's token)
+
+8. **create_pr** - Create a pull request
+   ```json
+   {"tool": "create_pr", "title": "Add feature", "head": "feature-branch", "base": "main", "body": "Description"}
+   ```
+
+9. **list_prs** - List pull requests
+   ```json
+   {"tool": "list_prs", "state": "open"}
+   ```
+
+10. **merge_pr** - Merge a pull request
+    ```json
+    {"tool": "merge_pr", "pr_number": 1, "merge_method": "squash"}
+    ```
+
+11. **ci_status** - Check CI/GitHub Actions status
+    ```json
+    {"tool": "ci_status", "ref": "branch-name"}
+    ```
+
+12. **list_issues** / **create_issue** / **close_issue** - Issue management
+
+13. **list_branches** / **delete_branch** - Branch management
+
+## WORKFLOW FOR CODE CHANGES & PRs
+
+When asked to make code changes and create a PR, follow these steps IN ORDER:
+
+### Step 1: Understand the Codebase
+```json
+{"tool": "list_files", "path": "."}
+```
+```json
+{"tool": "git", "command": "status"}
+```
+```json
+{"tool": "git", "command": "remote -v"}
+```
+
+### Step 2: Read Relevant Files
+```json
+{"tool": "file_read", "path": "path/to/relevant/file.py"}
+```
+```json
+{"tool": "search_files", "path": ".", "pattern": "function_to_modify", "file_pattern": "*.py"}
+```
+
+### Step 3: Create a Feature Branch
+```json
+{"tool": "terminal", "command": "git checkout -b feature/descriptive-name"}
+```
+
+### Step 4: Make Changes
+```json
+{"tool": "file_write", "path": "path/to/file.py", "content": "... new content ..."}
+```
+
+### Step 5: Verify Changes
+```json
+{"tool": "file_read", "path": "path/to/file.py"}
+```
+```json
+{"tool": "terminal", "command": "python -m py_compile path/to/file.py"}
+```
+
+### Step 6: Commit Changes
+```json
+{"tool": "terminal", "command": "git add path/to/file.py && git commit -m 'Add feature: description'"}
+```
+
+### Step 7: Push to Remote
+```json
+{"tool": "terminal", "command": "git push -u origin feature/descriptive-name"}
+```
+
+### Step 8: Create Pull Request
+```json
+{"tool": "create_pr", "title": "Add feature: description", "head": "feature/descriptive-name", "base": "main", "body": "## Changes\\n- Added X\\n- Fixed Y"}
+```
+
+### Step 9: Verify PR Created
+```json
+{"tool": "list_prs", "state": "open"}
+```
+
+## ERROR HANDLING
+
+If a tool fails:
+1. Read the error message carefully
+2. Try a different approach
+3. If git push fails, check if branch exists: `git branch -a`
+4. If file write fails, check directory exists: `list_files`
+5. If PR creation fails, verify branch was pushed: `git log origin/branch-name`
+
+## TASK COMPLETION
+
+Your task is complete when:
+- For code changes: Files are modified and verified
+- For PR creation: PR URL is returned and confirmed
+- For bug fixes: Code compiles/runs without errors
+- For features: Feature is implemented and tested
+
+When done, provide a summary with:
+- What was accomplished
+- Files changed
+- PR URL (if created)
+- Any issues encountered
+
+## IMPORTANT REMINDERS
+
+1. **Read before write**: Always read a file before modifying it
+2. **Verify after change**: Check your changes compiled/work
+3. **Use terminal for git writes**: git add, commit, push use terminal tool
+4. **GitHub tools for API**: create_pr, merge_pr, etc. use GitHub tools
+5. **Keep going**: Don't stop until the task is truly complete
+6. **Be specific**: Use exact file paths, not placeholders
+
+REMEMBER: You are an autonomous engineer. Take action, don't just describe!"""
+
+
+def detect_task_type(description: str) -> str:
+    """Detect the type of task from the description."""
+    description_lower = description.lower()
+    
+    if any(word in description_lower for word in ["pr", "pull request", "merge"]):
+        return "pr_workflow"
+    elif any(word in description_lower for word in ["fix", "bug", "error", "issue"]):
+        return "bug_fix"
+    elif any(word in description_lower for word in ["add", "create", "implement", "build", "feature"]):
+        return "feature"
+    elif any(word in description_lower for word in ["refactor", "improve", "optimize", "clean"]):
+        return "refactor"
+    elif any(word in description_lower for word in ["test", "testing"]):
+        return "testing"
+    elif any(word in description_lower for word in ["read", "show", "list", "find", "search"]):
+        return "exploration"
+    else:
+        return "general"
+
+
+def get_task_specific_instructions(task_type: str, working_dir: str) -> str:
+    """Get task-specific instructions based on task type."""
+    
+    if task_type == "pr_workflow":
+        return f"""
+## PR WORKFLOW DETECTED
+
+You need to create a Pull Request. Follow these steps exactly:
+
+1. First, check current git status and remote:
+   ```json
+   {{"tool": "git", "command": "status"}}
+   ```
+   ```json
+   {{"tool": "git", "command": "remote -v"}}
+   ```
+
+2. Create a new branch (use descriptive name):
+   ```json
+   {{"tool": "terminal", "command": "git checkout -b feature/your-feature-name"}}
+   ```
+
+3. Make your code changes using file_write
+
+4. Commit your changes:
+   ```json
+   {{"tool": "terminal", "command": "git add . && git commit -m 'Your commit message'"}}
+   ```
+
+5. Push to remote:
+   ```json
+   {{"tool": "terminal", "command": "git push -u origin feature/your-feature-name"}}
+   ```
+
+6. Create the PR:
+   ```json
+   {{"tool": "create_pr", "title": "Your PR title", "head": "feature/your-feature-name", "base": "main", "body": "Description of changes"}}
+   ```
+
+Working directory: {working_dir}
+"""
+    
+    elif task_type == "bug_fix":
+        return f"""
+## BUG FIX DETECTED
+
+Steps to fix the bug:
+
+1. First, understand the codebase:
+   ```json
+   {{"tool": "list_files", "path": "{working_dir}"}}
+   ```
+
+2. Search for relevant code:
+   ```json
+   {{"tool": "search_files", "path": "{working_dir}", "pattern": "error_keyword", "file_pattern": "*.py"}}
+   ```
+
+3. Read the problematic file:
+   ```json
+   {{"tool": "file_read", "path": "path/to/file"}}
+   ```
+
+4. Fix the code and verify it compiles
+
+5. Test if possible
+
+Working directory: {working_dir}
+"""
+    
+    elif task_type == "feature":
+        return f"""
+## FEATURE IMPLEMENTATION DETECTED
+
+Steps to implement the feature:
+
+1. Explore the codebase structure:
+   ```json
+   {{"tool": "list_files", "path": "{working_dir}"}}
+   ```
+
+2. Read existing related code to understand patterns
+
+3. Implement the feature following existing code style
+
+4. Verify the code compiles/works
+
+5. If PR is needed, follow the PR workflow
+
+Working directory: {working_dir}
+"""
+    
+    else:
+        return f"""
+Working directory: {working_dir}
+
+Start by exploring the codebase:
+```json
+{{"tool": "list_files", "path": "{working_dir}"}}
+```
+"""
+
+
+def check_task_completion(response: str, task_type: str) -> tuple:
+    """Check if the task appears to be complete based on the response."""
+    response_lower = response.lower()
+    
+    # Check for explicit completion signals
+    completion_phrases = [
+        "task complete", "task is complete", "completed successfully",
+        "done", "finished", "accomplished", "pr created", "pr has been created",
+        "pull request created", "changes committed", "pushed successfully"
+    ]
+    
+    has_completion_signal = any(phrase in response_lower for phrase in completion_phrases)
+    
+    # Check for PR URL (strong completion signal for PR tasks)
+    has_pr_url = "github.com" in response_lower and "/pull/" in response_lower
+    
+    # Check for ongoing work signals
+    ongoing_phrases = [
+        "let me", "i will", "i'll", "next step", "now i", "continuing",
+        "let's", "working on", "in progress"
+    ]
+    
+    has_ongoing_signal = any(phrase in response_lower for phrase in ongoing_phrases)
+    
+    # Determine completion
+    if task_type == "pr_workflow":
+        is_complete = has_pr_url or (has_completion_signal and not has_ongoing_signal)
+    else:
+        is_complete = has_completion_signal and not has_ongoing_signal
+    
+    reason = ""
+    if is_complete:
+        if has_pr_url:
+            reason = "PR URL detected in response"
+        else:
+            reason = "Completion signal detected"
+    else:
+        reason = "Task appears to be ongoing"
+    
+    return is_complete, reason
+
+
+def should_auto_gather_context(tool_calls: list, iteration: int) -> bool:
+    """Determine if we should auto-gather context."""
+    # On first iteration with no tool calls, suggest context gathering
+    if iteration == 1 and not tool_calls:
+        return True
+    return False
+
+
+def get_context_gathering_prompt(working_dir: str) -> str:
+    """Get a prompt to encourage context gathering."""
+    return f"""
+I notice you haven't started gathering context yet. Before making changes, you should:
+
+1. List the files in the working directory:
+```json
+{{"tool": "list_files", "path": "{working_dir}"}}
+```
+
+2. Check git status:
+```json
+{{"tool": "git", "command": "status"}}
+```
+
+Please start by exploring the codebase.
+"""
+
+
+def get_error_recovery_prompt(error: str, tool_name: str) -> str:
+    """Get a prompt to help recover from errors."""
+    recovery_suggestions = {
+        "terminal": "Try checking if the command exists or if you have the right permissions. Use `which command_name` to verify.",
+        "file_write": "Verify the directory exists using list_files. Check file permissions.",
+        "file_read": "Verify the file path is correct using list_files.",
+        "git": "Check git status first. Make sure you're in a git repository.",
+        "create_pr": "Verify the branch was pushed: `git log origin/branch-name`. Check branch names are correct.",
+        "merge_pr": "Verify the PR exists and is open using list_prs.",
+    }
+    
+    suggestion = recovery_suggestions.get(tool_name, "Try a different approach or check the error message for hints.")
+    
+    return f"""
+The tool '{tool_name}' encountered an error: {error}
+
+Suggestion: {suggestion}
+
+Please try to recover from this error and continue with the task.
+"""
