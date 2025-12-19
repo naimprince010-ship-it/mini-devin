@@ -3936,6 +3936,54 @@ def execute_tool(tool_call: dict, session_id: str = "", default_working_dir: str
                 token=repo_info.get("github_token", ""),
                 hook_id=int(tool_call.get("hook_id", 0))
             )
+        # Phase 53: Code Intelligence
+        elif tool == "code_suggest":
+            return execute_code_suggest(
+                code_context=str(tool_call.get("code_context", "")),
+                language=str(tool_call.get("language", "python")),
+                cursor_position=int(tool_call.get("cursor_position", -1)),
+                file_path=str(tool_call.get("file_path", ""))
+            )
+        elif tool == "search_code":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="search_code", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return search_code_in_repo(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", ""),
+                query=str(tool_call.get("query", "")),
+                language=tool_call.get("language"),
+                path=tool_call.get("path")
+            )
+        elif tool == "search_code_local":
+            extensions = tool_call.get("extensions")
+            if isinstance(extensions, str):
+                extensions = [e.strip() for e in extensions.split(",")]
+            return search_code_local(
+                directory=str(tool_call.get("directory", "")),
+                pattern=str(tool_call.get("pattern", "")),
+                file_extensions=extensions,
+                max_results=int(tool_call.get("max_results", 50))
+            )
+        elif tool == "analyze_dependencies":
+            return execute_analyze_dependencies(
+                directory=str(tool_call.get("directory", "")),
+                language=tool_call.get("language")
+            )
+        elif tool == "security_scan":
+            return scan_security_vulnerabilities(
+                directory=str(tool_call.get("directory", ""))
+            )
+        elif tool == "github_security_alerts":
+            repo_info = get_repo_info_for_session(session_id)
+            if not repo_info:
+                return ToolResult(tool="github_security_alerts", success=False, output="", error="No repo linked to session", error_code="no_repo_linked")
+            return check_github_security_alerts(
+                owner=tool_call.get("owner", repo_info.get("owner", "")),
+                repo=tool_call.get("repo", repo_info.get("repo_name", "")),
+                token=repo_info.get("github_token", "")
+            )
         else:
             return ToolResult(tool=str(tool), success=False, output="", error=f"Unknown tool: {tool}", error_code="unknown_tool", suggestions=get_error_suggestions("unknown_tool"))
     except Exception as e:
@@ -9744,3 +9792,684 @@ def execute_test_webhook(owner: str, repo: str, token: str, hook_id: int) -> Too
         return ToolResult(tool="test_webhook", success=True, output=f"Ping sent to webhook {hook_id}")
     except Exception as e:
         return ToolResult(tool="test_webhook", success=False, output="", error=str(e), error_code="unknown_error")
+
+
+# ============================================================================
+# Phase 53: Code Intelligence - Copilot-like Suggestions, Code Search, Dependency Analysis, Security Alerts
+# ============================================================================
+
+class CodeSuggestion(BaseModel):
+    """Model for code completion suggestions."""
+    suggestion: str
+    confidence: float
+    context: str
+    language: str
+
+class CodeSearchResult(BaseModel):
+    """Model for code search results."""
+    file_path: str
+    line_number: int
+    content: str
+    match_type: str
+    repo_name: str
+
+class DependencyInfo(BaseModel):
+    """Model for dependency information."""
+    name: str
+    version: str
+    latest_version: Optional[str] = None
+    is_outdated: bool = False
+    vulnerabilities: List[dict] = []
+
+class SecurityAlert(BaseModel):
+    """Model for security vulnerability alerts."""
+    severity: str
+    package: str
+    vulnerability_id: str
+    title: str
+    description: str
+    recommendation: str
+    affected_versions: str
+    patched_version: Optional[str] = None
+
+# ============================================================================
+# Code Suggestion Functions (Copilot-like)
+# ============================================================================
+
+async def generate_code_suggestion(
+    code_context: str,
+    language: str,
+    cursor_position: int,
+    file_path: str,
+    session_id: str
+) -> List[CodeSuggestion]:
+    """Generate code completion suggestions using LLM."""
+    try:
+        prompt = f"""You are a code completion assistant. Given the following code context, suggest completions.
+
+Language: {language}
+File: {file_path}
+Cursor position: {cursor_position}
+
+Code context (cursor is at the end):
+```{language}
+{code_context}
+```
+
+Provide 3 code completion suggestions. For each suggestion:
+1. Complete the current line or add the next logical lines
+2. Follow the coding style and patterns in the context
+3. Be concise and practical
+
+Return JSON array with format:
+[{{"suggestion": "code to insert", "confidence": 0.0-1.0, "context": "brief explanation"}}]
+
+Only return the JSON array, no other text."""
+
+        client = get_llm_client()
+        if not client:
+            return []
+        
+        response = await asyncio.to_thread(
+            client.chat.completions.create,
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=1000
+        )
+        
+        content = response.choices[0].message.content.strip()
+        if content.startswith("```"):
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+        
+        suggestions_data = json.loads(content)
+        suggestions = []
+        for s in suggestions_data[:3]:
+            suggestions.append(CodeSuggestion(
+                suggestion=s.get("suggestion", ""),
+                confidence=float(s.get("confidence", 0.5)),
+                context=s.get("context", ""),
+                language=language
+            ))
+        return suggestions
+    except Exception as e:
+        logger.error(f"Code suggestion error: {e}")
+        return []
+
+def execute_code_suggest(
+    code_context: str,
+    language: str,
+    cursor_position: int = -1,
+    file_path: str = ""
+) -> ToolResult:
+    """Execute code suggestion tool."""
+    try:
+        if cursor_position == -1:
+            cursor_position = len(code_context)
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            suggestions = loop.run_until_complete(
+                generate_code_suggestion(code_context, language, cursor_position, file_path, "")
+            )
+        finally:
+            loop.close()
+        
+        if not suggestions:
+            return ToolResult(
+                tool="code_suggest",
+                success=True,
+                output="No suggestions available for this context"
+            )
+        
+        result_lines = ["Code Suggestions:\n"]
+        for i, s in enumerate(suggestions, 1):
+            result_lines.append(f"{i}. (Confidence: {s.confidence:.0%})")
+            result_lines.append(f"   {s.context}")
+            result_lines.append(f"   ```{s.language}")
+            result_lines.append(f"   {s.suggestion}")
+            result_lines.append("   ```\n")
+        
+        return ToolResult(tool="code_suggest", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="code_suggest", success=False, output="", error=str(e), error_code="suggestion_error")
+
+# ============================================================================
+# Code Search Functions
+# ============================================================================
+
+def search_code_in_repo(
+    owner: str,
+    repo: str,
+    token: str,
+    query: str,
+    language: Optional[str] = None,
+    path: Optional[str] = None
+) -> ToolResult:
+    """Search for code across a repository using GitHub Code Search API."""
+    try:
+        search_query = f"{query} repo:{owner}/{repo}"
+        if language:
+            search_query += f" language:{language}"
+        if path:
+            search_query += f" path:{path}"
+        
+        from urllib.parse import quote
+        encoded_query = quote(search_query)
+        
+        success, data = execute_github_api(
+            "GET",
+            f"/search/code?q={encoded_query}&per_page=20",
+            token
+        )
+        
+        if not success:
+            return ToolResult(
+                tool="search_code",
+                success=False,
+                output="",
+                error=data.get("message", "Code search failed"),
+                error_code="api_error"
+            )
+        
+        items = data.get("items", [])
+        if not items:
+            return ToolResult(
+                tool="search_code",
+                success=True,
+                output=f"No results found for query: {query}"
+            )
+        
+        result_lines = [f"Found {data.get('total_count', len(items))} results for '{query}':\n"]
+        for item in items[:20]:
+            result_lines.append(f"File: {item.get('path', 'N/A')}")
+            result_lines.append(f"  Repository: {item.get('repository', {}).get('full_name', 'N/A')}")
+            result_lines.append(f"  URL: {item.get('html_url', 'N/A')}")
+            if item.get('text_matches'):
+                for match in item['text_matches'][:2]:
+                    result_lines.append(f"  Match: ...{match.get('fragment', '')}...")
+            result_lines.append("")
+        
+        return ToolResult(tool="search_code", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="search_code", success=False, output="", error=str(e), error_code="unknown_error")
+
+def search_code_local(
+    directory: str,
+    pattern: str,
+    file_extensions: Optional[List[str]] = None,
+    max_results: int = 50
+) -> ToolResult:
+    """Search for code patterns in local directory using grep."""
+    try:
+        if not os.path.isdir(directory):
+            return ToolResult(
+                tool="search_code_local",
+                success=False,
+                output="",
+                error=f"Directory not found: {directory}",
+                error_code="directory_not_found"
+            )
+        
+        cmd = ["grep", "-rn", "--include=*"]
+        if file_extensions:
+            cmd = ["grep", "-rn"]
+            for ext in file_extensions:
+                cmd.extend(["--include", f"*.{ext}"])
+        
+        cmd.extend([pattern, directory])
+        
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        lines = result.stdout.strip().split("\n") if result.stdout.strip() else []
+        
+        if not lines or lines == ['']:
+            return ToolResult(
+                tool="search_code_local",
+                success=True,
+                output=f"No matches found for pattern: {pattern}"
+            )
+        
+        result_lines = [f"Found {len(lines)} matches for '{pattern}':\n"]
+        for line in lines[:max_results]:
+            result_lines.append(line)
+        
+        if len(lines) > max_results:
+            result_lines.append(f"\n... and {len(lines) - max_results} more matches")
+        
+        return ToolResult(tool="search_code_local", success=True, output="\n".join(result_lines))
+    except subprocess.TimeoutExpired:
+        return ToolResult(tool="search_code_local", success=False, output="", error="Search timed out", error_code="timeout")
+    except Exception as e:
+        return ToolResult(tool="search_code_local", success=False, output="", error=str(e), error_code="unknown_error")
+
+# ============================================================================
+# Dependency Analysis Functions
+# ============================================================================
+
+def analyze_dependencies_python(directory: str) -> ToolResult:
+    """Analyze Python dependencies from requirements.txt or pyproject.toml."""
+    try:
+        dependencies = []
+        
+        req_file = os.path.join(directory, "requirements.txt")
+        if os.path.exists(req_file):
+            with open(req_file, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        parts = re.split(r'[=<>!~]', line)
+                        name = parts[0].strip()
+                        version = line.replace(name, "").strip("=<>!~[] ") or "any"
+                        dependencies.append(DependencyInfo(name=name, version=version))
+        
+        pyproject_file = os.path.join(directory, "pyproject.toml")
+        if os.path.exists(pyproject_file):
+            with open(pyproject_file, "r") as f:
+                content = f.read()
+                deps_match = re.findall(r'^\s*([a-zA-Z0-9_-]+)\s*=\s*["\']([^"\']+)["\']', content, re.MULTILINE)
+                for name, version in deps_match:
+                    if name not in ["python", "name", "version", "description"]:
+                        dependencies.append(DependencyInfo(name=name, version=version))
+        
+        if not dependencies:
+            return ToolResult(
+                tool="analyze_dependencies",
+                success=True,
+                output="No Python dependencies found (no requirements.txt or pyproject.toml)"
+            )
+        
+        result_lines = [f"Found {len(dependencies)} Python dependencies:\n"]
+        for dep in dependencies:
+            result_lines.append(f"  - {dep.name}: {dep.version}")
+        
+        return ToolResult(tool="analyze_dependencies", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="analyze_dependencies", success=False, output="", error=str(e), error_code="unknown_error")
+
+def analyze_dependencies_node(directory: str) -> ToolResult:
+    """Analyze Node.js dependencies from package.json."""
+    try:
+        package_file = os.path.join(directory, "package.json")
+        if not os.path.exists(package_file):
+            return ToolResult(
+                tool="analyze_dependencies",
+                success=True,
+                output="No package.json found in directory"
+            )
+        
+        with open(package_file, "r") as f:
+            package_data = json.load(f)
+        
+        dependencies = []
+        
+        for dep_type in ["dependencies", "devDependencies", "peerDependencies"]:
+            deps = package_data.get(dep_type, {})
+            for name, version in deps.items():
+                dependencies.append(DependencyInfo(
+                    name=name,
+                    version=version.lstrip("^~")
+                ))
+        
+        if not dependencies:
+            return ToolResult(
+                tool="analyze_dependencies",
+                success=True,
+                output="No dependencies found in package.json"
+            )
+        
+        result_lines = [f"Found {len(dependencies)} Node.js dependencies:\n"]
+        
+        prod_deps = package_data.get("dependencies", {})
+        if prod_deps:
+            result_lines.append("Production dependencies:")
+            for name, version in prod_deps.items():
+                result_lines.append(f"  - {name}: {version}")
+        
+        dev_deps = package_data.get("devDependencies", {})
+        if dev_deps:
+            result_lines.append("\nDev dependencies:")
+            for name, version in dev_deps.items():
+                result_lines.append(f"  - {name}: {version}")
+        
+        return ToolResult(tool="analyze_dependencies", success=True, output="\n".join(result_lines))
+    except json.JSONDecodeError:
+        return ToolResult(tool="analyze_dependencies", success=False, output="", error="Invalid package.json", error_code="parse_error")
+    except Exception as e:
+        return ToolResult(tool="analyze_dependencies", success=False, output="", error=str(e), error_code="unknown_error")
+
+def execute_analyze_dependencies(directory: str, language: Optional[str] = None) -> ToolResult:
+    """Analyze dependencies for a project."""
+    try:
+        if not os.path.isdir(directory):
+            return ToolResult(
+                tool="analyze_dependencies",
+                success=False,
+                output="",
+                error=f"Directory not found: {directory}",
+                error_code="directory_not_found"
+            )
+        
+        if language:
+            if language.lower() in ["python", "py"]:
+                return analyze_dependencies_python(directory)
+            elif language.lower() in ["javascript", "js", "node", "nodejs", "typescript", "ts"]:
+                return analyze_dependencies_node(directory)
+        
+        results = []
+        
+        python_result = analyze_dependencies_python(directory)
+        if python_result.success and "No Python dependencies found" not in python_result.output:
+            results.append(("Python", python_result.output))
+        
+        node_result = analyze_dependencies_node(directory)
+        if node_result.success and "No package.json found" not in node_result.output:
+            results.append(("Node.js", node_result.output))
+        
+        if not results:
+            return ToolResult(
+                tool="analyze_dependencies",
+                success=True,
+                output="No dependencies found. Supported: Python (requirements.txt, pyproject.toml), Node.js (package.json)"
+            )
+        
+        output_lines = []
+        for lang, output in results:
+            output_lines.append(f"=== {lang} Dependencies ===\n{output}\n")
+        
+        return ToolResult(tool="analyze_dependencies", success=True, output="\n".join(output_lines))
+    except Exception as e:
+        return ToolResult(tool="analyze_dependencies", success=False, output="", error=str(e), error_code="unknown_error")
+
+# ============================================================================
+# Security Vulnerability Alert Functions
+# ============================================================================
+
+KNOWN_VULNERABILITIES = {
+    "lodash": [
+        {"version_range": "<4.17.21", "severity": "high", "id": "CVE-2021-23337", "title": "Command Injection", "patched": "4.17.21"},
+    ],
+    "axios": [
+        {"version_range": "<0.21.1", "severity": "high", "id": "CVE-2020-28168", "title": "Server-Side Request Forgery", "patched": "0.21.1"},
+    ],
+    "minimist": [
+        {"version_range": "<1.2.6", "severity": "critical", "id": "CVE-2021-44906", "title": "Prototype Pollution", "patched": "1.2.6"},
+    ],
+    "requests": [
+        {"version_range": "<2.31.0", "severity": "medium", "id": "CVE-2023-32681", "title": "Unintended Leak of Proxy-Authorization Header", "patched": "2.31.0"},
+    ],
+    "django": [
+        {"version_range": "<4.2.4", "severity": "high", "id": "CVE-2023-41164", "title": "Denial of Service", "patched": "4.2.4"},
+    ],
+    "flask": [
+        {"version_range": "<2.3.2", "severity": "medium", "id": "CVE-2023-30861", "title": "Cookie Injection", "patched": "2.3.2"},
+    ],
+    "pyyaml": [
+        {"version_range": "<6.0", "severity": "critical", "id": "CVE-2020-14343", "title": "Arbitrary Code Execution", "patched": "6.0"},
+    ],
+    "pillow": [
+        {"version_range": "<10.0.1", "severity": "high", "id": "CVE-2023-44271", "title": "Denial of Service", "patched": "10.0.1"},
+    ],
+}
+
+def check_version_vulnerable(version: str, version_range: str) -> bool:
+    """Check if a version is within a vulnerable range."""
+    try:
+        version = version.lstrip("^~>=<!")
+        version_parts = [int(x) for x in re.findall(r'\d+', version)[:3]]
+        while len(version_parts) < 3:
+            version_parts.append(0)
+        
+        range_version = version_range.lstrip("<>=!")
+        range_parts = [int(x) for x in re.findall(r'\d+', range_version)[:3]]
+        while len(range_parts) < 3:
+            range_parts.append(0)
+        
+        if version_range.startswith("<"):
+            return version_parts < range_parts
+        elif version_range.startswith("<="):
+            return version_parts <= range_parts
+        
+        return False
+    except:
+        return False
+
+def scan_security_vulnerabilities(directory: str) -> ToolResult:
+    """Scan project dependencies for known security vulnerabilities."""
+    try:
+        alerts = []
+        
+        req_file = os.path.join(directory, "requirements.txt")
+        if os.path.exists(req_file):
+            with open(req_file, "r") as f:
+                for line in f:
+                    line = line.strip().lower()
+                    if line and not line.startswith("#"):
+                        parts = re.split(r'[=<>!~]', line)
+                        name = parts[0].strip()
+                        version = line.replace(name, "").strip("=<>!~[] ") or "0.0.0"
+                        
+                        if name in KNOWN_VULNERABILITIES:
+                            for vuln in KNOWN_VULNERABILITIES[name]:
+                                if check_version_vulnerable(version, vuln["version_range"]):
+                                    alerts.append(SecurityAlert(
+                                        severity=vuln["severity"],
+                                        package=name,
+                                        vulnerability_id=vuln["id"],
+                                        title=vuln["title"],
+                                        description=f"Vulnerable version {version} detected",
+                                        recommendation=f"Upgrade to version {vuln['patched']} or later",
+                                        affected_versions=vuln["version_range"],
+                                        patched_version=vuln["patched"]
+                                    ))
+        
+        package_file = os.path.join(directory, "package.json")
+        if os.path.exists(package_file):
+            with open(package_file, "r") as f:
+                package_data = json.load(f)
+            
+            all_deps = {}
+            all_deps.update(package_data.get("dependencies", {}))
+            all_deps.update(package_data.get("devDependencies", {}))
+            
+            for name, version in all_deps.items():
+                name_lower = name.lower()
+                if name_lower in KNOWN_VULNERABILITIES:
+                    for vuln in KNOWN_VULNERABILITIES[name_lower]:
+                        if check_version_vulnerable(version, vuln["version_range"]):
+                            alerts.append(SecurityAlert(
+                                severity=vuln["severity"],
+                                package=name,
+                                vulnerability_id=vuln["id"],
+                                title=vuln["title"],
+                                description=f"Vulnerable version {version} detected",
+                                recommendation=f"Upgrade to version {vuln['patched']} or later",
+                                affected_versions=vuln["version_range"],
+                                patched_version=vuln["patched"]
+                            ))
+        
+        if not alerts:
+            return ToolResult(
+                tool="security_scan",
+                success=True,
+                output="No known vulnerabilities found in dependencies. Note: This is a basic scan - consider using dedicated tools like npm audit, pip-audit, or Snyk for comprehensive scanning."
+            )
+        
+        critical = [a for a in alerts if a.severity == "critical"]
+        high = [a for a in alerts if a.severity == "high"]
+        medium = [a for a in alerts if a.severity == "medium"]
+        low = [a for a in alerts if a.severity == "low"]
+        
+        result_lines = [f"Found {len(alerts)} security vulnerabilities:\n"]
+        result_lines.append(f"  Critical: {len(critical)}, High: {len(high)}, Medium: {len(medium)}, Low: {len(low)}\n")
+        
+        for alert in sorted(alerts, key=lambda x: {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(x.severity, 4)):
+            severity_icon = {"critical": "[!!!]", "high": "[!!]", "medium": "[!]", "low": "[.]"}.get(alert.severity, "[?]")
+            result_lines.append(f"{severity_icon} {alert.package} ({alert.vulnerability_id})")
+            result_lines.append(f"    Severity: {alert.severity.upper()}")
+            result_lines.append(f"    Title: {alert.title}")
+            result_lines.append(f"    Affected: {alert.affected_versions}")
+            result_lines.append(f"    Fix: {alert.recommendation}")
+            result_lines.append("")
+        
+        return ToolResult(tool="security_scan", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="security_scan", success=False, output="", error=str(e), error_code="unknown_error")
+
+def check_github_security_alerts(owner: str, repo: str, token: str) -> ToolResult:
+    """Check GitHub Dependabot security alerts for a repository."""
+    try:
+        success, data = execute_github_api(
+            "GET",
+            f"/repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=50",
+            token
+        )
+        
+        if not success:
+            error_msg = data.get("message", "Failed to fetch security alerts")
+            if "Dependabot alerts are not enabled" in error_msg:
+                return ToolResult(
+                    tool="github_security_alerts",
+                    success=True,
+                    output="Dependabot alerts are not enabled for this repository. Enable them in Settings > Security > Code security and analysis."
+                )
+            return ToolResult(
+                tool="github_security_alerts",
+                success=False,
+                output="",
+                error=error_msg,
+                error_code="api_error"
+            )
+        
+        if not data:
+            return ToolResult(
+                tool="github_security_alerts",
+                success=True,
+                output="No open Dependabot security alerts found."
+            )
+        
+        result_lines = [f"Found {len(data)} open Dependabot alerts:\n"]
+        
+        for alert in data:
+            severity = alert.get("security_advisory", {}).get("severity", "unknown")
+            package = alert.get("dependency", {}).get("package", {}).get("name", "unknown")
+            vuln_id = alert.get("security_advisory", {}).get("cve_id") or alert.get("security_advisory", {}).get("ghsa_id", "N/A")
+            summary = alert.get("security_advisory", {}).get("summary", "No summary")
+            
+            severity_icon = {"critical": "[!!!]", "high": "[!!]", "medium": "[!]", "low": "[.]"}.get(severity, "[?]")
+            result_lines.append(f"{severity_icon} {package} ({vuln_id})")
+            result_lines.append(f"    Severity: {severity.upper()}")
+            result_lines.append(f"    Summary: {summary}")
+            result_lines.append(f"    URL: {alert.get('html_url', 'N/A')}")
+            result_lines.append("")
+        
+        return ToolResult(tool="github_security_alerts", success=True, output="\n".join(result_lines))
+    except Exception as e:
+        return ToolResult(tool="github_security_alerts", success=False, output="", error=str(e), error_code="unknown_error")
+
+# ============================================================================
+# REST API Endpoints for Code Intelligence
+# ============================================================================
+
+class CodeSuggestRequest(BaseModel):
+    code_context: str
+    language: str
+    cursor_position: int = -1
+    file_path: str = ""
+
+class CodeSearchRequest(BaseModel):
+    query: str
+    language: Optional[str] = None
+    path: Optional[str] = None
+
+class DependencyAnalysisRequest(BaseModel):
+    directory: str
+    language: Optional[str] = None
+
+class SecurityScanRequest(BaseModel):
+    directory: str
+
+@app.post("/api/code/suggest")
+async def api_code_suggest(request: CodeSuggestRequest):
+    """Generate code completion suggestions."""
+    suggestions = await generate_code_suggestion(
+        request.code_context,
+        request.language,
+        request.cursor_position,
+        request.file_path,
+        ""
+    )
+    return {
+        "suggestions": [
+            {
+                "suggestion": s.suggestion,
+                "confidence": s.confidence,
+                "context": s.context,
+                "language": s.language
+            }
+            for s in suggestions
+        ]
+    }
+
+@app.post("/api/repos/{repo_id}/code/search")
+async def api_code_search(repo_id: int, request: CodeSearchRequest):
+    """Search code in a repository."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT owner, repo_name, github_token FROM repos WHERE id = ?", (repo_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    owner, repo_name, encrypted_token = row
+    token = decrypt_token(encrypted_token) if encrypted_token else ""
+    
+    result = search_code_in_repo(owner, repo_name, token, request.query, request.language, request.path)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/code/search/local")
+async def api_code_search_local(directory: str, pattern: str, extensions: Optional[str] = None):
+    """Search code in local directory."""
+    ext_list = extensions.split(",") if extensions else None
+    result = search_code_local(directory, pattern, ext_list)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/code/dependencies")
+async def api_analyze_dependencies(request: DependencyAnalysisRequest):
+    """Analyze project dependencies."""
+    result = execute_analyze_dependencies(request.directory, request.language)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.post("/api/code/security/scan")
+async def api_security_scan(request: SecurityScanRequest):
+    """Scan for security vulnerabilities in dependencies."""
+    result = scan_security_vulnerabilities(request.directory)
+    return {"success": result.success, "output": result.output, "error": result.error}
+
+@app.get("/api/repos/{repo_id}/security/alerts")
+async def api_github_security_alerts(repo_id: int):
+    """Get GitHub Dependabot security alerts for a repository."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT owner, repo_name, github_token FROM repos WHERE id = ?", (repo_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    owner, repo_name, encrypted_token = row
+    token = decrypt_token(encrypted_token) if encrypted_token else ""
+    
+    result = check_github_security_alerts(owner, repo_name, token)
+    return {"success": result.success, "output": result.output, "error": result.error}
