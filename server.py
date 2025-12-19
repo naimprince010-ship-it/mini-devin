@@ -1,11 +1,12 @@
 """
-Mini-Devin API Server v5.1
+Mini-Devin API Server v5.2
 Phase 34: Better Error Handling
 Phase 35: Task History & Export
 Phase 36: Multi-Model Support (OpenAI, Anthropic, Ollama)
 Phase 37: File Upload
 Phase 38: Agent Memory (cross-session)
 Phase 42: Authentication & Security (JWT, Rate Limiting, Session Timeout)
+Phase 43: Database Connection Pooling (SQLAlchemy)
 """
 
 import os
@@ -20,8 +21,8 @@ import hashlib
 import secrets
 import time
 from collections import defaultdict
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional, List, Dict, Any
+from contextlib import asynccontextmanager, contextmanager
+from typing import AsyncGenerator, Optional, List, Dict, Any, Generator
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -30,6 +31,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
+
+# SQLAlchemy for connection pooling
+from sqlalchemy import create_engine, text, event
+from sqlalchemy.pool import QueuePool
+from sqlalchemy.engine import Engine
 
 # JWT Configuration
 JWT_SECRET = os.environ.get("JWT_SECRET", secrets.token_hex(32))
@@ -51,6 +57,77 @@ DB_PATH = os.environ.get("MINI_DEVIN_DB_PATH", "/root/mini-devin/mini_devin.db")
 WORKSPACE_DIR = os.environ.get("MINI_DEVIN_WORKSPACE", "/root/mini-devin/workspace")
 UPLOADS_DIR = os.environ.get("MINI_DEVIN_UPLOADS", "/root/mini-devin/uploads")
 MEMORY_DIR = os.environ.get("MINI_DEVIN_MEMORY", "/root/mini-devin/memory")
+
+# ============================================================================
+# Phase 43: Database Connection Pooling Configuration
+# ============================================================================
+DB_POOL_SIZE = int(os.environ.get("DB_POOL_SIZE", "5"))
+DB_MAX_OVERFLOW = int(os.environ.get("DB_MAX_OVERFLOW", "10"))
+DB_POOL_TIMEOUT = int(os.environ.get("DB_POOL_TIMEOUT", "30"))
+DB_POOL_RECYCLE = int(os.environ.get("DB_POOL_RECYCLE", "3600"))
+
+# Create SQLAlchemy engine with connection pooling
+db_engine: Optional[Engine] = None
+
+def init_db_engine() -> Engine:
+    """Initialize SQLAlchemy engine with connection pooling."""
+    global db_engine
+    if db_engine is None:
+        # Ensure database directory exists
+        db_dir = os.path.dirname(DB_PATH)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+        
+        # Create engine with QueuePool for connection pooling
+        db_engine = create_engine(
+            f"sqlite:///{DB_PATH}",
+            poolclass=QueuePool,
+            pool_size=DB_POOL_SIZE,
+            max_overflow=DB_MAX_OVERFLOW,
+            pool_timeout=DB_POOL_TIMEOUT,
+            pool_recycle=DB_POOL_RECYCLE,
+            pool_pre_ping=True,  # Verify connections before use
+            connect_args={"check_same_thread": False}  # Allow multi-threaded access
+        )
+        
+        # Enable WAL mode for better concurrent access
+        @event.listens_for(db_engine, "connect")
+        def set_sqlite_pragma(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.close()
+    
+    return db_engine
+
+@contextmanager
+def get_db_connection() -> Generator:
+    """Get a database connection from the pool with automatic cleanup."""
+    engine = init_db_engine()
+    connection = engine.connect()
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+def get_db_pool_stats() -> Dict[str, Any]:
+    """Get current connection pool statistics."""
+    if db_engine is None:
+        return {"status": "not_initialized"}
+    
+    pool = db_engine.pool
+    return {
+        "status": "active",
+        "pool_size": DB_POOL_SIZE,
+        "max_overflow": DB_MAX_OVERFLOW,
+        "pool_timeout": DB_POOL_TIMEOUT,
+        "pool_recycle": DB_POOL_RECYCLE,
+        "checked_in": pool.checkedin(),
+        "checked_out": pool.checkedout(),
+        "overflow": pool.overflow(),
+        "invalid": pool.invalidatedcount() if hasattr(pool, 'invalidatedcount') else 0
+    }
 
 class APIError(Exception):
     def __init__(self, message: str, code: str, status_code: int = 400, details: Optional[Dict] = None):
@@ -201,9 +278,26 @@ def init_db():
     conn.close()
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Get a database connection from the pool.
+    
+    This function now uses SQLAlchemy connection pooling for better performance.
+    The connection is automatically returned to the pool when closed.
+    """
+    engine = init_db_engine()
+    # Get raw DBAPI connection from pool
+    raw_conn = engine.raw_connection()
+    raw_conn.row_factory = sqlite3.Row
+    return raw_conn
+
+def get_db_pooled():
+    """Get a pooled database connection as a context manager.
+    
+    Usage:
+        with get_db_pooled() as conn:
+            result = conn.execute(text("SELECT * FROM sessions"))
+            rows = result.fetchall()
+    """
+    return get_db_connection()
 
 active_websockets: Dict[str, List[WebSocket]] = {}
 llm_clients: Dict[str, Any] = {}
@@ -2240,6 +2334,15 @@ async def get_rate_limit_status(request: Request):
     rate_limit_storage[f"api:{client_ip}"].pop()
     rate_info["remaining"] += 1
     return rate_info
+
+@app.get("/api/db-pool")
+async def get_db_pool_status():
+    """Get database connection pool statistics.
+    
+    Returns pool configuration and current usage metrics.
+    Useful for monitoring database connection health.
+    """
+    return get_db_pool_stats()
 
 @app.get("/api/status")
 async def get_status():
