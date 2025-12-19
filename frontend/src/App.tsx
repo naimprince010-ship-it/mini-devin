@@ -7,10 +7,11 @@ import { LoginForm } from './components/LoginForm';
 import { UserMenu } from './components/UserMenu';
 import { SkillsManager } from './components/SkillsManager';
 import { RepoManager } from './components/RepoManager';
+import { PRReview } from './components/PRReview';
 import { useAuth } from './contexts/AuthContext';
-import { Bot, Github, LogIn, Loader2, MessageSquare, Wrench, GitFork } from 'lucide-react';
+import { Bot, Github, LogIn, Loader2, MessageSquare, Wrench, GitFork, GitPullRequest } from 'lucide-react';
 
-type TabType = 'sessions' | 'skills' | 'repos';
+type TabType = 'sessions' | 'skills' | 'repos' | 'reviews';
 
 function App() {
   const { user, loading } = useAuth();
@@ -107,6 +108,17 @@ function App() {
                         <GitFork size={16} />
                         Repos
                       </button>
+                      <button
+                        onClick={() => setActiveTab('reviews')}
+                        className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
+                          activeTab === 'reviews'
+                            ? 'text-purple-400 border-b-2 border-purple-400 bg-gray-800/50'
+                            : 'text-gray-400 hover:text-white hover:bg-gray-800/30'
+                        }`}
+                      >
+                        <GitPullRequest size={16} />
+                        Reviews
+                      </button>
                     </div>
           
                     {/* Tab Content */}
@@ -122,11 +134,15 @@ function App() {
                         <div className="p-4">
                           <SkillsManager apiBaseUrl={import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : 'http://localhost:8000/api'} />
                         </div>
-                      ) : (
+                      ) : activeTab === 'repos' ? (
                         <RepoManager 
                           apiBaseUrl={import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : 'http://localhost:8000/api'}
                           sessionId={selectedSession?.session_id}
                           onRepoLinked={() => {}}
+                        />
+                      ) : (
+                        <PRReview 
+                          apiBaseUrl={import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : 'http://localhost:8000/api'}
                         />
                       )}
                     </div>
@@ -160,7 +176,7 @@ function App() {
                         </p>
                       </div>
                     </div>
-                  ) : (
+                  ) : activeTab === 'repos' ? (
                     <div className="flex-1 flex items-center justify-center">
                       <div className="text-center">
                         <GitFork className="mx-auto text-gray-600 mb-4" size={64} />
@@ -169,6 +185,18 @@ function App() {
                         </h2>
                         <p className="text-gray-500 max-w-md">
                           Connect GitHub repositories to Mini-Devin. The AI agent can clone, edit, commit, push, and create pull requests on your repos.
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex-1 flex items-center justify-center">
+                      <div className="text-center">
+                        <GitPullRequest className="mx-auto text-purple-600 mb-4" size={64} />
+                        <h2 className="text-xl font-medium text-gray-400 mb-2">
+                          AI Code Review
+                        </h2>
+                        <p className="text-gray-500 max-w-md">
+                          Analyze pull requests with AI-powered code review. Get inline suggestions, approve or request changes, and submit reviews directly to GitHub.
                         </p>
                       </div>
                     </div>
