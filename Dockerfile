@@ -7,17 +7,15 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency files and README (required by poetry)
-COPY pyproject.toml poetry.lock README.md ./
+# Install poetry
+RUN pip install poetry --no-cache-dir
 
-# Install poetry and dependencies
-RUN pip install poetry --no-cache-dir && \
-    poetry config virtualenvs.create false && \
-    poetry install --only main --no-interaction --no-ansi
+# Copy ALL source files first (poetry needs mini_devin package and README.md)
+COPY . .
 
-# Copy application code
-COPY app/ ./app/
-COPY mini_devin/ ./mini_devin/
+# Install dependencies (no-root because Docker handles packaging)
+RUN poetry config virtualenvs.create false && \
+    poetry install --only main --no-interaction --no-ansi --no-root
 
 # Expose port
 EXPOSE 8000
