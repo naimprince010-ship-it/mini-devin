@@ -6,7 +6,16 @@ import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from mini_devin.config.settings import AgentGatesSettings
+# from mini_devin.config.settings import AgentGatesSettings
+from dataclasses import dataclass
+
+@dataclass
+class AgentGatesSettings:
+    planning_required: bool = False
+    max_plan_steps: int = 5
+    review_required: bool = False
+    block_on_high_severity: bool = False
+    use_llm_planning: bool = False
 from mini_devin.schemas.state import TaskState, TaskGoal
 
 

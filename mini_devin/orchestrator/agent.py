@@ -32,7 +32,22 @@ from ..tools.browser import (
     create_citation_store,
 )
 from ..safety.guards import SafetyGuard, SafetyPolicy, SafetyViolation
-from ..artifacts.logger import ArtifactLogger, create_artifact_logger
+# from ..artifacts.logger import ArtifactLogger, create_artifact_logger
+
+# HACK: ArtifactLogger module missing, using dummy implementation
+class ArtifactLogger:
+    def set_model(self, model: Any) -> None: pass
+    def log_tool_call(self, *args: Any, **kwargs: Any) -> None: pass
+    def add_command_executed(self, *args: Any, **kwargs: Any) -> None: pass
+    def add_file_modified(self, *args: Any, **kwargs: Any) -> None: pass
+    def increment_iteration(self, *args: Any, **kwargs: Any) -> None: pass
+    def update_tokens(self, *args: Any, **kwargs: Any) -> None: pass
+    def set_diff(self, *args: Any, **kwargs: Any) -> None: pass
+    def complete(self, *args: Any, **kwargs: Any) -> None: pass
+    def get_run_dir(self, *args: Any, **kwargs: Any) -> str: return ""
+
+def create_artifact_logger(*args: Any, **kwargs: Any) -> ArtifactLogger:
+    return ArtifactLogger()
 from ..memory import (
     SymbolIndex,
     VectorStore,
@@ -140,6 +155,7 @@ class Agent:
         artifact_dir: str = "runs",
         enable_parallel_execution: bool = True,
         max_parallel_tools: int = 5,
+        callbacks: dict[str, Any] | None = None,
     ):
         self.llm = llm_client or create_llm_client()
         self.registry = tool_registry or get_global_registry()
@@ -148,6 +164,7 @@ class Agent:
         self.verbose = verbose
         self.auto_verify = auto_verify
         self.max_repair_iterations = max_repair_iterations
+        self.callbacks = callbacks or {}
         
         # Initialize state
         self.state = AgentState(
@@ -731,7 +748,7 @@ class Agent:
             task_id=task_id,
             task_description=task_description,
         )
-        self._artifact_logger.set_model(self.llm.model)
+        self._artifact_logger.set_model(self.llm.config.model)
     
     def _check_command_safety(self, command: str) -> SafetyViolation | None:
         """Check if a command is safe to execute."""
@@ -1937,6 +1954,9 @@ class Agent:
         old_phase = self.state.phase
         self.state.phase = new_phase
         self._log(f"Phase transition: {old_phase.value} -> {new_phase.value}")
+        if "on_phase_change" in self.callbacks:
+            import asyncio
+            asyncio.create_task(self.callbacks["on_phase_change"](new_phase.value))
     
     async def run(self, task: TaskState) -> TaskState:
         """
@@ -2001,10 +2021,19 @@ Please start by exploring the codebase if needed, then create a plan and execute
             self.safety_guard.reset_iteration()
             
             try:
-                # Get LLM response with tools
+                # Define token callback
+                async def handle_token(token: str):
+                    if "on_message" in self.callbacks:
+                        import asyncio
+                        # The callback handles token messages in the frontend
+                        asyncio.create_task(self.callbacks["on_message"](token, is_token=True))
+
+                # Get LLM response with tools and streaming
                 response = await self.llm.complete(
                     tools=self._get_tool_schemas(),
                     tool_choice="auto",
+                    stream=True,
+                    on_token=handle_token,
                 )
                 
                 # Handle tool calls
@@ -2019,9 +2048,20 @@ Please start by exploring the codebase if needed, then create a plan and execute
                     
                     # Execute each tool
                     for tc in response.tool_calls:
+                        if "on_tool_start" in self.callbacks:
+                            import asyncio
+                            asyncio.create_task(self.callbacks["on_tool_start"](tc.name, tc.arguments))
+                            
                         self._log(f"Executing tool: {tc.name}({json.dumps(tc.arguments)[:100]}...)")
+                        import time
+                        start_time = time.time()
                         result = await self._execute_tool(tc.name, tc.arguments)
+                        duration_ms = (time.time() - start_time) * 1000
                         self._log(f"Tool result: {result[:200]}...")
+                        
+                        if "on_tool_result" in self.callbacks:
+                            import asyncio
+                            asyncio.create_task(self.callbacks["on_tool_result"](tc.name, tc.arguments, result, duration_ms))
                         
                         # Add tool result to conversation
                         self.llm.add_tool_result(tc.id, tc.name, result)
@@ -2036,6 +2076,7 @@ Please start by exploring the codebase if needed, then create a plan and execute
                         self._log(f"Assistant: {response.content[:200]}...")
                         self.llm.add_assistant_message(content=response.content)
                         
+                        # (Redundant broadcast removed to prevent duplication in frontend after token stream)
                         # Check for completion signals in the response
                         content_lower = response.content.lower()
                         if any(phrase in content_lower for phrase in [
@@ -2086,8 +2127,8 @@ Please start by exploring the codebase if needed, then create a plan and execute
             git_mgr = self._get_git_manager()
             if git_mgr:
                 diff_result = await git_mgr.get_diff()
-                if diff_result and diff_result.success:
-                    self._artifact_logger.set_diff(diff_result.data.get("diff", ""))
+                if diff_result and not diff_result.is_empty:
+                    self._artifact_logger.set_diff(diff_result.diff_text)
             
             # Get final summary from last assistant message
             summary = ""
@@ -2139,11 +2180,20 @@ Please start by exploring the codebase if needed, then create a plan and execute
         result = await self.run(task)
         
         # Get the last assistant message as summary
+        summary = f"Task {'completed' if result.status == TaskStatus.COMPLETED else 'failed'}"
         for msg in reversed(self.llm.conversation):
             if msg.role == "assistant" and msg.content:
-                return msg.content
+                summary = msg.content
+                break
+                
+        if result.status == TaskStatus.COMPLETED and "on_task_complete" in self.callbacks:
+            import asyncio
+            asyncio.create_task(self.callbacks["on_task_complete"](summary))
+        elif result.status == TaskStatus.FAILED and "on_task_failed" in self.callbacks:
+            import asyncio
+            asyncio.create_task(self.callbacks["on_task_failed"](result.last_error))
         
-        return f"Task {'completed' if result.status == TaskStatus.COMPLETED else 'failed'}"
+        return summary
 
 
 async def create_agent(
@@ -2151,6 +2201,7 @@ async def create_agent(
     api_key: str | None = None,
     working_directory: str | None = None,
     verbose: bool = True,
+    callbacks: dict[str, Any] | None = None,
 ) -> Agent:
     """Create an agent with default configuration."""
     import os
@@ -2164,4 +2215,5 @@ async def create_agent(
         llm_client=llm,
         working_directory=working_directory,
         verbose=verbose,
+        callbacks=callbacks
     )

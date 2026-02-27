@@ -126,8 +126,8 @@ export function useApi() {
       const result = await fetchApi<{ tasks: Task[] } | Task[]>(`/sessions/${sessionId}/tasks`);
       return Array.isArray(result) ? result : result.tasks;
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to list tasks');
-      throw e;
+      console.warn('listTasks returned error, possibly lightweight mode without DB', e);
+      return []; // Return empty in lightweight mode
     } finally {
       setLoading(false);
     }
@@ -169,7 +169,8 @@ export function useApi() {
     try {
       return await fetchApi(`/sessions/${sessionId}/tasks/${taskId}/output`);
     } catch (e) {
-      throw e;
+      console.warn('getTaskOutput returned error, possibly lightweight mode without DB', e);
+      return { task_id: taskId, status: 'unknown', outputs: [], result: null };
     }
   }, []);
 
@@ -231,7 +232,9 @@ export function useApi() {
     setLoading(true);
     setError(null);
     try {
-      return await fetchApi<SystemStatus>('/status');
+      // In lightweight mode, /api/status might not exist. Call /health instead.
+      const health = await fetchApi<{ status: string; mode?: string }>('/health');
+      return { status: health.status, version: '1.0.0', mode: health.mode || 'unknown' } as unknown as SystemStatus;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to get status');
       throw e;

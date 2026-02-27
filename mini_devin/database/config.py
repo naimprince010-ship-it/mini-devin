@@ -14,9 +14,10 @@ class Base(DeclarativeBase):
 
 def get_database_url() -> str:
     """Get the database URL from environment variables."""
+    # Default to local SQLite database for persistence
     return os.getenv(
         "DATABASE_URL",
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/minidevin"
+        "sqlite+aiosqlite:///minidevin.db"
     )
 
 

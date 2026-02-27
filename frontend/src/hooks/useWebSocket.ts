@@ -10,11 +10,17 @@ interface UseWebSocketOptions {
 }
 
 export function useWebSocket(options: UseWebSocketOptions = {}) {
-  const { sessionId, onMessage, onConnect, onDisconnect, onError } = options;
+  const { sessionId } = options;
   const [isConnected, setIsConnected] = useState(false);
   const [messages, setMessages] = useState<WebSocketMessage[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
+
+  // Store latest callbacks in refs to avoid stale closures
+  const optionsRef = useRef(options);
+  useEffect(() => {
+    optionsRef.current = options;
+  }, [options]);
 
   const connect = useCallback(() => {
     const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -28,35 +34,37 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
     ws.onopen = () => {
       setIsConnected(true);
-      onConnect?.();
+      optionsRef.current.onConnect?.();
     };
 
     ws.onclose = () => {
       setIsConnected(false);
-      onDisconnect?.();
-      
-      // Attempt to reconnect after 3 seconds
-      reconnectTimeoutRef.current = window.setTimeout(() => {
-        connect();
-      }, 3000);
+      optionsRef.current.onDisconnect?.();
+
+      // Only attempt to reconnect if it wasn't an intentional disconnect
+      if (wsRef.current === ws) {
+        reconnectTimeoutRef.current = window.setTimeout(() => {
+          connect();
+        }, 3000);
+      }
     };
 
     ws.onerror = (error) => {
-      onError?.(error);
+      optionsRef.current.onError?.(error);
     };
 
     ws.onmessage = (event) => {
       try {
         const message: WebSocketMessage = JSON.parse(event.data);
         setMessages((prev) => [...prev, message]);
-        onMessage?.(message);
+        optionsRef.current.onMessage?.(message);
       } catch (e) {
         console.error('Failed to parse WebSocket message:', e);
       }
     };
 
     wsRef.current = ws;
-  }, [sessionId, onMessage, onConnect, onDisconnect, onError]);
+  }, [sessionId]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {

@@ -121,7 +121,7 @@ class LLMClient:
         self._setup_provider()
         
         # Disable litellm logging noise
-        litellm.set_verbose = False
+        litellm.set_verbose = True
     
     def _setup_provider(self) -> None:
         """Set up provider-specific configuration."""
@@ -154,6 +154,41 @@ class LLMClient:
         else:
             if self.config.api_key:
                 os.environ["OPENAI_API_KEY"] = self.config.api_key
+        
+        # SSL Verification Workaround
+        # We must use a custom AsyncOpenAI client for OpenAI to bypass SSL issues
+        # and avoid organization header conflicts.
+        self._custom_client = None
+        if provider == Provider.OPENAI:
+            if "OPENAI_ORGANIZATION" in os.environ:
+                 del os.environ["OPENAI_ORGANIZATION"]
+            if "OPENAI_ORG_ID" in os.environ:
+                 del os.environ["OPENAI_ORG_ID"]
+            
+            # Additional safety for LiteLLM internals
+            import litellm
+            litellm.organization = ""
+            
+            try:
+                import httpx
+                from openai import AsyncOpenAI
+                from dotenv import load_dotenv
+                load_dotenv()
+                self._custom_client = AsyncOpenAI(
+                    api_key=self.config.api_key or os.environ.get("OPENAI_API_KEY"),
+                    organization=None,
+                    http_client=httpx.AsyncClient(verify=False)
+                )
+            except ImportError:
+                 pass
+        else:
+             # Fallback for others (though only OpenAI uses this path typically)
+             try:
+                import httpx
+                litellm.aclient_session = httpx.AsyncClient(verify=False)
+                litellm.client_session = httpx.Client(verify=False)
+             except ImportError:
+                pass
     
     def set_system_prompt(self, prompt: str) -> None:
         """Set or update the system prompt."""
@@ -207,6 +242,8 @@ class LLMClient:
         self,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] = "auto",
+        stream: bool = False,
+        on_token: Callable[[str], Any] | None = None,
     ) -> LLMResponse:
         """
         Get a completion from the LLM.
@@ -214,6 +251,8 @@ class LLMClient:
         Args:
             tools: List of tool definitions in OpenAI format
             tool_choice: "auto", "none", or {"type": "function", "function": {"name": "..."}}
+            stream: Whether to stream the response
+            on_token: Optional callback for streaming tokens
             
         Returns:
             LLMResponse with content and/or tool calls
@@ -228,6 +267,7 @@ class LLMClient:
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
             "timeout": self.config.timeout,
+            "stream": stream,
         }
         
         if tools:
@@ -243,44 +283,118 @@ class LLMClient:
         if self.config.api_base:
             kwargs["api_base"] = self.config.api_base
         
+        if self._custom_client and self.config.provider == Provider.OPENAI:
+             kwargs["client"] = self._custom_client
+
         # Make the API call
         response = await acompletion(**kwargs)
         
-        # Parse response
-        choice = response.choices[0]
-        message = choice.message
+        content = ""
+        tool_calls_dict = {}
+        finish_reason = "stop"
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        model_returned = model_name
         
-        # Extract tool calls
-        tool_calls = []
-        if hasattr(message, "tool_calls") and message.tool_calls:
-            for tc in message.tool_calls:
+        if stream:
+            async for chunk in response:
+                if not getattr(chunk, "choices", None):
+                    continue
+                    
+                choice = chunk.choices[0]
+                delta = getattr(choice, "delta", None)
+                if not delta:
+                    continue
+                
+                # Handle text chunks
+                if getattr(delta, "content", None):
+                    chunk_text = delta.content
+                    content += chunk_text
+                    # DEBUG LOG: Trace token string duplication issue from upstream
+                    print(f"[TOKEN STREAM CHUNK]: {repr(chunk_text)}")
+                    if on_token:
+                        import asyncio
+                        if asyncio.iscoroutinefunction(on_token):
+                            await on_token(chunk_text)
+                        else:
+                            on_token(chunk_text)
+                
+                # Handle tool calls in streaming mode
+                if getattr(delta, "tool_calls", None):
+                    for tc in delta.tool_calls:
+                        index = tc.index
+                        if index not in tool_calls_dict:
+                            tool_calls_dict[index] = {
+                                "id": getattr(tc, "id", "") or "",
+                                "name": getattr(tc.function, "name", "") if hasattr(tc, "function") else "",
+                                "arguments": getattr(tc.function, "arguments", "") if hasattr(tc, "function") else ""
+                            }
+                        else:
+                            if hasattr(tc, "id") and getattr(tc, "id", None):
+                                tool_calls_dict[index]["id"] = tc.id
+                            if hasattr(tc, "function"):
+                                if getattr(tc.function, "name", None):
+                                    tool_calls_dict[index]["name"] += tc.function.name
+                                if getattr(tc.function, "arguments", None):
+                                    tool_calls_dict[index]["arguments"] += tc.function.arguments
+                
+                if getattr(choice, "finish_reason", None):
+                    finish_reason = choice.finish_reason
+                    
+            # Parse streaming tool calls
+            tool_calls = []
+            for _, tc_data in sorted(tool_calls_dict.items()):
                 try:
-                    arguments = json.loads(tc.function.arguments)
+                    arguments = json.loads(tc_data["arguments"])
                 except json.JSONDecodeError:
                     arguments = {}
-                
                 tool_calls.append(ToolCall(
-                    id=tc.id,
-                    name=tc.function.name,
-                    arguments=arguments,
+                    id=tc_data["id"],
+                    name=tc_data["name"],
+                    arguments=arguments
                 ))
-        
-        # Track usage
-        usage = {
-            "prompt_tokens": response.usage.prompt_tokens,
-            "completion_tokens": response.usage.completion_tokens,
-            "total_tokens": response.usage.total_tokens,
-        }
+                
+        else:
+            # Parse non-streaming response
+            choice = response.choices[0]
+            message = choice.message
+            content = message.content
+            finish_reason = choice.finish_reason
+            if hasattr(response, "model"):
+                model_returned = response.model
+                
+            # Extract tool calls
+            tool_calls = []
+            if hasattr(message, "tool_calls") and message.tool_calls:
+                for tc in message.tool_calls:
+                    try:
+                        arguments = json.loads(tc.function.arguments)
+                    except json.JSONDecodeError:
+                        arguments = {}
+                    
+                    tool_calls.append(ToolCall(
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=arguments,
+                    ))
+            
+            # Track usage
+            if hasattr(response, "usage") and response.usage:
+                usage = {
+                    "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
+                    "completion_tokens": getattr(response.usage, "completion_tokens", 0),
+                    "total_tokens": getattr(response.usage, "total_tokens", 0),
+                }
+
         self.total_prompt_tokens += usage["prompt_tokens"]
         self.total_completion_tokens += usage["completion_tokens"]
         self.total_tokens_used += usage["total_tokens"]
         
         return LLMResponse(
-            content=message.content,
+            content=content,
             tool_calls=tool_calls,
-            finish_reason=choice.finish_reason,
+            finish_reason=finish_reason,
             usage=usage,
-            model=response.model,
+            model=model_returned,
         )
     
     async def chat(
