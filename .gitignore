@@ -57,3 +57,12 @@ artifacts/
 # OS
 .DS_Store
 Thumbs.db
+
+# Sensitive/temp files
+do_reset.ps1
+do_reset.py
+check_ssh.py
+droplet_details.json
+droplet_details_utf8.json
+*.log
+git_status.txt
