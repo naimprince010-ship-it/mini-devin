@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from ..orchestrator.agent import Agent
 from ..api.websocket import ConnectionManager
+from ..schemas.state import TaskState, TaskGoal, TaskStatus as AgentTaskStatus
 
 
 class SessionStatus(str, Enum):
@@ -336,12 +337,55 @@ class SessionManager:
                 task.iteration = data.get("iteration", task.iteration)
                 session.iteration = task.iteration
             
-            # Run the agent
-            result = await session.agent.run(
-                task=task.description,
-                acceptance_criteria=task.acceptance_criteria,
-                cancel_event=session.cancel_event,
-                on_update=on_update,
+            # Create TaskState object for the agent
+            task_state = TaskState(
+                task_id=task_id,
+                goal=TaskGoal(
+                    description=task.description,
+                    acceptance_criteria=task.acceptance_criteria or [],
+                ),
+                status=AgentTaskStatus.PENDING,
+            )
+
+            # Set up callbacks on the agent instance
+            session.agent.callbacks = {
+                "on_message": lambda token, is_token=False: asyncio.create_task(on_update("tokens", {"content": token})) if is_token else None,
+                "on_tool_start": lambda name, args: asyncio.create_task(on_update("tool_started", {"tool": name, "input": args})),
+                "on_tool_result": lambda name, args, output, duration: asyncio.create_task(on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration})),
+                "on_phase_change": lambda phase: asyncio.create_task(on_update("phase_changed", {"phase": phase})),
+            }
+            
+            # Run the agent with the TaskState object
+            final_task_state = await session.agent.run(task_state)
+            
+            # Extract result info from final_task_state and agent's conversation
+            success = final_task_state.status == AgentTaskStatus.COMPLETE or final_task_state.status == AgentTaskStatus.COMPLETED
+            
+            # Get summary from last assistant message
+            summary = ""
+            if session.agent.llm and hasattr(session.agent.llm, 'conversation'):
+                for msg in reversed(session.agent.llm.conversation):
+                    if msg.role == "assistant" and msg.content:
+                        summary = msg.content
+                        break
+            
+            # Create a result-like object for compatibility
+            class AgentResult:
+                def __init__(self, success, summary, files_modified, commands_executed, total_tokens, error_message):
+                    self.success = success
+                    self.summary = summary
+                    self.files_modified = files_modified
+                    self.commands_executed = commands_executed
+                    self.total_tokens = total_tokens
+                    self.error_message = error_message
+
+            result = AgentResult(
+                success=success,
+                summary=summary,
+                files_modified=[f.path for f in final_task_state.files_changed],
+                commands_executed=final_task_state.commands_executed,
+                total_tokens=final_task_state.total_tokens_used,
+                error_message=final_task_state.last_error
             )
             
             # Calculate duration

@@ -215,6 +215,7 @@ async def list_skills():
     }
 
 
+@app.websocket("/api/ws/{session_id}")
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     await connection_manager.connect(websocket, session_id)
@@ -248,7 +249,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             ))
 
     except WebSocketDisconnect:
-        connection_manager.disconnect(websocket, session_id)
+        connection_manager.disconnect(websocket)
     except Exception as e:
         print(f"WebSocket error: {e}")
-        connection_manager.disconnect(websocket, session_id)
+        connection_manager.disconnect(websocket)
