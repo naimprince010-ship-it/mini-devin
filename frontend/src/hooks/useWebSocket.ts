@@ -23,9 +23,17 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   }, [options]);
 
   const connect = useCallback(() => {
-    const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-    const wsProtocol = apiUrl.startsWith('https') ? 'wss:' : 'ws:';
-    const apiHost = apiUrl.replace(/^https?:\/\//, '');
+    let wsProtocol: string;
+    let apiHost: string;
+    if (import.meta.env.VITE_API_URL) {
+      const apiUrl = import.meta.env.VITE_API_URL;
+      wsProtocol = apiUrl.startsWith('https') ? 'wss:' : 'ws:';
+      apiHost = apiUrl.replace(/^https?:\/\//, '');
+    } else {
+      // Same-domain: use current window location
+      wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      apiHost = window.location.host;
+    }
     const wsUrl = sessionId
       ? `${wsProtocol}//${apiHost}/ws/${sessionId}`
       : `${wsProtocol}//${apiHost}/ws`;

@@ -1,6 +1,34 @@
 name: mini-devin
 region: blr
 
+ingress:
+  rules:
+    - component:
+        name: backend
+      match:
+        path:
+          prefix: /api
+    - component:
+        name: backend
+      match:
+        path:
+          prefix: /ws
+    - component:
+        name: backend
+      match:
+        path:
+          prefix: /docs
+    - component:
+        name: backend
+      match:
+        path:
+          prefix: /health
+    - component:
+        name: frontend
+      match:
+        path:
+          prefix: /
+
 services:
   - name: backend
     github:
@@ -45,4 +73,7 @@ static_sites:
     envs:
       - key: VITE_API_URL
         scope: BUILD_TIME
-        value: "${backend.PUBLIC_URL}"
+        value: ""
+      - key: VITE_WS_URL
+        scope: BUILD_TIME
+        value: ""
