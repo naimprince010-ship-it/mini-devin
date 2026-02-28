@@ -287,7 +287,21 @@ class LLMClient:
              kwargs["client"] = self._custom_client
 
         # Make the API call
-        response = await acompletion(**kwargs)
+        try:
+            print(f"[LLM] Requesting completion: model={model_name}, tools={len(tools) if tools else 0}, stream={stream}")
+            response = await acompletion(**kwargs)
+        except Exception as e:
+            print(f"[LLM] Error in acompletion: {str(e)}")
+            # Raise a more descriptive error
+            error_msg = str(e)
+            if "AuthenticationError" in error_msg or "401" in error_msg:
+                raise RuntimeError(f"LLM Authentication Failed: API Key might be invalid or missing for {model_name}")
+            elif "RateLimitError" in error_msg or "429" in error_msg:
+                raise RuntimeError(f"LLM Rate Limit Reached: {error_msg}")
+            elif "NotFoundError" in error_msg or "404" in error_msg:
+                raise RuntimeError(f"LLM Model Not Found: {model_name}. Check if the model ID is correct.")
+            else:
+                raise RuntimeError(f"LLM API Error: {error_msg}")
         
         content = ""
         tool_calls_dict = {}

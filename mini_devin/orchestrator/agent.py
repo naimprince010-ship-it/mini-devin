@@ -2100,7 +2100,14 @@ Please start by exploring the codebase if needed, then create a plan and execute
                         )
             
             except Exception as e:
-                self._log(f"Error in iteration: {str(e)}")
+                error_msg = f"Error in iteration: {str(e)}"
+                self._log(error_msg)
+                
+                # Report error to UI if callback exists
+                if "on_message" in self.callbacks:
+                    import asyncio
+                    asyncio.create_task(self.callbacks["on_message"](f"⚠️ **Error**: {str(e)}", is_token=False))
+                
                 task.last_error = str(e)
                 task.error_count += 1
                 
