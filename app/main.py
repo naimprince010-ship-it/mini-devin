@@ -6,6 +6,7 @@ while optimizing memory usage for cloud deployment.
 """
 
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from datetime import datetime
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field
 # In-memory storage for sessions (production would use database)
 sessions: dict = {}
 tasks: dict = {}
+START_TIME = time.time()
 
 
 class CreateSessionRequest(BaseModel):
@@ -29,6 +31,7 @@ class CreateSessionRequest(BaseModel):
 
 class CreateTaskRequest(BaseModel):
     description: str = Field(..., description="Task description")
+    acceptance_criteria: list[str] = Field(default_factory=list, description="Acceptance criteria")
 
 
 @asynccontextmanager
@@ -73,6 +76,7 @@ async def root():
         "status": "running",
         "mode": "full" if api_key else "limited",
         "llm_configured": bool(api_key),
+        "uptime_seconds": int(time.time() - START_TIME),
         "docs": "/docs",
     }
 
@@ -89,6 +93,7 @@ async def api_health():
         "status": "healthy",
         "mode": "full" if api_key else "limited",
         "llm_configured": bool(api_key),
+        "uptime_seconds": int(time.time() - START_TIME),
     }
 
 
@@ -100,6 +105,8 @@ async def get_status():
         "mode": "full" if api_key else "limited",
         "version": "1.0.0",
         "active_sessions": len(sessions),
+        "total_tasks_completed": len([t for t in tasks.values() if t["status"] == "completed"]),
+        "uptime_seconds": int(time.time() - START_TIME),
         "llm_configured": bool(api_key),
     }
 
@@ -109,6 +116,36 @@ async def list_sessions():
     return {
         "sessions": list(sessions.values()),
         "total": len(sessions),
+    }
+
+
+@app.get("/api/models")
+async def list_models():
+    # Return placeholder models for full mode
+    return {
+        "models": [
+            {"id": "gpt-4o", "name": "GPT-4o", "provider": "openai"},
+            {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "provider": "openai"},
+            {"id": "claude-3-5-sonnet-latest", "name": "Claude 3.5 Sonnet", "provider": "anthropic"},
+        ]
+    }
+
+
+@app.get("/api/providers")
+async def list_providers():
+    return {
+        "providers": [
+            {
+                "id": "openai",
+                "name": "OpenAI",
+                "models": ["gpt-4o", "gpt-4o-mini"]
+            },
+            {
+                "id": "anthropic",
+                "name": "Anthropic",
+                "models": ["claude-3-5-sonnet-latest"]
+            }
+        ]
     }
 
 
@@ -131,12 +168,7 @@ async def create_session(request: CreateSessionRequest):
     }
     sessions[session_id] = session
     
-    return {
-        "session_id": session_id,
-        "created_at": session["created_at"],
-        "status": "active",
-        "llm_enabled": bool(api_key),
-    }
+    return session
 
 
 @app.get("/api/sessions/{session_id}")
@@ -166,8 +198,13 @@ async def create_task(session_id: str, request: CreateTaskRequest):
         "task_id": task_id,
         "session_id": session_id,
         "description": request.description,
+        "acceptance_criteria": request.acceptance_criteria,
         "status": "pending",
         "created_at": datetime.utcnow().isoformat(),
+        "started_at": None,
+        "completed_at": None,
+        "iteration": 0,
+        "error_message": None,
         "result": None,
     }
     
