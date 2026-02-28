@@ -15,6 +15,11 @@ import asyncio
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+import os
+
+# Load environment variables
+load_dotenv()
 
 from .websocket import ConnectionManager, WebSocketMessage, MessageType
 from ..database.config import init_db
@@ -81,6 +86,7 @@ async def api_health():
 
 
 @app.get("/api/sessions")
+@app.get("/sessions")
 async def list_sessions():
     sessions = await session_manager.list_sessions()
     return [
@@ -97,6 +103,7 @@ async def list_sessions():
     ]
 
 @app.post("/api/sessions")
+@app.post("/sessions")
 async def create_session():
     session = await session_manager.create_session()
     return {
@@ -109,6 +116,7 @@ async def create_session():
     }
 
 @app.get("/api/sessions/{session_id}")
+@app.get("/sessions/{session_id}")
 async def get_session(session_id: str):
     s = await session_manager.get_session(session_id)
     if not s:
@@ -124,11 +132,60 @@ async def get_session(session_id: str):
     }
 
 @app.delete("/api/sessions/{session_id}")
+@app.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
     success = await session_manager.delete_session(session_id)
     if not success:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"status": "deleted", "session_id": session_id}
+
+@app.get("/api/providers")
+@app.get("/providers")
+async def list_providers():
+    """List available LLM providers."""
+    # Simplified version for lightweight mode
+    providers = []
+    if os.getenv("OPENAI_API_KEY") or os.getenv("MiniDevin"):
+        providers.append({
+            "id": "openai",
+            "name": "OpenAI",
+            "models": ["gpt-4o", "gpt-4o-mini"]
+        })
+    if os.getenv("ANTHROPIC_API_KEY"):
+        providers.append({
+            "id": "anthropic",
+            "name": "Anthropic",
+            "models": ["claude-3-5-sonnet-latest"]
+        })
+    return {"providers": providers}
+
+@app.get("/api/models")
+@app.get("/models")
+async def list_models():
+    """List available LLM models."""
+    models = []
+    if os.getenv("OPENAI_API_KEY") or os.getenv("MiniDevin"):
+        models.extend([
+            {"id": "gpt-4o", "name": "GPT-4o", "provider": "openai"},
+            {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "provider": "openai"}
+        ])
+    if os.getenv("ANTHROPIC_API_KEY"):
+        models.append({"id": "claude-3-5-sonnet-latest", "name": "Claude 3.5 Sonnet", "provider": "anthropic"})
+    return {"models": models}
+
+@app.get("/api/status")
+@app.get("/status")
+async def get_system_status():
+    """Get system status with uptime and metrics."""
+    return {
+        "status": "running",
+        "mode": "lightweight",
+        "version": "1.0.0",
+        "active_sessions": await session_manager.get_active_session_count(),
+        "total_tasks_completed": await session_manager.get_total_tasks_completed(),
+        "uptime_seconds": session_manager.get_uptime_seconds(),
+        "llm_configured": bool(os.getenv("OPENAI_API_KEY") or os.getenv("MiniDevin") or os.getenv("ANTHROPIC_API_KEY")),
+    }
 
 
 @app.get("/api/skills")

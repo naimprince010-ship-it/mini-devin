@@ -232,9 +232,8 @@ export function useApi() {
     setLoading(true);
     setError(null);
     try {
-      // In lightweight mode, /api/status might not exist. Call /health instead.
-      const health = await fetchApi<{ status: string; mode?: string }>('/health');
-      return { status: health.status, version: '1.0.0', mode: health.mode || 'unknown' } as unknown as SystemStatus;
+      const status = await fetchApi<SystemStatus>('/status');
+      return status;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to get status');
       throw e;
