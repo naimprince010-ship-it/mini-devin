@@ -12,9 +12,13 @@ from typing import AsyncGenerator
 from datetime import datetime
 import uuid
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+
+# Load environment variables at startup
+load_dotenv()
 
 
 # In-memory storage for sessions (production would use database)
@@ -98,6 +102,7 @@ async def api_health():
 
 
 @app.get("/api/status")
+@app.get("/status")
 async def get_status():
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("MiniDevin")
     return {
@@ -120,6 +125,7 @@ async def list_sessions():
 
 
 @app.get("/api/models")
+@app.get("/models")
 async def list_models():
     # Return placeholder models for full mode
     return {
@@ -132,6 +138,7 @@ async def list_models():
 
 
 @app.get("/api/providers")
+@app.get("/providers")
 async def list_providers():
     return {
         "providers": [
@@ -150,6 +157,7 @@ async def list_providers():
 
 
 @app.post("/api/sessions")
+@app.post("/sessions")
 async def create_session(request: CreateSessionRequest):
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("MiniDevin")
     
@@ -172,6 +180,7 @@ async def create_session(request: CreateSessionRequest):
 
 
 @app.get("/api/sessions/{session_id}")
+@app.get("/sessions/{session_id}")
 async def get_session(session_id: str):
     if session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -223,6 +232,7 @@ async def create_task(session_id: str, request: CreateTaskRequest):
 
 
 @app.get("/api/sessions/{session_id}/tasks")
+@app.get("/sessions/{session_id}/tasks")
 async def list_tasks(session_id: str):
     if session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -313,5 +323,6 @@ async def list_sessions_root():
 
 
 @app.get("/status")
+@app.get("/api/status")
 async def get_status_root():
     return await get_status()
