@@ -35,8 +35,8 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       apiHost = window.location.host;
     }
     const wsUrl = sessionId
-      ? `${wsProtocol}//${apiHost}/ws/${sessionId}`
-      : `${wsProtocol}//${apiHost}/ws`;
+      ? `${wsProtocol}//${apiHost}/api/ws/${sessionId}`
+      : `${wsProtocol}//${apiHost}/api/ws`;
 
     const ws = new WebSocket(wsUrl);
 
