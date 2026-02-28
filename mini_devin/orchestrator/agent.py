@@ -1979,7 +1979,7 @@ class Agent:
         self.safety_guard.reset_all()
         
         self._log(f"Starting task: {task.goal.description}")
-        self._update_phase(AgentPhase.INTAKE)
+        await self._update_phase(AgentPhase.INTAKE)
         
         # Add task description to conversation
         task_message = f"""Task: {task.goal.description}
@@ -2038,7 +2038,7 @@ Please start by exploring the codebase if needed, then create a plan and execute
                 
                 # Handle tool calls
                 if response.tool_calls:
-                    self._update_phase(AgentPhase.EXECUTE)
+                    await self._update_phase(AgentPhase.EXECUTE)
                     
                     # Add assistant message with tool calls
                     self.llm.add_assistant_message(
@@ -2087,7 +2087,7 @@ Please start by exploring the codebase if needed, then create a plan and execute
                             "completed the task",
                             "all done",
                         ]):
-                            self._update_phase(AgentPhase.COMPLETE)
+                            await self._update_phase(AgentPhase.COMPLETE)
                             task.status = TaskStatus.COMPLETED
                             task.completed_at = datetime.utcnow()
                             self._log("Task completed!")
@@ -2112,7 +2112,7 @@ Please start by exploring the codebase if needed, then create a plan and execute
                 task.error_count += 1
                 
                 if task.error_count >= 3:
-                    self._update_phase(AgentPhase.BLOCKED)
+                    await self._update_phase(AgentPhase.BLOCKED)
                     task.status = TaskStatus.FAILED
                     break
         
