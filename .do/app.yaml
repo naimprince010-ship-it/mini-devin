@@ -30,3 +30,19 @@ services:
       - key: DATABASE_URL
         scope: RUN_TIME
         value: "sqlite:///./minidevin.db"
+
+static_sites:
+  - name: frontend
+    github:
+      repo: naimprince010-ship-it/mini-devin
+      branch: main
+      deploy_on_push: true
+    source_dir: /frontend
+    build_command: npm install && npm run build
+    output_dir: /dist
+    index_document: index.html
+    error_document: index.html
+    envs:
+      - key: VITE_API_URL
+        scope: BUILD_TIME
+        value: "${backend.PUBLIC_URL}"
