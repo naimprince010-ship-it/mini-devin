@@ -2,13 +2,11 @@ import { useState, useEffect, useCallback } from 'react';
 import { Session, Task, WebSocketMessage } from '../types';
 import { useApi } from '../hooks/useApi';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { Send, Square, Clock, CheckCircle, XCircle, Loader, Layers, Terminal, ListTodo, FolderOpen, AlertTriangle } from 'lucide-react';
+import { Send, Clock, CheckCircle, XCircle, Loader, Layers, Terminal, ListTodo, AlertTriangle } from 'lucide-react';
 import { StreamingOutput } from './StreamingOutput';
 import { ToolExecutionLog, ToolExecution } from './ToolExecutionLog';
 import { PlanProgress, Plan } from './PlanProgress';
-import { FileUpload } from './FileUpload';
-import { MemoryView } from './MemoryView';
-import { ExportButtons } from './ExportButtons';
+// FileUpload, MemoryView, ExportButtons reserved for future use
 
 interface TaskPanelProps {
   session: Session;
@@ -305,7 +303,7 @@ export function TaskPanel({ session }: TaskPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTask?.task_id, session.session_id]);
 
-  const pollTaskOutput = useCallback(async (sessionId: string, taskId: string) => {
+  const _pollTaskOutput = useCallback(async (sessionId: string, taskId: string) => {
     if (taskId.startsWith('task-')) {
       // Local mock tasks don't have an output API endpoint
       return;
@@ -385,7 +383,7 @@ export function TaskPanel({ session }: TaskPanelProps) {
     }
   };
 
-  const handleCancelTask = async (taskId: string) => {
+  const _handleCancelTask = async (taskId: string) => {
     try {
       await api.cancelTask(session.session_id, taskId);
       loadTasks();

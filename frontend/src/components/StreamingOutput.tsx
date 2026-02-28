@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Terminal, Sparkles, Copy, Check } from 'lucide-react';
+import { Terminal, Copy, Check } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
