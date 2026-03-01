@@ -116,21 +116,27 @@ async def create_session(request: CreateSessionRequest, req: Request):
 @router.get("/sessions", response_model=list[SessionInfo])
 async def list_sessions(req: Request):
     """List all active sessions."""
-    session_manager = req.app.state.session_manager
-    sessions = await session_manager.list_sessions()
-    
-    return [
-        SessionInfo(
-            session_id=s.session_id,
-            created_at=s.created_at.isoformat(),
-            status=s.status.value if hasattr(s.status, 'value') else str(s.status),
-            working_directory=s.working_directory,
-            current_task=getattr(s, 'current_task_id', None),
-            iteration=s.iteration,
-            total_tasks=s.total_tasks,
-        )
-        for s in sessions
-    ]
+    try:
+        session_manager = req.app.state.session_manager
+        sessions = await session_manager.list_sessions()
+        
+        return [
+            SessionInfo(
+                session_id=s.session_id,
+                created_at=s.created_at.isoformat(),
+                status=s.status.value if hasattr(s.status, 'value') else str(s.status),
+                working_directory=s.working_directory,
+                current_task=getattr(s, 'current_task_id', None),
+                iteration=s.iteration,
+                total_tasks=s.total_tasks,
+            )
+            for s in sessions
+        ]
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error in list_sessions: {error_details}")
+        raise HTTPException(status_code=500, detail=f"Error listing sessions: {str(e)}")
 
 
 @router.get("/sessions/{session_id}", response_model=SessionInfo)
