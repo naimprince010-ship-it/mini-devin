@@ -24,6 +24,8 @@ def get_database_url() -> str:
 def get_sync_database_url() -> str:
     """Get the synchronous database URL for Alembic migrations."""
     url = get_database_url()
+    if url.startswith("sqlite+aiosqlite"):
+        return url.replace("sqlite+aiosqlite", "sqlite")
     return url.replace("+asyncpg", "")
 
 

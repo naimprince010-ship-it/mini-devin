@@ -278,42 +278,49 @@ class DatabaseSessionManager:
         cancel_event = self._cancel_events.get(session_id, asyncio.Event())
         
         try:
+            # Lock for serialized database updates in background tasks
+            update_lock = asyncio.Lock()
+
             # Create callback for streaming updates
             async def on_update(update_type: str, data: dict[str, Any]) -> None:
                 if not connection_manager:
                     return
                 
-                if update_type == "phase_changed":
-                    await connection_manager.send_phase_changed(
-                        session_id, task_id, data.get("phase", "")
-                    )
-                elif update_type == "tool_started":
-                    await connection_manager.send_tool_started(
-                        session_id, task_id,
-                        data.get("tool", ""),
-                        data.get("input", {}),
-                    )
-                elif update_type == "tool_completed":
-                    await connection_manager.send_tool_completed(
-                        session_id, task_id,
-                        data.get("tool", ""),
-                        data.get("output", {}),
-                        data.get("duration_ms", 0),
-                    )
-                elif update_type == "tokens":
-                    await connection_manager.send_tokens(
-                        session_id, task_id, data.get("content", "")
-                    )
-                
-                # Update iteration in database
-                iteration = data.get("iteration", 0)
-                if iteration > 0:
-                    async with self._session_maker() as db:
-                        task_repo = TaskRepository(db)
-                        session_repo = SessionRepository(db)
-                        await task_repo.update_status(task_id, DBTaskStatus.RUNNING, iteration=iteration)
-                        await session_repo.update_status(session_id, DBSessionStatus.RUNNING, iteration=iteration)
-                        await db.commit()
+                try:
+                    if update_type == "phase_changed":
+                        await connection_manager.send_phase_changed(
+                            session_id, task_id, data.get("phase", "")
+                        )
+                    elif update_type == "tool_started":
+                        await connection_manager.send_tool_started(
+                            session_id, task_id,
+                            data.get("tool", ""),
+                            data.get("input", {}),
+                        )
+                    elif update_type == "tool_completed":
+                        await connection_manager.send_tool_completed(
+                            session_id, task_id,
+                            data.get("tool", ""),
+                            data.get("output", {}),
+                            data.get("duration_ms", 0),
+                        )
+                    elif update_type == "tokens":
+                        await connection_manager.send_tokens(
+                            session_id, task_id, data.get("content", "")
+                        )
+                    
+                    # Update iteration in database with locking
+                    iteration = data.get("iteration", 0)
+                    if iteration > 0:
+                        async with update_lock:
+                            async with self._session_maker() as db:
+                                task_repo = TaskRepository(db)
+                                session_repo = SessionRepository(db)
+                                await task_repo.update_status(task_id, DBTaskStatus.RUNNING, iteration=iteration)
+                                await session_repo.update_status(session_id, DBSessionStatus.RUNNING, iteration=iteration)
+                                await db.commit()
+                except Exception as e:
+                    print(f"Error in background update: {e}")
             
             # Create TaskState object for the agent
             task_state = TaskState(
