@@ -50,7 +50,9 @@ class SessionRepository:
         result = await self.session.execute(
             select(SessionModel)
             .where(SessionModel.id == session_id)
-            .options(selectinload(SessionModel.tasks))
+            .options(
+                selectinload(SessionModel.tasks).selectinload(TaskModel.result)
+            )
         )
         return result.scalar_one_or_none()
 
@@ -58,7 +60,9 @@ class SessionRepository:
         """List all sessions."""
         result = await self.session.execute(
             select(SessionModel)
-            .options(selectinload(SessionModel.tasks))
+            .options(
+                selectinload(SessionModel.tasks).selectinload(TaskModel.result)
+            )
             .order_by(SessionModel.created_at.desc())
         )
         return list(result.scalars().all())
