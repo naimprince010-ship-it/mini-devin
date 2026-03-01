@@ -139,6 +139,72 @@ async def delete_session(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     return {"status": "deleted", "session_id": session_id}
 
+@app.get("/api/sessions/{session_id}/tasks")
+@app.get("/sessions/{session_id}/tasks")
+async def list_tasks(session_id: str):
+    tasks = await session_manager.list_tasks(session_id)
+    return [
+        {
+            "task_id": t.task_id,
+            "session_id": t.session_id,
+            "description": t.goal.description,
+            "status": t.status.value,
+            "iteration": t.iteration,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+            "started_at": t.started_at.isoformat() if t.started_at else None,
+            "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+        }
+        for t in tasks
+    ]
+
+@app.get("/api/sessions/{session_id}/tasks/{task_id}")
+@app.get("/sessions/{session_id}/tasks/{task_id}")
+async def get_task(session_id: str, task_id: str):
+    t = await session_manager.get_task(session_id, task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {
+        "task_id": t.task_id,
+        "session_id": t.session_id,
+        "description": t.goal.description,
+        "status": t.status.value,
+        "iteration": t.iteration,
+        "last_error": t.last_error,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "started_at": t.started_at.isoformat() if t.started_at else None,
+        "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+    }
+
+@app.get("/api/sessions/{session_id}/tasks/{task_id}/result")
+@app.get("/sessions/{session_id}/tasks/{task_id}/result")
+async def get_task_result(session_id: str, task_id: str):
+    result = await session_manager.get_task_result(session_id, task_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Result not found")
+    return {
+        "success": result.success,
+        "summary": result.summary,
+        "files_modified": result.files_modified,
+        "commands_executed": result.commands_executed,
+        "total_tokens": result.total_tokens,
+        "duration_ms": result.duration_ms if hasattr(result, "duration_ms") else 0,
+    }
+
+@app.get("/api/sessions/{session_id}/tasks/{task_id}/artifacts")
+@app.get("/sessions/{session_id}/tasks/{task_id}/artifacts")
+async def list_artifacts(session_id: str, task_id: str):
+    artifacts = await session_manager.list_artifacts(session_id, task_id)
+    return [
+        {
+            "name": a.name,
+            "type": a.type,
+            "file_path": a.file_path,
+            "size": a.size,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+        }
+        for a in artifacts
+    ]
+
 @app.get("/api/providers")
 @app.get("/providers")
 async def list_providers():
