@@ -30,9 +30,10 @@ class SessionRepository:
         working_directory: str = ".",
         model: str = "gpt-4o",
         max_iterations: int = 50,
+        session_id: Optional[str] = None,
     ) -> SessionModel:
         """Create a new session."""
-        session_id = str(uuid.uuid4())[:8]
+        session_id = session_id or str(uuid.uuid4())[:8]
         db_session = SessionModel(
             id=session_id,
             working_directory=working_directory,

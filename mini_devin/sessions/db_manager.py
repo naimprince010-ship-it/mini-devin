@@ -68,6 +68,7 @@ class DatabaseSessionManager:
         working_directory: str = ".",
         model: str = "gpt-4o",
         max_iterations: int = 50,
+        session_id: str | None = None,
     ) -> Session:
         """Create a new agent session with database persistence."""
         async with self._session_lock:
@@ -84,6 +85,7 @@ class DatabaseSessionManager:
                     working_directory=working_directory,
                     model=model,
                     max_iterations=max_iterations,
+                    session_id=session_id,
                 )
                 await db.commit()
                 
