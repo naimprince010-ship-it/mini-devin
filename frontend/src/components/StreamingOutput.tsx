@@ -1,15 +1,14 @@
-import { useEffect, useRef } from 'react';
-import { Terminal, Copy, Check } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Copy, Check, FileText } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { useState } from 'react';
 
 interface StreamingOutputProps {
   content: string;
   isStreaming: boolean;
   title?: string;
-  forceOpenHandsStyle?: boolean;
+  sessionId?: string; // Reserved for potential backends
 }
 
 function CodeBlock({ language, children }: { language: string; children: string }) {
@@ -22,22 +21,22 @@ function CodeBlock({ language, children }: { language: string; children: string 
   };
 
   return (
-    <div className="relative group my-3 overflow-hidden rounded-xl border border-gray-700/50 shadow-sm">
-      <div className="flex items-center justify-between px-4 py-2 bg-gray-800/80 border-b border-gray-700/50">
-        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">{language || 'text'}</span>
+    <div className="relative group my-4 overflow-hidden rounded-xl border border-[#262626] shadow-md bg-[#000000]">
+      <div className="flex items-center justify-between px-4 py-2 bg-[#121212] border-b border-[#262626]">
+        <span className="text-[10px] font-bold text-[#a3a3a3] uppercase tracking-widest">{language || 'text'}</span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-transparent hover:bg-gray-700 text-gray-400 hover:text-gray-200 transition-colors"
+          className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[#a3a3a3] hover:text-[#00ff99] transition-colors"
           title="Copy code"
         >
-          {copied ? <><Check size={14} className="text-green-400" /><span className="text-xs">Copied</span></> : <><Copy size={14} /><span className="text-xs">Copy</span></>}
+          {copied ? <><Check size={12} /><span className="text-[10px] font-bold uppercase">Copied</span></> : <><Copy size={12} /><span className="text-[10px] font-bold uppercase">Copy</span></>}
         </button>
       </div>
       <SyntaxHighlighter
         style={oneDark}
         language={language || 'text'}
         PreTag="div"
-        customStyle={{ margin: 0, padding: '1rem', background: '#1E1E24', fontSize: '0.875rem' }}
+        customStyle={{ margin: 0, padding: '1.25rem', background: 'transparent', fontSize: '0.85rem', lineHeight: '1.6' }}
       >
         {children}
       </SyntaxHighlighter>
@@ -45,7 +44,7 @@ function CodeBlock({ language, children }: { language: string; children: string 
   );
 }
 
-export function StreamingOutput({ content, isStreaming, title = 'Agent Output', forceOpenHandsStyle = false }: StreamingOutputProps) {
+export function StreamingOutput({ content, isStreaming, title = 'Output' }: StreamingOutputProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -54,38 +53,9 @@ export function StreamingOutput({ content, isStreaming, title = 'Agent Output', 
     }
   }, [content]);
 
-  // Use either the new OpenHands style or the legacy terminal style
-  const containerClass = forceOpenHandsStyle
-    ? "flex flex-col h-full bg-[#1E1E24] rounded-2xl border border-gray-700/50 shadow-sm overflow-hidden"
-    : "flex flex-col h-full bg-gray-900 rounded-lg overflow-hidden";
-
-  const headerClass = forceOpenHandsStyle
-    ? "flex items-center gap-2 px-5 py-3 bg-[#1A1A1E] border-b border-gray-800/80"
-    : "flex items-center gap-2 px-4 py-2 bg-gray-800 border-b border-gray-700";
-
-  const contentClass = forceOpenHandsStyle
-    ? "flex-1 overflow-y-auto p-5 text-[15px] leading-relaxed text-gray-200 prose prose-invert prose-sm max-w-none"
-    : "flex-1 overflow-y-auto p-4 text-sm text-gray-200 prose prose-invert prose-sm max-w-none bg-gray-900";
-
   return (
-    <div className={containerClass}>
-      <div className={headerClass}>
-        <Terminal size={16} className={forceOpenHandsStyle ? "text-blue-500" : "text-blue-400"} />
-        <span className="text-sm font-medium text-gray-200">{title}</span>
-        {isStreaming && (
-          <div className="flex items-center gap-1.5 ml-auto">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-            </span>
-            <span className="text-[11px] uppercase tracking-wider font-semibold text-blue-400">Thinking</span>
-          </div>
-        )}
-      </div>
-      <div
-        ref={containerRef}
-        className={contentClass}
-      >
+    <div className="flex flex-col h-full overflow-hidden">
+      <div ref={containerRef} className="flex-1 overflow-y-auto custom-scrollbar text-sm leading-relaxed text-[#d1d1d1] prose prose-invert prose-sm max-w-none">
         {content ? (
           <ReactMarkdown
             components={{
@@ -95,46 +65,52 @@ export function StreamingOutput({ content, isStreaming, title = 'Agent Output', 
                 return match ? (
                   <CodeBlock language={match[1]}>{codeString}</CodeBlock>
                 ) : (
-                  <code className="bg-gray-800/80 px-1.5 py-0.5 rounded text-blue-300 font-medium" {...props}>
+                  <code className="bg-[#1a1a1a] px-1.5 py-0.5 rounded text-[#00ff99] font-medium" {...props}>
                     {children}
                   </code>
                 );
               },
               p({ children }) {
-                return <p className="mb-4">{children}</p>;
+                return <p className="mb-4 last:mb-0">{children}</p>;
               },
               h1({ children }) {
-                return <h1 className="text-xl font-bold text-white mb-4 mt-6">{children}</h1>;
+                return <h1 className="text-lg font-bold text-white mb-4 mt-6 border-b border-[#262626] pb-2">{children}</h1>;
               },
               h2({ children }) {
-                return <h2 className="text-lg font-semibold text-white mb-3 mt-5">{children}</h2>;
+                return <h2 className="text-base font-semibold text-white mb-3 mt-5">{children}</h2>;
               },
               h3({ children }) {
-                return <h3 className="text-base font-semibold text-white mb-2 mt-4">{children}</h3>;
+                return <h3 className="text-sm font-semibold text-white mb-2 mt-4">{children}</h3>;
               },
               ul({ children }) {
-                return <ul className="list-disc list-outside ml-5 mb-4 space-y-1">{children}</ul>;
+                return <ul className="list-disc list-outside ml-5 mb-4 space-y-2">{children}</ul>;
               },
               ol({ children }) {
-                return <ol className="list-decimal list-outside ml-5 mb-4 space-y-1">{children}</ol>;
+                return <ol className="list-decimal list-outside ml-5 mb-4 space-y-2">{children}</ol>;
               },
               li({ children }) {
-                return <li className="text-gray-300 pl-1">{children}</li>;
+                return <li className="text-[#a3a3a3] pl-1 font-normal leading-relaxed">{children}</li>;
               },
               strong({ children }) {
-                return <strong className="font-semibold text-white">{children}</strong>;
+                return <strong className="font-bold text-white">{children}</strong>;
               },
+              blockquote({ children }) {
+                return <blockquote className="border-l-2 border-[#00ff99] pl-4 italic text-[#a3a3a3] my-4">{children}</blockquote>;
+              }
             }}
           >
             {content}
           </ReactMarkdown>
         ) : (
-          <div className="flex items-center justify-center h-full">
-            <span className="text-gray-500 italic">Waiting for agent response...</span>
+          <div className="flex flex-col items-center justify-center h-full gap-3 opacity-20">
+            <FileText size={40} />
+            <span className="text-xs font-bold uppercase tracking-widest italic">Awaiting output...</span>
           </div>
         )}
         {isStreaming && (
-          <span className="inline-block w-2 h-4 bg-blue-500 animate-pulse ml-1 align-middle" />
+          <div className="inline-flex items-center ml-1 align-baseline">
+            <span className="w-1.5 h-3.5 bg-[#00ff99] animate-pulse" />
+          </div>
         )}
       </div>
     </div>

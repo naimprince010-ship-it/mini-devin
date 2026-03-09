@@ -1949,14 +1949,28 @@ class Agent:
             "batch_caller_initialized": self._batch_caller is not None,
         }
     
-    def _update_phase(self, new_phase: AgentPhase) -> None:
+    async def _trigger_callback(self, name: str, *args, **kwargs) -> None:
+        """Trigger a callback if it exists, awaiting it if it's a coroutine."""
+        if name in self.callbacks:
+            callback = self.callbacks[name]
+            try:
+                import asyncio
+                if asyncio.iscoroutine(callback) or asyncio.iscoroutinefunction(callback):
+                    await callback(*args, **kwargs)
+                else:
+                    # If it's a lambda or function that returns a coroutine, handle it
+                    result = callback(*args, **kwargs)
+                    if asyncio.iscoroutine(result):
+                        await result
+            except Exception as e:
+                self._log(f"Error in callback '{name}': {e}")
+
+    async def _update_phase(self, new_phase: AgentPhase) -> None:
         """Update the agent phase."""
         old_phase = self.state.phase
         self.state.phase = new_phase
         self._log(f"Phase transition: {old_phase.value} -> {new_phase.value}")
-        if "on_phase_change" in self.callbacks:
-            import asyncio
-            asyncio.create_task(self.callbacks["on_phase_change"](new_phase.value))
+        await self._trigger_callback("on_phase_change", new_phase.value)
     
     async def run(self, task: TaskState) -> TaskState:
         """
@@ -2023,10 +2037,8 @@ Please start by exploring the codebase if needed, then create a plan and execute
             try:
                 # Define token callback
                 async def handle_token(token: str):
-                    if "on_message" in self.callbacks:
-                        import asyncio
-                        # The callback handles token messages in the frontend
-                        asyncio.create_task(self.callbacks["on_message"](token, is_token=True))
+                    # The callback handles token messages in the frontend
+                    await self._trigger_callback("on_message", token, is_token=True)
 
                 # Get LLM response with tools and streaming
                 response = await self.llm.complete(
@@ -2048,9 +2060,7 @@ Please start by exploring the codebase if needed, then create a plan and execute
                     
                     # Execute each tool
                     for tc in response.tool_calls:
-                        if "on_tool_start" in self.callbacks:
-                            import asyncio
-                            asyncio.create_task(self.callbacks["on_tool_start"](tc.name, tc.arguments))
+                        await self._trigger_callback("on_tool_start", tc.name, tc.arguments)
                             
                         self._log(f"Executing tool: {tc.name}({json.dumps(tc.arguments)[:100]}...)")
                         import time
@@ -2060,8 +2070,7 @@ Please start by exploring the codebase if needed, then create a plan and execute
                         self._log(f"Tool result: {result[:200]}...")
                         
                         if "on_tool_result" in self.callbacks:
-                            import asyncio
-                            asyncio.create_task(self.callbacks["on_tool_result"](tc.name, tc.arguments, result, duration_ms))
+                            await self._trigger_callback("on_tool_result", tc.name, tc.arguments, result, duration_ms)
                         
                         # Add tool result to conversation
                         self.llm.add_tool_result(tc.id, tc.name, result)
@@ -2104,9 +2113,7 @@ Please start by exploring the codebase if needed, then create a plan and execute
                 self._log(error_msg)
                 
                 # Report error to UI if callback exists
-                if "on_message" in self.callbacks:
-                    import asyncio
-                    asyncio.create_task(self.callbacks["on_message"](f"⚠️ **Error**: {str(e)}", is_token=False))
+                await self._trigger_callback("on_message", f"⚠️ **Error**: {str(e)}", is_token=False)
                 
                 task.last_error = str(e)
                 task.error_count += 1
@@ -2193,12 +2200,10 @@ Please start by exploring the codebase if needed, then create a plan and execute
                 summary = msg.content
                 break
                 
-        if result.status == TaskStatus.COMPLETED and "on_task_complete" in self.callbacks:
-            import asyncio
-            asyncio.create_task(self.callbacks["on_task_complete"](summary))
-        elif result.status == TaskStatus.FAILED and "on_task_failed" in self.callbacks:
-            import asyncio
-            asyncio.create_task(self.callbacks["on_task_failed"](result.last_error))
+        if result.status == TaskStatus.COMPLETED:
+            await self._trigger_callback("on_task_complete", summary)
+        elif result.status == TaskStatus.FAILED:
+            await self._trigger_callback("on_task_failed", result.last_error)
         
         return summary
 

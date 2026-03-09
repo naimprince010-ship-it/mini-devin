@@ -138,6 +138,49 @@ async def delete_session(session_id: str):
     if not success:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"status": "deleted", "session_id": session_id}
+    
+@app.get("/api/sessions/{session_id}/ls")
+@app.get("/sessions/{session_id}/ls")
+async def list_workspace_files(session_id: str, directory: str = "."):
+    """List directory contents for a session."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Use session's working directory or default
+    base_dir = session.working_directory or "."
+    target_dir = os.path.join(base_dir, directory)
+    
+    # Safety check: ensure target_dir is within base_dir or allowed areas
+    # For now, we'll allow listing within the local project area
+    try:
+        abs_target = os.path.abspath(target_dir)
+        if not os.path.exists(abs_target):
+            raise HTTPException(status_code=404, detail=f"Directory not found: {directory}")
+        
+        entries = []
+        for entry in os.scandir(abs_target):
+            # Skip hidden files
+            if entry.name.startswith("."):
+                continue
+                
+            is_dir = entry.is_dir()
+            stat = entry.stat()
+            entries.append({
+                "name": entry.name,
+                "path": os.path.join(directory, entry.name),
+                "is_directory": is_dir,
+                "size": stat.st_size if not is_dir else 0,
+                "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            })
+            
+        # Sort: directories first, then by name
+        entries.sort(key=lambda x: (not x["is_directory"], x["name"].lower()))
+        return entries
+        
+    except Exception as e:
+        print(f"Error listing directory {target_dir}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/sessions/{session_id}/tasks")
 @app.get("/sessions/{session_id}/tasks")

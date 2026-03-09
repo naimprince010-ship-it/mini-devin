@@ -125,10 +125,19 @@ class DatabaseSessionManager:
             return self._db_to_session(db_session)
     
     async def list_sessions(self) -> list[Session]:
-        """List all sessions."""
+        """List all sessions with their tasks eagerly loaded."""
         async with self._session_maker() as db:
-            repo = SessionRepository(db)
-            db_sessions = await repo.list_all()
+            # Use selectinload to avoid MissingGreenlet error when accessing db_session.tasks
+            from sqlalchemy import select
+            from sqlalchemy.orm import selectinload
+            from ..database.models import SessionModel, TaskModel
+            
+            result = await db.execute(
+                select(SessionModel)
+                .options(selectinload(SessionModel.tasks).selectinload(TaskModel.result))
+                .order_by(SessionModel.created_at.desc())
+            )
+            db_sessions = result.scalars().all()
             return [self._db_to_session(s) for s in db_sessions]
     
     async def delete_session(self, session_id: str) -> bool:
@@ -309,13 +318,15 @@ class DatabaseSessionManager:
                             session_id, task_id, data.get("content", "")
                         )
                     
-                    # Update iteration in database with locking
-                    iteration = data.get("iteration", 0)
-                    if iteration > 0:
+                    # Update iteration and status in database with locking
+                    # Skip for tokens to reduce database pressure during streaming
+                    if update_type != "tokens":
+                        iteration = agent.state.iteration if agent and hasattr(agent, 'state') else 0
                         async with update_lock:
                             async with self._session_maker() as db:
                                 task_repo = TaskRepository(db)
                                 session_repo = SessionRepository(db)
+                                # Update status and iteration
                                 await task_repo.update_status(task_id, DBTaskStatus.RUNNING, iteration=iteration)
                                 await session_repo.update_status(session_id, DBSessionStatus.RUNNING, iteration=iteration)
                                 await db.commit()
@@ -334,10 +345,10 @@ class DatabaseSessionManager:
 
             # Set up callbacks on the agent instance
             agent.callbacks = {
-                "on_message": lambda token, is_token=False: asyncio.create_task(on_update("tokens", {"content": token})) if is_token else None,
-                "on_tool_start": lambda name, args: asyncio.create_task(on_update("tool_started", {"tool": name, "input": args})),
-                "on_tool_result": lambda name, args, output, duration: asyncio.create_task(on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration})),
-                "on_phase_change": lambda phase: asyncio.create_task(on_update("phase_changed", {"phase": phase})),
+                "on_message": lambda token, is_token=False: on_update("tokens", {"content": token}) if is_token else None,
+                "on_tool_start": lambda name, args: on_update("tool_started", {"tool": name, "input": args}),
+                "on_tool_result": lambda name, args, output, duration: on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration}),
+                "on_phase_change": lambda phase: on_update("phase_changed", {"phase": phase}),
             }
             
             # Run the agent with the TaskState object

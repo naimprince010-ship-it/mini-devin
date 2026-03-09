@@ -307,6 +307,19 @@ export function useApi() {
     }
   }, []);
 
+  const listWorkspaceFiles = useCallback(async (sessionId: string, directory: string = '.'): Promise<any[]> => {
+    setLoading(true);
+    setError(null);
+    try {
+      return await fetchApi<any[]>(`/sessions/${sessionId}/ls?directory=${directory}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to list workspace files');
+      throw e;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   const deleteFile = useCallback(async (sessionId: string, fileId: string): Promise<void> => {
     setLoading(true);
     setError(null);
@@ -403,6 +416,7 @@ export function useApi() {
     // Files
     uploadFile,
     listFiles,
+    listWorkspaceFiles,
     deleteFile,
     // Memory
     listMemories,

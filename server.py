@@ -5565,6 +5565,52 @@ async def list_files_endpoint(session_id: str):
     files = [{"file_id": r[0], "filename": r[1], "size": r[2], "mime_type": r[3], "uploaded_at": r[4]} for r in rows]
     return {"files": files, "total": len(files)}
 
+@app.get("/api/sessions/{session_id}/ls")
+async def list_workspace_files(session_id: str, directory: str = "."):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT working_directory FROM sessions WHERE session_id=?", (session_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    base_dir = row[0]
+    # Handle absolute paths if provided, otherwise relative to base_dir
+    if os.path.isabs(directory):
+        target_dir = directory
+    else:
+        target_dir = os.path.abspath(os.path.join(base_dir, directory))
+    
+    if not os.path.exists(target_dir):
+        return []
+
+    def get_tree(current_path, rel_base, depth=0):
+        if depth > 3: # Limit depth to prevent massive responses
+            return []
+        nodes = []
+        try:
+            with os.scandir(current_path) as it:
+                for entry in it:
+                    if entry.name.startswith(('.', '__pycache__', 'node_modules', 'dist', 'build', '.git')):
+                        continue
+                    
+                    rel_path = os.path.relpath(entry.path, rel_base)
+                    node = {
+                        "name": entry.name,
+                        "path": rel_path.replace("\\", "/"),
+                        "isDir": entry.is_dir()
+                    }
+                    if entry.is_dir() and depth < 2:
+                        node["children"] = get_tree(entry.path, rel_base, depth + 1)
+                    nodes.append(node)
+        except Exception:
+            pass
+        return sorted(nodes, key=lambda x: (not x["isDir"], x["name"].lower()))
+
+    return get_tree(target_dir, base_dir)
+
 @app.get("/api/sessions/{session_id}/files/{file_id}")
 async def download_file(session_id: str, file_id: str):
     conn = get_db()

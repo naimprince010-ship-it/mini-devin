@@ -57,7 +57,7 @@ class SessionRepository:
         return result.scalar_one_or_none()
 
     async def list_all(self) -> list[SessionModel]:
-        """List all sessions."""
+        """List all sessions with their tasks and results eagerly loaded."""
         result = await self.session.execute(
             select(SessionModel)
             .options(
