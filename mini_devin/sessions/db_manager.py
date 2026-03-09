@@ -347,7 +347,7 @@ class DatabaseSessionManager:
 
             # Set up callbacks on the agent instance
             agent.callbacks = {
-                "on_message": lambda token, is_token=False: on_update("tokens", {"content": token}) if is_token else None,
+                "on_message": lambda token, is_token=False: on_update("tokens", {"content": token}),
                 "on_tool_start": lambda name, args: on_update("tool_started", {"tool": name, "input": args}),
                 "on_tool_result": lambda name, args, output, duration: on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration}),
                 "on_phase_change": lambda phase: on_update("phase_changed", {"phase": phase}),
