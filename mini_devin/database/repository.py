@@ -52,7 +52,8 @@ class SessionRepository:
             select(SessionModel)
             .where(SessionModel.id == session_id)
             .options(
-                selectinload(SessionModel.tasks).selectinload(TaskModel.result)
+                selectinload(SessionModel.tasks).selectinload(TaskModel.result),
+                selectinload(SessionModel.tasks).selectinload(TaskModel.artifacts)
             )
         )
         return result.scalar_one_or_none()
@@ -62,7 +63,8 @@ class SessionRepository:
         result = await self.session.execute(
             select(SessionModel)
             .options(
-                selectinload(SessionModel.tasks).selectinload(TaskModel.result)
+                selectinload(SessionModel.tasks).selectinload(TaskModel.result),
+                selectinload(SessionModel.tasks).selectinload(TaskModel.artifacts)
             )
             .order_by(SessionModel.created_at.desc())
         )
@@ -149,7 +151,10 @@ class TaskRepository:
         result = await self.session.execute(
             select(TaskModel)
             .where(TaskModel.session_id == session_id)
-            .options(selectinload(TaskModel.result))
+            .options(
+                selectinload(TaskModel.result),
+                selectinload(TaskModel.artifacts)
+            )
             .order_by(TaskModel.created_at.desc())
         )
         return list(result.scalars().all())

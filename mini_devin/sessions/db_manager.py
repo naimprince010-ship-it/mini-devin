@@ -588,6 +588,45 @@ class DatabaseSessionManager:
             size_bytes=len(summary_content),
         )
     
+    async def list_directory(self, session_id: str, directory: str = ".") -> list[dict]:
+        """List files and directories in the session's working directory."""
+        async with self._session_maker() as db:
+            repo = SessionRepository(db)
+            db_session = await repo.get(session_id)
+            
+            if not db_session:
+                raise ValueError(f"Session {session_id} not found")
+            
+            base_path = Path(db_session.working_directory).resolve()
+            target_path = (base_path / directory).resolve()
+            
+            # Security check: ensure target_path is within base_path
+            if not str(target_path).startswith(str(base_path)):
+                raise ValueError("Cannot access directories outside of workspace")
+            
+            if not target_path.exists():
+                return []
+            
+            nodes = []
+            for item in target_path.iterdir():
+                # Skip hidden files and common exclusions
+                if item.name.startswith('.') and item.name != '.env':
+                    continue
+                if item.name == '__pycache__' or item.name == 'node_modules':
+                    continue
+                
+                rel_path = str(item.relative_to(base_path))
+                nodes.append({
+                    "name": item.name,
+                    "path": rel_path,
+                    "isDir": item.is_dir(),
+                    "children": [] if item.is_dir() else None
+                })
+            
+            # Sort: directories first, then by name
+            nodes.sort(key=lambda x: (not x["isDir"], x["name"].lower()))
+            return nodes
+
     async def list_artifacts(self, session_id: str, task_id: str) -> list[str] | None:
         """List artifacts for a task."""
         async with self._session_maker() as db:

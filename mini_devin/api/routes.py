@@ -171,6 +171,19 @@ async def delete_session(session_id: str, req: Request):
     return {"status": "deleted", "session_id": session_id}
 
 
+@router.get("/sessions/{session_id}/ls")
+async def list_workspace_files(session_id: str, req: Request, directory: str = "."):
+    """List files in the session's workspace."""
+    session_manager = req.app.state.session_manager
+    try:
+        files = await session_manager.list_directory(session_id, directory)
+        return files
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error listing files: {str(e)}")
+
+
 # Task Endpoints
 
 @router.post("/sessions/{session_id}/tasks", response_model=CreateTaskResponse)
