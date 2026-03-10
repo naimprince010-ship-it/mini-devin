@@ -71,6 +71,7 @@ class TaskInfo(BaseModel):
     completed_at: str | None
     iteration: int
     error_message: str | None
+    summary: str | None = None
 
 
 class TaskResult(BaseModel):
@@ -246,6 +247,7 @@ async def list_tasks(session_id: str, req: Request):
             completed_at=t.completed_at.isoformat() if t.completed_at else None,
             iteration=t.iteration,
             error_message=t.error_message,
+            summary=t.result.summary if hasattr(t, 'result') and t.result else None,
         )
         for t in tasks
     ]
@@ -270,6 +272,7 @@ async def get_task(session_id: str, task_id: str, req: Request):
         completed_at=task.completed_at.isoformat() if task.completed_at else None,
         iteration=task.iteration,
         error_message=task.error_message,
+        summary=task.result.summary if hasattr(task, 'result') and task.result else None,
     )
 
 

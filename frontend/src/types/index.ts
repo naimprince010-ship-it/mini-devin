@@ -20,6 +20,7 @@ export interface Task {
   completed_at: string | null;
   iteration: number;
   error_message: string | null;
+  summary?: string;
 }
 
 export interface TaskResult {

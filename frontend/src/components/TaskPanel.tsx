@@ -174,8 +174,14 @@ export function TaskPanel({ session }: TaskPanelProps) {
                         <StreamingOutput content={streamingContent} isStreaming={isStreaming} />
                       </div>
                     ) : (
-                      <div className="p-4 bg-[#1a1a1a]/30 rounded-xl border border-[#262626] italic text-[#a3a3a3]">
-                        Historical task output is archived.
+                      <div className="space-y-4">
+                        {task.summary ? (
+                          <StreamingOutput content={task.summary} isStreaming={false} />
+                        ) : (
+                          <div className="p-4 bg-[#1a1a1a]/30 rounded-xl border border-[#262626] italic text-[#a3a3a3]">
+                            Task is pending or summary is unavailable.
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
