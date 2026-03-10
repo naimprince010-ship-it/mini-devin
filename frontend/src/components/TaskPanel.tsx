@@ -14,6 +14,8 @@ export function TaskPanel({ session }: TaskPanelProps) {
   const [taskDescription, setTaskDescription] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [taskSummaries, setTaskSummaries] = useState<Record<string, string>>({});
+  const currentTaskIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const api = useApi();
@@ -54,13 +56,31 @@ export function TaskPanel({ session }: TaskPanelProps) {
 
       case 'task_completed':
         setIsStreaming(false);
-        setStreamingContent(prev => prev + '\n\nTask completed successfully.');
+        setStreamingContent(prev => {
+          const finalContent = prev + '\n\n✅ Task completed successfully.';
+          if (currentTaskIdRef.current) {
+            setTaskSummaries(summaries => ({
+              ...summaries,
+              [currentTaskIdRef.current!]: finalContent,
+            }));
+          }
+          return finalContent;
+        });
         loadTasks();
         break;
 
       case 'task_failed':
         setIsStreaming(false);
-        setStreamingContent(prev => prev + `\n\nTask failed: ${data.error || 'Unknown error'}`);
+        setStreamingContent(prev => {
+          const finalContent = prev + `\n\n❌ Task failed: ${data.error || 'Unknown error'}`;
+          if (currentTaskIdRef.current) {
+            setTaskSummaries(summaries => ({
+              ...summaries,
+              [currentTaskIdRef.current!]: finalContent,
+            }));
+          }
+          return finalContent;
+        });
         loadTasks();
         break;
 
@@ -100,8 +120,9 @@ export function TaskPanel({ session }: TaskPanelProps) {
     if (!taskDescription.trim() || isStreaming) return;
 
     try {
+      const newTaskId = `task-${Date.now()}`;
       const mockTask: Task = {
-        task_id: `task-${Date.now()}`,
+        task_id: newTaskId,
         session_id: session.session_id,
         description: taskDescription,
         status: 'running',
@@ -112,6 +133,7 @@ export function TaskPanel({ session }: TaskPanelProps) {
         error_message: null
       };
 
+      currentTaskIdRef.current = newTaskId;
       setTasks(prev => [...prev, mockTask]);
       setTaskDescription('');
       setStreamingContent('');
@@ -159,7 +181,7 @@ export function TaskPanel({ session }: TaskPanelProps) {
                 </div>
                 <div className="space-y-4 flex-1">
                   <div className="text-sm leading-relaxed text-[#d1d1d1] whitespace-pre-wrap">
-                    {task.task_id.startsWith('task-') && isStreaming ? (
+                    {task.task_id === currentTaskIdRef.current && isStreaming ? (
                       <div className="space-y-4">
                         {agentStatus && (
                           <div className="flex items-center gap-2 mb-2 animate-in fade-in slide-in-from-left-2 duration-300">
@@ -175,13 +197,16 @@ export function TaskPanel({ session }: TaskPanelProps) {
                       </div>
                     ) : (
                       <div className="space-y-4">
-                        {task.summary ? (
-                          <StreamingOutput content={task.summary} isStreaming={false} />
-                        ) : (
-                          <div className="p-4 bg-[#1a1a1a]/30 rounded-xl border border-[#262626] italic text-[#a3a3a3]">
-                            Task is pending or summary is unavailable.
-                          </div>
-                        )}
+                        {(() => {
+                          const displayContent = taskSummaries[task.task_id] || task.summary;
+                          return displayContent ? (
+                            <StreamingOutput content={displayContent} isStreaming={false} />
+                          ) : (
+                            <div className="p-4 bg-[#1a1a1a]/30 rounded-xl border border-[#262626] italic text-[#a3a3a3]">
+                              Agent response is loading...
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
                   </div>
