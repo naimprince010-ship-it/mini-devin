@@ -190,7 +190,7 @@ async def list_tasks(session_id: str):
         {
             "task_id": t.task_id,
             "session_id": session_id,
-            "description": t.goal.description,
+            "description": t.description,
             "status": t.status.value,
             "iteration": t.iteration,
             "created_at": t.created_at.isoformat() if t.created_at else None,

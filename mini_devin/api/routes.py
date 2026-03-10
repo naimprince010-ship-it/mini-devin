@@ -234,23 +234,50 @@ async def list_tasks(session_id: str, req: Request):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    tasks = await session_manager.list_tasks(session_id)
-    
-    return [
-        TaskInfo(
-            task_id=t.task_id,
-            session_id=session_id,
-            description=t.description,
-            status=t.status.value if hasattr(t.status, 'value') else str(t.status),
-            created_at=t.created_at.isoformat(),
-            started_at=t.started_at.isoformat() if t.started_at else None,
-            completed_at=t.completed_at.isoformat() if t.completed_at else None,
-            iteration=t.iteration,
-            error_message=t.error_message,
-            summary=t.result.summary if hasattr(t, 'result') and t.result else None,
-        )
-        for t in tasks
-    ]
+    try:
+        tasks = await session_manager.list_tasks(session_id)
+        
+        task_infos = []
+        for t in tasks:
+            try:
+                # Safely get result summary if available
+                res_summary = None
+                if hasattr(t, 'result') and t.result is not None:
+                    res_summary = getattr(t.result, 'summary', None)
+                
+                task_infos.append(
+                    TaskInfo(
+                        task_id=t.task_id,
+                        session_id=session_id,
+                        description=t.description,
+                        status=t.status.value if hasattr(t.status, 'value') else str(t.status),
+                        created_at=t.created_at.isoformat() if hasattr(t.created_at, 'isoformat') else str(t.created_at),
+                        started_at=t.started_at.isoformat() if t.started_at and hasattr(t.started_at, 'isoformat') else None,
+                        completed_at=t.completed_at.isoformat() if t.completed_at and hasattr(t.completed_at, 'isoformat') else None,
+                        iteration=t.iteration,
+                        error_message=t.error_message,
+                        summary=res_summary,
+                    )
+                )
+            except Exception as e:
+                print(f"Error processing task {getattr(t, 'task_id', 'unknown')}: {e}")
+                # Still add basic info if possible
+                task_infos.append(
+                    TaskInfo(
+                        task_id=getattr(t, 'task_id', 'unknown'),
+                        session_id=session_id,
+                        description=getattr(t, 'description', ''),
+                        status="error",
+                        created_at=datetime.now(timezone.utc).isoformat(),
+                        iteration=0,
+                        error_message=f"Serialization error: {str(e)}",
+                    )
+                )
+        return task_infos
+    except Exception as e:
+        import traceback
+        print(f"Error in list_tasks API: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Error listing tasks: {str(e)}")
 
 
 @router.get("/sessions/{session_id}/tasks/{task_id}", response_model=TaskInfo)
