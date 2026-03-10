@@ -365,8 +365,8 @@ class DatabaseSessionManager:
             # Run the agent with the TaskState object
             final_task_state = await agent.run(task_state)
             
-            # Extract result info from final_task_state and agent's conversation
-            success = final_task_state.status == AgentTaskStatus.COMPLETE or final_task_state.status == AgentTaskStatus.COMPLETED
+            # Check success: only COMPLETED = success, anything else = not success
+            success = final_task_state.status == AgentTaskStatus.COMPLETED
             
             # Get summary from last assistant message
             summary = ""
@@ -392,7 +392,8 @@ class DatabaseSessionManager:
                 files_modified=[f.path for f in final_task_state.files_changed],
                 commands_executed=final_task_state.commands_executed,
                 total_tokens=final_task_state.total_tokens_used,
-                error_message=final_task_state.last_error
+                # Only treat last_error as an error if the task actually failed
+                error_message=final_task_state.last_error if not success else None
             )
             
             # Calculate duration
