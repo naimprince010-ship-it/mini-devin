@@ -14,7 +14,7 @@ export function TaskPanel({ session }: TaskPanelProps) {
   const [taskDescription, setTaskDescription] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
-  const [taskSummaries, setTaskSummaries] = useState<Record<string, string>>({});
+  const [taskSummaries, setTaskSummaries] = useState<Record<string, string>>({}); // kept for now, unused
   const currentTaskIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -59,14 +59,16 @@ export function TaskPanel({ session }: TaskPanelProps) {
         setStreamingContent(prev => {
           const finalContent = prev + '\n\n✅ Task completed successfully.';
           if (currentTaskIdRef.current) {
-            setTaskSummaries(summaries => ({
-              ...summaries,
-              [currentTaskIdRef.current!]: finalContent,
-            }));
+            // Directly update the task in local state with the streamed content as summary
+            // This avoids loadTasks() replacing our mock task with a DB task (different ID, no summary)
+            setTasks(prevTasks => prevTasks.map(t =>
+              t.task_id === currentTaskIdRef.current
+                ? { ...t, status: 'completed', summary: finalContent }
+                : t
+            ));
           }
           return finalContent;
         });
-        loadTasks();
         break;
 
       case 'task_failed':
@@ -74,14 +76,14 @@ export function TaskPanel({ session }: TaskPanelProps) {
         setStreamingContent(prev => {
           const finalContent = prev + `\n\n❌ Task failed: ${data.error || 'Unknown error'}`;
           if (currentTaskIdRef.current) {
-            setTaskSummaries(summaries => ({
-              ...summaries,
-              [currentTaskIdRef.current!]: finalContent,
-            }));
+            setTasks(prevTasks => prevTasks.map(t =>
+              t.task_id === currentTaskIdRef.current
+                ? { ...t, status: 'failed', summary: finalContent }
+                : t
+            ));
           }
           return finalContent;
         });
-        loadTasks();
         break;
 
       default:
@@ -197,16 +199,13 @@ export function TaskPanel({ session }: TaskPanelProps) {
                       </div>
                     ) : (
                       <div className="space-y-4">
-                        {(() => {
-                          const displayContent = taskSummaries[task.task_id] || task.summary;
-                          return displayContent ? (
-                            <StreamingOutput content={displayContent} isStreaming={false} />
-                          ) : (
-                            <div className="p-4 bg-[#1a1a1a]/30 rounded-xl border border-[#262626] italic text-[#a3a3a3]">
-                              Agent response is loading...
-                            </div>
-                          );
-                        })()}
+                        {task.summary ? (
+                          <StreamingOutput content={task.summary} isStreaming={false} />
+                        ) : (
+                          <div className="p-4 bg-[#1a1a1a]/30 rounded-xl border border-[#262626] italic text-[#a3a3a3]">
+                            Agent response is loading...
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
