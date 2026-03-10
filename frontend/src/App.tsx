@@ -11,7 +11,7 @@ import { RepoManager } from './components/RepoManager';
 import { PRReview } from './components/PRReview';
 import { ProviderSelector } from './components/ProviderSelector';
 import { useAuth } from './contexts/AuthContext';
-import { SessionEventsProvider } from './contexts/SessionEventsContext';
+import { SessionEventsProvider, useSessionEvents } from './contexts/SessionEventsContext';
 import { useApi } from './hooks/useApi';
 import {
   Bot,
@@ -26,6 +26,7 @@ import {
   X,
   FolderOpen,
   Cpu,
+  Target,
 } from 'lucide-react';
 
 type TabType = 'sessions' | 'skills' | 'repos' | 'reviews';
@@ -41,7 +42,9 @@ function NewSessionModal({
   const [provider, setProvider] = useState('openai');
   const [model, setModel] = useState('gpt-4o-mini');
   const [maxIterations, setMaxIterations] = useState(50);
+  const [acceptanceCriteria, setAcceptanceCriteria] = useState('');
   const api = useApi();
+  const events = useSessionEvents();
 
   const handleCreate = async () => {
     try {
@@ -50,6 +53,9 @@ function NewSessionModal({
         model,
         max_iterations: maxIterations,
       });
+      if (acceptanceCriteria.trim()) {
+        events.setAcceptanceCriteria(acceptanceCriteria.trim());
+      }
       onCreated(session);
       onClose();
     } catch (e) {
@@ -104,6 +110,21 @@ function NewSessionModal({
               selectedModel={model}
               onProviderChange={setProvider}
               onModelChange={setModel}
+            />
+          </div>
+
+          {/* Acceptance Criteria */}
+          <div>
+            <label className="flex items-center gap-1.5 text-xs font-medium text-[#a3a3a3] mb-2">
+              <Target size={12} />
+              What counts as success? <span className="text-[#525252]">(optional)</span>
+            </label>
+            <textarea
+              value={acceptanceCriteria}
+              onChange={(e) => setAcceptanceCriteria(e.target.value)}
+              className="w-full px-3 py-2.5 bg-[#0a0a0a] text-white text-sm rounded-lg border border-[#262626] focus:border-[#00ff99]/40 focus:outline-none transition-colors placeholder-[#525252] resize-none"
+              placeholder="e.g. A working Python script that prints Hello World"
+              rows={2}
             />
           </div>
 
@@ -210,8 +231,8 @@ function App() {
                 key={item.id}
                 onClick={() => setActiveTab(item.id)}
                 className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === item.id
-                    ? 'bg-[#1a1a1a] text-white'
-                    : 'text-[#737373] hover:text-white hover:bg-[#1a1a1a]/50'
+                  ? 'bg-[#1a1a1a] text-white'
+                  : 'text-[#737373] hover:text-white hover:bg-[#1a1a1a]/50'
                   }`}
               >
                 <span className={activeTab === item.id ? 'text-[#00ff99]' : ''}>{item.icon}</span>

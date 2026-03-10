@@ -2,9 +2,10 @@ import React, { useState, useEffect, useCallback, useRef, Fragment } from 'react
 import { Session, Task, WebSocketMessage } from '../types';
 import { useApi } from '../hooks/useApi';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { Send, Bot, User, AlertCircle, Square, ChevronRight } from 'lucide-react';
+import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target } from 'lucide-react';
 import { StreamingOutput } from './StreamingOutput';
 import { useSessionEvents } from '../contexts/SessionEventsContext';
+import { PlanStepsView } from './PlanStepsView';
 
 interface TaskPanelProps {
   session: Session;
@@ -92,10 +93,8 @@ export function TaskPanel({ session }: TaskPanelProps) {
         const tool = (data.tool as string) || 'unknown';
         const input = (data.input as Record<string, unknown>) || {};
         const ctxId = events.onToolStarted(tool, input);
-        // store mapping: we'll need the ws-side id when completed
         const wsKey = `${tool}-${Date.now()}`;
         toolCallIdMapRef.current.set(wsKey, ctxId);
-        // store latest for completion
         toolCallIdMapRef.current.set('__latest__', ctxId);
         break;
       }
@@ -116,6 +115,25 @@ export function TaskPanel({ session }: TaskPanelProps) {
         if (latestId) {
           events.onToolFailed(latestId, (data.error as string) || 'Unknown error');
         }
+        break;
+      }
+
+      case 'plan_created':
+      case 'plan': {
+        const steps = (data.steps as string[]) || [];
+        if (steps.length > 0) events.onPlanCreated(steps);
+        break;
+      }
+
+      case 'step_started': {
+        const idx = (data.index as number) ?? (data.step_index as number) ?? 0;
+        events.onStepStarted(idx);
+        break;
+      }
+
+      case 'step_completed': {
+        const idx = (data.index as number) ?? (data.step_index as number) ?? 0;
+        events.onStepCompleted(idx);
         break;
       }
 
@@ -268,6 +286,26 @@ export function TaskPanel({ session }: TaskPanelProps) {
           </div>
         )}
       </div>
+
+      {/* Acceptance Criteria badge */}
+      {events.acceptanceCriteria && (
+        <div className="mx-6 mt-3 mb-1 flex items-start gap-2 px-3 py-2 bg-[#0d1a0d] border border-[#00ff99]/15 rounded-lg">
+          <Target size={12} className="text-[#00ff99] flex-shrink-0 mt-0.5" />
+          <span className="text-[11px] text-[#00ff99]/70 leading-relaxed">
+            <span className="font-bold text-[#00ff99]/90">Success: </span>
+            {events.acceptanceCriteria}
+          </span>
+        </div>
+      )}
+
+      {/* Plan Steps */}
+      {events.planSteps.length > 0 && (
+        <PlanStepsView
+          steps={events.planSteps}
+          currentIndex={events.currentStepIndex}
+          isRunning={events.isRunning}
+        />
+      )}
 
       {/* Messages Area */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-8 space-y-10 custom-scrollbar">
