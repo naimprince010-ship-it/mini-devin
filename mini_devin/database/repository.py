@@ -42,6 +42,9 @@ class SessionRepository:
             status=SessionStatus.IDLE,
             iteration=0,
         )
+        # Initialize relationships to prevent lazy loading on new objects
+        db_session.tasks = []
+        
         self.session.add(db_session)
         await self.session.flush()
         return db_session
@@ -130,6 +133,10 @@ class TaskRepository:
             status=TaskStatus.PENDING,
             iteration=0,
         )
+        # Initialize relationships to prevent lazy loading on new objects
+        task.result = None
+        task.artifacts = []
+        
         self.session.add(task)
         await self.session.flush()
         return task

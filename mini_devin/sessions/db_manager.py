@@ -136,10 +136,19 @@ class DatabaseSessionManager:
             
             result = await db.execute(
                 select(SessionModel)
-                .options(selectinload(SessionModel.tasks).selectinload(TaskModel.result))
+                .options(
+                    selectinload(SessionModel.tasks).selectinload(TaskModel.result),
+                    selectinload(SessionModel.tasks).selectinload(TaskModel.artifacts)
+                )
                 .order_by(SessionModel.created_at.desc())
             )
             db_sessions = result.scalars().all()
+            
+            # Explicitly initialize properties to avoid lazy loading issues
+            for s in db_sessions:
+                if not hasattr(s, 'tasks') or s.tasks is None:
+                    s.tasks = []
+                    
             return [self._db_to_session(s) for s in db_sessions]
     
     async def delete_session(self, session_id: str) -> bool:
@@ -697,10 +706,21 @@ class DatabaseSessionManager:
         )
         
         # Add tasks
-        if db_session.tasks:
-            for db_task in db_session.tasks:
-                artifacts_dir = self.artifacts_base_dir / db_session.id / db_task.id
-                session.tasks[db_task.id] = self._db_to_task(db_task, artifacts_dir)
+        try:
+            # Check if tasks relationship is loaded to avoid MissingGreenlet
+            from sqlalchemy.orm import inspect
+            insp = inspect(db_session)
+            if "tasks" not in insp.unloaded and db_session.tasks:
+                for db_task in db_session.tasks:
+                    # Ensure results/artifacts are initialized even if empty
+                    if not hasattr(db_task, 'result'):
+                        db_task.result = None
+                    if not hasattr(db_task, 'artifacts'):
+                        db_task.artifacts = []
+                    artifacts_dir = self.artifacts_base_dir / db_session.id / db_task.id
+                    session.tasks[db_task.id] = self._db_to_task(db_task, artifacts_dir)
+        except Exception as e:
+            print(f"Warning: Failed to load tasks for session {db_session.id}: {e}")
         
         return session
     
@@ -728,14 +748,20 @@ class DatabaseSessionManager:
         )
         
         # Add result if exists
-        if db_task.result:
-            task.result = TaskResult(
-                status="completed" if db_task.result.success else "failed",
-                summary=db_task.result.summary or "",
-                files_modified=db_task.result.files_modified or [],
-                commands_executed=db_task.result.commands_executed or [],
-                total_tokens=0,
-                duration_seconds=db_task.result.duration_seconds or 0.0,
-            )
+        try:
+            # Check if result relationship is loaded to avoid MissingGreenlet
+            from sqlalchemy.orm import inspect
+            insp = inspect(db_task)
+            if "result" not in insp.unloaded and db_task.result:
+                task.result = TaskResult(
+                    status="completed" if db_task.result.success else "failed",
+                    summary=db_task.result.summary or "",
+                    files_modified=db_task.result.files_modified or [],
+                    commands_executed=db_task.result.commands_executed or [],
+                    total_tokens=0,
+                    duration_seconds=db_task.result.duration_seconds or 0.0,
+                )
+        except Exception as e:
+            print(f"Warning: Failed to load result for task {db_task.id}: {e}")
         
         return task
