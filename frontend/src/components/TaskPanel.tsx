@@ -6,6 +6,7 @@ import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target } from 'luci
 import { StreamingOutput } from './StreamingOutput';
 import { useSessionEvents } from '../contexts/SessionEventsContext';
 import { PlanStepsView } from './PlanStepsView';
+import { useToast } from './Toast';
 
 interface TaskPanelProps {
   session: Session;
@@ -44,6 +45,7 @@ export function TaskPanel({ session }: TaskPanelProps) {
 
   const api = useApi();
   const events = useSessionEvents();
+  const toast = useToast();
 
   const loadTasks = async () => {
     try {
@@ -151,6 +153,7 @@ export function TaskPanel({ session }: TaskPanelProps) {
           return finalContent;
         });
         events.onTaskEnded();
+        toast.success('Task completed', 'Agent finished the task successfully.');
         break;
 
       case 'task_failed':
@@ -167,6 +170,7 @@ export function TaskPanel({ session }: TaskPanelProps) {
           return finalContent;
         });
         events.onTaskEnded();
+        toast.error('Task failed', String(data.error || 'Unknown error'));
         break;
 
       default:

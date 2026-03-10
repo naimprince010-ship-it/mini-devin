@@ -217,25 +217,33 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
                     ];
                 }
 
-                // File edits
-                if (tool && FILE_WRITE_TOOLS.has(tool.tool)) {
-                    const path = (tool.input.path as string) || (tool.input.file_path as string) || (tool.input.filename as string) || 'unknown';
-                    const content = (tool.input.content as string) || (tool.input.new_content as string) || (output.content as string) || '';
-                    const fileEdit: FileEdit = {
-                        path,
-                        content,
-                        timestamp: new Date(),
-                        toolId: id,
-                    };
-                    // Replace if same path already edited
-                    const existing = prev.fileEdits.findIndex(f => f.path === path);
-                    if (existing >= 0) {
-                        const updated = [...prev.fileEdits];
-                        fileEdit.before = updated[existing].content;
-                        updated[existing] = fileEdit;
-                        newState.fileEdits = updated;
-                    } else {
-                        newState.fileEdits = [...prev.fileEdits, fileEdit];
+                // File edits — also check tool_completed output for content (from backend editor tool)
+                if (tool && (FILE_WRITE_TOOLS.has(tool.tool) || tool.tool === 'editor')) {
+                    const inputAction = (tool.input.action as string) || '';
+                    const isWrite = FILE_WRITE_TOOLS.has(tool.tool) || inputAction === 'write_file' || inputAction === 'apply_patch';
+                    if (isWrite) {
+                        const path = (tool.input.path as string) || (tool.input.file_path as string) || (tool.input.filename as string) || 'unknown';
+                        // Prefer content from output (backend sends actual written content), fallback to input
+                        const content = (output.content as string)
+                            || (output.file_content as string)
+                            || (tool.input.content as string)
+                            || (tool.input.new_content as string)
+                            || '';
+                        const fileEdit: FileEdit = {
+                            path,
+                            content,
+                            timestamp: new Date(),
+                            toolId: id,
+                        };
+                        const existing = prev.fileEdits.findIndex(f => f.path === path);
+                        if (existing >= 0) {
+                            const updated = [...prev.fileEdits];
+                            fileEdit.before = updated[existing].content;
+                            updated[existing] = fileEdit;
+                            newState.fileEdits = updated;
+                        } else {
+                            newState.fileEdits = [...prev.fileEdits, fileEdit];
+                        }
                     }
                 }
 
@@ -252,11 +260,32 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
                     }
                 }
 
+                // Step auto-progression: advance current step on every 2nd tool completion
+                if (prev.planSteps.length > 0) {
+                    const completedCount = newState.toolCalls.filter(t => t.status === 'completed').length;
+                    const stepsTotal = prev.planSteps.length;
+                    // Map completed tools to steps: step N starts after (N * toolsPerStep) tools
+                    const toolsPerStep = Math.max(1, Math.ceil((completedCount + 1) / stepsTotal));
+                    const newStepIdx = Math.min(
+                        Math.floor(completedCount / toolsPerStep),
+                        stepsTotal - 1
+                    );
+                    if (newStepIdx > prev.currentStepIndex) {
+                        newState.currentStepIndex = newStepIdx;
+                        newState.planSteps = prev.planSteps.map((s, i) => {
+                            if (i < newStepIdx) return { ...s, status: 'done' };
+                            if (i === newStepIdx) return { ...s, status: 'running' };
+                            return s;
+                        });
+                    }
+                }
+
                 return newState;
             });
         },
         []
     );
+
 
     const onToolFailed = useCallback((id: string, error: string) => {
         setState(prev => ({

@@ -13,6 +13,7 @@ import { ProviderSelector } from './components/ProviderSelector';
 import { useAuth } from './contexts/AuthContext';
 import { SessionEventsProvider, useSessionEvents } from './contexts/SessionEventsContext';
 import { useApi } from './hooks/useApi';
+import { ToastContainer, useToastState } from './components/Toast';
 import {
   Bot,
   Github,
@@ -175,6 +176,7 @@ function App() {
   const { user, loading } = useAuth();
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [showLogin, setShowLogin] = useState(false);
+  const { toasts, dismiss } = useToastState();
   const [showNewSession, setShowNewSession] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>('sessions');
 
@@ -337,6 +339,7 @@ function App() {
           )}
         </div>
       </div>
+      <ToastContainer toasts={toasts} onDismiss={dismiss} />
     </SessionEventsProvider>
   );
 }
