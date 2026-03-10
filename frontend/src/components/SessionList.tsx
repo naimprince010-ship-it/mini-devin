@@ -1,22 +1,31 @@
 import { useState, useEffect } from 'react';
 import { Session } from '../types';
 import { useApi } from '../hooks/useApi';
-import { Plus, Trash2, RefreshCw } from 'lucide-react';
-import { ProviderSelector } from './ProviderSelector';
+import { Plus, Trash2, RefreshCw, Zap, Clock, CheckCircle2, AlertCircle } from 'lucide-react';
 
 interface SessionListProps {
   onSelectSession: (session: Session) => void;
   selectedSessionId?: string;
+  onNewSession?: () => void;
 }
 
-export function SessionList({ onSelectSession, selectedSessionId }: SessionListProps) {
+function formatTime(dateStr: string): string {
+  const d = new Date(dateStr);
+  const diff = Date.now() - d.getTime();
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+  return `${Math.floor(diff / 86400000)}d ago`;
+}
+
+function StatusIcon({ status }: { status: string }) {
+  if (status === 'running') return <Zap size={12} className="text-[#00ff99]" />;
+  if (status === 'error') return <AlertCircle size={12} className="text-red-400" />;
+  return <CheckCircle2 size={12} className="text-[#525252]" />;
+}
+
+export function SessionList({ onSelectSession, selectedSessionId, onNewSession }: SessionListProps) {
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [showCreateForm, setShowCreateForm] = useState(false);
-  const [workingDir, setWorkingDir] = useState('.');
-  const [provider, setProvider] = useState('openai');
-  const [model, setModel] = useState('gpt-4o-mini');
-  const [maxIterations, setMaxIterations] = useState(50);
-  
   const api = useApi();
 
   const loadSessions = async () => {
@@ -34,25 +43,9 @@ export function SessionList({ onSelectSession, selectedSessionId }: SessionListP
     return () => clearInterval(interval);
   }, []);
 
-  const handleCreateSession = async () => {
-    try {
-      const session = await api.createSession({
-        working_directory: workingDir,
-        model,
-        max_iterations: maxIterations,
-      });
-      setSessions([...sessions, session]);
-      setShowCreateForm(false);
-      onSelectSession(session);
-    } catch (e) {
-      console.error('Failed to create session:', e);
-    }
-  };
-
   const handleDeleteSession = async (sessionId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm('Are you sure you want to delete this session?')) return;
-    
+    if (!confirm('Delete this session?')) return;
     try {
       await api.deleteSession(sessionId);
       setSessions(sessions.filter(s => s.session_id !== sessionId));
@@ -61,112 +54,86 @@ export function SessionList({ onSelectSession, selectedSessionId }: SessionListP
     }
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'running': return 'bg-green-500';
-      case 'idle': return 'bg-gray-400';
-      case 'error': return 'bg-red-500';
-      default: return 'bg-gray-400';
-    }
-  };
-
   return (
-    <div className="bg-gray-800 rounded-lg p-4">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-white">Sessions</h2>
-        <div className="flex gap-2">
+    <div>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-3 px-1">
+        <span className="text-[10px] uppercase tracking-widest text-[#525252] font-bold">Sessions</span>
+        <div className="flex gap-1">
           <button
             onClick={loadSessions}
-            className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded"
+            className="p-1 text-[#525252] hover:text-[#a3a3a3] rounded transition-colors"
             title="Refresh"
           >
-            <RefreshCw size={16} />
+            <RefreshCw size={12} />
           </button>
           <button
-            onClick={() => setShowCreateForm(!showCreateForm)}
-            className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded"
+            onClick={onNewSession}
+            className="p-1 text-[#525252] hover:text-[#00ff99] rounded transition-colors"
             title="New Session"
           >
-            <Plus size={16} />
+            <Plus size={12} />
           </button>
         </div>
       </div>
 
-      {showCreateForm && (
-        <div className="mb-4 p-3 bg-gray-700 rounded-lg">
-          <div className="space-y-3">
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">Working Directory</label>
-              <input
-                type="text"
-                value={workingDir}
-                onChange={(e) => setWorkingDir(e.target.value)}
-                className="w-full px-3 py-2 bg-gray-600 text-white rounded border border-gray-500 focus:border-blue-500 focus:outline-none"
-                placeholder="/path/to/repo"
-              />
-            </div>
-            <ProviderSelector
-              selectedProvider={provider}
-              selectedModel={model}
-              onProviderChange={setProvider}
-              onModelChange={setModel}
-            />
-            <div>
-              <label className="block text-sm text-gray-300 mb-1">Max Iterations</label>
-              <input
-                type="number"
-                value={maxIterations}
-                onChange={(e) => setMaxIterations(parseInt(e.target.value))}
-                className="w-full px-3 py-2 bg-gray-600 text-white rounded border border-gray-500 focus:border-blue-500 focus:outline-none"
-                min={1}
-                max={100}
-              />
-            </div>
-            <button
-              onClick={handleCreateSession}
-              disabled={api.loading}
-              className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white rounded font-medium disabled:opacity-50"
-            >
-              {api.loading ? 'Creating...' : 'Create Session'}
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div className="space-y-2">
+      {/* Session list */}
+      <div className="space-y-1">
         {sessions.length === 0 ? (
-          <p className="text-gray-400 text-sm text-center py-4">No sessions yet</p>
+          <div
+            onClick={onNewSession}
+            className="p-3 rounded-lg border border-dashed border-[#262626] text-[#525252] text-xs text-center cursor-pointer hover:border-[#00ff99]/30 hover:text-[#00ff99]/70 transition-colors"
+          >
+            + New session
+          </div>
         ) : (
-          sessions.map((session) => (
-            <div
-              key={session.session_id}
-              onClick={() => onSelectSession(session)}
-              className={`p-3 rounded-lg cursor-pointer transition-colors ${
-                selectedSessionId === session.session_id
-                  ? 'bg-blue-600'
-                  : 'bg-gray-700 hover:bg-gray-600'
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className={`w-2 h-2 rounded-full ${getStatusColor(session.status)}`} />
-                  <span className="text-white font-medium">{session.session_id}</span>
+          sessions.map((session) => {
+            const isSelected = selectedSessionId === session.session_id;
+            const isRunning = session.status === 'running';
+            return (
+              <div
+                key={session.session_id}
+                onClick={() => onSelectSession(session)}
+                className={`group relative p-3 rounded-lg cursor-pointer transition-all ${isSelected
+                    ? 'bg-[#1a1a1a] border border-[#00ff99]/20 shadow-[inset_0_0_0_1px_rgba(0,255,153,0.1)]'
+                    : 'border border-transparent hover:border-[#262626] hover:bg-[#1a1a1a]/50'
+                  }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <StatusIcon status={session.status} />
+                    <span className={`text-xs font-semibold truncate ${isSelected ? 'text-white' : 'text-[#d1d1d1]'}`}>
+                      {session.session_id}
+                    </span>
+                    {isRunning && (
+                      <span className="flex-shrink-0 px-1.5 py-0.5 bg-[#00ff99]/10 text-[#00ff99] text-[9px] font-bold uppercase rounded-full border border-[#00ff99]/20">
+                        live
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    onClick={(e) => handleDeleteSession(session.session_id, e)}
+                    className="opacity-0 group-hover:opacity-100 p-0.5 text-[#525252] hover:text-red-400 transition-all"
+                  >
+                    <Trash2 size={11} />
+                  </button>
                 </div>
-                <button
-                  onClick={(e) => handleDeleteSession(session.session_id, e)}
-                  className="p-1 text-gray-400 hover:text-red-400"
-                >
-                  <Trash2 size={14} />
-                </button>
+
+                <div className="mt-1.5 flex items-center gap-2 text-[10px] text-[#525252]">
+                  <Clock size={9} />
+                  <span>{formatTime(session.created_at)}</span>
+                  <span>·</span>
+                  <span>{session.total_tasks} task{session.total_tasks !== 1 ? 's' : ''}</span>
+                  {session.iteration > 0 && (
+                    <>
+                      <span>·</span>
+                      <span>iter {session.iteration}</span>
+                    </>
+                  )}
+                </div>
               </div>
-              <div className="mt-1 text-sm text-gray-300 truncate">
-                {session.working_directory}
-              </div>
-              <div className="mt-1 text-xs text-gray-400">
-                Tasks: {session.total_tasks} | Iteration: {session.iteration}
-              </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>
