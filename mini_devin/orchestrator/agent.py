@@ -1986,6 +1986,11 @@ class Agent:
         task.status = TaskStatus.IN_PROGRESS
         task.started_at = datetime.utcnow()
         
+        # Reset plan state for this new task
+        self._plan_sent = False
+        self._plan_steps = []
+        self._current_step_idx = 0
+        
         # Initialize artifact logger
         self._init_artifact_logger(task.task_id, task.goal.description)
         
@@ -2027,9 +2032,9 @@ Please start by exploring the codebase if needed, then create a plan and execute
             self.state.iteration = iteration
             self._log(f"Iteration {iteration}/{self.max_iterations}")
             
-            # Update artifact logger
-            if self._artifact_logger:
-                self._artifact_logger.increment_iteration()
+            # Notify frontend of iteration update
+            await self._trigger_callback("on_iteration", iteration, self.max_iterations)
+            
             
             # Reset per-iteration safety counters
             self.safety_guard.reset_iteration()
@@ -2085,6 +2090,18 @@ Please start by exploring the codebase if needed, then create a plan and execute
                         self._log(f"Assistant: {response.content[:200]}...")
                         self.llm.add_assistant_message(content=response.content)
                         
+                        # Detect numbered plan in LLM response (e.g. "1. Step one\n2. Step two")
+                        content = response.content or ""
+                        import re
+                        plan_lines = re.findall(r'^\s*(\d+)\.\s+(.+)', content, re.MULTILINE)
+                        if len(plan_lines) >= 2 and not getattr(self, '_plan_sent', False):
+                            steps = [text.strip() for _, text in plan_lines]
+                            self._plan_sent = True
+                            self._plan_steps = steps
+                            self._current_step_idx = 0
+                            await self._trigger_callback("on_plan_created", steps)
+                            await self._update_phase(AgentPhase.PLAN)
+                        
                         # (Redundant broadcast removed to prevent duplication in frontend after token stream)
                         # Check for completion signals in the response
                         content_lower = response.content.lower()
@@ -2107,6 +2124,7 @@ Please start by exploring the codebase if needed, then create a plan and execute
                         self.llm.add_user_message(
                             "Please continue with the task. If you're done, say 'Task complete' and summarize what you did."
                         )
+
             
             except Exception as e:
                 error_msg = f"Error in iteration: {str(e)}"

@@ -49,10 +49,13 @@ class MessageType(str, Enum):
     # Plan updates
     PLAN_CREATED = "plan_created"
     PLAN_UPDATED = "plan_updated"
+    STEP_STARTED = "step_started"
     STEP_COMPLETED = "step_completed"
     
-    # Verification
-    VERIFICATION_STARTED = "verification_started"
+    # Iteration
+    ITERATION = "iteration"
+    ITERATION_STARTED = "iteration_started"
+    ITERATION_COMPLETED = "iteration_completed"
     VERIFICATION_COMPLETED = "verification_completed"
     REPAIR_STARTED = "repair_started"
     REPAIR_COMPLETED = "repair_completed"
@@ -391,14 +394,65 @@ class ConnectionManager:
         self,
         session_id: str,
         task_id: str,
-        plan: dict[str, Any],
+        steps: list[str],
     ) -> int:
-        """Send plan created notification."""
+        """Send plan created notification with list of step strings."""
         return await self.broadcast_to_session(
             session_id,
             WebSocketMessage(
                 type=MessageType.PLAN_CREATED,
-                data={"plan": plan},
+                data={"steps": steps},
+                task_id=task_id,
+            ),
+        )
+    
+    async def send_step_started(
+        self,
+        session_id: str,
+        task_id: str,
+        index: int,
+        step_text: str = "",
+    ) -> int:
+        """Send step started notification."""
+        return await self.broadcast_to_session(
+            session_id,
+            WebSocketMessage(
+                type=MessageType.STEP_STARTED,
+                data={"index": index, "text": step_text},
+                task_id=task_id,
+            ),
+        )
+    
+    async def send_step_completed(
+        self,
+        session_id: str,
+        task_id: str,
+        index: int,
+        step_text: str = "",
+    ) -> int:
+        """Send step completed notification."""
+        return await self.broadcast_to_session(
+            session_id,
+            WebSocketMessage(
+                type=MessageType.STEP_COMPLETED,
+                data={"index": index, "text": step_text},
+                task_id=task_id,
+            ),
+        )
+    
+    async def send_iteration(
+        self,
+        session_id: str,
+        task_id: str,
+        iteration: int,
+        max_iterations: int,
+    ) -> int:
+        """Send iteration update."""
+        return await self.broadcast_to_session(
+            session_id,
+            WebSocketMessage(
+                type=MessageType.ITERATION,
+                data={"iteration": iteration, "max": max_iterations},
                 task_id=task_id,
             ),
         )

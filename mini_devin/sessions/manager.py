@@ -332,6 +332,30 @@ class SessionManager:
                     await connection_manager.send_tokens(
                         session_id, task_id, data.get("content", "")
                     )
+                elif update_type == "plan_created":
+                    steps = data.get("steps", [])
+                    if steps:
+                        await connection_manager.send_plan_created(
+                            session_id, task_id, steps
+                        )
+                elif update_type == "step_started":
+                    await connection_manager.send_step_started(
+                        session_id, task_id,
+                        data.get("index", 0),
+                        data.get("text", ""),
+                    )
+                elif update_type == "step_completed":
+                    await connection_manager.send_step_completed(
+                        session_id, task_id,
+                        data.get("index", 0),
+                        data.get("text", ""),
+                    )
+                elif update_type == "iteration":
+                    await connection_manager.send_iteration(
+                        session_id, task_id,
+                        data.get("iteration", 0),
+                        data.get("max", session.max_iterations),
+                    )
                 
                 # Update iteration count
                 task.iteration = data.get("iteration", task.iteration)
@@ -353,6 +377,10 @@ class SessionManager:
                 "on_tool_start": lambda name, args: asyncio.create_task(on_update("tool_started", {"tool": name, "input": args})),
                 "on_tool_result": lambda name, args, output, duration: asyncio.create_task(on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration})),
                 "on_phase_change": lambda phase: asyncio.create_task(on_update("phase_changed", {"phase": phase})),
+                "on_plan_created": lambda steps: asyncio.create_task(on_update("plan_created", {"steps": steps})),
+                "on_step_started": lambda idx, text="": asyncio.create_task(on_update("step_started", {"index": idx, "text": text})),
+                "on_step_completed": lambda idx, text="": asyncio.create_task(on_update("step_completed", {"index": idx, "text": text})),
+                "on_iteration": lambda iter_n, max_n: asyncio.create_task(on_update("iteration", {"iteration": iter_n, "max": max_n})),
             }
             
             # Run the agent with the TaskState object
