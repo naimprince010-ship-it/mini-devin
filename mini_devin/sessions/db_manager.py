@@ -180,6 +180,7 @@ class DatabaseSessionManager:
         session_id: str,
         description: str,
         acceptance_criteria: list[str] | None = None,
+        connection_manager: 'ConnectionManager | None' = None,
     ) -> Task:
         """Create a new task in a session."""
         async with self._session_maker() as db:
