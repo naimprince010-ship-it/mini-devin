@@ -13,8 +13,9 @@ from datetime import datetime
 
 import asyncio
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 import os
 
@@ -97,7 +98,8 @@ async def list_sessions():
             "working_directory": s.working_directory,
             "current_task": s.current_task_id,
             "iteration": s.iteration,
-            "total_tasks": s.total_tasks
+            "total_tasks": s.total_tasks,
+            "title": getattr(s, 'title', ''),
         }
         for s in sessions
     ]
@@ -128,7 +130,8 @@ async def get_session(session_id: str):
         "working_directory": s.working_directory,
         "current_task": s.current_task_id,
         "iteration": s.iteration,
-        "total_tasks": s.total_tasks
+        "total_tasks": s.total_tasks,
+        "title": getattr(s, 'title', ''),
     }
 
 @app.delete("/api/sessions/{session_id}")
@@ -147,12 +150,9 @@ async def list_workspace_files(session_id: str, directory: str = "."):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    # Use session's working directory or default
     base_dir = session.working_directory or "."
     target_dir = os.path.join(base_dir, directory)
     
-    # Safety check: ensure target_dir is within base_dir or allowed areas
-    # For now, we'll allow listing within the local project area
     try:
         abs_target = os.path.abspath(target_dir)
         if not os.path.exists(abs_target):
@@ -160,7 +160,6 @@ async def list_workspace_files(session_id: str, directory: str = "."):
         
         entries = []
         for entry in os.scandir(abs_target):
-            # Skip hidden files
             if entry.name.startswith("."):
                 continue
                 
@@ -174,13 +173,69 @@ async def list_workspace_files(session_id: str, directory: str = "."):
                 "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
             })
             
-        # Sort: directories first, then by name
         entries.sort(key=lambda x: (not x["is_directory"], x["name"].lower()))
         return entries
         
     except Exception as e:
         print(f"Error listing directory {target_dir}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/sessions/{session_id}/file")
+@app.get("/sessions/{session_id}/file")
+async def read_file_content(session_id: str, path: str):
+    """Read a file from the session's workspace."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    base_dir = os.path.abspath(session.working_directory or ".")
+    target = os.path.abspath(os.path.join(base_dir, path))
+    if not target.startswith(base_dir):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not os.path.exists(target) or os.path.isdir(target):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    try:
+        with open(target, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read()
+        return {"path": path, "content": content}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/sessions/{session_id}/file")
+@app.put("/sessions/{session_id}/file")
+async def write_file_content(session_id: str, req: Request):
+    """Write content to a file in the session's workspace."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    body = await req.json()
+    path = body.get("path", "")
+    content = body.get("content", "")
+    
+    base_dir = os.path.abspath(session.working_directory or ".")
+    target = os.path.abspath(os.path.join(base_dir, path))
+    if not target.startswith(base_dir):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return {"path": path, "saved": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/sessions/{session_id}/stop")
+@app.post("/sessions/{session_id}/stop")
+async def stop_session_app(session_id: str):
+    """Stop the running task in a session."""
+    success = await session_manager.stop_session(session_id)
+    return {"stopped": True, "session_id": session_id}
 
 @app.get("/api/sessions/{session_id}/tasks")
 @app.get("/sessions/{session_id}/tasks")
@@ -329,28 +384,34 @@ async def list_skills():
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     await connection_manager.connect(websocket, session_id)
     try:
-        # Prevent concurrent agents overlapping and interleaving tokens
-        # The session_manager or global lock should handle this.
-        # For simplicity, we track it via DatabaseSessionManager's status.
-        
         while True:
             data = await websocket.receive_text()
             print(f"Received from {session_id}: {data}")
             
-            # Check if session exists, create if not (for UI simplicity)
+            # Check if session exists, create if not
             session = await session_manager.get_session(session_id)
             if not session:
-                session = await session_manager.create_session(session_id=session_id) # Preserve UI's session_id
+                session = await session_manager.create_session(session_id=session_id)
                 session_id = session.session_id
             
-            # Create a task in the session
+            # If agent is currently running -> inject as follow-up
+            if session.status.value == 'running':
+                await session_manager.inject_followup(session_id, data)
+                # Acknowledge to UI
+                await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
+                    type=MessageType.TOKEN,
+                    data={"content": f"\n\n**[Follow-up received]** {data}\n\n"},
+                    task_id=session.current_task_id,
+                ))
+                continue
+            
+            # Create a new task
             task = await session_manager.create_task(
                 session_id=session_id,
-                description=data
+                description=data,
+                connection_manager=connection_manager,
             )
             
-            # Run the task through the session manager
-            # This handles persistence and agent execution in a separate task
             asyncio.create_task(session_manager.run_task(
                 session_id=session_id,
                 task_id=task.task_id,

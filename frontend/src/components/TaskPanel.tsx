@@ -196,6 +196,15 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
         );
         break;
 
+      case 'tool_output': {
+        // Shell live streaming — add line to shell output in WorkspacePanel
+        const line = data.line as string | undefined;
+        if (line) {
+          events.onShellLine?.(line);
+        }
+        break;
+      }
+
       default:
         break;
     }
@@ -221,7 +230,15 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
   }, [streamingContent, tasks]);
 
   const handleSubmitTask = async () => {
-    if (!taskDescription.trim() || isStreaming) return;
+    if (!taskDescription.trim()) return;
+
+    // If agent is running, send as follow-up via WebSocket
+    if (isStreaming) {
+      sendMessage(taskDescription);
+      setStreamingContent(prev => prev + `\n\n**[You]:** ${taskDescription}\n`);
+      setTaskDescription('');
+      return;
+    }
 
     const newTaskId = `task-${Date.now()}`;
     const mockTask: Task = {

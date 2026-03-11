@@ -4,6 +4,7 @@ import type { FileEdit } from '../contexts/SessionEventsContext';
 
 interface FileDiffViewProps {
     fileEdits: FileEdit[];
+    onFileSelect?: (path: string) => void;
 }
 
 function getLanguage(path: string): string {
@@ -84,7 +85,7 @@ function FileItem({ edit, isSelected, onClick }: { edit: FileEdit; isSelected: b
     );
 }
 
-export function FileDiffView({ fileEdits }: FileDiffViewProps) {
+export function FileDiffView({ fileEdits, onFileSelect }: FileDiffViewProps) {
     const [selectedPath, setSelectedPath] = useState<string | null>(null);
     const [showFullFile, setShowFullFile] = useState(false);
 
@@ -151,6 +152,14 @@ export function FileDiffView({ fileEdits }: FileDiffViewProps) {
                                 {removeCount > 0 && (
                                     <span className="text-[10px] text-red-400 font-mono">-{removeCount}</span>
                                 )}
+                                {onFileSelect && selectedEdit && (
+                                    <button
+                                        onClick={() => onFileSelect(selectedEdit.path)}
+                                        className="text-[9px] text-[#00ff99] hover:text-white border border-[#00ff99]/20 px-1.5 py-0.5 rounded uppercase tracking-wider"
+                                    >
+                                        Edit
+                                    </button>
+                                )}
                                 {selectedEdit.before && (
                                     <button
                                         onClick={() => setShowFullFile(v => !v)}
@@ -168,10 +177,10 @@ export function FileDiffView({ fileEdits }: FileDiffViewProps) {
                                 <div
                                     key={i}
                                     className={`flex items-start gap-0 leading-5 ${line.type === 'add'
-                                            ? 'bg-green-900/20'
-                                            : line.type === 'remove'
-                                                ? 'bg-red-900/20'
-                                                : ''
+                                        ? 'bg-green-900/20'
+                                        : line.type === 'remove'
+                                            ? 'bg-red-900/20'
+                                            : ''
                                         }`}
                                 >
                                     {/* Line number */}
@@ -180,15 +189,15 @@ export function FileDiffView({ fileEdits }: FileDiffViewProps) {
                                     </span>
                                     {/* Prefix */}
                                     <span className={`w-4 flex-shrink-0 py-0.5 font-bold ${line.type === 'add' ? 'text-green-500'
-                                            : line.type === 'remove' ? 'text-red-500'
-                                                : 'text-transparent'
+                                        : line.type === 'remove' ? 'text-red-500'
+                                            : 'text-transparent'
                                         }`}>
                                         {line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' '}
                                     </span>
                                     {/* Content */}
                                     <span className={`flex-1 py-0.5 pr-4 whitespace-pre-wrap break-all ${line.type === 'add' ? 'text-green-300'
-                                            : line.type === 'remove' ? 'text-red-400 line-through opacity-70'
-                                                : 'text-[#c0c0c0]'
+                                        : line.type === 'remove' ? 'text-red-400 line-through opacity-70'
+                                            : 'text-[#c0c0c0]'
                                         }`}>
                                         {line.line || ' '}
                                     </span>

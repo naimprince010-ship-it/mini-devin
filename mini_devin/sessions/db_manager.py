@@ -49,6 +49,8 @@ class DatabaseSessionManager:
         # In-memory agent instances (not persisted)
         self._agents: dict[str, Agent] = {}
         self._cancel_events: dict[str, asyncio.Event] = {}
+        self._running_tasks: dict[str, asyncio.Task] = {}  # Track asyncio Tasks for cancellation
+        self._session_titles: dict[str, str] = {}  # Cache titles in-memory
         
         # Statistics
         self._start_time = datetime.now(timezone.utc)
@@ -201,7 +203,43 @@ class DatabaseSessionManager:
             artifacts_dir = self.artifacts_base_dir / session_id / db_task.id
             artifacts_dir.mkdir(parents=True, exist_ok=True)
             
+            # Auto-generate title from first task
+            session_title = self._session_titles.get(session_id, '')
+            if not session_title and description:
+                raw = description.strip().replace('\n', ' ')
+                session_title = raw[:60] + ('\u2026' if len(raw) > 60 else '')
+                self._session_titles[session_id] = session_title
+                # Emit WS event if connection_manager provided
+                if connection_manager:
+                    try:
+                        await connection_manager.send_session_title_updated(session_id, session_title)
+                    except Exception:
+                        pass
+
             return self._db_to_task(db_task, artifacts_dir)
+
+    async def inject_followup(self, session_id: str, message: str) -> None:
+        """Inject a follow-up message into the running agent's conversation."""
+        agent = self._agents.get(session_id)
+        if not agent:
+            return
+        # Inject into the LLM conversation history so the next LLM call sees it
+        try:
+            if hasattr(agent, 'llm') and agent.llm and hasattr(agent.llm, 'conversation'):
+                from ..core.llm_client import Message
+                agent.llm.conversation.append(Message(role='user', content=f'[User follow-up]: {message}'))
+        except Exception as e:
+            print(f'inject_followup error: {e}')
+
+    async def stop_session(self, session_id: str) -> bool:
+        """Stop the running task in a session."""
+        if session_id in self._cancel_events:
+            self._cancel_events[session_id].set()
+        running = self._running_tasks.get(session_id)
+        if running and not running.done():
+            running.cancel()
+            return True
+        return False
     
     async def get_task(self, session_id: str, task_id: str) -> Task | None:
         """Get a task by ID."""
@@ -328,6 +366,15 @@ class DatabaseSessionManager:
                         await connection_manager.send_tokens(
                             session_id, task_id, data.get("content", "")
                         )
+                    elif update_type == "tool_output":
+                        # Shell live streaming — emit a token-style line for the Shell tab
+                        line = data.get("line", "")
+                        if line:
+                            await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
+                                type=MessageType.TOOL_OUTPUT,
+                                data={"line": line},
+                                task_id=task_id,
+                            ))
                     
                     # Update iteration and status in database with locking
                     # Skip for tokens to reduce database pressure during streaming
@@ -360,10 +407,15 @@ class DatabaseSessionManager:
                 "on_tool_start": lambda name, args: on_update("tool_started", {"tool": name, "input": args}),
                 "on_tool_result": lambda name, args, output, duration: on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration}),
                 "on_phase_change": lambda phase: on_update("phase_changed", {"phase": phase}),
+                # Shell live streaming: each stdout line becomes a tool_output event
+                "on_command_output": lambda line: on_update("tool_output", {"line": line}),
             }
-            
-            # Run the agent with the TaskState object
-            final_task_state = await agent.run(task_state)
+
+            # Run the agent — track asyncio.Task for cancellation
+            coro = agent.run(task_state)
+            running = asyncio.ensure_future(coro)
+            self._running_tasks[session_id] = running
+            final_task_state = await running
             
             # Check success: only COMPLETED = success, anything else = not success
             success = final_task_state.status == AgentTaskStatus.COMPLETED

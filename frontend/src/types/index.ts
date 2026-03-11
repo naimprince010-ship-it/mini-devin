@@ -80,6 +80,7 @@ export type MessageType =
   | 'session_title_updated'
   | 'browser_event'
   | 'file_changed'
+  | 'tool_output'
   | 'pong';
 
 export interface ToolResultData {

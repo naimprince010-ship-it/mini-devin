@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Terminal, FileCode, History, Maximize2, Globe, ExternalLink, Search } from 'lucide-react';
+import { Terminal, FileCode, History, Maximize2, Globe, ExternalLink, Search, X } from 'lucide-react';
 import { MemoryView } from './MemoryView';
 import { FileExplorer } from './FileExplorer';
 import { ToolCallLog } from './ToolCallLog';
 import { FileDiffView } from './FileDiffView';
+import { MonacoEditorPanel } from './MonacoEditorPanel';
 import { useSessionEvents } from '../contexts/SessionEventsContext';
 
 interface WorkspacePanelProps {
@@ -16,6 +17,8 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
     const [activeTab, setActiveTab] = useState<TabType>('shell');
     const shellRef = useRef<HTMLDivElement>(null);
     const events = useSessionEvents();
+    // Monaco editor state: which file is open
+    const [openFile, setOpenFile] = useState<string | null>(null);
 
     // Auto-scroll shell when new lines come in
     useEffect(() => {
@@ -165,15 +168,34 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
                     </div>
                 )}
 
-                {/* IDE — File Diff View */}
+                {/* IDE — Monaco or File Diff View */}
                 {activeTab === 'editor' && (
                     <div className="absolute inset-0 flex flex-col">
-                        {events.fileEdits.length > 0 ? (
-                            <FileDiffView fileEdits={events.fileEdits} />
+                        {openFile && sessionId ? (
+                            // Monaco editor for the selected file
+                            <MonacoEditorPanel
+                                sessionId={sessionId}
+                                filePath={openFile}
+                                initialContent={events.fileEdits.find(f => f.path === openFile)?.content}
+                                onClose={() => setOpenFile(null)}
+                                onSaved={() => { }}
+                            />
+                        ) : events.fileEdits.length > 0 ? (
+                            // File diff view when agent has written files
+                            <div className="flex flex-col h-full">
+                                <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#1a1a1a] bg-[#111] flex-shrink-0">
+                                    <span className="text-[10px] text-[#525252] uppercase tracking-wider">Agent file edits — click a file to edit</span>
+                                </div>
+                                <FileDiffView
+                                    fileEdits={events.fileEdits}
+                                    onFileSelect={(path) => { setActiveTab('editor'); setOpenFile(path); }}
+                                />
+                            </div>
                         ) : (
+                            // File explorer when no edits yet
                             <FileExplorer
                                 sessionId={sessionId}
-                                onFileSelect={(path: string) => console.log('Selected file:', path)}
+                                onFileSelect={(path: string) => { setActiveTab('editor'); setOpenFile(path); }}
                             />
                         )}
                     </div>

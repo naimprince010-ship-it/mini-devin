@@ -66,6 +66,9 @@ class MessageType(str, Enum):
     
     # File system
     FILE_CHANGED = "file_changed"
+    
+    # Shell live output
+    TOOL_OUTPUT = "tool_output"
 
 
 @dataclass
