@@ -445,34 +445,42 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
                 handleSubmitTask();
               }
             }}
-            placeholder="Type a task for the agent..."
-            className="w-full bg-[#121212] border border-[#262626] rounded-[20px] px-5 py-4 pr-14 text-sm focus:outline-none focus:border-[#00ff99]/50 transition-colors resize-none placeholder-[#737373] min-h-[56px] max-h-40 custom-scrollbar"
+            placeholder={isStreaming ? 'Send a follow-up message to the agent...' : 'Type a task for the agent...'}
+            className={`w-full bg-[#121212] border rounded-[20px] px-5 py-4 pr-24 text-sm focus:outline-none transition-colors resize-none placeholder-[#737373] min-h-[56px] max-h-40 custom-scrollbar ${isStreaming
+                ? 'border-[#00ff99]/20 focus:border-[#00ff99]/40'
+                : 'border-[#262626] focus:border-[#00ff99]/50'
+              }`}
             rows={1}
-            disabled={isStreaming}
           />
-          {isStreaming ? (
-            <button
-              onClick={handleStop}
-              className="absolute right-3 bottom-3 p-2 rounded-full bg-red-500/20 border border-red-500/30 text-red-400 hover:bg-red-500/30 transition-all"
-              title="Stop agent"
-            >
-              <Square size={18} />
-            </button>
-          ) : (
+          <div className="absolute right-3 bottom-3 flex items-center gap-1.5">
+            {/* Send / follow-up button */}
             <button
               onClick={handleSubmitTask}
               disabled={!taskDescription.trim()}
-              className={`absolute right-3 bottom-3 p-2 rounded-full transition-all ${taskDescription.trim()
-                ? 'bg-[#00ff99] text-[#0f0f0f] hover:scale-110'
-                : 'bg-[#262626] text-[#737373] cursor-not-allowed'
+              className={`p-2 rounded-full transition-all ${taskDescription.trim()
+                  ? isStreaming
+                    ? 'bg-[#00ff99]/20 text-[#00ff99] border border-[#00ff99]/30 hover:bg-[#00ff99]/30'
+                    : 'bg-[#00ff99] text-[#0f0f0f] hover:scale-110'
+                  : 'bg-[#262626] text-[#737373] cursor-not-allowed'
                 }`}
+              title={isStreaming ? 'Send follow-up' : 'Send task'}
             >
-              <Send size={18} />
+              <Send size={16} />
             </button>
-          )}
+            {/* Stop button — only when streaming */}
+            {isStreaming && (
+              <button
+                onClick={handleStop}
+                className="p-2 rounded-full bg-red-500/20 border border-red-500/30 text-red-400 hover:bg-red-500/30 transition-all"
+                title="Stop agent"
+              >
+                <Square size={16} />
+              </button>
+            )}
+          </div>
         </div>
         <p className="text-center mt-3 text-[10px] text-[#737373] font-medium uppercase tracking-widest">
-          Shift + Enter for new line
+          {isStreaming ? 'Agent is running — you can send follow-up messages' : 'Shift + Enter for new line'}
         </p>
       </div>
     </div>

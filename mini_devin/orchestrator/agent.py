@@ -427,9 +427,29 @@ class Agent:
                 output_parts = []
                 if result.stdout:
                     output_parts.append(f"STDOUT:\n{result.stdout}")
+                    
+                    # Stream STDOUT to UI callback
+                    on_cmd_output = self.callbacks.get("on_command_output")
+                    if on_cmd_output:
+                        for line in result.stdout.splitlines():
+                            # Send normal lines without prefix to match typical terminal look
+                            on_cmd_output(line)
+                            
                 if result.stderr:
                     output_parts.append(f"STDERR:\n{result.stderr}")
+                    
+                    # Stream STDERR to UI callback as well
+                    on_cmd_output = self.callbacks.get("on_command_output")
+                    if on_cmd_output:
+                        for line in result.stderr.splitlines():
+                            on_cmd_output(line)
+                            
                 output_parts.append(f"Exit code: {result.exit_code}")
+                
+                # Stream exit code
+                on_cmd_output = self.callbacks.get("on_command_output")
+                if on_cmd_output:
+                    on_cmd_output(f"Exit code: {result.exit_code}")
                 
                 output = "\n".join(output_parts)
                 
