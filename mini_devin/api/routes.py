@@ -44,6 +44,7 @@ class SessionInfo(BaseModel):
     current_task: str | None
     iteration: int
     total_tasks: int
+    title: str = ""
 
 
 class CreateTaskRequest(BaseModel):
@@ -130,6 +131,7 @@ async def list_sessions(req: Request):
                 current_task=getattr(s, 'current_task_id', None),
                 iteration=s.iteration,
                 total_tasks=s.total_tasks,
+                title=getattr(s, 'title', ''),
             )
             for s in sessions
         ]
@@ -157,6 +159,7 @@ async def get_session(session_id: str, req: Request):
         current_task=getattr(session, 'current_task_id', None),
         iteration=session.iteration,
         total_tasks=session.total_tasks,
+        title=getattr(session, 'title', ''),
     )
 
 
@@ -207,6 +210,7 @@ async def create_task(
         session_id=session_id,
         description=request.description,
         acceptance_criteria=request.acceptance_criteria,
+        connection_manager=connection_manager,
     )
     
     # Start the task in the background
@@ -333,6 +337,16 @@ async def cancel_task(session_id: str, task_id: str, req: Request):
         raise HTTPException(status_code=404, detail="Task not found or not running")
     
     return {"status": "cancelled", "task_id": task_id}
+
+
+@router.post("/sessions/{session_id}/stop")
+async def stop_session(session_id: str, req: Request):
+    """Stop the currently running task in a session."""
+    session_manager = req.app.state.session_manager
+    success = await session_manager.stop_session(session_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Session not found or not running")
+    return {"status": "stopped", "session_id": session_id}
 
 
 # Artifact Endpoints

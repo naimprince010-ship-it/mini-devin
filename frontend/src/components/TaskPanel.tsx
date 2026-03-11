@@ -10,6 +10,7 @@ import { useToast } from './Toast';
 
 interface TaskPanelProps {
   session: Session;
+  onTitleUpdated?: (title: string) => void;
 }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -34,7 +35,7 @@ function formatRelativeTime(date: string | Date): string {
   return `${Math.floor(diff / 86400000)}d ago`;
 }
 
-export function TaskPanel({ session }: TaskPanelProps) {
+export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskDescription, setTaskDescription] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
@@ -173,6 +174,28 @@ export function TaskPanel({ session }: TaskPanelProps) {
         toast.error('Task failed', String(data.error || 'Unknown error'));
         break;
 
+      case 'session_title_updated':
+        if (onTitleUpdated && data.title) {
+          onTitleUpdated(data.title as string);
+        }
+        break;
+
+      case 'browser_event':
+        events.onBrowserEventFromWS(
+          (data.event_type as string) || 'other',
+          data.url as string | undefined,
+          data.query as string | undefined,
+          data.screenshot_base64 as string | undefined,
+        );
+        break;
+
+      case 'file_changed':
+        events.onFileChangedFromWS(
+          (data.path as string) || '',
+          (data.content as string) || '',
+        );
+        break;
+
       default:
         break;
     }
@@ -221,11 +244,12 @@ export function TaskPanel({ session }: TaskPanelProps) {
     sendMessage(taskDescription);
   };
 
-  const handleStop = () => {
-    // Send stop signal via WebSocket (best-effort)
-    sendMessage('__STOP__');
+  const handleStop = async () => {
+    // REST API call for proper cancellation
+    await api.stopSession(session.session_id);
     setIsStreaming(false);
     events.onTaskEnded();
+    toast.error('Agent stopped', 'The agent was interrupted.');
   };
 
   const currentPhase = events.phase;

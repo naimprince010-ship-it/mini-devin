@@ -36,10 +36,14 @@ export function SessionList({ onSelectSession, selectedSessionId, onNewSession }
     try {
       const data = await api.listSessions();
       setSessions(data);
-      // Fetch first task title for sessions that don't have a title yet
+      // Use backend title if available, else fetch from tasks
       for (const s of data) {
-        if (!sessionTitles[s.session_id] && s.total_tasks > 0) {
-          fetchSessionTitle(s.session_id);
+        if (!sessionTitles[s.session_id]) {
+          if (s.title) {
+            setSessionTitles(prev => ({ ...prev, [s.session_id]: s.title! }));
+          } else if (s.total_tasks > 0) {
+            fetchSessionTitle(s.session_id);
+          }
         }
       }
     } catch (e) {

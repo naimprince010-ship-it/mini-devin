@@ -99,6 +99,15 @@ export function useApi() {
     }
   }, []);
 
+  const stopSession = useCallback(async (sessionId: string): Promise<void> => {
+    try {
+      await fetchApi(`/sessions/${sessionId}/stop`, { method: 'POST' });
+    } catch (e) {
+      // ignore errors — session may have already stopped
+      console.warn('stopSession:', e);
+    }
+  }, []);
+
   // Tasks
   const createTask = useCallback(async (
     sessionId: string,
@@ -398,6 +407,7 @@ export function useApi() {
     listSessions,
     getSession,
     deleteSession,
+    stopSession,
     // Tasks
     createTask,
     listTasks,

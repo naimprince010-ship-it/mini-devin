@@ -180,6 +180,11 @@ function App() {
   const [showNewSession, setShowNewSession] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>('sessions');
 
+  // Real-time title from WebSocket (session_title_updated)
+  const handleTitleUpdated = (title: string) => {
+    setSelectedSession(prev => prev ? { ...prev, title } : prev);
+  };
+
   if (loading) {
     return (
       <div className="h-screen flex items-center justify-center bg-[#0f0f0f]">
@@ -294,7 +299,7 @@ function App() {
             <PanelGroup direction="horizontal">
               <Panel defaultSize={45} minSize={30}>
                 <div className="h-full flex flex-col bg-[#0f0f0f] relative overflow-hidden">
-                  <TaskPanel session={selectedSession} />
+                  <TaskPanel session={selectedSession} onTitleUpdated={handleTitleUpdated} />
                 </div>
               </Panel>
 

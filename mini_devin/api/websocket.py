@@ -54,11 +54,18 @@ class MessageType(str, Enum):
     
     # Iteration
     ITERATION = "iteration"
-    ITERATION_STARTED = "iteration_started"
-    ITERATION_COMPLETED = "iteration_completed"
     VERIFICATION_COMPLETED = "verification_completed"
     REPAIR_STARTED = "repair_started"
     REPAIR_COMPLETED = "repair_completed"
+    
+    # Session metadata
+    SESSION_TITLE_UPDATED = "session_title_updated"
+    
+    # Browser
+    BROWSER_EVENT = "browser_event"
+    
+    # File system
+    FILE_CHANGED = "file_changed"
 
 
 @dataclass
@@ -453,6 +460,61 @@ class ConnectionManager:
             WebSocketMessage(
                 type=MessageType.ITERATION,
                 data={"iteration": iteration, "max": max_iterations},
+                task_id=task_id,
+            ),
+        )
+
+    async def send_session_title_updated(
+        self,
+        session_id: str,
+        title: str,
+    ) -> int:
+        """Broadcast updated session title."""
+        return await self.broadcast_to_session(
+            session_id,
+            WebSocketMessage(
+                type=MessageType.SESSION_TITLE_UPDATED,
+                data={"title": title},
+            ),
+        )
+
+    async def send_browser_event(
+        self,
+        session_id: str,
+        task_id: str,
+        event_type: str,
+        url: str | None = None,
+        query: str | None = None,
+        screenshot_base64: str | None = None,
+    ) -> int:
+        """Send browser activity event."""
+        return await self.broadcast_to_session(
+            session_id,
+            WebSocketMessage(
+                type=MessageType.BROWSER_EVENT,
+                data={
+                    "event_type": event_type,
+                    "url": url,
+                    "query": query,
+                    "screenshot_base64": screenshot_base64,
+                },
+                task_id=task_id,
+            ),
+        )
+
+    async def send_file_changed(
+        self,
+        session_id: str,
+        task_id: str,
+        path: str,
+        content: str,
+    ) -> int:
+        """Send file changed notification."""
+        return await self.broadcast_to_session(
+            session_id,
+            WebSocketMessage(
+                type=MessageType.FILE_CHANGED,
+                data={"path": path, "content": content},
                 task_id=task_id,
             ),
         )

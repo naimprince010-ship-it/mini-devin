@@ -8,6 +8,7 @@ export interface Session {
   current_task: string | null;
   iteration: number;
   total_tasks: number;
+  title?: string;
 }
 
 export interface Task {
@@ -76,6 +77,9 @@ export type MessageType =
   | 'verification_completed'
   | 'repair_started'
   | 'repair_completed'
+  | 'session_title_updated'
+  | 'browser_event'
+  | 'file_changed'
   | 'pong';
 
 export interface ToolResultData {

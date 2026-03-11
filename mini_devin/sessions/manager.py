@@ -77,6 +77,7 @@ class Session:
     max_iterations: int
     status: SessionStatus = SessionStatus.IDLE
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    title: str = ""
     
     # Task tracking
     tasks: dict[str, Task] = field(default_factory=dict)
@@ -89,6 +90,7 @@ class Session:
     
     # Cancellation
     cancel_event: asyncio.Event | None = None
+    _running_task: asyncio.Task | None = None
 
 
 class SessionManager:
@@ -208,38 +210,49 @@ class SessionManager:
         session_id: str,
         description: str,
         acceptance_criteria: list[str] | None = None,
+        connection_manager=None,
     ) -> Task:
         """
         Create a new task in a session.
-        
+
         Args:
             session_id: The session ID
             description: Task description
             acceptance_criteria: Optional acceptance criteria
-            
+            connection_manager: Optional WebSocket manager for title event
+
         Returns:
             The created task
         """
         session = self.sessions.get(session_id)
         if not session:
             raise ValueError(f"Session {session_id} not found")
-        
+
         task_id = str(uuid.uuid4())[:8]
-        
+
+        # Auto-generate session title from first task
+        if not session.title and description:
+            raw = description.strip().replace('\n', ' ')
+            session.title = raw[:60] + ('…' if len(raw) > 60 else '')
+            if connection_manager:
+                await connection_manager.send_session_title_updated(
+                    session_id, session.title
+                )
+
         # Create artifacts directory
         artifacts_dir = self.artifacts_base_dir / session_id / task_id
         artifacts_dir.mkdir(parents=True, exist_ok=True)
-        
+
         task = Task(
             task_id=task_id,
             description=description,
             acceptance_criteria=acceptance_criteria or [],
             artifacts_dir=artifacts_dir,
         )
-        
+
         session.tasks[task_id] = task
         session.total_tasks += 1
-        
+
         return task
     
     def get_task(self, session_id: str, task_id: str) -> Task | None:
@@ -356,7 +369,21 @@ class SessionManager:
                         data.get("iteration", 0),
                         data.get("max", session.max_iterations),
                     )
-                
+                elif update_type == "browser_event":
+                    await connection_manager.send_browser_event(
+                        session_id, task_id,
+                        data.get("event_type", "other"),
+                        data.get("url"),
+                        data.get("query"),
+                        data.get("screenshot_base64"),
+                    )
+                elif update_type == "file_changed":
+                    await connection_manager.send_file_changed(
+                        session_id, task_id,
+                        data.get("path", ""),
+                        data.get("content", ""),
+                    )
+
                 # Update iteration count
                 task.iteration = data.get("iteration", task.iteration)
                 session.iteration = task.iteration
@@ -382,9 +409,12 @@ class SessionManager:
                 "on_step_completed": lambda idx, text="": asyncio.create_task(on_update("step_completed", {"index": idx, "text": text})),
                 "on_iteration": lambda iter_n, max_n: asyncio.create_task(on_update("iteration", {"iteration": iter_n, "max": max_n})),
             }
-            
-            # Run the agent with the TaskState object
-            final_task_state = await session.agent.run(task_state)
+
+            # Run the agent with the TaskState object — track the asyncio Task for cancellation
+            agent_coro = session.agent.run(task_state)
+            running = asyncio.ensure_future(agent_coro)
+            session._running_task = running
+            final_task_state = await running
             
             # Check success: only COMPLETED = success, anything else = not success
             success = final_task_state.status == AgentTaskStatus.COMPLETED
@@ -494,27 +524,45 @@ class SessionManager:
     async def cancel_task(self, session_id: str, task_id: str) -> bool:
         """
         Cancel a running task.
-        
+
         Args:
             session_id: The session ID
             task_id: The task ID
-            
+
         Returns:
             True if cancelled, False if not found or not running
         """
         session = self.sessions.get(session_id)
         if not session:
             return False
-        
+
         task = session.tasks.get(task_id)
         if not task or task.status != TaskStatus.RUNNING:
             return False
-        
-        # Signal cancellation
+
+        # Signal cancellation via event
         if session.cancel_event:
             session.cancel_event.set()
-        
+
+        # Also cancel the asyncio Task if we have a reference
+        if session._running_task and not session._running_task.done():
+            session._running_task.cancel()
+
         return True
+
+    async def stop_session(self, session_id: str) -> bool:
+        """
+        Stop the currently running task in a session.
+
+        Returns:
+            True if a running task was found and stopped, False otherwise.
+        """
+        session = self.sessions.get(session_id)
+        if not session or session.status != SessionStatus.RUNNING:
+            return False
+        if session.current_task_id:
+            return await self.cancel_task(session_id, session.current_task_id)
+        return False
     
     def _save_artifacts(self, task: Task, result: Any) -> None:
         """Save task artifacts to disk."""
