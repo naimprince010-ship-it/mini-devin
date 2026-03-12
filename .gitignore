@@ -49,6 +49,7 @@ htmlcov/
 # Artifacts
 runs/
 artifacts/
+!mini_devin/artifacts/
 
 # Database
 *.db
