@@ -6,6 +6,7 @@ using a state machine approach with planning, execution, and verification phases
 """
 
 import json
+import time
 import uuid
 from datetime import datetime
 from typing import Any
@@ -32,22 +33,7 @@ from ..tools.browser import (
     create_citation_store,
 )
 from ..safety.guards import SafetyGuard, SafetyPolicy, SafetyViolation
-# from ..artifacts.logger import ArtifactLogger, create_artifact_logger
-
-# HACK: ArtifactLogger module missing, using dummy implementation
-class ArtifactLogger:
-    def set_model(self, model: Any) -> None: pass
-    def log_tool_call(self, *args: Any, **kwargs: Any) -> None: pass
-    def add_command_executed(self, *args: Any, **kwargs: Any) -> None: pass
-    def add_file_modified(self, *args: Any, **kwargs: Any) -> None: pass
-    def increment_iteration(self, *args: Any, **kwargs: Any) -> None: pass
-    def update_tokens(self, *args: Any, **kwargs: Any) -> None: pass
-    def set_diff(self, *args: Any, **kwargs: Any) -> None: pass
-    def complete(self, *args: Any, **kwargs: Any) -> None: pass
-    def get_run_dir(self, *args: Any, **kwargs: Any) -> str: return ""
-
-def create_artifact_logger(*args: Any, **kwargs: Any) -> ArtifactLogger:
-    return ArtifactLogger()
+from ..artifacts.logger import ArtifactLogger, create_artifact_logger
 from ..memory import (
     SymbolIndex,
     VectorStore,
