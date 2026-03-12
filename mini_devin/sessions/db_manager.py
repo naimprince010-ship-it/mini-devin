@@ -408,6 +408,11 @@ class DatabaseSessionManager:
                 "on_tool_start": lambda name, args: on_update("tool_started", {"tool": name, "input": args}),
                 "on_tool_result": lambda name, args, output, duration: on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration}),
                 "on_phase_change": lambda phase: on_update("phase_changed", {"phase": phase}),
+                # Plan events
+                "on_plan_created": lambda steps: on_update("plan_created", {"steps": steps}),
+                "on_step_started": lambda idx, text: on_update("step_started", {"index": idx, "text": text}),
+                "on_step_completed": lambda idx, text: on_update("step_completed", {"index": idx, "text": text}),
+                "on_iteration": lambda iteration, max_iter: on_update("iteration", {"iteration": iteration, "max": max_iter}),
                 # Shell live streaming: each stdout line becomes a tool_output event
                 "on_command_output": lambda line: on_update("tool_output", {"line": line}),
             }

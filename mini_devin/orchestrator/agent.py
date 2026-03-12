@@ -2091,7 +2091,39 @@ Please start by exploring the codebase if needed, then create a plan and execute
                     stream=True,
                     on_token=handle_token,
                 )
-                
+                # Detect step progression in the message content
+                if getattr(self, '_plan_sent', False) and response.content:
+                    new_step_reached = -1
+                    # Look for patterns like "Moving to milestone 2" or "Step 2:" or "Task 3"
+                    step_patterns = [
+                        r"move to step (\d+)",
+                        r"moving to step (\d+)",
+                        r"starting step (\d+)",
+                        r"now on step (\d+)",
+                        r"proceed to step (\d+)",
+                        r"step (\d+):",
+                        r"milestone (\d+):",
+                        r"^\s*(\d+)\.", # Numbered line
+                    ]
+                    
+                    content_lower = response.content.lower()
+                    for pattern in step_patterns:
+                        match = re.search(pattern, content_lower, re.MULTILINE)
+                        if match:
+                            try:
+                                new_step_reached = int(match.group(1)) - 1 # 0-indexed
+                                break
+                            except (ValueError, IndexError):
+                                continue
+                    
+                    if 0 <= new_step_reached < len(self._plan_steps):
+                        if new_step_reached > self._current_step_idx:
+                            # Complete previous step
+                            await self._trigger_callback("on_step_completed", self._current_step_idx, self._plan_steps[self._current_step_idx])
+                            # Start new step
+                            self._current_step_idx = new_step_reached
+                            await self._trigger_callback("on_step_started", self._current_step_idx, self._plan_steps[self._current_step_idx])
+
                 # Handle tool calls
                 if response.tool_calls:
                     await self._update_phase(AgentPhase.EXECUTE)
@@ -2231,6 +2263,10 @@ Please start by exploring the codebase if needed, then create a plan and execute
                             self._current_step_idx = 0
                             await self._trigger_callback("on_plan_created", steps)
                             await self._update_phase(AgentPhase.PLAN)
+                            
+                            # Start first step
+                            if steps:
+                                await self._trigger_callback("on_step_started", 0, steps[0])
                         
                         # (Redundant broadcast removed to prevent duplication in frontend after token stream)
                         # Check for completion signals in the response
