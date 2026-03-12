@@ -39,6 +39,11 @@ from .repair_signals import (
     get_repair_strategy,
 )
 
+from .self_correction import (
+    SelfCorrectionEngine,
+    ErrorType,
+)
+
 __all__ = [
     # Minimal reproduction
     "FailureExtractor",
@@ -63,4 +68,7 @@ __all__ = [
     "FailureClassifier",
     "classify_failure",
     "get_repair_strategy",
+    # Self-correction
+    "SelfCorrectionEngine",
+    "ErrorType",
 ]

@@ -81,6 +81,8 @@ from ..core.parallel_executor import (
     create_parallel_executor,
     create_batch_caller,
 )
+from ..reliability.self_correction import SelfCorrectionEngine, ErrorType
+
 
 
 # System prompt for the agent
@@ -166,6 +168,9 @@ class Agent:
         self.max_repair_iterations = max_repair_iterations
         self.callbacks = callbacks or {}
         
+        # Self-correction specific parameters
+        self.max_immediate_retries = 3
+        
         # Initialize state
         self.state = AgentState(
             agent_id=str(uuid.uuid4()),
@@ -207,6 +212,12 @@ class Agent:
         self._max_parallel_tools = max_parallel_tools
         self._parallel_executor: ParallelExecutor | None = None
         self._batch_caller: BatchToolCaller | None = None
+        
+        # Self-correction (Phase 24)
+        self._correction_engine = SelfCorrectionEngine(
+            max_immediate_retries=self.max_immediate_retries
+        )
+        self._consecutive_failures = 0
         
         # Register default tools
         self._register_default_tools()
@@ -421,7 +432,15 @@ class Agent:
                     command=command,
                     working_directory=arguments.get("working_directory", "."),
                 )
-                result = await tool.execute(input_data)
+                
+                # Setup specific error capture for terminal
+                exit_code = -1
+                result = None
+                try:
+                    result = await tool.execute(input_data)
+                    exit_code = result.exit_code
+                except Exception as e:
+                    return f"Error executing terminal command: {str(e)}"
                 
                 # Format terminal output
                 output_parts = []
@@ -2085,25 +2104,116 @@ Please start by exploring the codebase if needed, then create a plan and execute
                     
                     # Execute each tool
                     for tc in response.tool_calls:
-                        await self._trigger_callback("on_tool_start", tc.name, tc.arguments)
+                        if "on_tool_start" in self.callbacks:
+                            await self._trigger_callback("on_tool_start", tc.name, tc.arguments)
+                        
+                        tool_success = False
+                        retry_count = 0
+                        final_result = ""
+                        
+                        # Self-correction retry loop
+                        while retry_count <= self.max_immediate_retries:
+                            self._log(f"Executing tool {tc.name} ({retry_count}/{self.max_immediate_retries}): {json.dumps(tc.arguments)[:100]}...")
+                            import time
+                            start_time = time.time()
                             
-                        self._log(f"Executing tool: {tc.name}({json.dumps(tc.arguments)[:100]}...)")
-                        import time
-                        start_time = time.time()
-                        result = await self._execute_tool(tc.name, tc.arguments)
-                        duration_ms = (time.time() - start_time) * 1000
-                        self._log(f"Tool result: {result[:200]}...")
+                            # For tool execution classification
+                            exit_code = None
+                            
+                            result = await self._execute_tool(tc.name, tc.arguments)
+                            duration_ms = (time.time() - start_time) * 1000
+                            self._log(f"Tool result: {result[:200]}...")
+                            final_result = result
+                            
+                            # Parse exit code from terminal output if available
+                            if tc.name == "terminal" and "Exit code:" in result:
+                                try:
+                                    exit_code_str = result.split("Exit code:")[-1].strip()
+                                    exit_code = int(exit_code_str)
+                                except (ValueError, TypeError):
+                                    pass
+                                    
+                            # Classify the result
+                            error_type = self._correction_engine.classify_error(tc.name, result, exit_code)
+                            
+                            if error_type == ErrorType.SUCCESS:
+                                tool_success = True
+                                # If we had retried, record the successful correction
+                                if retry_count > 0:
+                                    self._log(f"Self-correction successful after {retry_count} retries")
+                                    # Reset failures and notify UI about success
+                                    self._consecutive_failures = 0
+                                    await self._trigger_callback("on_message", f"✅ Successfully corrected error in {tc.name}", is_token=False)
+                                break
+                                
+                            # Tool failed
+                            self._log(f"Tool {tc.name} failed with {error_type.value}")
+                            
+                            if not self._correction_engine.should_retry(error_type, retry_count):
+                                self._log("Max retries reached or error not retryable immediately")
+                                break
+                                
+                            # Need to retry with hint
+                            retry_count += 1
+                            hint = self._correction_engine.get_retry_hint(error_type, tc.name, tc.arguments, result)
+                            
+                            await self._trigger_callback("on_message", f"🔄 **Self-Correcting**: Tool '{tc.name}' failed. Retrying... (Attempt {retry_count}/{self.max_immediate_retries})\n*Hint:* {hint}", is_token=False)
+                            
+                            # We feed the failed result and hint to LLM to get a corrected tool call
+                            self.llm.add_tool_result(tc.id, tc.name, result)
+                            self.llm.add_user_message(f"Your tool call failed: {hint}\nPlease review the error and provide a corrected tool call.")
+                            
+                            # Ask LLM again
+                            retry_response = await self.llm.complete(
+                                tools=self._get_tool_schemas(),
+                                tool_choice="required", # Force tool use
+                                stream=False
+                            )
+                            
+                            if retry_response.tool_calls:
+                                # Update the current tool call with LLM's new attempt
+                                tc = retry_response.tool_calls[0]
+                                self.llm.add_assistant_message(
+                                    content=retry_response.content,
+                                    tool_calls=[tc],
+                                )
+                            else:
+                                # LLM didn't provide a tool call, break retry loop
+                                break
                         
                         if "on_tool_result" in self.callbacks:
-                            await self._trigger_callback("on_tool_result", tc.name, tc.arguments, result, duration_ms)
+                            await self._trigger_callback("on_tool_result", tc.name, tc.arguments, final_result, duration_ms)
                         
-                        # Add tool result to conversation
-                        self.llm.add_tool_result(tc.id, tc.name, result)
+                        # Add final tool result to conversation
+                        self.llm.add_tool_result(tc.id, tc.name, final_result)
                         
                         # Track in task state
                         if tc.name == "terminal":
                             task.commands_executed.append(tc.arguments.get("command", ""))
-                
+                            
+                        # Handle Escalation to Planner
+                        if not tool_success:
+                            self._consecutive_failures += 1
+                            if self._correction_engine.should_replan(self._consecutive_failures):
+                                await self._trigger_callback("on_message", "🔁 **Replanning needed**: Consecutive failures exceeded limit.", is_token=False)
+                                self._consecutive_failures = 0
+                                
+                                # trigger replanning
+                                if self.state.current_plan:
+                                    # Find current step
+                                    failed_step_id = None
+                                    from ..schemas.state import StepStatus
+                                    for step in self.state.current_plan.steps:
+                                        if step.status == StepStatus.PENDING or step.status == StepStatus.IN_PROGRESS:
+                                            failed_step_id = step.step_id
+                                            break
+                                            
+                                    if failed_step_id:
+                                        await self.replan_from_failure(failed_step_id, final_result)
+                                        # Force breakdown of iteration loop to let new plan take over
+                                        task.error_count += 1
+                                        break
+                                
                 else:
                     # No tool calls - check if task is complete
                     if response.content:

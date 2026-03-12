@@ -166,7 +166,6 @@ class LLMClient:
                  del os.environ["OPENAI_ORG_ID"]
             
             # Additional safety for LiteLLM internals
-            import litellm
             litellm.organization = ""
             
             try:
