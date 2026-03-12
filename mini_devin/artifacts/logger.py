@@ -7,7 +7,6 @@ Each task run is stored in its own directory under a configurable base dir.
 """
 
 import json
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -89,19 +88,23 @@ class ArtifactLogger:
         """Record a shell command that was executed."""
         if command not in self._commands_executed:
             self._commands_executed.append(command)
+            self._write_meta()
 
     def add_file_modified(self, file_path: str) -> None:
         """Record a file that was created or modified."""
         if file_path not in self._files_modified:
             self._files_modified.append(file_path)
+            self._write_meta()
 
     def increment_iteration(self) -> None:
         """Increment the agent iteration counter."""
         self._iterations += 1
+        self._write_meta()
 
     def update_tokens(self, total_tokens: int) -> None:
         """Update cumulative token usage."""
         self._total_tokens = total_tokens
+        self._write_meta()
 
     def set_diff(self, diff_text: str) -> None:
         """Store the final git diff for this run."""
