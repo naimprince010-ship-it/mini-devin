@@ -48,7 +48,7 @@ htmlcov/
 
 # Artifacts
 runs/
-artifacts/
+/artifacts/
 
 # Database
 *.db
