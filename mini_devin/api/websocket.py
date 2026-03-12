@@ -68,7 +68,7 @@ class MessageType(str, Enum):
     FILE_CHANGED = "file_changed"
     
     # Shell live output
-    TOOL_OUTPUT = "tool_output"
+    # (Removed duplicate TOOL_OUTPUT)
 
 
 @dataclass
