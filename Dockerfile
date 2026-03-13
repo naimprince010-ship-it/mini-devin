@@ -26,5 +26,8 @@ RUN poetry config virtualenvs.create false && \
 # Expose port
 EXPOSE 8000
 
+# Set environment variables
+ENV PYTHONIOENCODING=UTF-8
+
 # Run the bootstrap script as a watchdog
 CMD ["python", "scripts/bootstrap.py"]

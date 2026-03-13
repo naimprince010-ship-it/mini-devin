@@ -33,21 +33,21 @@ connection_manager = ConnectionManager()
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager."""
-    print(f"🚀 [API] Starting Mini-Devin API at {datetime.now(timezone.utc).isoformat()}")
-    print(f"🔧 [API] Environment: PORT={os.getenv('PORT')}, DATABASE_URL={'Set' if os.getenv('DATABASE_URL') else 'Default SLite'}")
+    print(f"[API] Starting Mini-Devin API at {datetime.now(timezone.utc).isoformat()}")
+    print(f"[API] Environment: PORT={os.getenv('PORT')}, DATABASE_URL={'Set' if os.getenv('DATABASE_URL') else 'Default SLite'}")
     
     try:
-        print("🗄️ [API] Initializing Database...")
+        print("[API] Initializing Database...")
         await init_db()
-        print("✅ [API] Database initialized successfully.")
+        print("[API] Database initialized successfully.")
     except Exception as e:
-        print(f"❌ [API] Error initializing database: {e}")
+        print(f"[API] Error initializing database: {e}")
         import traceback
         traceback.print_exc()
         # We don't exit here to allow health checks to potentially still pass if DB isn't critical
     
     yield
-    print(f"🛑 [API] Shutting down Mini-Devin API at {datetime.now(timezone.utc).isoformat()}")
+    print(f"[API] Shutting down Mini-Devin API at {datetime.now(timezone.utc).isoformat()}")
 
 
 app = FastAPI(
