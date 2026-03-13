@@ -8,6 +8,7 @@ using a state machine approach with planning, execution, and verification phases
 import json
 import time
 import uuid
+import re
 from datetime import datetime
 from typing import Any
 
