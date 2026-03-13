@@ -480,9 +480,10 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         selector = self._get(input_data, "selector", "")
 
         # Inject highlight CSS and take screenshot
+        safe_selector = selector.replace("'", "\\'")
         await self._page.evaluate(f"""
             (function() {{
-                const el = document.querySelector('{selector.replace("'", "\\'")}');
+                const el = document.querySelector('{safe_selector}');
                 if (el) {{
                     el.style.outline = '3px solid red';
                     el.style.outlineOffset = '2px';
@@ -497,9 +498,10 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
 
         # Remove highlight after screenshot
+        safe_selector = selector.replace("'", "\\'")
         await self._page.evaluate(f"""
             (function() {{
-                const el = document.querySelector('{selector.replace("'", "\\'")}');
+                const el = document.querySelector('{safe_selector}');
                 if (el) {{
                     el.style.outline = '';
                     el.style.outlineOffset = '';
