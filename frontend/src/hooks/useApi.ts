@@ -398,6 +398,21 @@ export function useApi() {
     }
   }, []);
 
+  const triggerSelfEvolution = useCallback(async (): Promise<{ session_id: string; task_id: string }> => {
+    setLoading(true);
+    setError(null);
+    try {
+      return await fetchApi<{ session_id: string; task_id: string }>('/system/evolve', {
+        method: 'POST',
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to trigger self-evolution');
+      throw e;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   return {
     loading,
     error,
@@ -434,5 +449,7 @@ export function useApi() {
     deleteMemory,
     // Export
     exportSession,
+    // Evolution
+    triggerSelfEvolution,
   };
 }

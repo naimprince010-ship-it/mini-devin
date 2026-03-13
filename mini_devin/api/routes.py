@@ -14,6 +14,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
 from pydantic import BaseModel, Field
+from datetime import datetime, timezone
 
 
 router = APIRouter(tags=["api"])
@@ -440,6 +441,62 @@ async def list_models(
             for m in models
         ]
     }
+
+
+@router.post("/system/evolve")
+async def trigger_self_evolution(req: Request, background_tasks: BackgroundTasks):
+    """
+    Trigger the self-evolution loop.
+    This runs a self-audit and starts a self-improvement session if needed.
+    """
+    session_manager = req.app.state.session_manager
+    connection_manager = req.app.state.connection_manager
+    
+    # Create a specialized session for self-development
+    session = await session_manager.create_session(
+        working_directory=".",
+        model="gpt-4o", # Default high-power model for self-dev
+        max_iterations=100,
+    )
+    
+    # In a real implementation, we would use the SelfDeveloperAgent here.
+    # For now, we seed the session with a self-audit task description.
+    audit_task_desc = "Perform a self-audit of the 'mini_devin' directory and implement one high-priority improvement found."
+    
+    task = await session_manager.create_task(
+        session_id=session.session_id,
+        description=audit_task_desc,
+        acceptance_criteria=["Improvement implemented", "Tests pass", "Code remains functional"],
+        connection_manager=connection_manager,
+    )
+    
+    background_tasks.add_task(
+        session_manager.run_task,
+        session.session_id,
+        task.task_id,
+        connection_manager,
+    )
+    
+    return {
+        "status": "started",
+        "session_id": session.session_id,
+        "task_id": task.task_id,
+        "message": "Self-evolution loop initiated with a self-audit task."
+    }
+
+
+@router.post("/system/restart")
+async def restart_system():
+    """
+    Trigger a system restart by creating a .restart_flag file.
+    Works in conjunction with the bootstrap.py script.
+    """
+    try:
+        with open(".restart_flag", "w") as f:
+            f.write("restart")
+        return {"status": "success", "message": "Restart signal sent. System will reboot shortly."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send restart signal: {str(e)}")
 
 
 @router.get("/providers")

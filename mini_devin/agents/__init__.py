@@ -15,6 +15,10 @@ from .planner import (
     TaskAnalysis,
     create_planner_agent,
 )
+from .self_developer import (
+    SelfDeveloperAgent,
+    create_self_developer_agent,
+)
 from .reviewer import (
     ReviewerAgent,
     ReviewFeedback,
@@ -32,6 +36,9 @@ __all__ = [
     "PlanValidationResult",
     "TaskAnalysis",
     "create_planner_agent",
+    # Self-Developer Agent
+    "SelfDeveloperAgent",
+    "create_self_developer_agent",
     # Reviewer Agent
     "ReviewerAgent",
     "ReviewFeedback",

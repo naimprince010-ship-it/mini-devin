@@ -28,6 +28,7 @@ import {
   FolderOpen,
   Cpu,
   Target,
+  Zap,
 } from 'lucide-react';
 
 type TabType = 'sessions' | 'skills' | 'repos' | 'reviews';
@@ -179,6 +180,17 @@ function App() {
   const { toasts, dismiss } = useToastState();
   const [showNewSession, setShowNewSession] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>('sessions');
+  const api = useApi();
+
+  const handleSelfEvolve = async () => {
+    try {
+      const result = await api.triggerSelfEvolution();
+      // Handle success - maybe select the new session
+      console.log('Self-evolution started:', result);
+    } catch (e) {
+      console.error('Failed to trigger self-evolution:', e);
+    }
+  };
 
   // Real-time title from WebSocket (session_title_updated)
   const handleTitleUpdated = (title: string) => {
@@ -246,6 +258,14 @@ function App() {
                 {item.label}
               </button>
             ))}
+            <button
+              onClick={handleSelfEvolve}
+              disabled={api.loading}
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-[#00ff99] hover:bg-[#00ff99]/10 transition-colors mt-2"
+            >
+              <Zap size={18} fill="currentColor" fillOpacity={0.2} />
+              Self-Evolve
+            </button>
           </nav>
 
           {/* Sessions list */}

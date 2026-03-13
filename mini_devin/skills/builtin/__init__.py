@@ -13,6 +13,7 @@ from .create_test import CreateTestSkill
 from .update_documentation import UpdateDocumentationSkill
 from .setup_linting import SetupLintingSkill
 from .debug_error import DebugErrorSkill
+from .self_audit import SelfAuditSkill
 
 __all__ = [
     "AddEndpointSkill",
@@ -23,4 +24,5 @@ __all__ = [
     "UpdateDocumentationSkill",
     "SetupLintingSkill",
     "DebugErrorSkill",
+    "SelfAuditSkill",
 ]
