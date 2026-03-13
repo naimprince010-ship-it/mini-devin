@@ -11,13 +11,16 @@ import os
 import subprocess
 import time
 import sys
+from datetime import datetime
 from pathlib import Path
 
 RESTART_FLAG = Path(".restart_flag")
 
 def run_server():
     """Run the Mini-Devin server and restart if flag is detected."""
-    print("🚀 [Bootstrap] Initializing Mini-Devin Watchdog...")
+    print(f"🚀 [Bootstrap] Initializing Mini-Devin Watchdog at {datetime.now().isoformat()}...")
+    print(f"📁 [Bootstrap] Working Directory: {os.getcwd()}")
+    print(f"🐍 [Bootstrap] Python Executable: {sys.executable}")
     
     # Clean up stale restart flag at startup
     if RESTART_FLAG.exists():
@@ -25,21 +28,30 @@ def run_server():
         RESTART_FLAG.unlink()
 
     # Configuration
-    python_exe = sys.executable
     api_module = "mini_devin.api.app"
     host = "0.0.0.0"
     port = os.getenv("PORT", "8000")
     
+    # Ensure current directory is in PYTHONPATH
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f".{os.pathsep}{env.get('PYTHONPATH', '')}"
+    
     while True:
-        # Start server with uvicorn directly via subprocess
-        # This ensures we have control over the process lifecycle
+        # Start server with uvicorn
+        # We try to use uvicorn directly as a command first, fallback to python -m
         print(f"📡 [Bootstrap] Starting server on {host}:{port}...")
-        process = subprocess.Popen([
-            python_exe, "-m", "uvicorn", 
-            f"{api_module}:app", 
-            "--host", host, 
-            "--port", port
-        ])
+        try:
+            process = subprocess.Popen(
+                ["uvicorn", f"{api_module}:app", "--host", host, "--port", port],
+                env=env
+            )
+        except FileNotFoundError:
+            print("⚠️ [Bootstrap] 'uvicorn' command not found in PATH, trying 'python -m uvicorn'...")
+            process = subprocess.Popen(
+                [sys.executable, "-m", "uvicorn", f"{api_module}:app", "--host", host, "--port", port],
+                env=env
+            )
+        
         print(f"✅ [Bootstrap] Mini-Devin running with PID: {process.pid}")
         
         while process.poll() is None:
