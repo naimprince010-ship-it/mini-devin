@@ -26,5 +26,5 @@ RUN poetry config virtualenvs.create false && \
 # Expose port
 EXPOSE 8000
 
-# Run the FastAPI server
-CMD ["uvicorn", "mini_devin.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the bootstrap script as a watchdog
+CMD ["python", "scripts/bootstrap.py"]
