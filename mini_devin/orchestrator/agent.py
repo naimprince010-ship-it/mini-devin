@@ -50,15 +50,7 @@ from ..memory import (
     TaskSummary,
     create_conversation_memory,
 )
-from ..agents import (
-    ReviewerAgent,
-    ReviewFeedback,
-    create_reviewer_agent,
-    PlannerAgent,
-    PlanningResult,
-    PlanningStrategy,
-    create_planner_agent,
-)
+# Selective imports will be handled locally within methods to avoid circular dependencies
 from ..core.parallel_executor import (
     ParallelExecutor,
     BatchToolCaller,
@@ -1363,6 +1355,7 @@ class Agent:
             ReviewerAgent instance
         """
         if self._reviewer_agent is None:
+            from ..agents import create_reviewer_agent
             self._reviewer_agent = create_reviewer_agent(
                 strict_mode=strict_mode,
                 auto_suggest_improvements=True,
@@ -1458,8 +1451,11 @@ class Agent:
     
     def get_planner_agent(
         self,
-        strategy: PlanningStrategy = PlanningStrategy.ITERATIVE,
-    ) -> PlannerAgent:
+        strategy: Any = None, # Avoid PlanningStrategy type at top level if possible
+    ) -> Any:
+        # Import inside to avoid circularity
+        from ..agents import create_planner_agent, PlanningStrategy
+        strategy = strategy or PlanningStrategy.ITERATIVE
         """
         Get or create the planner agent.
         
@@ -1470,6 +1466,7 @@ class Agent:
             PlannerAgent instance
         """
         if self._planner_agent is None:
+            from ..agents import create_planner_agent
             self._planner_agent = create_planner_agent(
                 default_strategy=strategy,
                 max_steps=50,
@@ -1481,8 +1478,9 @@ class Agent:
         self,
         task: TaskState | None = None,
         context: str | None = None,
-        strategy: PlanningStrategy | None = None,
-    ) -> PlanningResult:
+        strategy: Any = None,
+    ) -> Any:
+        from ..agents import PlanningResult
         """
         Create an execution plan for a task using the planner agent.
         
@@ -1551,7 +1549,8 @@ class Agent:
     async def refine_plan(
         self,
         feedback: str,
-    ) -> PlanningResult:
+    ) -> Any:
+        from ..agents import PlanningResult
         """
         Refine the current plan based on feedback.
         
@@ -1595,7 +1594,8 @@ class Agent:
         self,
         failed_step_id: str,
         error: str,
-    ) -> PlanningResult:
+    ) -> Any:
+        from ..agents import PlanningResult
         """
         Create a recovery plan after a step failure.
         
