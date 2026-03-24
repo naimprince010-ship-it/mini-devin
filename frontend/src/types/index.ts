@@ -81,7 +81,9 @@ export type MessageType =
   | 'browser_event'
   | 'file_changed'
   | 'tool_output'
-  | 'pong';
+  | 'pong'
+  | 'token_usage'
+  | 'clarification_needed';
 
 export interface ToolResultData {
   tool: string;

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, Fragment } from 'react
 import { Session, Task, WebSocketMessage } from '../types';
 import { useApi } from '../hooks/useApi';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target } from 'lucide-react';
+import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target, Coins, HelpCircle, X } from 'lucide-react';
 import { StreamingOutput } from './StreamingOutput';
 import { useSessionEvents } from '../contexts/SessionEventsContext';
 import { PlanStepsView } from './PlanStepsView';
@@ -44,6 +44,11 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const toolCallIdMapRef = useRef<Map<string, string>>(new Map()); // ws tool -> context id
 
+  // Clarification state (local to TaskPanel for the modal)
+  const [clarificationQuestion, setClarificationQuestion] = useState<string | null>(null);
+  const [clarificationAnswer, setClarificationAnswer] = useState('');
+  const [isSubmittingAnswer, setIsSubmittingAnswer] = useState(false);
+
   const api = useApi();
   const events = useSessionEvents();
   const toast = useToast();
@@ -67,6 +72,21 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
         setStreamingContent(prev => prev + (data.content as string || ''));
         break;
 
+      case 'token_usage':
+        if (data.total_tokens !== undefined) {
+          events.onTokenUsage({
+            total_tokens: data.total_tokens as number,
+            prompt_tokens: data.prompt_tokens as number,
+            completion_tokens: data.completion_tokens as number
+          });
+        }
+        break;
+
+      case 'clarification_needed':
+        setClarificationQuestion(data.question as string || 'The agent needs clarification.');
+        events.onClarificationNeeded(data.question as string || '');
+        break;
+
       case 'response':
         setIsStreaming(true);
         setStreamingContent(prev => prev + (message.content || data.content as string || ''));
@@ -75,6 +95,7 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
       case 'task_started':
         setIsStreaming(true);
         setStreamingContent('');
+        setClarificationQuestion(null);
         events.onTaskStarted();
         break;
 
@@ -269,6 +290,30 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     toast.error('Agent stopped', 'The agent was interrupted.');
   };
 
+  const handleAnswerClarification = async () => {
+    if (!clarificationAnswer.trim() || isSubmittingAnswer) return;
+    setIsSubmittingAnswer(true);
+    try {
+      const response = await fetch(`/api/sessions/${session.session_id}/answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ answer: clarificationAnswer })
+      });
+      if (response.ok) {
+        toast.success('Answer sent', 'The agent will now resume.');
+        setClarificationQuestion(null);
+        events.dismissClarification();
+        setClarificationAnswer('');
+      } else {
+        toast.error('Failed to send answer', 'The API returned an error.');
+      }
+    } catch (e) {
+      toast.error('Error', 'Failed to connect to API.');
+    } finally {
+      setIsSubmittingAnswer(false);
+    }
+  };
+
   const currentPhase = events.phase;
   const phaseLabel = currentPhase ? (PHASE_LABELS[currentPhase] || currentPhase) : null;
 
@@ -287,9 +332,15 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
             </div>
           </div>
 
-          {/* Phase + Iteration chips */}
+          {/* Phase + Iteration + Tokens chips */}
           {isStreaming && (
             <div className="flex items-center gap-2">
+              {events.tokenUsage.total_tokens > 0 && (
+                <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#1a1a1a] border border-[#262626] text-[10px] text-[#a3a3a3]">
+                  <Coins size={10} className="text-yellow-500/80" />
+                  <span className="font-mono">{events.tokenUsage.total_tokens.toLocaleString()} tk</span>
+                </div>
+              )}
               {events.iteration > 0 && (
                 <div className="px-2 py-0.5 rounded-full bg-[#1a1a1a] border border-[#262626] text-[10px] text-[#a3a3a3]">
                   iter {events.iteration}/{events.maxIterations}
@@ -297,9 +348,9 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
               )}
               {phaseLabel && (
                 <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#00ff99]/10 border border-[#00ff99]/25">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#00ff99] animate-pulse" />
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-[#00ff99]">
-                    {phaseLabel}
+                  <span className={`w-1.5 h-1.5 rounded-full ${clarificationQuestion ? 'bg-yellow-400' : 'bg-[#00ff99] animate-pulse'}`} />
+                  <span className={`text-[10px] font-bold uppercase tracking-widest ${clarificationQuestion ? 'text-yellow-400' : 'text-[#00ff99]'}`}>
+                    {clarificationQuestion ? 'Waiting for User' : phaseLabel}
                   </span>
                 </div>
               )}
@@ -447,8 +498,8 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
             }}
             placeholder={isStreaming ? 'Send a follow-up message to the agent...' : 'Type a task for the agent...'}
             className={`w-full bg-[#121212] border rounded-[20px] px-5 py-4 pr-24 text-sm focus:outline-none transition-colors resize-none placeholder-[#737373] min-h-[56px] max-h-40 custom-scrollbar ${isStreaming
-                ? 'border-[#00ff99]/20 focus:border-[#00ff99]/40'
-                : 'border-[#262626] focus:border-[#00ff99]/50'
+              ? 'border-[#00ff99]/20 focus:border-[#00ff99]/40'
+              : 'border-[#262626] focus:border-[#00ff99]/50'
               }`}
             rows={1}
           />
@@ -458,10 +509,10 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
               onClick={handleSubmitTask}
               disabled={!taskDescription.trim()}
               className={`p-2 rounded-full transition-all ${taskDescription.trim()
-                  ? isStreaming
-                    ? 'bg-[#00ff99]/20 text-[#00ff99] border border-[#00ff99]/30 hover:bg-[#00ff99]/30'
-                    : 'bg-[#00ff99] text-[#0f0f0f] hover:scale-110'
-                  : 'bg-[#262626] text-[#737373] cursor-not-allowed'
+                ? isStreaming
+                  ? 'bg-[#00ff99]/20 text-[#00ff99] border border-[#00ff99]/30 hover:bg-[#00ff99]/30'
+                  : 'bg-[#00ff99] text-[#0f0f0f] hover:scale-110'
+                : 'bg-[#262626] text-[#737373] cursor-not-allowed'
                 }`}
               title={isStreaming ? 'Send follow-up' : 'Send task'}
             >
@@ -483,6 +534,66 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
           {isStreaming ? 'Agent is running — you can send follow-up messages' : 'Shift + Enter for new line'}
         </p>
       </div>
+
+      {/* Clarification Modal Overlay */}
+      {clarificationQuestion && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-6 animate-in fade-in duration-200">
+          <div className="bg-[#121212] border border-yellow-500/30 shadow-2xl rounded-2xl w-full max-w-lg overflow-hidden flex flex-col">
+            <div className="px-5 py-4 border-b border-[#262626] flex justify-between items-center bg-yellow-500/5">
+              <div className="flex items-center gap-2 text-yellow-500">
+                <HelpCircle size={18} />
+                <h3 className="font-semibold text-sm tracking-wide">Agent Needs Clarification</h3>
+              </div>
+              <button
+                onClick={() => { setClarificationQuestion(null); events.dismissClarification(); }}
+                className="text-[#737373] hover:text-white transition-colors"
+                title="Dismiss (Agent will guess)"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="p-6 flex-1 overflow-y-auto">
+              <p className="text-[#d1d1d1] text-sm leading-relaxed whitespace-pre-wrap font-medium">
+                {clarificationQuestion}
+              </p>
+
+              <div className="mt-6 space-y-2">
+                <label className="text-[10px] uppercase tracking-wider text-[#737373] font-bold">Your Answer</label>
+                <textarea
+                  autoFocus
+                  value={clarificationAnswer}
+                  onChange={e => setClarificationAnswer(e.target.value)}
+                  placeholder="Type your answer here..."
+                  className="w-full bg-[#0f0f0f] border border-[#262626] focus:border-yellow-500/50 rounded-xl px-4 py-3 text-sm text-white resize-none h-24 custom-scrollbar outline-none transition-colors"
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleAnswerClarification();
+                    }
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-[#262626] bg-[#0f0f0f]/50 flex justify-end gap-3">
+              <button
+                onClick={() => { setClarificationQuestion(null); events.dismissClarification(); }}
+                className="px-4 py-2 text-xs font-semibold text-[#a3a3a3] hover:text-white transition-colors"
+              >
+                Ignore
+              </button>
+              <button
+                onClick={handleAnswerClarification}
+                disabled={!clarificationAnswer.trim() || isSubmittingAnswer}
+                className="px-5 py-2 text-xs font-bold rounded-lg bg-yellow-500 text-black hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {isSubmittingAnswer ? 'Sending...' : 'Send Answer'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

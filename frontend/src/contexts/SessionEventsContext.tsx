@@ -50,6 +50,12 @@ export type AgentPhase =
     | 'complete'
     | null;
 
+export interface TokenUsage {
+    total_tokens: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+}
+
 interface SessionEventsState {
     phase: AgentPhase;
     iteration: number;
@@ -63,6 +69,8 @@ interface SessionEventsState {
     browserEvents: BrowserEvent[];
     acceptanceCriteria: string;
     changedFiles: Set<string>;
+    tokenUsage: TokenUsage;
+    clarificationQuestion: string | null;
 }
 
 interface SessionEventsContextValue extends SessionEventsState {
@@ -81,6 +89,9 @@ interface SessionEventsContextValue extends SessionEventsState {
     setAcceptanceCriteria: (criteria: string) => void;
     onBrowserEventFromWS: (eventType: string, url?: string, query?: string, screenshotBase64?: string) => void;
     onFileChangedFromWS: (path: string, content: string) => void;
+    onTokenUsage: (usage: TokenUsage) => void;
+    onClarificationNeeded: (question: string) => void;
+    dismissClarification: () => void;
 }
 
 const defaultState: SessionEventsState = {
@@ -96,6 +107,8 @@ const defaultState: SessionEventsState = {
     browserEvents: [],
     acceptanceCriteria: '',
     changedFiles: new Set<string>(),
+    tokenUsage: { total_tokens: 0, prompt_tokens: 0, completion_tokens: 0 },
+    clarificationQuestion: null,
 };
 
 const SessionEventsContext = createContext<SessionEventsContextValue>({
@@ -115,6 +128,9 @@ const SessionEventsContext = createContext<SessionEventsContextValue>({
     setAcceptanceCriteria: () => { },
     onBrowserEventFromWS: () => { },
     onFileChangedFromWS: () => { },
+    onTokenUsage: () => { },
+    onClarificationNeeded: () => { },
+    dismissClarification: () => { },
 });
 
 const BROWSER_TOOLS = new Set(['browser_navigate', 'browser_screenshot', 'browser_click', 'web_search', 'search_web', 'browse', 'browser']);
@@ -392,6 +408,18 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
         });
     }, []);
 
+    const onTokenUsage = useCallback((usage: TokenUsage) => {
+        setState(prev => ({ ...prev, tokenUsage: usage }));
+    }, []);
+
+    const onClarificationNeeded = useCallback((question: string) => {
+        setState(prev => ({ ...prev, clarificationQuestion: question }));
+    }, []);
+
+    const dismissClarification = useCallback(() => {
+        setState(prev => ({ ...prev, clarificationQuestion: null }));
+    }, []);
+
     return (
         <SessionEventsContext.Provider
             value={{
@@ -411,6 +439,9 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
                 setAcceptanceCriteria,
                 onBrowserEventFromWS,
                 onFileChangedFromWS,
+                onTokenUsage,
+                onClarificationNeeded,
+                dismissClarification,
             }}
         >
             {children}

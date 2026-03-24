@@ -67,8 +67,11 @@ class MessageType(str, Enum):
     # File system
     FILE_CHANGED = "file_changed"
     
-    # Shell live output
-    # (Removed duplicate TOOL_OUTPUT)
+    # Token usage tracking
+    TOKEN_USAGE = "token_usage"
+    
+    # Proactive clarification
+    CLARIFICATION_NEEDED = "clarification_needed"
 
 
 @dataclass

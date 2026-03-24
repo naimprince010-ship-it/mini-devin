@@ -148,6 +148,20 @@ async def delete_session(session_id: str):
     if not success:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"status": "deleted", "session_id": session_id}
+
+@app.post("/api/sessions/{session_id}/answer")
+@app.post("/sessions/{session_id}/answer")
+async def answer_clarification(session_id: str, request: Request):
+    """Provide a user answer to a clarification question from the agent."""
+    body = await request.json()
+    answer = body.get("answer", "")
+    if not answer:
+        raise HTTPException(status_code=400, detail="Missing 'answer' field")
+    ok = await session_manager.answer_clarification(session_id, answer)
+    if not ok:
+        raise HTTPException(status_code=404, detail="No pending clarification for this session")
+    return {"status": "answered", "session_id": session_id}
+    
     
 @app.get("/api/sessions/{session_id}/ls")
 @app.get("/sessions/{session_id}/ls")

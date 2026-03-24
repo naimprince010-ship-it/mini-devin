@@ -5,6 +5,7 @@ This module implements the main agent that orchestrates task execution
 using a state machine approach with planning, execution, and verification phases.
 """
 
+import asyncio
 import json
 import time
 import uuid
@@ -137,6 +138,7 @@ class Agent:
         enable_parallel_execution: bool = True,
         max_parallel_tools: int = 5,
         callbacks: dict[str, Any] | None = None,
+        use_sandbox: bool = False,
     ):
         self.llm = llm_client or create_llm_client()
         self.registry = tool_registry or get_global_registry()
@@ -197,6 +199,14 @@ class Agent:
             max_immediate_retries=self.max_immediate_retries
         )
         self._consecutive_failures = 0
+        
+        # Docker Sandbox (optional isolated execution)
+        self.use_sandbox = use_sandbox
+        self._sandbox = None  # Initialized lazily per task
+        
+        # Proactive clarification support
+        self._clarification_event: asyncio.Event | None = None
+        self._clarification_answer: str | None = None
         
         # Register default tools
         self._register_default_tools()
@@ -384,6 +394,22 @@ class Agent:
             },
         })
         
+        # Ask-user tool for proactive clarification
+        schemas.append({
+            "name": "ask_user",
+            "description": "Ask the user a clarifying question when the task is ambiguous or you need more information before proceeding. Use this sparingly, only when truly necessary.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The specific question to ask the user",
+                    },
+                },
+                "required": ["question"],
+            },
+        })
+        
         return schemas
     
     async def _execute_tool(self, name: str, arguments: dict[str, Any]) -> str:
@@ -391,6 +417,23 @@ class Agent:
         import time
         start_time = time.time()
         call_id = str(uuid.uuid4())[:8]
+        
+        # ── ask_user: pause and request clarification from user ──
+        if name == "ask_user":
+            question = arguments.get("question", "Can you clarify?")
+            on_clarification = self.callbacks.get("on_clarification_needed")
+            if on_clarification:
+                on_clarification(question)
+            # Wait up to 5 minutes for user answer
+            self._clarification_event = asyncio.Event()
+            self._clarification_answer = None
+            try:
+                await asyncio.wait_for(self._clarification_event.wait(), timeout=300)
+            except asyncio.TimeoutError:
+                return "User did not answer within 5 minutes. Proceeding with best guess."
+            answer = self._clarification_answer or "(no answer)"
+            self._clarification_event = None
+            return f"User answered: {answer}"
         
         tool = self.registry.get(name)
         if not tool:
@@ -406,13 +449,62 @@ class Agent:
                     self._update_phase(AgentPhase.BLOCKED)
                     return f"BLOCKED: {violation.message}. Task moved to BLOCKED state."
                 
+                # Emit command to shell stream
+                on_cmd_output = self.callbacks.get("on_command_output")
+                if on_cmd_output:
+                    on_cmd_output(f"$ {command}")
+                
+                # ── Docker Sandbox Execution ──
+                if self.use_sandbox and self._sandbox is not None:
+                    try:
+                        if not self._sandbox.is_running():
+                            started = await self._sandbox.start()
+                            if not started:
+                                # Fall through to regular execution
+                                self.use_sandbox = False
+                        
+                        if self._sandbox.is_running():
+                            sandbox_result = await self._sandbox.execute(
+                                command,
+                                working_dir=arguments.get("working_directory"),
+                            )
+                            output_parts = []
+                            if sandbox_result.stdout:
+                                output_parts.append(f"STDOUT:\n{sandbox_result.stdout}")
+                                if on_cmd_output:
+                                    for line in sandbox_result.stdout.splitlines():
+                                        on_cmd_output(line)
+                            if sandbox_result.stderr:
+                                output_parts.append(f"STDERR:\n{sandbox_result.stderr}")
+                                if on_cmd_output:
+                                    for line in sandbox_result.stderr.splitlines():
+                                        on_cmd_output(line)
+                            output_parts.append(f"Exit code: {sandbox_result.exit_code}")
+                            if on_cmd_output:
+                                on_cmd_output(f"Exit code: {sandbox_result.exit_code}")
+                            output = "\n".join(output_parts)
+                            if self._artifact_logger:
+                                duration_ms = int((time.time() - start_time) * 1000)
+                                self._artifact_logger.log_tool_call(
+                                    call_id=call_id,
+                                    tool_name="terminal",
+                                    arguments=arguments,
+                                    result=output,
+                                    duration_ms=duration_ms,
+                                    success=sandbox_result.exit_code == 0,
+                                )
+                                self._artifact_logger.add_command_executed(command)
+                            return output
+                    except Exception as sandbox_err:
+                        self._log(f"Sandbox error, falling back to host: {sandbox_err}")
+                
+                # ── Regular Host Execution ──
                 from ..schemas.tools import TerminalInput
                 input_data = TerminalInput(
                     command=command,
                     working_directory=arguments.get("working_directory", "."),
                 )
                 
-                # Setup specific error capture for terminal
                 exit_code = -1
                 result = None
                 try:
@@ -425,27 +517,17 @@ class Agent:
                 output_parts = []
                 if result.stdout:
                     output_parts.append(f"STDOUT:\n{result.stdout}")
-                    
-                    # Stream STDOUT to UI callback
-                    on_cmd_output = self.callbacks.get("on_command_output")
                     if on_cmd_output:
                         for line in result.stdout.splitlines():
-                            # Send normal lines without prefix to match typical terminal look
                             on_cmd_output(line)
                             
                 if result.stderr:
                     output_parts.append(f"STDERR:\n{result.stderr}")
-                    
-                    # Stream STDERR to UI callback as well
-                    on_cmd_output = self.callbacks.get("on_command_output")
                     if on_cmd_output:
                         for line in result.stderr.splitlines():
                             on_cmd_output(line)
                             
                 output_parts.append(f"Exit code: {result.exit_code}")
-                
-                # Stream exit code
-                on_cmd_output = self.callbacks.get("on_command_output")
                 if on_cmd_output:
                     on_cmd_output(f"Exit code: {result.exit_code}")
                 

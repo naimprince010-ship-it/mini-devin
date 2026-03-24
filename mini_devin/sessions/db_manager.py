@@ -71,6 +71,7 @@ class DatabaseSessionManager:
         model: str = "gpt-4o",
         max_iterations: int = 50,
         session_id: str | None = None,
+        use_sandbox: bool = False,
     ) -> Session:
         """Create a new agent session with database persistence."""
         async with self._session_lock:
@@ -97,11 +98,23 @@ class DatabaseSessionManager:
                 from ..core.llm_client import create_llm_client
                 llm_client = create_llm_client(model=model)
                 
+                # Build Docker sandbox if requested
+                sandbox = None
+                if use_sandbox:
+                    try:
+                        from ..sandbox.docker_sandbox import create_sandbox
+                        sandbox = create_sandbox(repo_path=working_directory)
+                    except Exception as e:
+                        print(f"[Session] Sandbox creation failed, running without sandbox: {e}")
+                
                 agent = Agent(
                     llm_client=llm_client,
                     working_directory=working_directory,
                     max_iterations=max_iterations,
+                    use_sandbox=use_sandbox,
                 )
+                if sandbox:
+                    agent._sandbox = sandbox
                 
                 self._agents[session_id] = agent
                 self._cancel_events[session_id] = asyncio.Event()
@@ -232,6 +245,20 @@ class DatabaseSessionManager:
         except Exception as e:
             print(f'inject_followup error: {e}')
 
+    async def answer_clarification(self, session_id: str, answer: str) -> bool:
+        """Provide an answer to a clarification question asked by the agent."""
+        agent = self._agents.get(session_id)
+        if not agent:
+            return False
+        try:
+            agent._clarification_answer = answer
+            if agent._clarification_event is not None:
+                agent._clarification_event.set()
+            return True
+        except Exception as e:
+            print(f'answer_clarification error: {e}')
+            return False
+
     async def stop_session(self, session_id: str) -> bool:
         """Stop the running task in a session."""
         if session_id in self._cancel_events:
@@ -336,6 +363,43 @@ class DatabaseSessionManager:
         start_time = datetime.now(timezone.utc)
         cancel_event = self._cancel_events.get(session_id, asyncio.Event())
         
+        # ── Auto Dependency Detection & Installation ──
+        try:
+            ws_dir = Path(db_task.description and agent.working_directory or ".")
+            if agent.working_directory:
+                ws_dir = Path(agent.working_directory)
+            dep_cmds = []
+            if (ws_dir / "requirements.txt").exists():
+                dep_cmds.append("pip install -r requirements.txt")
+            if (ws_dir / "pyproject.toml").exists() and not (ws_dir / "requirements.txt").exists():
+                dep_cmds.append("pip install -e . 2>/dev/null || true")
+            if (ws_dir / "package.json").exists():
+                dep_cmds.append("npm install --prefer-offline 2>/dev/null || true")
+            if dep_cmds and connection_manager:
+                await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
+                    type=MessageType.TOOL_OUTPUT,
+                    data={"line": "[Auto] Detecting and installing dependencies..."},
+                    task_id=task_id,
+                ))
+                import asyncio as _asyncio
+                for dep_cmd in dep_cmds:
+                    proc = await _asyncio.create_subprocess_shell(
+                        dep_cmd, cwd=str(ws_dir),
+                        stdout=_asyncio.subprocess.PIPE,
+                        stderr=_asyncio.subprocess.STDOUT,
+                    )
+                    stdout_bytes, _ = await proc.communicate()
+                    out = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+                    for line in out.splitlines():
+                        if connection_manager:
+                            await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
+                                type=MessageType.TOOL_OUTPUT,
+                                data={"line": line},
+                                task_id=task_id,
+                            ))
+        except Exception as dep_err:
+            print(f"[Auto-deps] error: {dep_err}")
+        
         try:
             # Lock for serialized database updates in background tasks
             update_lock = asyncio.Lock()
@@ -367,6 +431,14 @@ class DatabaseSessionManager:
                         await connection_manager.send_tokens(
                             session_id, task_id, data.get("content", "")
                         )
+                        # Also emit accumulated token usage
+                        if agent and hasattr(agent, 'llm') and agent.llm:
+                            usage = agent.llm.get_usage_stats()
+                            await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
+                                type=MessageType.TOKEN_USAGE,
+                                data=usage,
+                                task_id=task_id,
+                            ))
                     elif update_type == "tool_output":
                         # Shell live streaming — emit a token-style line for the Shell tab
                         line = data.get("line", "")
@@ -408,8 +480,16 @@ class DatabaseSessionManager:
                 "on_tool_start": lambda name, args: on_update("tool_started", {"tool": name, "input": args}),
                 "on_tool_result": lambda name, args, output, duration: on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration}),
                 "on_phase_change": lambda phase: on_update("phase_changed", {"phase": phase}),
-                # Plan events
-                "on_plan_created": lambda steps: on_update("plan_created", {"steps": steps}),
+                    # on_clarification_needed callback: emit WS event so UI can show modal
+                    "on_clarification_needed": lambda question: asyncio.ensure_future(
+                        connection_manager.broadcast_to_session(session_id, WebSocketMessage(
+                            type=MessageType.CLARIFICATION_NEEDED,
+                            data={"question": question},
+                            task_id=task_id,
+                        ))
+                    ) if connection_manager else None,
+                    # Plan events
+                    "on_plan_created": lambda steps: on_update("plan_created", {"steps": steps}),
                 "on_step_started": lambda idx, text: on_update("step_started", {"index": idx, "text": text}),
                 "on_step_completed": lambda idx, text: on_update("step_completed", {"index": idx, "text": text}),
                 "on_iteration": lambda iteration, max_iter: on_update("iteration", {"iteration": iteration, "max": max_iter}),
