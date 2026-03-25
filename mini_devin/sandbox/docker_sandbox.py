@@ -39,7 +39,7 @@ class SecurityLevel(str, Enum):
 @dataclass
 class SandboxConfig:
     """Configuration for the Docker sandbox."""
-    # Image settings
+    # Image settings — built from Dockerfile.sandbox
     image: str = "mini-devin-sandbox:latest"
     
     # Resource limits
@@ -563,13 +563,17 @@ def generate_dockerfile(output_path: str = "Dockerfile") -> str:
 
 
 async def build_sandbox_image(
-    dockerfile_path: str = "Dockerfile",
+    dockerfile_path: str = "Dockerfile.sandbox",
     image_name: str = "mini-devin-sandbox:latest",
+    build_context: str = ".",
 ) -> bool:
-    """Build the sandbox Docker image."""
+    """Build the sandbox Docker image from Dockerfile.sandbox."""
     try:
         process = await asyncio.create_subprocess_exec(
-            "docker", "build", "-t", image_name, "-f", dockerfile_path, ".",
+            "docker", "build",
+            "-t", image_name,
+            "-f", dockerfile_path,
+            build_context,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -577,15 +581,46 @@ async def build_sandbox_image(
         stdout, stderr = await process.communicate()
         
         if process.returncode == 0:
-            print(f"Successfully built image: {image_name}")
+            print(f"[Sandbox] Successfully built image: {image_name}")
             return True
         else:
-            print(f"Failed to build image: {stderr.decode()}")
+            print(f"[Sandbox] Failed to build image: {stderr.decode()}")
             return False
             
     except Exception as e:
-        print(f"Error building image: {e}")
+        print(f"[Sandbox] Error building image: {e}")
         return False
+
+
+async def build_sandbox_from_repo(repo_root: str | None = None) -> bool:
+    """
+    Locate Dockerfile.sandbox relative to the repo root and build the image.
+    
+    Args:
+        repo_root: Path to the repo. Defaults to the parent of this file's package.
+        
+    Returns:
+        True if the build succeeded.
+    """
+    import pathlib
+    if repo_root is None:
+        # Walk up from this file to find Dockerfile.sandbox
+        here = pathlib.Path(__file__).resolve().parent
+        for candidate in [here, here.parent, here.parent.parent]:
+            df = candidate / "Dockerfile.sandbox"
+            if df.exists():
+                repo_root = str(candidate)
+                break
+        else:
+            print("[Sandbox] Could not locate Dockerfile.sandbox")
+            return False
+    
+    dockerfile = str(pathlib.Path(repo_root) / "Dockerfile.sandbox")
+    return await build_sandbox_image(
+        dockerfile_path=dockerfile,
+        image_name="mini-devin-sandbox:latest",
+        build_context=repo_root,
+    )
 
 
 def generate_seccomp_profile(output_path: str = "seccomp.json") -> str:

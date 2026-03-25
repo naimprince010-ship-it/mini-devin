@@ -51,6 +51,7 @@ class DatabaseSessionManager:
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}  # Track asyncio Tasks for cancellation
         self._session_titles: dict[str, str] = {}  # Cache titles in-memory
+        self._sandboxes: dict[str, Any] = {}  # Active DockerSandbox instances per session
         
         # Statistics
         self._start_time = datetime.now(timezone.utc)
@@ -268,6 +269,66 @@ class DatabaseSessionManager:
             running.cancel()
             return True
         return False
+
+    async def start_sandbox(self, session_id: str) -> dict:
+        """Start a Docker sandbox for the given session."""
+        session = await self.get_session(session_id)
+        if not session:
+            return {"started": False, "error": "Session not found"}
+
+        # If a sandbox is already running, return its status
+        existing = self._sandboxes.get(session_id)
+        if existing and existing.is_running():
+            return {
+                "started": True,
+                "session_id": session_id,
+                "container_id": existing.container_id,
+                "status": existing.status.value,
+            }
+
+        try:
+            from ..sandbox.docker_sandbox import create_sandbox
+            working_dir = session.working_directory or "."
+            sandbox = create_sandbox(repo_path=working_dir)
+            ok = await sandbox.start()
+            if ok:
+                self._sandboxes[session_id] = sandbox
+                # Also wire it to the agent if one exists
+                agent = self._agents.get(session_id)
+                if agent:
+                    agent._sandbox = sandbox
+                    agent.use_sandbox = True
+                return {
+                    "started": True,
+                    "session_id": session_id,
+                    "container_id": sandbox.container_id,
+                    "status": sandbox.status.value,
+                }
+            else:
+                return {"started": False, "error": "Docker failed to start the container"}
+        except Exception as e:
+            return {"started": False, "error": str(e)}
+
+    async def stop_sandbox(self, session_id: str) -> dict:
+        """Stop the Docker sandbox for the given session."""
+        sandbox = self._sandboxes.get(session_id)
+        if not sandbox:
+            return {"stopped": False, "error": "No active sandbox for this session"}
+
+        try:
+            ok = await sandbox.stop()
+            if ok:
+                del self._sandboxes[session_id]
+                # Detach sandbox from agent
+                agent = self._agents.get(session_id)
+                if agent:
+                    agent._sandbox = None
+                    agent.use_sandbox = False
+                return {"stopped": True, "session_id": session_id}
+            else:
+                return {"stopped": False, "error": "Failed to stop Docker container"}
+        except Exception as e:
+            return {"stopped": False, "error": str(e)}
     
     async def get_task(self, session_id: str, task_id: str) -> Task | None:
         """Get a task by ID."""

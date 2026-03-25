@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, Fragment } from 'react
 import { Session, Task, WebSocketMessage } from '../types';
 import { useApi } from '../hooks/useApi';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target, Coins, HelpCircle, X } from 'lucide-react';
+import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target, Coins, HelpCircle, X, DollarSign } from 'lucide-react';
 import { StreamingOutput } from './StreamingOutput';
 import { useSessionEvents } from '../contexts/SessionEventsContext';
 import { PlanStepsView } from './PlanStepsView';
@@ -33,6 +33,17 @@ function formatRelativeTime(date: string | Date): string {
   if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
   if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
   return `${Math.floor(diff / 86400000)}d ago`;
+}
+
+// GPT-4o pricing (per 1M tokens)
+const COST_PER_1M_INPUT = 2.50;
+const COST_PER_1M_OUTPUT = 10.00;
+
+function calcEstimatedCost(promptTokens: number, completionTokens: number): string {
+  const cost = (promptTokens / 1_000_000) * COST_PER_1M_INPUT
+    + (completionTokens / 1_000_000) * COST_PER_1M_OUTPUT;
+  if (cost < 0.001) return '<$0.001';
+  return `$${cost.toFixed(3)}`;
 }
 
 export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
@@ -332,15 +343,9 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
             </div>
           </div>
 
-          {/* Phase + Iteration + Tokens chips */}
+          {/* Phase + Iteration chips (only show when streaming) */}
           {isStreaming && (
             <div className="flex items-center gap-2">
-              {events.tokenUsage.total_tokens > 0 && (
-                <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#1a1a1a] border border-[#262626] text-[10px] text-[#a3a3a3]">
-                  <Coins size={10} className="text-yellow-500/80" />
-                  <span className="font-mono">{events.tokenUsage.total_tokens.toLocaleString()} tk</span>
-                </div>
-              )}
               {events.iteration > 0 && (
                 <div className="px-2 py-0.5 rounded-full bg-[#1a1a1a] border border-[#262626] text-[10px] text-[#a3a3a3]">
                   iter {events.iteration}/{events.maxIterations}
@@ -382,6 +387,54 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
           </div>
         )}
       </div>
+
+      {/* Token Usage Status Bar — shown whenever tokens have been used */}
+      {events.tokenUsage.total_tokens > 0 && (
+        <div className="px-6 py-2 border-b border-[#1a1a1a] bg-[#0a0a0a] flex items-center gap-4">
+          {/* Token count */}
+          <div
+            className="group relative flex items-center gap-1.5 cursor-default"
+            title="Prompt / Completion tokens"
+          >
+            <Coins size={11} className="text-yellow-500/70" />
+            <span className="text-[11px] font-mono text-[#737373]">
+              {events.tokenUsage.total_tokens.toLocaleString()}
+              <span className="text-[#525252]"> tokens</span>
+            </span>
+            {/* Hover breakdown */}
+            <div className="absolute bottom-full left-0 mb-1.5 hidden group-hover:flex flex-col gap-0.5 bg-[#1a1a1a] border border-[#262626] rounded-lg px-3 py-2 text-[10px] font-mono text-[#a3a3a3] shadow-xl whitespace-nowrap z-50">
+              <span>↑ prompt: <span className="text-white">{events.tokenUsage.prompt_tokens.toLocaleString()}</span></span>
+              <span>↓ completion: <span className="text-white">{events.tokenUsage.completion_tokens.toLocaleString()}</span></span>
+              <span>∑ total: <span className="text-white">{events.tokenUsage.total_tokens.toLocaleString()}</span></span>
+            </div>
+          </div>
+
+          <span className="text-[#2a2a2a]">·</span>
+
+          {/* Estimated cost */}
+          <div className="flex items-center gap-1.5">
+            <DollarSign size={11} className="text-emerald-500/70" />
+            <span className="text-[11px] font-mono text-[#737373]">
+              {calcEstimatedCost(
+                events.tokenUsage.prompt_tokens,
+                events.tokenUsage.completion_tokens
+              )}
+              <span className="text-[#525252]"> est. cost</span>
+            </span>
+          </div>
+
+          {/* Live pulse when running */}
+          {isStreaming && (
+            <>
+              <span className="text-[#2a2a2a]">·</span>
+              <div className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#00ff99] animate-pulse" />
+                <span className="text-[10px] uppercase tracking-wider text-[#00ff99]/70 font-bold">Live</span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Acceptance Criteria badge */}
       {events.acceptanceCriteria && (

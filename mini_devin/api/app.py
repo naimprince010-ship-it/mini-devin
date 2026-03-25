@@ -161,8 +161,58 @@ async def answer_clarification(session_id: str, request: Request):
     if not ok:
         raise HTTPException(status_code=404, detail="No pending clarification for this session")
     return {"status": "answered", "session_id": session_id}
-    
-    
+
+
+@app.post("/api/sessions/{session_id}/sandbox/start")
+@app.post("/sessions/{session_id}/sandbox/start")
+async def start_sandbox(session_id: str):
+    """Start a Docker sandbox for the given session."""
+    result = await session_manager.start_sandbox(session_id)
+    if not result.get("started"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to start sandbox"))
+    # Broadcast sandbox_started event over WebSocket
+    await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
+        type=MessageType.STATUS,
+        data={"event": "sandbox_started", "container_id": result.get("container_id"), "status": result.get("status")},
+    ))
+    return result
+
+
+@app.post("/api/sessions/{session_id}/sandbox/stop")
+@app.post("/sessions/{session_id}/sandbox/stop")
+async def stop_sandbox(session_id: str):
+    """Stop the Docker sandbox for the given session."""
+    result = await session_manager.stop_sandbox(session_id)
+    if not result.get("stopped"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to stop sandbox"))
+    # Broadcast sandbox_stopped event over WebSocket
+    await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
+        type=MessageType.STATUS,
+        data={"event": "sandbox_stopped"},
+    ))
+    return result
+
+
+
+@app.post("/api/sandbox/build")
+async def build_sandbox_image_endpoint():
+    """Trigger a build of the mini-devin-sandbox Docker image (runs in background)."""
+    async def _do_build():
+        try:
+            from ..sandbox.docker_sandbox import build_sandbox_from_repo
+            ok = await build_sandbox_from_repo()
+            print(f"[API] Sandbox image build {'succeeded' if ok else 'failed'}")
+        except Exception as e:
+            print(f"[API] Sandbox image build error: {e}")
+
+    asyncio.create_task(_do_build())
+    return {
+        "status": "building",
+        "image": "mini-devin-sandbox:latest",
+        "message": "Build started in background. Check server logs for progress.",
+    }
+
+
 @app.get("/api/sessions/{session_id}/ls")
 @app.get("/sessions/{session_id}/ls")
 async def list_workspace_files(session_id: str, directory: str = "."):
