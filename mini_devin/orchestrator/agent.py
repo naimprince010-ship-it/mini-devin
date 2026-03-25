@@ -4,6 +4,7 @@ Agent Orchestrator for Mini-Devin
 This module implements the main agent that orchestrates task execution
 using a state machine approach with planning, execution, and verification phases.
 """
+from __future__ import annotations  # Enable forward references for type hints
 
 import asyncio
 import json
