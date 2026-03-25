@@ -93,6 +93,41 @@ async def api_health():
     return {"status": "healthy", "mode": "lightweight"}
 
 
+@app.get("/api/browse")
+async def browse_directory(path: str = "."):
+    """Browse server filesystem directories for the folder picker UI."""
+    import pathlib
+    try:
+        target = pathlib.Path(path).resolve()
+        if not target.exists() or not target.is_dir():
+            raise HTTPException(status_code=404, detail="Directory not found")
+
+        entries = []
+        # Add parent navigation (go up one level)
+        parent = str(target.parent) if target != target.parent else None
+
+        for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
+            if entry.name.startswith('.') and entry.name not in ('.env',):
+                continue
+            if entry.name in ('__pycache__', 'node_modules', '.git'):
+                continue
+            entries.append({
+                "name": entry.name,
+                "path": str(entry),
+                "is_directory": entry.is_dir(),
+            })
+
+        return {
+            "current": str(target),
+            "parent": parent,
+            "entries": entries,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/sessions")
 @app.get("/sessions")
 async def list_sessions():

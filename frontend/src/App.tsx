@@ -10,6 +10,7 @@ import { SkillsManager } from './components/SkillsManager';
 import { RepoManager } from './components/RepoManager';
 import { PRReview } from './components/PRReview';
 import { ProviderSelector } from './components/ProviderSelector';
+import { FolderPicker } from './components/FolderPicker';
 import { useAuth } from './contexts/AuthContext';
 import { SessionEventsProvider, useSessionEvents } from './contexts/SessionEventsContext';
 import { useApi } from './hooks/useApi';
@@ -25,7 +26,6 @@ import {
   GitPullRequest,
   BookOpen,
   X,
-  FolderOpen,
   Cpu,
   Target,
   Zap,
@@ -89,16 +89,10 @@ function NewSessionModal({
           {/* Working Directory */}
           <div>
             <label className="flex items-center gap-1.5 text-xs font-medium text-[#a3a3a3] mb-2">
-              <FolderOpen size={12} />
+              <Cpu size={12} className="text-yellow-500/70" />
               Working Directory
             </label>
-            <input
-              type="text"
-              value={workingDir}
-              onChange={(e) => setWorkingDir(e.target.value)}
-              className="w-full px-3 py-2.5 bg-[#0a0a0a] text-white text-sm rounded-lg border border-[#262626] focus:border-[#00ff99]/40 focus:outline-none transition-colors placeholder-[#525252] font-mono"
-              placeholder="/path/to/repo"
-            />
+            <FolderPicker value={workingDir} onChange={setWorkingDir} />
           </div>
 
           {/* Model */}
