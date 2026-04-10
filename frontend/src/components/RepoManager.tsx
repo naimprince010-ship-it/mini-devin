@@ -411,7 +411,7 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
                                 {b === repo.default_branch && <span className="ml-auto text-xs text-green-400 bg-green-900/30 px-1.5 py-0.5 rounded">default</span>}
                               </div>
                             ))}
-                            {!branches[repo.repo_id] && <p className="text-gray-500 text-xs text-center py-2">Click "Branches" tab to load</p>}
+                            {branches[repo.repo_id]?.length === 0 && <p className="text-gray-500 text-xs text-center py-2">No branches found</p>}
                           </div>
                         )}
 
@@ -450,7 +450,11 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
                                 <ExternalLink size={11} className="text-gray-500 group-hover:text-blue-400 shrink-0 mt-1" />
                               </a>
                             ))}
-                            {pulls[repo.repo_id]?.length === 0 && <p className="text-gray-500 text-xs text-center py-2">No open pull requests</p>}
+                            {(pulls[repo.repo_id] === undefined || pulls[repo.repo_id]?.length === 0) && (
+                              <p className="text-gray-500 text-xs text-center py-2">
+                                {pulls[repo.repo_id] === undefined ? 'Could not load PRs — GitHub token required.' : 'No open pull requests'}
+                              </p>
+                            )}
                           </div>
                         )}
 
@@ -485,7 +489,11 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
                                 <ExternalLink size={11} className="text-gray-500 group-hover:text-blue-400 shrink-0 mt-1" />
                               </a>
                             ))}
-                            {issues[repo.repo_id]?.length === 0 && <p className="text-gray-500 text-xs text-center py-2">No open issues</p>}
+                            {(issues[repo.repo_id] === undefined || issues[repo.repo_id]?.length === 0) && (
+                              <p className="text-gray-500 text-xs text-center py-2">
+                                {issues[repo.repo_id] === undefined ? 'Could not load issues — GitHub token required.' : 'No open issues'}
+                              </p>
+                            )}
                           </div>
                         )}
 
@@ -501,7 +509,11 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
                                 </div>
                               </div>
                             ))}
-                            {commits[repo.repo_id]?.length === 0 && <p className="text-gray-500 text-xs text-center py-2">No commits found</p>}
+                            {(commits[repo.repo_id] === undefined || commits[repo.repo_id]?.length === 0) && (
+                              <p className="text-gray-500 text-xs text-center py-2">
+                                {commits[repo.repo_id] === undefined ? 'Could not load commits — GitHub token required.' : 'No commits found'}
+                              </p>
+                            )}
                           </div>
                         )}
 
