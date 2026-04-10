@@ -268,9 +268,10 @@ function App() {
     { id: 'reviews', icon: <GitPullRequest size={18} />, label: 'Reviews' },
   ];
 
+  // Same-origin /api when API is served with the app (production). Override with VITE_API_URL for split deploys.
   const apiBase = import.meta.env.VITE_API_URL
     ? `${import.meta.env.VITE_API_URL}/api`
-    : 'http://localhost:8000/api';
+    : '/api';
 
   const accentColor = isDark ? '#00ff99' : '#00aa66';
   const bgPrimary = isDark ? 'bg-[#0f0f0f]' : 'bg-[#f5f5f5]';
