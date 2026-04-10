@@ -8,6 +8,7 @@ from __future__ import annotations  # Enable forward references for type hints
 
 import asyncio
 import json
+import os
 import time
 import uuid
 import re
@@ -99,7 +100,13 @@ SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer agent.
 - Always write COMPLETE file content when using `write_file`
 - After writing a file, verify with `read_file`
 - If a command fails, read the error and fix it — do NOT give up
-- When done: write **TASK COMPLETE** followed by a short summary of actual results."""
+- When done: write **TASK COMPLETE** followed by a short summary of actual results.
+
+## Environment (critical)
+- The agent runs on **Linux/bash** in the cloud/container, **not** on the user's Windows PC.
+- **Never** use Windows drive paths (`C:\\`, `G:\\`, `D:\\`) in `terminal` or `editor` paths—they do not exist here.
+- Use **paths under the workspace** only: relative paths like `./myself/index.html` or POSIX paths starting with the workspace root shown below.
+- Prefer **`editor` `write_file`** to create files and folders; it creates parent directories automatically."""
 
 
 class Agent:
@@ -210,8 +217,12 @@ class Agent:
         # Register default tools
         self._register_default_tools()
         
-        # Set system prompt
-        self.llm.set_system_prompt(SYSTEM_PROMPT)
+        # Set system prompt (inject workspace so models stop inventing Windows paths)
+        wd = self.working_directory or os.getcwd()
+        self.llm.set_system_prompt(
+            SYSTEM_PROMPT
+            + f"\n\n**Workspace root (authoritative):** `{wd}`\n"
+        )
     
     def _register_default_tools(self) -> None:
         """Register the default tools (terminal, editor, browser)."""
@@ -254,7 +265,7 @@ class Agent:
         # Terminal tool schema
         schemas.append({
             "name": "terminal",
-            "description": "Execute a shell command in the terminal. Use this for running builds, tests, git commands, etc.",
+            "description": "Execute a shell command in Linux/bash under the task workspace. Do not use Windows paths (C:\\\\, G:\\\\). Use relative paths (./...) from the workspace.",
             "parameters": {
                 "type": "object",
                 "properties": {

@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any
 
 from ..core.tool_interface import BaseTool, ToolPolicy
+from .host_paths import resolve_for_editor
 from ..schemas.tools import (
     EditorAction,
     ReadFileInput,
@@ -102,10 +103,8 @@ Use this tool for all file operations during development."""
         return super().validate_input(input_data)
     
     def _resolve_path(self, path: str) -> str:
-        """Resolve a path relative to working directory."""
-        if os.path.isabs(path):
-            return path
-        return os.path.abspath(os.path.join(self.working_directory, path))
+        """Resolve a path relative to working directory (remap Windows drives on Linux)."""
+        return resolve_for_editor(path, self.working_directory)
     
     def _detect_language(self, path: str) -> str | None:
         """Detect programming language from file extension."""

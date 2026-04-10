@@ -114,8 +114,11 @@ class SelfCorrectionEngine:
             return "A dependency or command is missing. You may need to run `pip install`, `npm install`, or `apt-get install` to install the required package before retrying."
             
         elif error_type == ErrorType.FILE_NOT_FOUND:
-            path = args.get("path", args.get("command", "the file"))
-            return f"The file or directory was not found. Please use the `editor` (list_directory) or `terminal` (ls/dir) to verify the correct path exists, create it if necessary, and use the absolute path."
+            return (
+                "The file or directory was not found. Use `editor` list_directory or terminal `pwd` / `ls` "
+                "under the task workspace. On Linux servers, do NOT use Windows paths (C:\\\\, G:\\\\). "
+                "Use relative paths like `./src` or paths under the workspace root from the system prompt."
+            )
             
         elif error_type == ErrorType.PERMISSION_DENIED:
             return "Permission denied. You may need to change file permissions, use a different directory, or avoid modifying system-protected files."
@@ -124,7 +127,15 @@ class SelfCorrectionEngine:
             return "The operation timed out. If it's a server, run it in the background using `&` or as a daemon. Otherwise, try a smaller or optimized command."
             
         elif error_type == ErrorType.COMMAND_FAILED:
-            return "The command failed with a non-zero exit code. Please read the STDERR output carefully to understand why it failed, adjust your command, and retry."
+            if "Windows-style paths" in output or "runs on Linux" in output:
+                return (
+                    "The command used a Windows path on a Linux host. Remove drive letters (G:\\\\, C:\\\\); "
+                    "use `mkdir -p ./name`, POSIX paths under the workspace, or `editor` write_file instead."
+                )
+            return (
+                "The command failed with a non-zero exit code. Read STDERR, fix the root cause "
+                "(wrong path, missing package, syntax), then retry—do not repeat the same failing command."
+            )
             
         elif "BLOCKED" in output:
              return "This action was blocked by the safety guard. You must find an alternative approach that does not violate safety policies."

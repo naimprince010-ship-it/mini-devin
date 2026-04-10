@@ -11,6 +11,7 @@ import os
 import time
 
 from ..core.tool_interface import BaseTool, ToolPolicy
+from .host_paths import command_uses_windows_drive_paths, linux_workspace_hint
 from ..schemas.tools import TerminalInput, TerminalOutput, ToolStatus
 
 
@@ -137,6 +138,19 @@ Output is captured and returned. Long outputs are truncated."""
                 error_message=f"Command blocked by safety policy: {input_data.command}",
                 stdout="",
                 stderr="Command blocked by safety policy",
+                exit_code=-1,
+                execution_time_ms=0,
+            )
+
+        # Fail fast on Windows paths when the server is POSIX (avoids useless retry loops).
+        if os.name != "nt" and command_uses_windows_drive_paths(input_data.command):
+            wd = os.path.abspath(self.working_directory)
+            msg = linux_workspace_hint(wd)
+            return TerminalOutput(
+                status=ToolStatus.FAILURE,
+                error_message="Windows-style paths are invalid on this Linux environment.",
+                stdout="",
+                stderr=msg,
                 exit_code=-1,
                 execution_time_ms=0,
             )
