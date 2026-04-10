@@ -129,6 +129,31 @@ async def api_health():
     return {"status": "healthy", "mode": "lightweight"}
 
 
+# ── Repos stub endpoints ──────────────────────────────────────────────────────
+# Full repo management requires GitHub OAuth + git binary. For now we return
+# empty lists so the frontend doesn't show scary error banners.
+
+@app.get("/api/repos")
+async def list_repos():
+    return {"repos": [], "total": 0}
+
+@app.post("/api/repos")
+async def add_repo(request: Request):
+    raise HTTPException(status_code=501, detail="Repository management requires GitHub OAuth setup. Please configure GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET.")
+
+@app.get("/api/github/oauth/status")
+async def github_oauth_status():
+    return {
+        "connected": False,
+        "github_configured": bool(os.getenv("GITHUB_CLIENT_ID")),
+    }
+
+@app.get("/api/github/oauth/start")
+async def github_oauth_start():
+    raise HTTPException(status_code=501, detail="GitHub OAuth not configured. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET.")
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 @app.get("/api/browse")
 async def browse_directory(path: str = "."):
     """Browse server filesystem directories for the folder picker UI."""

@@ -58,9 +58,13 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
       if (response.ok) {
         const data = await response.json();
         setGithubStatus(data);
+      } else {
+        // Endpoint unavailable — set a default "not configured" state
+        setGithubStatus({ connected: false, github_configured: false });
       }
     } catch (e) {
-      console.error('Failed to load GitHub status:', e);
+      console.warn('GitHub status unavailable:', e);
+      setGithubStatus({ connected: false, github_configured: false });
     }
   }, [apiBaseUrl]);
 
@@ -131,11 +135,18 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
     setError(null);
     try {
       const response = await fetch(`${apiBaseUrl}/repos`);
+      // 404 or 501 means feature not enabled — treat as empty, not an error
+      if (response.status === 404 || response.status === 501) {
+        setRepos([]);
+        return;
+      }
       if (!response.ok) throw new Error('Failed to load repositories');
       const data = await response.json();
       setRepos(data.repos || []);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load repositories');
+      // Network failure — show a soft info message, not a scary red banner
+      console.warn('Repos API unavailable:', e);
+      setRepos([]);
     } finally {
       setLoading(false);
     }
