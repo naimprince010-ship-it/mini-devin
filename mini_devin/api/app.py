@@ -19,6 +19,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 from dotenv import load_dotenv
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 import os
 
 # Load environment variables
@@ -27,6 +31,9 @@ load_dotenv()
 from .websocket import ConnectionManager, WebSocketMessage, MessageType
 from ..database.config import init_db
 from ..sessions.db_manager import DatabaseSessionManager
+
+# Rate limiter — 60 requests/minute per IP; WebSocket excluded
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 
 # Database-backed session management
 session_manager = DatabaseSessionManager()
@@ -63,6 +70,11 @@ app = FastAPI(
 def create_app() -> FastAPI:
     """Factory function to create the app instance."""
     return app
+
+# Rate limiting setup
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Configure CORS - allow all origins for production
 app.add_middleware(
@@ -144,6 +156,7 @@ async def list_sessions():
             "iteration": s.iteration,
             "total_tasks": s.total_tasks,
             "title": getattr(s, 'title', ''),
+            "model": getattr(s, 'model', 'gpt-4o'),
         }
         for s in sessions
     ]
@@ -157,6 +170,7 @@ class CreateSessionRequest(BaseModel):
 
 @app.post("/api/sessions")
 @app.post("/sessions")
+@limiter.limit("10/minute")
 async def create_session(raw_request: Request):
     working_dir = "."
     model = "gpt-4o"
@@ -481,34 +495,66 @@ async def list_artifacts(session_id: str, task_id: str):
 @app.get("/providers")
 async def list_providers():
     """List available LLM providers."""
-    # Simplified version for lightweight mode
     providers = []
     if os.getenv("OPENAI_API_KEY") or os.getenv("MiniDevin"):
         providers.append({
-            "id": "openai",
-            "name": "OpenAI",
-            "models": ["gpt-4o", "gpt-4o-mini"]
+            "id": "openai", "name": "OpenAI", "configured": True, "enabled": True,
+            "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
         })
     if os.getenv("ANTHROPIC_API_KEY"):
         providers.append({
-            "id": "anthropic",
-            "name": "Anthropic",
-            "models": ["claude-3-5-sonnet-latest"]
+            "id": "anthropic", "name": "Anthropic", "configured": True, "enabled": True,
+            "models": ["claude-3-5-sonnet-latest", "claude-3-haiku-20240307"]
+        })
+    if os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
+        providers.append({
+            "id": "google", "name": "Google", "configured": True, "enabled": True,
+            "models": ["gemini/gemini-1.5-pro", "gemini/gemini-1.5-flash"]
         })
     return {"providers": providers}
 
 @app.get("/api/models")
 @app.get("/models")
 async def list_models():
-    """List available LLM models."""
+    """List available LLM models based on configured API keys."""
     models = []
     if os.getenv("OPENAI_API_KEY") or os.getenv("MiniDevin"):
         models.extend([
-            {"id": "gpt-4o", "name": "GPT-4o", "provider": "openai"},
-            {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "provider": "openai"}
+            {"id": "gpt-4o", "name": "GPT-4o", "provider": "openai",
+             "context_window": 128000, "supports_tools": True, "supports_vision": True,
+             "max_output_tokens": 4096, "description": "Most capable GPT-4 model"},
+            {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "provider": "openai",
+             "context_window": 128000, "supports_tools": True, "supports_vision": True,
+             "max_output_tokens": 16384, "description": "Faster, cheaper GPT-4o"},
+            {"id": "gpt-4-turbo", "name": "GPT-4 Turbo", "provider": "openai",
+             "context_window": 128000, "supports_tools": True, "supports_vision": True,
+             "max_output_tokens": 4096, "description": "Powerful GPT-4 with vision"},
         ])
     if os.getenv("ANTHROPIC_API_KEY"):
-        models.append({"id": "claude-3-5-sonnet-latest", "name": "Claude 3.5 Sonnet", "provider": "anthropic"})
+        models.extend([
+            {"id": "claude-3-5-sonnet-latest", "name": "Claude 3.5 Sonnet", "provider": "anthropic",
+             "context_window": 200000, "supports_tools": True, "supports_vision": True,
+             "max_output_tokens": 8192, "description": "Best Claude for coding tasks"},
+            {"id": "claude-3-haiku-20240307", "name": "Claude 3 Haiku", "provider": "anthropic",
+             "context_window": 200000, "supports_tools": True, "supports_vision": False,
+             "max_output_tokens": 4096, "description": "Fastest Claude model"},
+        ])
+    if os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
+        models.extend([
+            {"id": "gemini/gemini-1.5-pro", "name": "Gemini 1.5 Pro", "provider": "google",
+             "context_window": 1000000, "supports_tools": True, "supports_vision": True,
+             "max_output_tokens": 8192, "description": "Google's most capable model"},
+            {"id": "gemini/gemini-1.5-flash", "name": "Gemini 1.5 Flash", "provider": "google",
+             "context_window": 1000000, "supports_tools": True, "supports_vision": True,
+             "max_output_tokens": 8192, "description": "Fast & efficient Gemini"},
+        ])
+    if not models:
+        # Fallback defaults so UI always has something to show
+        models = [
+            {"id": "gpt-4o", "name": "GPT-4o", "provider": "openai",
+             "context_window": 128000, "supports_tools": True, "supports_vision": True,
+             "max_output_tokens": 4096, "description": "Requires OPENAI_API_KEY"},
+        ]
     return {"models": models}
 
 @app.get("/api/status")

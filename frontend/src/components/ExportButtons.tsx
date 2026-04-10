@@ -14,25 +14,25 @@ export function ExportButtons({ sessionId }: ExportButtonsProps) {
     setExporting(format);
     try {
       const data = await api.exportSession(sessionId, format);
-      
+
       let content: string;
       let filename: string;
       let mimeType: string;
-      
+
       if (format === 'json') {
         content = JSON.stringify(data, null, 2);
-        filename = `session-${sessionId}.json`;
+        filename = `session-${sessionId.slice(0, 8)}.json`;
         mimeType = 'application/json';
       } else if (format === 'markdown') {
-        content = data.content || '';
-        filename = `session-${sessionId}.md`;
+        content = data.content || JSON.stringify(data, null, 2);
+        filename = `session-${sessionId.slice(0, 8)}.md`;
         mimeType = 'text/markdown';
       } else {
-        content = data.content || '';
-        filename = `session-${sessionId}.txt`;
+        content = data.content || JSON.stringify(data, null, 2);
+        filename = `session-${sessionId.slice(0, 8)}.txt`;
         mimeType = 'text/plain';
       }
-      
+
       const blob = new Blob([content], { type: mimeType });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -49,48 +49,26 @@ export function ExportButtons({ sessionId }: ExportButtonsProps) {
     }
   };
 
+  const buttons: { format: 'json' | 'markdown' | 'txt'; label: string; icon: React.ReactNode }[] = [
+    { format: 'json',     label: 'JSON',     icon: <FileJson size={13} /> },
+    { format: 'markdown', label: 'Markdown', icon: <FileText size={13} /> },
+    { format: 'txt',      label: 'Text',     icon: <File size={13} /> },
+  ];
+
   return (
-    <div className="flex items-center gap-2">
-      <span className="text-xs text-gray-400">Export:</span>
-      <button
-        onClick={() => handleExport('json')}
-        disabled={exporting !== null}
-        className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors disabled:opacity-50"
-        title="Export as JSON"
-      >
-        {exporting === 'json' ? (
-          <Loader2 className="animate-spin" size={12} />
-        ) : (
-          <FileJson size={12} />
-        )}
-        JSON
-      </button>
-      <button
-        onClick={() => handleExport('markdown')}
-        disabled={exporting !== null}
-        className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors disabled:opacity-50"
-        title="Export as Markdown"
-      >
-        {exporting === 'markdown' ? (
-          <Loader2 className="animate-spin" size={12} />
-        ) : (
-          <FileText size={12} />
-        )}
-        MD
-      </button>
-      <button
-        onClick={() => handleExport('txt')}
-        disabled={exporting !== null}
-        className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors disabled:opacity-50"
-        title="Export as Text"
-      >
-        {exporting === 'txt' ? (
-          <Loader2 className="animate-spin" size={12} />
-        ) : (
-          <File size={12} />
-        )}
-        TXT
-      </button>
+    <div className="flex flex-col gap-1">
+      {buttons.map(({ format, label, icon }) => (
+        <button
+          key={format}
+          onClick={() => handleExport(format)}
+          disabled={exporting !== null}
+          className="flex items-center gap-2 px-3 py-2 text-xs text-[#a3a3a3] hover:text-white hover:bg-[#1a1a1a] rounded-lg transition-colors disabled:opacity-50 w-full text-left"
+          title={`Export as ${label}`}
+        >
+          {exporting === format ? <Loader2 className="animate-spin" size={13} /> : icon}
+          {label}
+        </button>
+      ))}
     </div>
   );
 }

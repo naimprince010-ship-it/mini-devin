@@ -37,6 +37,7 @@ bcrypt = "^5.0.0"
 aiosqlite = "^0.22.1"
 PyGithub = "^2.3.0"
 GitPython = "^3.1.40"
+slowapi = "^0.1.9"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"

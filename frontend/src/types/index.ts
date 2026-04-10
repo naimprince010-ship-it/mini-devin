@@ -9,6 +9,7 @@ export interface Session {
   iteration: number;
   total_tasks: number;
   title?: string;
+  model?: string;
 }
 
 export interface Task {

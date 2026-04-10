@@ -2,11 +2,12 @@ import React, { useState, useEffect, useCallback, useRef, Fragment } from 'react
 import { Session, Task, WebSocketMessage } from '../types';
 import { useApi } from '../hooks/useApi';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target, Coins, HelpCircle, X, DollarSign } from 'lucide-react';
+import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target, Coins, HelpCircle, X, DollarSign, Cpu, Download } from 'lucide-react';
 import { StreamingOutput } from './StreamingOutput';
 import { useSessionEvents } from '../contexts/SessionEventsContext';
 import { PlanStepsView } from './PlanStepsView';
 import { useToast } from './Toast';
+import { ExportButtons } from './ExportButtons';
 
 interface TaskPanelProps {
   session: Session;
@@ -51,6 +52,7 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
   const [taskDescription, setTaskDescription] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [showExport, setShowExport] = useState(false);
   const currentTaskIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const toolCallIdMapRef = useRef<Map<string, string>>(new Map()); // ws tool -> context id
@@ -351,33 +353,64 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
       <div className="px-6 py-4 border-b border-[#262626] bg-[#0f0f0f]/80 backdrop-blur-md sticky top-0 z-10">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-sm font-semibold text-white">Current Session</h2>
+            <h2 className="text-sm font-semibold text-white truncate max-w-[200px]">
+              {session.title || 'Current Session'}
+            </h2>
             <div className="flex items-center gap-2 mt-1">
               <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-[#00ff99] shadow-[0_0_6px_#00ff99]' : 'bg-red-500'}`} />
               <span className="text-[10px] uppercase tracking-wider text-[#a3a3a3] font-bold">
                 {isConnected ? (isStreaming ? 'Agent Running' : 'Active Agent') : 'Agent Offline'}
               </span>
+              {/* Model badge */}
+              {session.model && (
+                <>
+                  <span className="text-[#2a2a2a]">·</span>
+                  <div className="flex items-center gap-1 text-[10px] text-[#525252]">
+                    <Cpu size={9} />
+                    <span>{session.model}</span>
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
-          {/* Phase + Iteration chips (only show when streaming) */}
-          {isStreaming && (
-            <div className="flex items-center gap-2">
-              {events.iteration > 0 && (
-                <div className="px-2 py-0.5 rounded-full bg-[#1a1a1a] border border-[#262626] text-[10px] text-[#a3a3a3]">
-                  iter {events.iteration}/{events.maxIterations}
-                </div>
-              )}
-              {phaseLabel && (
-                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#00ff99]/10 border border-[#00ff99]/25">
-                  <span className={`w-1.5 h-1.5 rounded-full ${clarificationQuestion ? 'bg-yellow-400' : 'bg-[#00ff99] animate-pulse'}`} />
-                  <span className={`text-[10px] font-bold uppercase tracking-widest ${clarificationQuestion ? 'text-yellow-400' : 'text-[#00ff99]'}`}>
-                    {clarificationQuestion ? 'Waiting for User' : phaseLabel}
-                  </span>
+          <div className="flex items-center gap-2">
+            {/* Export button */}
+            <div className="relative">
+              <button
+                onClick={() => setShowExport(p => !p)}
+                className="p-1.5 rounded-lg text-[#525252] hover:text-[#a3a3a3] hover:bg-[#1a1a1a] transition-colors"
+                title="Export conversation"
+              >
+                <Download size={14} />
+              </button>
+              {showExport && (
+                <div className="absolute right-0 top-full mt-1 bg-[#111111] border border-[#262626] rounded-xl shadow-2xl p-3 z-50 min-w-[160px]">
+                  <p className="text-[10px] uppercase tracking-wider text-[#525252] mb-2 font-bold">Export As</p>
+                  <ExportButtons sessionId={session.session_id} />
                 </div>
               )}
             </div>
-          )}
+
+            {/* Phase + Iteration chips (only show when streaming) */}
+            {isStreaming && (
+              <div className="flex items-center gap-2">
+                {events.iteration > 0 && (
+                  <div className="px-2 py-0.5 rounded-full bg-[#1a1a1a] border border-[#262626] text-[10px] text-[#a3a3a3]">
+                    iter {events.iteration}/{events.maxIterations}
+                  </div>
+                )}
+                {phaseLabel && (
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#00ff99]/10 border border-[#00ff99]/25">
+                    <span className={`w-1.5 h-1.5 rounded-full ${clarificationQuestion ? 'bg-yellow-400' : 'bg-[#00ff99] animate-pulse'}`} />
+                    <span className={`text-[10px] font-bold uppercase tracking-widest ${clarificationQuestion ? 'text-yellow-400' : 'text-[#00ff99]'}`}>
+                      {clarificationQuestion ? 'Waiting for User' : phaseLabel}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Phase progress bar */}

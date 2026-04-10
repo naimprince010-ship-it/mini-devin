@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Memory } from '../types';
 import { useApi } from '../hooks/useApi';
-import { Brain, Trash2, Plus, RefreshCw, Clock, Hash } from 'lucide-react';
+import { Brain, Trash2, Plus, RefreshCw, Clock, Hash, X } from 'lucide-react';
 
 interface MemoryViewProps {
   sessionId: string;
@@ -33,7 +33,6 @@ export function MemoryView({ sessionId }: MemoryViewProps) {
 
   const handleAddMemory = async () => {
     if (!newKey.trim() || !newValue.trim()) return;
-    
     try {
       await api.storeMemory(sessionId, newKey, newValue);
       setNewKey('');
@@ -54,107 +53,103 @@ export function MemoryView({ sessionId }: MemoryViewProps) {
     }
   };
 
-  const formatDate = (dateStr: string): string => {
-    const date = new Date(dateStr);
-    return date.toLocaleString();
-  };
-
   return (
-    <div className="bg-gray-800 rounded-lg p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-          <Brain size={16} />
+    <div className="space-y-3">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-[#525252] flex items-center gap-2">
+          <Brain size={13} className="text-[#00ff99]" />
           Agent Memory
         </h3>
         <div className="flex gap-1">
           <button
             onClick={loadMemories}
-            className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded"
+            className="p-1.5 text-[#525252] hover:text-white hover:bg-[#1a1a1a] rounded-lg transition-colors"
             title="Refresh"
           >
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
           </button>
           <button
             onClick={() => setShowAddForm(!showAddForm)}
-            className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded"
+            className="p-1.5 text-[#525252] hover:text-[#00ff99] hover:bg-[#00ff99]/10 rounded-lg transition-colors"
             title="Add Memory"
           >
-            <Plus size={14} />
+            <Plus size={12} />
           </button>
         </div>
       </div>
 
+      {/* Add form */}
       {showAddForm && (
-        <div className="mb-4 p-3 bg-gray-700 rounded-lg space-y-2">
+        <div className="p-3 bg-[#111111] border border-[#262626] rounded-xl space-y-2">
+          <div className="flex items-center justify-between mb-1">
+            <p className="text-[10px] uppercase tracking-wider text-[#525252] font-bold">New Memory</p>
+            <button onClick={() => setShowAddForm(false)} className="text-[#525252] hover:text-white">
+              <X size={12} />
+            </button>
+          </div>
           <input
             type="text"
             value={newKey}
-            onChange={(e) => setNewKey(e.target.value)}
-            placeholder="Key (e.g., user_preference)"
-            className="w-full px-3 py-2 bg-gray-600 text-white rounded border border-gray-500 focus:border-blue-500 focus:outline-none text-sm"
+            onChange={e => setNewKey(e.target.value)}
+            placeholder="Key (e.g. user_preference)"
+            className="w-full px-3 py-2 bg-[#0f0f0f] border border-[#262626] focus:border-[#00ff99]/50 text-white rounded-lg text-xs outline-none transition-colors"
           />
           <textarea
             value={newValue}
-            onChange={(e) => setNewValue(e.target.value)}
-            placeholder="Value (e.g., prefers dark mode)"
-            className="w-full px-3 py-2 bg-gray-600 text-white rounded border border-gray-500 focus:border-blue-500 focus:outline-none text-sm resize-none"
+            onChange={e => setNewValue(e.target.value)}
+            placeholder="Value (e.g. prefers TypeScript)"
+            className="w-full px-3 py-2 bg-[#0f0f0f] border border-[#262626] focus:border-[#00ff99]/50 text-white rounded-lg text-xs outline-none resize-none transition-colors"
             rows={2}
           />
-          <div className="flex gap-2">
-            <button
-              onClick={handleAddMemory}
-              disabled={!newKey.trim() || !newValue.trim()}
-              className="flex-1 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-medium disabled:opacity-50"
-            >
-              Store
-            </button>
-            <button
-              onClick={() => setShowAddForm(false)}
-              className="px-3 py-1.5 bg-gray-600 hover:bg-gray-500 text-white rounded text-sm"
-            >
-              Cancel
-            </button>
-          </div>
+          <button
+            onClick={handleAddMemory}
+            disabled={!newKey.trim() || !newValue.trim()}
+            className="w-full py-1.5 bg-[#00ff99] text-[#0f0f0f] rounded-lg text-xs font-bold disabled:opacity-40 hover:bg-[#00e589] transition-colors"
+          >
+            Store Memory
+          </button>
         </div>
       )}
 
+      {/* Memory list */}
       {memories.length === 0 ? (
-        <p className="text-gray-500 text-sm text-center py-4">
-          No memories stored yet. The agent will store important information here during task execution.
-        </p>
+        <div className="py-8 text-center">
+          <Brain size={24} className="text-[#2a2a2a] mx-auto mb-2" />
+          <p className="text-[#3a3a3a] text-xs">
+            No memories yet. The agent stores important context here during tasks.
+          </p>
+        </div>
       ) : (
-        <div className="space-y-2 max-h-64 overflow-y-auto">
-          {memories.map((memory) => (
-            <div
-              key={memory.memory_id}
-              className="p-3 bg-gray-700 rounded-lg"
-            >
+        <div className="space-y-2">
+          {memories.map(memory => (
+            <div key={memory.memory_id} className="p-3 bg-[#111111] border border-[#1a1a1a] rounded-xl hover:border-[#262626] transition-colors">
               <div className="flex items-start justify-between gap-2">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="text-blue-400 font-mono text-sm">{memory.content.key}</span>
-                    <span className="text-xs text-gray-500 px-1.5 py-0.5 bg-gray-600 rounded">
+                    <span className="text-[#00ff99] font-mono text-xs truncate">{memory.content.key}</span>
+                    <span className="text-[9px] text-[#525252] px-1.5 py-0.5 bg-[#1a1a1a] rounded font-bold uppercase">
                       {memory.type}
                     </span>
                   </div>
-                  <p className="text-gray-300 text-sm break-words">{memory.content.value}</p>
-                  <div className="flex items-center gap-3 mt-2 text-xs text-gray-500">
+                  <p className="text-[#a3a3a3] text-xs break-words leading-relaxed">{memory.content.value}</p>
+                  <div className="flex items-center gap-3 mt-2 text-[10px] text-[#3a3a3a]">
                     <span className="flex items-center gap-1">
-                      <Clock size={10} />
-                      {formatDate(memory.created_at)}
+                      <Clock size={9} />
+                      {new Date(memory.created_at).toLocaleString()}
                     </span>
                     <span className="flex items-center gap-1">
-                      <Hash size={10} />
-                      {memory.access_count} accesses
+                      <Hash size={9} />
+                      {memory.access_count} uses
                     </span>
                   </div>
                 </div>
                 <button
                   onClick={() => handleDeleteMemory(memory.memory_id)}
-                  className="p-1.5 text-gray-400 hover:text-red-400 rounded flex-shrink-0"
+                  className="p-1.5 text-[#3a3a3a] hover:text-red-400 rounded-lg flex-shrink-0 hover:bg-red-500/10 transition-colors"
                   title="Delete"
                 >
-                  <Trash2 size={14} />
+                  <Trash2 size={12} />
                 </button>
               </div>
             </div>

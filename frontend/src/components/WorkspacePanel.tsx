@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Terminal, FileCode, History, Maximize2, Globe, ExternalLink, Search, X } from 'lucide-react';
+import { Terminal, FileCode, History, Maximize2, Globe, ExternalLink, Search, X, Brain } from 'lucide-react';
 import { MemoryView } from './MemoryView';
 import { FileExplorer } from './FileExplorer';
 import { ToolCallLog } from './ToolCallLog';
@@ -11,7 +11,7 @@ interface WorkspacePanelProps {
     sessionId?: string;
 }
 
-type TabType = 'shell' | 'worklog' | 'editor' | 'browser';
+type TabType = 'shell' | 'worklog' | 'editor' | 'browser' | 'memory';
 
 export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => {
     const [activeTab, setActiveTab] = useState<TabType>('shell');
@@ -70,6 +70,11 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
             label: 'Browser',
             icon: <Globe size={13} />,
             badge: events.browserEvents.length > 0 ? events.browserEvents.length : undefined,
+        },
+        {
+            id: 'memory',
+            label: 'Memory',
+            icon: <Brain size={13} />,
         },
     ];
 
@@ -273,6 +278,18 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
                                 </div>
                             </>
                         )}
+                    </div>
+                )}
+
+                {/* MEMORY */}
+                {activeTab === 'memory' && sessionId && (
+                    <div className="absolute inset-0 overflow-y-auto custom-scrollbar p-4">
+                        <MemoryView sessionId={sessionId} />
+                    </div>
+                )}
+                {activeTab === 'memory' && !sessionId && (
+                    <div className="absolute inset-0 flex items-center justify-center text-[#3a3a3a] text-xs italic">
+                        Select a session to view memory.
                     </div>
                 )}
             </div>

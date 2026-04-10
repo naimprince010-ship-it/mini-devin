@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { ChevronDown, Cpu, Cloud, Server, Building2 } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { ChevronDown, Cpu, Cloud, Server, Zap, CheckCircle2 } from 'lucide-react';
 
 export interface Model {
   id: string;
@@ -26,185 +26,173 @@ interface ModelSelectorProps {
   showDetails?: boolean;
 }
 
-const providerIcons: Record<string, React.ReactNode> = {
-  openai: <Cloud size={14} className="text-green-400" />,
-  anthropic: <Cpu size={14} className="text-orange-400" />,
-  ollama: <Server size={14} className="text-blue-400" />,
-  azure: <Building2 size={14} className="text-cyan-400" />,
+const providerMeta: Record<string, { icon: React.ReactNode; color: string; label: string }> = {
+  openai:    { icon: <Cloud size={12} />,  color: 'text-green-400',  label: 'OpenAI' },
+  anthropic: { icon: <Cpu size={12} />,   color: 'text-orange-400', label: 'Anthropic' },
+  google:    { icon: <Zap size={12} />,   color: 'text-blue-400',   label: 'Google' },
+  ollama:    { icon: <Server size={12} />, color: 'text-purple-400', label: 'Ollama' },
 };
 
-const providerColors: Record<string, string> = {
-  openai: 'border-green-500/30 bg-green-500/10',
-  anthropic: 'border-orange-500/30 bg-orange-500/10',
-  ollama: 'border-blue-500/30 bg-blue-500/10',
-  azure: 'border-cyan-500/30 bg-cyan-500/10',
-};
+const formatCtx = (n: number) => n >= 1_000_000 ? `${(n/1_000_000).toFixed(1)}M` : `${(n/1000).toFixed(0)}K`;
 
 export function ModelSelector({ value, onChange, className = '', showDetails = false }: ModelSelectorProps) {
   const [models, setModels] = useState<Model[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
+  const [filterProvider, setFilterProvider] = useState<string | null>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const fetchModels = async () => {
-      try {
-        const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-        
-        const [modelsRes, providersRes] = await Promise.all([
-          fetch(`${apiUrl}/api/models`),
-          fetch(`${apiUrl}/api/providers`),
-        ]);
-        
-        if (modelsRes.ok) {
-          const data = await modelsRes.json();
-          setModels(data.models || []);
-        }
-        
-        if (providersRes.ok) {
-          const data = await providersRes.json();
-          setProviders(data.providers || []);
-        }
-      } catch (error) {
-        console.error('Failed to fetch models:', error);
-        setModels([
-          { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', context_window: 128000, supports_tools: true, supports_vision: true, max_output_tokens: 4096, description: 'Most capable GPT-4 model' },
-          { id: 'gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai', context_window: 128000, supports_tools: true, supports_vision: true, max_output_tokens: 16384, description: 'Smaller, faster GPT-4o' },
-          { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet', provider: 'anthropic', context_window: 200000, supports_tools: true, supports_vision: true, max_output_tokens: 8192, description: 'Most intelligent Claude' },
-        ]);
-      } finally {
-        setLoading(false);
+    const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+    Promise.all([
+      fetch(`${apiUrl}/api/models`).then(r => r.json()).catch(() => ({ models: [] })),
+      fetch(`${apiUrl}/api/providers`).then(r => r.json()).catch(() => ({ providers: [] })),
+    ]).then(([m, p]) => {
+      setModels(m.models || []);
+      setProviders(p.providers || []);
+    }).finally(() => setLoading(false));
+  }, []);
+
+  // Close on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
       }
     };
-
-    fetchModels();
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
   }, []);
 
   const selectedModel = models.find(m => m.id === value);
-  
-  const filteredModels = selectedProvider 
-    ? models.filter(m => m.provider === selectedProvider)
-    : models;
-
-  const groupedModels = filteredModels.reduce((acc, model) => {
-    if (!acc[model.provider]) {
-      acc[model.provider] = [];
-    }
-    acc[model.provider].push(model);
+  const filtered = filterProvider ? models.filter(m => m.provider === filterProvider) : models;
+  const grouped = filtered.reduce((acc, m) => {
+    if (!acc[m.provider]) acc[m.provider] = [];
+    acc[m.provider].push(m);
     return acc;
   }, {} as Record<string, Model[]>);
 
-  const formatContextWindow = (tokens: number) => {
-    if (tokens >= 1000000) return `${(tokens / 1000000).toFixed(1)}M`;
-    if (tokens >= 1000) return `${(tokens / 1000).toFixed(0)}K`;
-    return tokens.toString();
-  };
-
   if (loading) {
     return (
-      <div className={`px-3 py-2 bg-gray-600 text-gray-400 rounded border border-gray-500 ${className}`}>
+      <div className={`px-3 py-2 bg-[#1a1a1a] text-[#737373] rounded-lg border border-[#262626] text-sm ${className}`}>
         Loading models...
       </div>
     );
   }
 
+  const meta = selectedModel ? providerMeta[selectedModel.provider] : null;
+
   return (
-    <div className={`relative ${className}`}>
+    <div className={`relative ${className}`} ref={dropdownRef}>
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full px-3 py-2 bg-gray-600 text-white rounded border border-gray-500 focus:border-blue-500 focus:outline-none flex items-center justify-between"
+        className="w-full px-3 py-2.5 bg-[#1a1a1a] text-white rounded-lg border border-[#262626] hover:border-[#363636] focus:border-[#00ff99]/50 focus:outline-none flex items-center justify-between gap-2 transition-colors"
       >
-        <div className="flex items-center gap-2">
-          {selectedModel && providerIcons[selectedModel.provider]}
-          <span>{selectedModel?.name || 'Select a model'}</span>
+        <div className="flex items-center gap-2 min-w-0">
+          {meta && <span className={meta.color}>{meta.icon}</span>}
+          <span className="text-sm truncate">{selectedModel?.name || 'Select a model'}</span>
         </div>
-        <ChevronDown size={16} className={`transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        <ChevronDown size={14} className={`text-[#737373] flex-shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
       {isOpen && (
-        <div className="absolute z-50 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-xl max-h-80 overflow-hidden">
-          <div className="flex border-b border-gray-600">
-            <button
-              onClick={() => setSelectedProvider(null)}
-              className={`flex-1 px-3 py-2 text-xs font-medium ${
-                selectedProvider === null ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'
-              }`}
-            >
-              All
-            </button>
-            {providers.filter(p => p.enabled).map(provider => (
+        <div className="absolute z-50 w-full min-w-[280px] mt-1 bg-[#111111] border border-[#262626] rounded-xl shadow-2xl overflow-hidden">
+          {/* Provider filter tabs */}
+          {providers.length > 1 && (
+            <div className="flex border-b border-[#1a1a1a] px-1 pt-1 gap-0.5">
               <button
-                key={provider.id}
-                onClick={() => setSelectedProvider(provider.id)}
-                className={`flex-1 px-3 py-2 text-xs font-medium flex items-center justify-center gap-1 ${
-                  selectedProvider === provider.id ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'
+                onClick={() => setFilterProvider(null)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-t-lg transition-colors ${
+                  filterProvider === null ? 'bg-[#1e1e1e] text-white' : 'text-[#737373] hover:text-white'
                 }`}
               >
-                {providerIcons[provider.id]}
-                <span className="capitalize">{provider.id}</span>
+                All
               </button>
-            ))}
-          </div>
-          
-          <div className="overflow-y-auto max-h-64">
-            {Object.entries(groupedModels).map(([provider, providerModels]) => (
+              {providers.filter(p => p.enabled).map(p => {
+                const m = providerMeta[p.id];
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => setFilterProvider(p.id)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-t-lg transition-colors ${
+                      filterProvider === p.id ? 'bg-[#1e1e1e] text-white' : 'text-[#737373] hover:text-white'
+                    }`}
+                  >
+                    {m && <span className={m.color}>{m.icon}</span>}
+                    {m?.label || p.name}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Model list */}
+          <div className="overflow-y-auto max-h-72 custom-scrollbar">
+            {Object.entries(grouped).map(([provider, providerModels]) => (
               <div key={provider}>
-                {!selectedProvider && (
-                  <div className="px-3 py-1.5 text-xs font-semibold text-gray-400 bg-gray-750 uppercase tracking-wider flex items-center gap-2">
-                    {providerIcons[provider]}
-                    {provider}
+                {!filterProvider && (
+                  <div className="px-3 pt-3 pb-1 flex items-center gap-2">
+                    {providerMeta[provider] && (
+                      <span className={providerMeta[provider].color}>{providerMeta[provider].icon}</span>
+                    )}
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-[#525252]">
+                      {providerMeta[provider]?.label || provider}
+                    </span>
                   </div>
                 )}
                 {providerModels.map(model => (
                   <button
                     key={model.id}
-                    onClick={() => {
-                      onChange(model.id);
-                      setIsOpen(false);
-                    }}
-                    className={`w-full px-3 py-2 text-left hover:bg-gray-600 flex flex-col ${
-                      model.id === value ? 'bg-blue-600/20 border-l-2 border-blue-500' : ''
+                    onClick={() => { onChange(model.id); setIsOpen(false); }}
+                    className={`w-full px-3 py-2.5 text-left hover:bg-[#1a1a1a] flex items-start justify-between gap-3 transition-colors ${
+                      model.id === value ? 'bg-[#00ff99]/5 border-l-2 border-[#00ff99]' : ''
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="text-white font-medium">{model.name}</span>
+                    <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        {model.supports_tools && (
-                          <span className="text-xs px-1.5 py-0.5 bg-green-500/20 text-green-400 rounded">Tools</span>
-                        )}
-                        {model.supports_vision && (
-                          <span className="text-xs px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded">Vision</span>
-                        )}
+                        <span className="text-sm text-white font-medium">{model.name}</span>
+                        {model.id === value && <CheckCircle2 size={12} className="text-[#00ff99] flex-shrink-0" />}
                       </div>
+                      {model.description && (
+                        <p className="text-[11px] text-[#525252] mt-0.5">{model.description}</p>
+                      )}
+                      {showDetails && (
+                        <div className="flex items-center gap-2 mt-1 text-[10px] text-[#3a3a3a]">
+                          <span>{formatCtx(model.context_window)} ctx</span>
+                          <span>·</span>
+                          <span>{formatCtx(model.max_output_tokens)} out</span>
+                        </div>
+                      )}
                     </div>
-                    {showDetails && (
-                      <div className="flex items-center gap-3 mt-1 text-xs text-gray-400">
-                        <span>{formatContextWindow(model.context_window)} context</span>
-                        <span>{formatContextWindow(model.max_output_tokens)} max output</span>
-                      </div>
-                    )}
-                    {model.description && (
-                      <span className="text-xs text-gray-500 mt-0.5">{model.description}</span>
-                    )}
+                    <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                      {model.supports_tools && (
+                        <span className="text-[9px] px-1.5 py-0.5 bg-green-500/15 text-green-400 rounded font-bold">TOOLS</span>
+                      )}
+                      {model.supports_vision && (
+                        <span className="text-[9px] px-1.5 py-0.5 bg-purple-500/15 text-purple-400 rounded font-bold">VISION</span>
+                      )}
+                    </div>
                   </button>
                 ))}
               </div>
             ))}
+            {Object.keys(grouped).length === 0 && (
+              <p className="p-4 text-[#525252] text-sm text-center">No models available</p>
+            )}
           </div>
         </div>
       )}
 
       {selectedModel && showDetails && (
-        <div className={`mt-2 p-2 rounded border ${providerColors[selectedModel.provider]}`}>
-          <div className="flex items-center gap-2 text-xs text-gray-300">
-            {providerIcons[selectedModel.provider]}
-            <span className="capitalize">{selectedModel.provider}</span>
-            <span className="text-gray-500">|</span>
-            <span>{formatContextWindow(selectedModel.context_window)} context</span>
+        <div className="mt-2 px-3 py-2 rounded-lg bg-[#1a1a1a] border border-[#262626]">
+          <div className="flex items-center gap-2 text-xs text-[#737373]">
+            {meta && <span className={meta.color}>{meta.icon}</span>}
+            <span>{meta?.label || selectedModel.provider}</span>
+            <span className="text-[#2a2a2a]">·</span>
+            <span>{formatCtx(selectedModel.context_window)} context</span>
             {selectedModel.supports_tools && <span className="text-green-400">+ Tools</span>}
-            {selectedModel.supports_vision && <span className="text-purple-400">+ Vision</span>}
           </div>
         </div>
       )}
