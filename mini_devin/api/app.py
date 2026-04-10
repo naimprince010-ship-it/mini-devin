@@ -190,6 +190,7 @@ async def add_repo(request: Request):
         "has_token": bool(github_token),
         "_clone_url": clone_url,
         "_local_target": local_path,
+        "_token": github_token or os.getenv("GITHUB_TOKEN", ""),
     }
     _repos[repo_id] = repo_info
 
@@ -314,6 +315,179 @@ async def github_oauth_status():
 @app.get("/api/github/oauth/start")
 async def github_oauth_start():
     raise HTTPException(status_code=501, detail="GitHub OAuth not configured. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET.")
+
+# ── GitHub API (token-based) ──────────────────────────────────────────────────
+# All GitHub operations using a Personal Access Token stored per-repo.
+
+def _gh_headers(token: str) -> dict:
+    return {"Authorization": f"token {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+
+def _get_repo_token(repo_id: str) -> str:
+    repo = _repos.get(repo_id, {})
+    token = repo.get("_token") or os.getenv("GITHUB_TOKEN", "")
+    if not token:
+        raise HTTPException(status_code=400, detail="GitHub token required. Add the repo with a token, or set GITHUB_TOKEN env var.")
+    return token
+
+async def _gh_get(url: str, token: str) -> dict:
+    import urllib.request
+    req = urllib.request.Request(url, headers=_gh_headers(token))
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"GitHub API error: {e}")
+
+async def _gh_post(url: str, token: str, data: dict) -> dict:
+    import urllib.request
+    body = json.dumps(data).encode()
+    req = urllib.request.Request(url, data=body, headers={**_gh_headers(token), "Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        raise HTTPException(status_code=e.code, detail=f"GitHub API: {body[:300]}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"GitHub API error: {e}")
+
+@app.post("/api/repos/{repo_id}/token")
+async def set_repo_token(repo_id: str, request: Request):
+    """Set/update the GitHub token for a repo."""
+    if repo_id not in _repos:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    body = await request.json()
+    token = body.get("token", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="token is required")
+    _repos[repo_id]["_token"] = token
+    _repos[repo_id]["has_token"] = True
+    return {"status": "ok"}
+
+# ── Branches ──────────────────────────────────────────────────────────────────
+@app.get("/api/repos/{repo_id}/branches")
+async def list_branches(repo_id: str):
+    if repo_id not in _repos:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = _repos[repo_id]
+    token = _get_repo_token(repo_id)
+    owner, name = repo["owner"], repo["repo_name"]
+    data = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/branches", token)
+    return {"branches": [b["name"] for b in data]}
+
+@app.post("/api/repos/{repo_id}/branches")
+async def create_branch(repo_id: str, request: Request):
+    if repo_id not in _repos:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = _repos[repo_id]
+    token = _get_repo_token(repo_id)
+    body = await request.json()
+    branch_name = body.get("branch_name", "").strip()
+    from_branch = body.get("from_branch", repo["default_branch"])
+    if not branch_name:
+        raise HTTPException(status_code=400, detail="branch_name required")
+    owner, name = repo["owner"], repo["repo_name"]
+    # Get SHA of from_branch
+    ref_data = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/git/ref/heads/{from_branch}", token)
+    sha = ref_data["object"]["sha"]
+    result = await _gh_post(f"https://api.github.com/repos/{owner}/{name}/git/refs", token, {
+        "ref": f"refs/heads/{branch_name}", "sha": sha
+    })
+    # Also create local branch
+    local_path = repo.get("local_path")
+    if local_path and os.path.exists(local_path):
+        await _run_git("fetch", "origin", cwd=local_path)
+        await _run_git("checkout", "-b", branch_name, cwd=local_path)
+    return {"branch": branch_name, "sha": sha, "status": "created"}
+
+# ── Pull Requests ──────────────────────────────────────────────────────────────
+@app.get("/api/repos/{repo_id}/pulls")
+async def list_pulls(repo_id: str, state: str = "open"):
+    if repo_id not in _repos:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = _repos[repo_id]
+    token = _get_repo_token(repo_id)
+    owner, name = repo["owner"], repo["repo_name"]
+    data = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/pulls?state={state}&per_page=20", token)
+    return {"pulls": [{"number": p["number"], "title": p["title"], "state": p["state"],
+                        "url": p["html_url"], "author": p["user"]["login"],
+                        "head": p["head"]["ref"], "base": p["base"]["ref"],
+                        "created_at": p["created_at"]} for p in data]}
+
+@app.post("/api/repos/{repo_id}/pulls")
+async def create_pull_request(repo_id: str, request: Request):
+    if repo_id not in _repos:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = _repos[repo_id]
+    token = _get_repo_token(repo_id)
+    body = await request.json()
+    owner, name = repo["owner"], repo["repo_name"]
+    result = await _gh_post(f"https://api.github.com/repos/{owner}/{name}/pulls", token, {
+        "title": body.get("title", "Automated PR by Mini-Devin"),
+        "body": body.get("body", "Created by Mini-Devin AI agent."),
+        "head": body.get("head"),
+        "base": body.get("base", repo["default_branch"]),
+    })
+    return {"number": result["number"], "url": result["html_url"], "title": result["title"], "state": result["state"]}
+
+# ── Issues ────────────────────────────────────────────────────────────────────
+@app.get("/api/repos/{repo_id}/issues")
+async def list_issues(repo_id: str, state: str = "open"):
+    if repo_id not in _repos:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = _repos[repo_id]
+    token = _get_repo_token(repo_id)
+    owner, name = repo["owner"], repo["repo_name"]
+    data = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/issues?state={state}&per_page=20", token)
+    return {"issues": [{"number": i["number"], "title": i["title"], "state": i["state"],
+                         "url": i["html_url"], "author": i["user"]["login"],
+                         "created_at": i["created_at"],
+                         "labels": [l["name"] for l in i.get("labels", [])]} for i in data if "pull_request" not in i]}
+
+@app.post("/api/repos/{repo_id}/issues")
+async def create_issue(repo_id: str, request: Request):
+    if repo_id not in _repos:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = _repos[repo_id]
+    token = _get_repo_token(repo_id)
+    body = await request.json()
+    owner, name = repo["owner"], repo["repo_name"]
+    result = await _gh_post(f"https://api.github.com/repos/{owner}/{name}/issues", token, {
+        "title": body.get("title", ""),
+        "body": body.get("body", ""),
+        "labels": body.get("labels", []),
+    })
+    return {"number": result["number"], "url": result["html_url"], "title": result["title"]}
+
+# ── Create new GitHub Repo ────────────────────────────────────────────────────
+@app.post("/api/github/create-repo")
+async def create_github_repo(request: Request):
+    body = await request.json()
+    token = body.get("token") or os.getenv("GITHUB_TOKEN", "")
+    if not token:
+        raise HTTPException(status_code=400, detail="GitHub token required")
+    result = await _gh_post("https://api.github.com/user/repos", token, {
+        "name": body.get("name", ""),
+        "description": body.get("description", "Created by Mini-Devin"),
+        "private": body.get("private", False),
+        "auto_init": body.get("auto_init", True),
+    })
+    return {"repo_url": result["html_url"], "clone_url": result["clone_url"],
+            "name": result["name"], "full_name": result["full_name"]}
+
+# ── Commits ───────────────────────────────────────────────────────────────────
+@app.get("/api/repos/{repo_id}/commits")
+async def list_commits(repo_id: str, branch: str = ""):
+    if repo_id not in _repos:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = _repos[repo_id]
+    token = _get_repo_token(repo_id)
+    owner, name = repo["owner"], repo["repo_name"]
+    b = branch or repo["default_branch"]
+    data = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/commits?sha={b}&per_page=15", token)
+    return {"commits": [{"sha": c["sha"][:7], "message": c["commit"]["message"].split("\n")[0],
+                          "author": c["commit"]["author"]["name"],
+                          "date": c["commit"]["author"]["date"]} for c in data]}
 # ─────────────────────────────────────────────────────────────────────────────
 
 
