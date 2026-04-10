@@ -59,6 +59,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         print("[API] Initializing Database...")
         await init_db()
         print("[API] Database initialized successfully.")
+        
+        # Reset stale sessions (IDLE/RUNNING) from previous server runs
+        try:
+            from sqlalchemy import update
+            from ..database.models import SessionModel, SessionStatus as DBSessionStatus
+            from ..database.config import get_session_maker
+            async with get_session_maker()() as db:
+                result = await db.execute(
+                    update(SessionModel)
+                    .where(SessionModel.status.in_([DBSessionStatus.IDLE, DBSessionStatus.RUNNING]))
+                    .values(status=DBSessionStatus.TERMINATED)
+                )
+                await db.commit()
+                if result.rowcount > 0:
+                    print(f"[API] Reset {result.rowcount} stale session(s) from previous run.")
+        except Exception as cleanup_err:
+            print(f"[API] Warning: Could not reset stale sessions: {cleanup_err}")
     except Exception as e:
         print(f"[API] Error initializing database: {e}")
         import traceback
@@ -195,13 +212,19 @@ async def create_session(raw_request: Request):
         git_push = bool(body.get("git_push", False))
     except Exception:
         pass
-    session = await session_manager.create_session(
-        working_directory=working_dir,
-        model=model,
-        max_iterations=max_iterations,
-        auto_git_commit=auto_git_commit,
-        git_push=git_push,
-    )
+    try:
+        session = await session_manager.create_session(
+            working_directory=working_dir,
+            model=model,
+            max_iterations=max_iterations,
+            auto_git_commit=auto_git_commit,
+            git_push=git_push,
+        )
+    except Exception as e:
+        import traceback
+        print(f"[API] create_session ERROR: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
     return {
         "session_id": session.session_id,
         "created_at": session.created_at.isoformat(),
