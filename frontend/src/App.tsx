@@ -45,6 +45,8 @@ function NewSessionModal({
   const [model, setModel] = useState('gpt-4o-mini');
   const [maxIterations, setMaxIterations] = useState(50);
   const [acceptanceCriteria, setAcceptanceCriteria] = useState('');
+  const [autoGitCommit, setAutoGitCommit] = useState(false);
+  const [gitPush, setGitPush] = useState(false);
   const api = useApi();
   const events = useSessionEvents();
 
@@ -54,6 +56,8 @@ function NewSessionModal({
         working_directory: workingDir,
         model,
         max_iterations: maxIterations,
+        auto_git_commit: autoGitCommit,
+        git_push: gitPush,
       });
       if (acceptanceCriteria.trim()) {
         events.setAcceptanceCriteria(acceptanceCriteria.trim());
@@ -143,6 +147,34 @@ function NewSessionModal({
               <span>5</span>
               <span>100</span>
             </div>
+          </div>
+
+          {/* Git Options */}
+          <div className="space-y-2 pt-1 border-t border-[#1a1a1a]">
+            <label className="flex items-center gap-1.5 text-xs font-medium text-[#a3a3a3]">
+              <Github size={12} />
+              Git Options
+            </label>
+            <label className="flex items-center gap-2.5 cursor-pointer group">
+              <div
+                onClick={() => setAutoGitCommit(v => !v)}
+                className={`relative w-8 h-4 rounded-full transition-colors ${autoGitCommit ? 'bg-[#00ff99]' : 'bg-[#262626]'}`}
+              >
+                <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${autoGitCommit ? 'translate-x-4' : ''}`} />
+              </div>
+              <span className="text-xs text-[#a3a3a3] group-hover:text-white transition-colors">Auto git commit on task complete</span>
+            </label>
+            {autoGitCommit && (
+              <label className="flex items-center gap-2.5 cursor-pointer group ml-2">
+                <div
+                  onClick={() => setGitPush(v => !v)}
+                  className={`relative w-8 h-4 rounded-full transition-colors ${gitPush ? 'bg-[#00ff99]' : 'bg-[#262626]'}`}
+                >
+                  <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${gitPush ? 'translate-x-4' : ''}`} />
+                </div>
+                <span className="text-xs text-[#a3a3a3] group-hover:text-white transition-colors">Push to remote after commit</span>
+              </label>
+            )}
           </div>
         </div>
 

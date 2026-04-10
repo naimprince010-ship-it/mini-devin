@@ -11,7 +11,8 @@ import json
 import time
 import uuid
 import re
-from datetime import datetime
+import inspect
+from datetime import datetime, timezone
 from typing import Any
 
 from ..core.llm_client import LLMClient, create_llm_client
@@ -67,47 +68,38 @@ from ..reliability.self_correction import SelfCorrectionEngine, ErrorType
 
 
 # System prompt for the agent
-SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer agent. You can solve software engineering tasks by using tools to interact with the terminal, code editor, file system, and web browser.
+SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer agent. You solve software engineering tasks end-to-end using tools.
 
-## Your Capabilities
-- Execute shell commands (terminal tool)
-- Read, write, and search files (editor tool)
-- Apply patches to modify code
-- Navigate and explore codebases
-- Search the web for documentation and solutions (browser_search tool)
-- Fetch and read web pages (browser_fetch tool)
-- Interact with web pages for complex scenarios (browser_interactive tool)
+## CRITICAL RULES — READ FIRST
+- **NEVER describe or narrate actions without calling a tool.** If you say "I will create a file", you MUST immediately call the `editor` tool to do it.
+- **NEVER write fake outputs.** Do not write "The tests passed" unless you actually ran `pytest` using the `terminal` tool and saw the output.
+- **NEVER say TASK COMPLETE unless you have used at least one tool** and verified the result with actual tool output.
+- **Do NOT just write a plan as text and stop.** After your brief plan, immediately call the first tool.
 
-## Your Workflow
-1. UNDERSTAND: First understand the task and explore the codebase if needed
-2. RESEARCH: Search the web for relevant documentation or solutions if needed
-3. PLAN: Create a clear plan with specific steps
-4. EXECUTE: Execute each step using the appropriate tools
-5. VERIFY: Verify your changes work (run tests, lint, etc.)
-6. ITERATE: If something fails, analyze the error and try again
-
-## Guidelines
-- Always explore the codebase before making changes
-- Search the web when you need documentation or are stuck on an error
-- Make small, incremental changes
-- Test your changes after each modification
-- If you encounter errors, read them carefully and fix them
-- Be thorough and complete the entire task
+## Workflow
+1. **Brief plan** (2-3 lines max): State what you will do.
+2. **ACT immediately**: Call the first tool right away — do not wait.
+3. **Continue**: After each tool result, call the next tool needed.
+4. **Verify**: Run tests or check output with real tool calls.
+5. **TASK COMPLETE**: Only after you have seen real tool output confirming success.
 
 ## Tool Usage
-When you need to perform an action, use the appropriate tool:
-- Use `terminal` to run shell commands
-- Use `editor` with action="read_file" to read files
-- Use `editor` with action="write_file" to write files
-- Use `editor` with action="search" to search for patterns
-- Use `editor` with action="list_directory" to explore directories
-- Use `browser_search` to search the web for information
-- Use `browser_fetch` to fetch and read web page content
-- Use `browser_interactive` for complex web interactions (forms, JS-heavy pages)
+- `terminal` — Run shell commands (pytest, pip, git, etc.)
+- `editor` with `read_file` — Read a file
+- `editor` with `write_file` — Write/create a file
+- `editor` with `search` — Search patterns in files
+- `editor` with `list_directory` — List directory contents
+- `editor` with `apply_patch` — Apply a unified diff patch
+- `browser_search` — Search the web
+- `browser_fetch` — Fetch a web page
+- `github` — GitHub workflows
 
-Always provide your reasoning before using tools. After each tool use, analyze the result and decide on the next step.
-
-When the task is complete, provide a summary of what you did."""
+## Important Rules
+- Read a file before editing it (to avoid overwriting changes)
+- Always write COMPLETE file content when using `write_file`
+- After writing a file, verify with `read_file`
+- If a command fails, read the error and fix it — do NOT give up
+- When done: write **TASK COMPLETE** followed by a short summary of actual results."""
 
 
 class Agent:
@@ -140,6 +132,8 @@ class Agent:
         max_parallel_tools: int = 5,
         callbacks: dict[str, Any] | None = None,
         use_sandbox: bool = False,
+        auto_git_commit: bool = False,
+        git_push: bool = False,
     ):
         self.llm = llm_client or create_llm_client()
         self.registry = tool_registry or get_global_registry()
@@ -195,6 +189,10 @@ class Agent:
         self._parallel_executor: ParallelExecutor | None = None
         self._batch_caller: BatchToolCaller | None = None
         
+        # Auto git commit after task completion
+        self.auto_git_commit = auto_git_commit
+        self.git_push = git_push
+
         # Self-correction (Phase 24)
         self._correction_engine = SelfCorrectionEngine(
             max_immediate_retries=self.max_immediate_retries
@@ -242,6 +240,12 @@ class Agent:
         # Citation store for tracking web references
         if not hasattr(self, "_citation_store"):
             self._citation_store = create_citation_store()
+            
+        # GitHub tool
+        if not self.registry.get("github"):
+            from ..tools.github import create_github_tool
+            github_tool = create_github_tool()
+            self.registry.register(github_tool)
     
     def _get_tool_schemas(self) -> list[dict[str, Any]]:
         """Get tool schemas for LLM function calling."""
@@ -408,6 +412,56 @@ class Agent:
                     },
                 },
                 "required": ["question"],
+            },
+        })
+
+        # GitHub tool schema
+        schemas.append({
+            "name": "github",
+            "description": "Perform GitHub operations like creating branches, committing, and creating pull requests.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create_branch", "commit", "create_pr", "automated_workflow"],
+                        "description": "The GitHub action to perform",
+                    },
+                    "branch_name": {
+                        "type": "string",
+                        "description": "Name of the branch (for create_branch, create_pr, automated_workflow)",
+                    },
+                    "base_branch": {
+                        "type": "string",
+                        "description": "Base branch name (default: main)",
+                    },
+                    "commit_message": {
+                        "type": "string",
+                        "description": "Commit message (for commit)",
+                    },
+                    "files": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of files to commit. Empty means all changes.",
+                    },
+                    "pr_title": {
+                        "type": "string",
+                        "description": "Pull Request title",
+                    },
+                    "pr_description": {
+                        "type": "string",
+                        "description": "Pull Request description",
+                    },
+                    "task_description": {
+                        "type": "string",
+                        "description": "Task description (for automated_workflow)",
+                    },
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Local repository path (default: .)",
+                    },
+                },
+                "required": ["action"],
             },
         })
         
@@ -811,6 +865,44 @@ class Agent:
                     self._artifact_logger.log_tool_call(
                         call_id=call_id,
                         tool_name="browser_interactive",
+                        arguments=arguments,
+                        result=output[:5000],
+                        duration_ms=duration_ms,
+                        success=result.success,
+                    )
+                
+                return output
+            
+            elif name == "github":
+                action = arguments.get("action", "")
+                
+                from ..tools.github import GitHubToolInput, GitHubAction
+                input_data = GitHubToolInput(
+                    action=GitHubAction(action),
+                    branch_name=arguments.get("branch_name"),
+                    base_branch=arguments.get("base_branch", "main"),
+                    commit_message=arguments.get("commit_message"),
+                    files=arguments.get("files"),
+                    pr_title=arguments.get("pr_title"),
+                    pr_description=arguments.get("pr_description"),
+                    task_description=arguments.get("task_description"),
+                    repo_path=arguments.get("repo_path", self.working_directory or ".")
+                )
+                
+                result = await tool.execute(input_data)
+                
+                if result.success:
+                    output = f"GitHub action '{action}' completed successfully.\n{result.message}"
+                    if result.pr_url:
+                        output += f"\nPR URL: {result.pr_url}"
+                else:
+                    output = f"GitHub action failed: {result.message}"
+                
+                if self._artifact_logger:
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    self._artifact_logger.log_tool_call(
+                        call_id=call_id,
+                        tool_name="github",
                         arguments=arguments,
                         result=output[:5000],
                         duration_ms=duration_ms,
@@ -1903,11 +1995,10 @@ class Agent:
         if not self._enable_parallel_execution or len(tool_calls) <= 1:
             results = []
             for tc in tool_calls:
-                from datetime import datetime
-                started_at = datetime.utcnow()
+                started_at = datetime.now(timezone.utc)
                 try:
                     result = await self._execute_tool(tc["name"], tc["arguments"])
-                    completed_at = datetime.utcnow()
+                    completed_at = datetime.now(timezone.utc)
                     duration_ms = int((completed_at - started_at).total_seconds() * 1000)
                     success = "Error" not in str(result) and "BLOCKED" not in str(result)
                     results.append(ToolCallResult(
@@ -1921,7 +2012,7 @@ class Agent:
                         duration_ms=duration_ms,
                     ))
                 except Exception as e:
-                    completed_at = datetime.utcnow()
+                    completed_at = datetime.now(timezone.utc)
                     duration_ms = int((completed_at - started_at).total_seconds() * 1000)
                     results.append(ToolCallResult(
                         call_id=tc.get("id", str(len(results))),
@@ -2064,7 +2155,7 @@ class Agent:
             callback = self.callbacks[name]
             try:
                 import asyncio
-                if asyncio.iscoroutine(callback) or asyncio.iscoroutinefunction(callback):
+                if asyncio.iscoroutine(callback) or inspect.iscoroutinefunction(callback):
                     await callback(*args, **kwargs)
                 else:
                     # If it's a lambda or function that returns a coroutine, handle it
@@ -2093,12 +2184,14 @@ class Agent:
         """
         self.state.current_task = task
         task.status = TaskStatus.IN_PROGRESS
-        task.started_at = datetime.utcnow()
+        task.started_at = datetime.now(timezone.utc)
         
         # Reset plan state for this new task
         self._plan_sent = False
         self._plan_steps = []
         self._current_step_idx = 0
+        self._tools_used_count = 0
+        self._no_tool_streak = 0
         
         # Initialize artifact logger
         self._init_artifact_logger(task.task_id, task.goal.description)
@@ -2117,7 +2210,8 @@ Acceptance Criteria:
 
 Working Directory: {self.working_directory or 'current directory'}
 
-Please start by exploring the codebase if needed, then create a plan and execute it."""
+IMPORTANT: You MUST use tools to complete this task. Do NOT just write text descriptions. 
+Call a tool (editor or terminal) immediately as your first action."""
         
         self.llm.add_user_message(task_message)
         
@@ -2162,37 +2256,56 @@ Please start by exploring the codebase if needed, then create a plan and execute
                     on_token=handle_token,
                 )
                 # Detect step progression in the message content
-                if getattr(self, '_plan_sent', False) and response.content:
-                    new_step_reached = -1
-                    # Look for patterns like "Moving to milestone 2" or "Step 2:" or "Task 3"
-                    step_patterns = [
-                        r"move to step (\d+)",
-                        r"moving to step (\d+)",
-                        r"starting step (\d+)",
-                        r"now on step (\d+)",
-                        r"proceed to step (\d+)",
-                        r"step (\d+):",
-                        r"milestone (\d+):",
-                        r"^\s*(\d+)\.", # Numbered line
-                    ]
-                    
-                    content_lower = response.content.lower()
-                    for pattern in step_patterns:
-                        match = re.search(pattern, content_lower, re.MULTILINE)
-                        if match:
-                            try:
-                                new_step_reached = int(match.group(1)) - 1 # 0-indexed
-                                break
-                            except (ValueError, IndexError):
-                                continue
-                    
-                    if 0 <= new_step_reached < len(self._plan_steps):
-                        if new_step_reached > self._current_step_idx:
-                            # Complete previous step
-                            await self._trigger_callback("on_step_completed", self._current_step_idx, self._plan_steps[self._current_step_idx])
-                            # Start new step
-                            self._current_step_idx = new_step_reached
-                            await self._trigger_callback("on_step_started", self._current_step_idx, self._plan_steps[self._current_step_idx])
+                if response.content:
+                    # --- Plan detection: fire on_plan_created when agent produces a numbered plan ---
+                    if not getattr(self, '_plan_sent', False):
+                        # Look for numbered lists that indicate a plan
+                        import re as _re
+                        plan_lines = _re.findall(
+                            r'^\s*(?:\d+\.|-|\*|•)\s+(.+)', response.content, _re.MULTILINE
+                        )
+                        # Only treat as a plan if we have 2+ distinct bullet/number points
+                        if len(plan_lines) >= 2:
+                            steps = [l.strip() for l in plan_lines[:20] if l.strip()]
+                            if steps:
+                                self._plan_sent = True
+                                self._plan_steps = steps
+                                self._current_step_idx = 0
+                                await self._trigger_callback("on_plan_created", steps)
+                                await self._trigger_callback("on_step_started", 0, steps[0])
+
+                    # --- Step progression detection when a plan is already active ---
+                    if getattr(self, '_plan_sent', False):
+                        new_step_reached = -1
+                        # Look for patterns like "Moving to milestone 2" or "Step 2:""
+                        step_patterns = [
+                            r"move to step (\d+)",
+                            r"moving to step (\d+)",
+                            r"starting step (\d+)",
+                            r"now on step (\d+)",
+                            r"proceed to step (\d+)",
+                            r"step (\d+):",
+                            r"milestone (\d+):",
+                            r"^\s*(\d+)\.", # Numbered line
+                        ]
+
+                        content_lower = response.content.lower()
+                        for pattern in step_patterns:
+                            match = _re.search(pattern, content_lower, _re.MULTILINE)
+                            if match:
+                                try:
+                                    new_step_reached = int(match.group(1)) - 1 # 0-indexed
+                                    break
+                                except (ValueError, IndexError):
+                                    continue
+
+                        if 0 <= new_step_reached < len(self._plan_steps):
+                            if new_step_reached > self._current_step_idx:
+                                # Complete previous step
+                                await self._trigger_callback("on_step_completed", self._current_step_idx, self._plan_steps[self._current_step_idx])
+                                # Start new step
+                                self._current_step_idx = new_step_reached
+                                await self._trigger_callback("on_step_started", self._current_step_idx, self._plan_steps[self._current_step_idx])
 
                 # Handle tool calls
                 if response.tool_calls:
@@ -2212,6 +2325,9 @@ Please start by exploring the codebase if needed, then create a plan and execute
                         tool_success = False
                         retry_count = 0
                         final_result = ""
+                        # Track total tool uses this run (used to gate TASK COMPLETE)
+                        self._tools_used_count = getattr(self, '_tools_used_count', 0) + 1
+                        self._no_tool_streak = 0  # reset streak on real tool call
                         
                         # Self-correction retry loop
                         while retry_count <= self.max_immediate_retries:
@@ -2338,28 +2454,58 @@ Please start by exploring the codebase if needed, then create a plan and execute
                             if steps:
                                 await self._trigger_callback("on_step_started", 0, steps[0])
                         
-                        # (Redundant broadcast removed to prevent duplication in frontend after token stream)
-                        # Check for completion signals in the response
+                        # Only allow TASK COMPLETE if at least one tool was used this run
+                        _tools_used = getattr(self, '_tools_used_count', 0)
                         content_lower = response.content.lower()
-                        if any(phrase in content_lower for phrase in [
+                        is_completion = any(phrase in content_lower for phrase in [
                             "task complete",
                             "task is complete",
                             "successfully completed",
                             "finished the task",
                             "completed the task",
                             "all done",
-                        ]):
+                        ])
+
+                        if is_completion and _tools_used > 0:
                             await self._update_phase(AgentPhase.COMPLETE)
                             task.status = TaskStatus.COMPLETED
-                            task.completed_at = datetime.utcnow()
+                            task.completed_at = datetime.now(timezone.utc)
                             self._log("Task completed!")
                             break
-                    
-                    # If finish_reason is "stop" without completion signal, ask for next step
-                    if response.finish_reason == "stop":
-                        self.llm.add_user_message(
-                            "Please continue with the task. If you're done, say 'Task complete' and summarize what you did."
-                        )
+                        elif is_completion and _tools_used == 0:
+                            # Agent said complete without using any tools — force it to act
+                            self._log("Completion signal with no tool use — forcing tool call.")
+                            self.llm.add_user_message(
+                                "You have not used any tools yet. You MUST use the available tools (terminal, editor, etc.) "
+                                "to actually perform the task. Do NOT just describe what you would do — call a tool now."
+                            )
+                        elif response.finish_reason == "stop":
+                            # Nudge with forced tool use on the next iteration
+                            self._no_tool_streak = getattr(self, '_no_tool_streak', 0) + 1
+                            if self._no_tool_streak >= 2:
+                                # After 2 text-only turns, force a tool call
+                                self._log("Multiple text-only turns — injecting forced tool call.")
+                                forced_response = await self.llm.complete(
+                                    tools=self._get_tool_schemas(),
+                                    tool_choice="required",
+                                    stream=False,
+                                )
+                                self._no_tool_streak = 0
+                                if forced_response.tool_calls:
+                                    # Re-inject as if it was a normal tool call turn
+                                    self.llm.add_assistant_message(
+                                        content=forced_response.content,
+                                        tool_calls=forced_response.tool_calls,
+                                    )
+                                    for tc in forced_response.tool_calls:
+                                        result = await self._execute_tool(tc.name, tc.arguments)
+                                        self._tools_used_count = getattr(self, '_tools_used_count', 0) + 1
+                                        self.llm.add_tool_result(tc.id, tc.name, result)
+                            else:
+                                self.llm.add_user_message(
+                                    "Please continue with the task using the tools. "
+                                    "Call a tool (terminal or editor) to take the next action."
+                                )
 
             
             except Exception as e:
@@ -2424,8 +2570,76 @@ Please start by exploring the codebase if needed, then create a plan and execute
                 self._log("Task summary saved to conversation memory")
             except Exception as e:
                 self._log(f"Warning: Failed to save task summary to memory: {e}")
-        
+
+        # Auto git commit after task completion
+        if self.auto_git_commit and task.status == TaskStatus.COMPLETED and self.working_directory:
+            await self._auto_commit_changes(task)
+
         return task
+
+    async def _auto_commit_changes(self, task: TaskState) -> None:
+        """Automatically commit and optionally push changes after task completion."""
+        import os
+        from pathlib import Path
+        cwd = self.working_directory
+        git_dir = Path(cwd) / ".git"
+        try:
+            # Init repo if not a git repo yet
+            if not git_dir.exists():
+                import asyncio
+                proc = await asyncio.create_subprocess_shell(
+                    "git init && git add -A",
+                    cwd=cwd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.communicate()
+            else:
+                proc = await asyncio.create_subprocess_shell(
+                    "git add -A",
+                    cwd=cwd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.communicate()
+
+            # Build commit message from task description
+            short_desc = (task.goal.description[:72] if task.goal.description else "task")
+            commit_msg = f"feat: {short_desc}"
+            proc = await asyncio.create_subprocess_shell(
+                f'git commit -m "{commit_msg}"',
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode == 0:
+                self._log(f"Auto-committed changes: {commit_msg}")
+                await self._trigger_callback("on_message", f"✅ **Git**: Committed — `{commit_msg}`", is_token=False)
+            else:
+                out = (stdout or b"").decode() + (stderr or b"").decode()
+                if "nothing to commit" in out:
+                    self._log("Auto-commit: nothing to commit")
+                else:
+                    self._log(f"Auto-commit warning: {out[:200]}")
+
+            # Push if enabled and remote exists
+            if self.git_push:
+                proc = await asyncio.create_subprocess_shell(
+                    "git push",
+                    cwd=cwd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await proc.communicate()
+                if proc.returncode == 0:
+                    self._log("Auto-pushed to remote")
+                    await self._trigger_callback("on_message", "✅ **Git**: Pushed to remote", is_token=False)
+                else:
+                    err = (stderr or b"").decode()
+                    self._log(f"Auto-push failed: {err[:200]}")
+        except Exception as e:
+            self._log(f"Auto-commit failed: {e}")
     
     async def run_simple(self, task_description: str) -> str:
         """

@@ -7,7 +7,7 @@ analyzing dependencies and executing non-dependent calls concurrently.
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Coroutine
 import uuid
@@ -231,7 +231,7 @@ class ParallelExecutor:
                 execution_order=[],
             )
         
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         dependencies = self.analyzer.analyze(calls)
         
@@ -251,7 +251,7 @@ class ParallelExecutor:
             if self.fail_fast and any(not r.success for r in group_results):
                 break
         
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         total_duration = int((end_time - start_time).total_seconds() * 1000)
         
         speedup = sequential_duration / total_duration if total_duration > 0 else 1.0
@@ -322,8 +322,8 @@ class ParallelExecutor:
                     success=False,
                     result=None,
                     error=str(result),
-                    started_at=datetime.utcnow(),
-                    completed_at=datetime.utcnow(),
+                    started_at=datetime.now(timezone.utc),
+                    completed_at=datetime.now(timezone.utc),
                     duration_ms=0,
                 ))
             else:
@@ -333,11 +333,11 @@ class ParallelExecutor:
     
     async def _execute_single(self, call: ToolCall) -> ToolCallResult:
         """Execute a single tool call."""
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc)
         
         try:
             result = await self.execute_fn(call.tool_name, call.arguments)
-            completed_at = datetime.utcnow()
+            completed_at = datetime.now(timezone.utc)
             duration_ms = int((completed_at - started_at).total_seconds() * 1000)
             
             success = "Error" not in str(result) and "BLOCKED" not in str(result)
@@ -353,7 +353,7 @@ class ParallelExecutor:
                 duration_ms=duration_ms,
             )
         except Exception as e:
-            completed_at = datetime.utcnow()
+            completed_at = datetime.now(timezone.utc)
             duration_ms = int((completed_at - started_at).total_seconds() * 1000)
             
             return ToolCallResult(

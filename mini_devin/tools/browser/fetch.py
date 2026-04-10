@@ -11,7 +11,7 @@ This module implements headless HTTP fetch with content extraction:
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -29,7 +29,7 @@ class FetchedPage:
     raw_html: str | None = None
     content_type: str = "text/html"
     status_code: int = 200
-    fetch_time: datetime = field(default_factory=datetime.utcnow)
+    fetch_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     word_count: int = 0
     links: list[str] = field(default_factory=list)
     metadata: dict[str, str] = field(default_factory=dict)
@@ -274,7 +274,7 @@ class BrowserFetchTool(BaseBrowserTool):
         use_cache = getattr(input_data, "use_cache", self.cache_enabled)
         extract_content = getattr(input_data, "extract_content", True)
         
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         # Check cache
         if use_cache:
@@ -340,7 +340,7 @@ class BrowserFetchTool(BaseBrowserTool):
                 cache_key = self._get_cache_key(url)
                 self._cache[cache_key] = page
             
-            end_time = datetime.utcnow()
+            end_time = datetime.now(timezone.utc)
             fetch_time_ms = int((end_time - start_time).total_seconds() * 1000)
             
             return ToolResult(

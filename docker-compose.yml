@@ -1,6 +1,26 @@
 version: '3.8'
 
 services:
+  # Frontend (React + Vite)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+    container_name: mini-devin-frontend
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    ports:
+      - "3000:80"
+    depends_on:
+      - mini-devin
+    networks:
+      - mini-devin-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   # PostgreSQL Database
   postgres:
     image: postgres:16-alpine

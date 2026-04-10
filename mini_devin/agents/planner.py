@@ -11,7 +11,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -325,7 +325,7 @@ Provide an improved plan as JSON with the same structure."""
         
         if result.plan:
             result.plan.replan_count = plan.replan_count + 1
-            result.plan.last_replanned_at = datetime.utcnow()
+            result.plan.last_replanned_at = datetime.now(timezone.utc)
             result.validation = self.validate_plan(result.plan, task)
         
         return result
@@ -372,7 +372,7 @@ Provide the recovery plan as JSON."""
         
         if result.plan:
             result.plan.replan_count = plan.replan_count + 1
-            result.plan.last_replanned_at = datetime.utcnow()
+            result.plan.last_replanned_at = datetime.now(timezone.utc)
             result.reasoning = f"Recovery plan after failure: {error}"
         
         return result
@@ -535,7 +535,7 @@ Provide the recovery plan as JSON."""
         for step in plan.steps:
             if step.step_id == step_id:
                 step.status = StepStatus.COMPLETED
-                step.completed_at = datetime.utcnow()
+                step.completed_at = datetime.now(timezone.utc)
                 step.result = result
                 break
         
@@ -563,7 +563,7 @@ Provide the recovery plan as JSON."""
         for step in plan.steps:
             if step.step_id == step_id:
                 step.status = StepStatus.FAILED
-                step.completed_at = datetime.utcnow()
+                step.completed_at = datetime.now(timezone.utc)
                 step.error = error
                 break
         

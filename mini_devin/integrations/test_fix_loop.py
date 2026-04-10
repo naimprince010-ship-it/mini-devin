@@ -443,86 +443,72 @@ class TestFixRerunLoop:
             
         except Exception as e:
             return {'error': str(e), 'fix_applied': False}
+
+    async def _fix_via_llm(self, analysis: Dict[str, Any], failure_label: str) -> Dict[str, Any]:
+        """Apply bounded search/replace edits from the configured LLM (same helper as verification repair)."""
+        from mini_devin.verification.llm_repair import run_llm_search_replace_repair
+
+        err = analysis.get("error_message", "") or ""
+        test_name = analysis.get("test_name", "") or ""
+        test_file = analysis.get("test_file", "") or ""
+        suggested = analysis.get("suggested_fixes") or []
+        sug = "\n".join(suggested) if isinstance(suggested, list) else str(suggested)
+        blob = "\n".join(
+            [
+                f"failure_type: {failure_label}",
+                f"test_name: {test_name}",
+                f"test_file: {test_file}",
+                f"error_message:\n{err}",
+                f"suggestions:\n{sug}",
+            ]
+        )
+        instruction = (
+            f"Fix this {failure_label.replace('_', ' ')} in the repository. "
+            "Prefer fixing implementation code; change tests only if they are clearly wrong."
+        )
+        ok, msg, files = await run_llm_search_replace_repair(
+            str(self.workspace_dir), instruction, blob
+        )
+        return {
+            "fix_type": failure_label,
+            "fix_applied": ok,
+            "fix_description": msg,
+            "files_modified": files,
+            "confidence": 0.55 if ok else 0.0,
+        }
     
     async def _fix_assertion_error(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Fix assertion errors"""
+        """Fix assertion errors via LLM-assisted edits when configured."""
         try:
-            # This is a placeholder - actual implementation would analyze
-            # the assertion and potentially update test expectations
-            
-            return {
-                'fix_type': 'assertion_error',
-                'fix_applied': False,
-                'fix_description': 'Assertion errors need manual review',
-                'files_modified': [],
-                'confidence': 0.0
-            }
-            
+            return await self._fix_via_llm(analysis, "assertion_error")
         except Exception as e:
             return {'error': str(e), 'fix_applied': False}
     
     async def _fix_type_error(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Fix type errors"""
+        """Fix type errors via LLM-assisted edits when configured."""
         try:
-            # This is a placeholder - actual implementation would add
-            # type conversions or fix type mismatches
-            
-            return {
-                'fix_type': 'type_error',
-                'fix_applied': False,
-                'fix_description': 'Type errors need manual review',
-                'files_modified': [],
-                'confidence': 0.0
-            }
-            
+            return await self._fix_via_llm(analysis, "type_error")
         except Exception as e:
             return {'error': str(e), 'fix_applied': False}
     
     async def _fix_null_pointer(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Fix null pointer errors"""
+        """Fix null/None issues via LLM-assisted edits when configured."""
         try:
-            # This is a placeholder - actual implementation would add
-            # null checks or initialize variables
-            
-            return {
-                'fix_type': 'null_pointer',
-                'fix_applied': False,
-                'fix_description': 'Null pointer errors need manual review',
-                'files_modified': [],
-                'confidence': 0.0
-            }
-            
+            return await self._fix_via_llm(analysis, "null_pointer")
         except Exception as e:
             return {'error': str(e), 'fix_applied': False}
     
     async def _fix_logic_error(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Fix logic errors"""
+        """Fix logic errors via LLM-assisted edits when configured."""
         try:
-            # This is a placeholder - actual implementation would analyze
-            # the logic and suggest corrections
-            
-            return {
-                'fix_type': 'logic_error',
-                'fix_applied': False,
-                'fix_description': 'Logic errors need manual review',
-                'files_modified': [],
-                'confidence': 0.0
-            }
-            
+            return await self._fix_via_llm(analysis, "logic_error")
         except Exception as e:
             return {'error': str(e), 'fix_applied': False}
     
     async def _fix_generic_error(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Fix generic errors"""
+        """Try LLM-assisted fix for uncategorized failures."""
         try:
-            return {
-                'fix_type': 'generic_error',
-                'fix_applied': False,
-                'fix_description': 'Generic error needs manual review',
-                'files_modified': [],
-                'confidence': 0.0
-            }
-            
+            return await self._fix_via_llm(analysis, "generic_error")
         except Exception as e:
             return {'error': str(e), 'fix_applied': False}
 

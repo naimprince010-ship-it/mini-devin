@@ -8,7 +8,7 @@ for web-based tasks.
 import pytest
 
 from mini_devin.orchestrator.agent import Agent
-from mini_devin.config.settings import AgentGatesSettings
+
 
 
 class TestBrowserSearchTool:
@@ -20,14 +20,11 @@ class TestBrowserSearchTool:
         agent = Agent(
             llm_client=mock_llm_client,
             working_directory=temp_workspace,
-            gates_settings=AgentGatesSettings(
-                planning_required=False,
-                review_required=False,
-            ),
+
         )
         
         tool_schemas = agent._get_tool_schemas()
-        tool_names = [t["function"]["name"] for t in tool_schemas]
+        tool_names = [t["name"] for t in tool_schemas]
         
         assert "browser_search" in tool_names
     
@@ -37,20 +34,17 @@ class TestBrowserSearchTool:
         agent = Agent(
             llm_client=mock_llm_client,
             working_directory=temp_workspace,
-            gates_settings=AgentGatesSettings(
-                planning_required=False,
-                review_required=False,
-            ),
+
         )
         
         tool_schemas = agent._get_tool_schemas()
         search_tool = next(
-            (t for t in tool_schemas if t["function"]["name"] == "browser_search"),
+            (t for t in tool_schemas if t["name"] == "browser_search"),
             None,
         )
         
         assert search_tool is not None
-        assert "query" in search_tool["function"]["parameters"]["properties"]
+        assert "query" in search_tool["parameters"]["properties"]
 
 
 class TestBrowserFetchTool:
@@ -62,14 +56,11 @@ class TestBrowserFetchTool:
         agent = Agent(
             llm_client=mock_llm_client,
             working_directory=temp_workspace,
-            gates_settings=AgentGatesSettings(
-                planning_required=False,
-                review_required=False,
-            ),
+
         )
         
         tool_schemas = agent._get_tool_schemas()
-        tool_names = [t["function"]["name"] for t in tool_schemas]
+        tool_names = [t["name"] for t in tool_schemas]
         
         assert "browser_fetch" in tool_names
     
@@ -79,20 +70,17 @@ class TestBrowserFetchTool:
         agent = Agent(
             llm_client=mock_llm_client,
             working_directory=temp_workspace,
-            gates_settings=AgentGatesSettings(
-                planning_required=False,
-                review_required=False,
-            ),
+
         )
         
         tool_schemas = agent._get_tool_schemas()
         fetch_tool = next(
-            (t for t in tool_schemas if t["function"]["name"] == "browser_fetch"),
+            (t for t in tool_schemas if t["name"] == "browser_fetch"),
             None,
         )
         
         assert fetch_tool is not None
-        assert "url" in fetch_tool["function"]["parameters"]["properties"]
+        assert "url" in fetch_tool["parameters"]["properties"]
 
 
 class TestBrowserInteractiveTool:
@@ -104,14 +92,11 @@ class TestBrowserInteractiveTool:
         agent = Agent(
             llm_client=mock_llm_client,
             working_directory=temp_workspace,
-            gates_settings=AgentGatesSettings(
-                planning_required=False,
-                review_required=False,
-            ),
+
         )
         
         tool_schemas = agent._get_tool_schemas()
-        tool_names = [t["function"]["name"] for t in tool_schemas]
+        tool_names = [t["name"] for t in tool_schemas]
         
         assert "browser_interactive" in tool_names
     
@@ -121,21 +106,18 @@ class TestBrowserInteractiveTool:
         agent = Agent(
             llm_client=mock_llm_client,
             working_directory=temp_workspace,
-            gates_settings=AgentGatesSettings(
-                planning_required=False,
-                review_required=False,
-            ),
+
         )
         
         tool_schemas = agent._get_tool_schemas()
         interactive_tool = next(
-            (t for t in tool_schemas if t["function"]["name"] == "browser_interactive"),
+            (t for t in tool_schemas if t["name"] == "browser_interactive"),
             None,
         )
         
         assert interactive_tool is not None
-        assert "url" in interactive_tool["function"]["parameters"]["properties"]
-        assert "actions" in interactive_tool["function"]["parameters"]["properties"]
+        assert "url" in interactive_tool["parameters"]["properties"]
+        assert "action" in interactive_tool["parameters"]["properties"]
 
 
 class TestBrowserToolsIntegration:
@@ -147,14 +129,11 @@ class TestBrowserToolsIntegration:
         agent = Agent(
             llm_client=mock_llm_client,
             working_directory=temp_workspace,
-            gates_settings=AgentGatesSettings(
-                planning_required=False,
-                review_required=False,
-            ),
+
         )
         
         tool_schemas = agent._get_tool_schemas()
-        tool_names = [t["function"]["name"] for t in tool_schemas]
+        tool_names = [t["name"] for t in tool_schemas]
         
         browser_tools = ["browser_search", "browser_fetch", "browser_interactive"]
         for tool in browser_tools:
@@ -166,10 +145,7 @@ class TestBrowserToolsIntegration:
         agent = Agent(
             llm_client=mock_llm_client,
             working_directory=temp_workspace,
-            gates_settings=AgentGatesSettings(
-                planning_required=False,
-                review_required=False,
-            ),
+
         )
         
         tool_schemas = agent._get_tool_schemas()
@@ -177,9 +153,9 @@ class TestBrowserToolsIntegration:
         
         for tool_name in browser_tools:
             tool = next(
-                (t for t in tool_schemas if t["function"]["name"] == tool_name),
+                (t for t in tool_schemas if t["name"] == tool_name),
                 None,
             )
             assert tool is not None
-            assert "description" in tool["function"]
-            assert len(tool["function"]["description"]) > 0
+            assert "description" in tool
+            assert len(tool["description"]) > 0

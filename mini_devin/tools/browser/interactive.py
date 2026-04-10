@@ -13,7 +13,7 @@ Note: Uses headless Chrome/Chromium for automation.
 
 import base64
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -141,7 +141,7 @@ class BrowserInteractiveTool(BaseBrowserTool):
             input_data.action if hasattr(input_data, "action") else "navigate"
         )
         
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         try:
             # Initialize driver on first use
@@ -173,7 +173,7 @@ class BrowserInteractiveTool(BaseBrowserTool):
                     error=f"Unknown action: {action}",
                 )
             
-            end_time = datetime.utcnow()
+            end_time = datetime.now(timezone.utc)
             response.action_time_ms = int((end_time - start_time).total_seconds() * 1000)
             
             return ToolResult(

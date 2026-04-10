@@ -7,7 +7,7 @@ like lint, typecheck, and tests after agent changes.
 
 import asyncio
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable
 
 from ..schemas.verification import (
@@ -54,7 +54,7 @@ class VerificationRunner:
         task_id: str = "default",
     ) -> VerificationResult:
         """Run all checks in a verification suite."""
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc)
         check_results: list[CheckResult] = []
         blocking_failures: list[str] = []
         
@@ -89,7 +89,7 @@ class VerificationRunner:
             await self._run_command(cmd, self.working_directory, timeout=60)
         
         # Calculate summary
-        completed_at = datetime.utcnow()
+        completed_at = datetime.now(timezone.utc)
         total_checks = len(check_results)
         checks_passed = sum(1 for r in check_results if r.status == CheckStatus.PASSED)
         checks_failed = sum(1 for r in check_results if r.status == CheckStatus.FAILED)
@@ -153,7 +153,7 @@ class VerificationRunner:
         attempt: int,
     ) -> CheckResult:
         """Execute a single check attempt."""
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc)
         
         try:
             # Check if there's a custom checker
@@ -195,12 +195,12 @@ class VerificationRunner:
                     status=CheckStatus.ERROR,
                     message=f"Unsupported check type: {check.check_type}",
                     started_at=started_at,
-                    completed_at=datetime.utcnow(),
+                    completed_at=datetime.now(timezone.utc),
                     attempt_number=attempt,
                 )
                 
         except Exception as e:
-            completed_at = datetime.utcnow()
+            completed_at = datetime.now(timezone.utc)
             return CheckResult(
                 check_id=check.check_id,
                 check_type=check.check_type,
@@ -226,7 +226,7 @@ class VerificationRunner:
                 status=CheckStatus.ERROR,
                 message="No command specified for check",
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
                 attempt_number=attempt,
             )
         
@@ -239,7 +239,7 @@ class VerificationRunner:
             timeout,
         )
         
-        completed_at = datetime.utcnow()
+        completed_at = datetime.now(timezone.utc)
         
         # Parse test results if this is a test check
         tests_passed = None
@@ -293,7 +293,7 @@ class VerificationRunner:
                 status=CheckStatus.ERROR,
                 message="No file path specified",
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
                 attempt_number=attempt,
             )
         
@@ -302,7 +302,7 @@ class VerificationRunner:
             file_path = os.path.join(self.working_directory, file_path)
         
         exists = os.path.exists(file_path)
-        completed_at = datetime.utcnow()
+        completed_at = datetime.now(timezone.utc)
         
         return CheckResult(
             check_id=check.check_id,
@@ -329,7 +329,7 @@ class VerificationRunner:
                 status=CheckStatus.ERROR,
                 message="File path or expected content not specified",
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
                 attempt_number=attempt,
             )
         
@@ -342,7 +342,7 @@ class VerificationRunner:
                 content = f.read()
             
             contains = check.expected_content in content
-            completed_at = datetime.utcnow()
+            completed_at = datetime.now(timezone.utc)
             
             return CheckResult(
                 check_id=check.check_id,
@@ -361,7 +361,7 @@ class VerificationRunner:
                 status=CheckStatus.FAILED,
                 message=f"File not found: {check.file_path}",
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
                 attempt_number=attempt,
             )
     
@@ -379,7 +379,7 @@ class VerificationRunner:
                 status=CheckStatus.ERROR,
                 message="No pattern specified",
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
                 attempt_number=attempt,
             )
         
@@ -394,7 +394,7 @@ class VerificationRunner:
             check.timeout_seconds or 60,
         )
         
-        completed_at = datetime.utcnow()
+        completed_at = datetime.now(timezone.utc)
         found = exit_code == 0 and stdout.strip()
         
         return CheckResult(
@@ -434,7 +434,7 @@ class VerificationRunner:
                 exit_code=exit_code,
                 message="Working directory is clean" if is_clean else "Working directory has uncommitted changes",
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
                 attempt_number=attempt,
             )
         
@@ -452,7 +452,7 @@ class VerificationRunner:
                 exit_code=exit_code,
                 message="No merge conflicts" if no_conflicts else "Merge conflicts detected",
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
                 attempt_number=attempt,
             )
         
@@ -463,7 +463,7 @@ class VerificationRunner:
                 status=CheckStatus.ERROR,
                 message=f"Unsupported git check type: {check.check_type}",
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
                 attempt_number=attempt,
             )
     

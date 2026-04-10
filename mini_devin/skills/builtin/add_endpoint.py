@@ -5,7 +5,7 @@ This skill adds a new API endpoint to a web application,
 including the route handler, request/response models, and tests.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from ..base import Skill, SkillContext, SkillResult, SkillParameter, SkillStatus
@@ -92,7 +92,7 @@ class AddEndpointSkill(Skill):
             success=False,
             message="",
             status=SkillStatus.RUNNING,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         
         path = kwargs["path"]
@@ -170,7 +170,7 @@ class AddEndpointSkill(Skill):
             result.status = SkillStatus.FAILED
             result.error = str(e)
         
-        result.completed_at = datetime.utcnow()
+        result.completed_at = datetime.now(timezone.utc)
         result.steps = self.get_steps()
         return result
     

@@ -9,7 +9,7 @@ This skill refactors a function by:
 5. Running tests to verify
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from ..base import Skill, SkillContext, SkillResult, SkillParameter, SkillStatus
@@ -92,7 +92,7 @@ class RefactorFunctionSkill(Skill):
             success=False,
             message="",
             status=SkillStatus.RUNNING,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         
         file_path = kwargs["file_path"]
@@ -168,7 +168,7 @@ class RefactorFunctionSkill(Skill):
             result.status = SkillStatus.FAILED
             result.error = str(e)
         
-        result.completed_at = datetime.utcnow()
+        result.completed_at = datetime.now(timezone.utc)
         result.steps = self.get_steps()
         return result
     

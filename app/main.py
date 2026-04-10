@@ -17,8 +17,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
+from mini_devin.core.providers import Provider, get_model_registry
+
 # Load environment variables at startup
 load_dotenv()
+
+
+def _provider_display_name(provider: Provider) -> str:
+    return {
+        Provider.OPENAI: "OpenAI",
+        Provider.ANTHROPIC: "Anthropic",
+        Provider.OLLAMA: "Ollama",
+        Provider.AZURE: "Azure OpenAI",
+    }.get(provider, provider.value.title())
 
 
 # In-memory storage for sessions (production would use database)
@@ -127,33 +138,32 @@ async def list_sessions():
 @app.get("/api/models")
 @app.get("/models")
 async def list_models():
-    # Return placeholder models for full mode
-    return {
-        "models": [
-            {"id": "gpt-4o", "name": "GPT-4o", "provider": "openai"},
-            {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "provider": "openai"},
-            {"id": "claude-3-5-sonnet-latest", "name": "Claude 3.5 Sonnet", "provider": "anthropic"},
-        ]
-    }
+    reg = get_model_registry()
+    configured = bool(reg.list_configured_providers())
+    models = reg.to_api_format(only_configured=configured)
+    if not models:
+        models = reg.to_api_format(only_configured=False)
+    return {"models": models}
 
 
 @app.get("/api/providers")
 @app.get("/providers")
 async def list_providers():
-    return {
-        "providers": [
+    reg = get_model_registry()
+    providers_out: list[dict] = []
+    for p in Provider:
+        model_infos = reg.list_models(provider=p, only_configured=False)
+        if not model_infos:
+            continue
+        providers_out.append(
             {
-                "id": "openai",
-                "name": "OpenAI",
-                "models": ["gpt-4o", "gpt-4o-mini"]
-            },
-            {
-                "id": "anthropic",
-                "name": "Anthropic",
-                "models": ["claude-3-5-sonnet-latest"]
+                "id": p.value,
+                "name": _provider_display_name(p),
+                "configured": reg.is_provider_configured(p),
+                "models": [m.id for m in model_infos],
             }
-        ]
-    }
+        )
+    return {"providers": providers_out}
 
 
 @app.post("/api/sessions")

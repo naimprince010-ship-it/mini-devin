@@ -9,7 +9,7 @@ This module implements API-based web search using various providers:
 
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -87,7 +87,7 @@ class BrowserSearchTool(BaseBrowserTool):
         query = input_data.query if hasattr(input_data, "query") else str(input_data)
         max_results = getattr(input_data, "max_results", self.max_results)
         
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         try:
             if self.provider == SearchProvider.TAVILY:
@@ -97,7 +97,7 @@ class BrowserSearchTool(BaseBrowserTool):
             else:
                 response = await self._search_duckduckgo(query, max_results)
             
-            end_time = datetime.utcnow()
+            end_time = datetime.now(timezone.utc)
             response.search_time_ms = int((end_time - start_time).total_seconds() * 1000)
             
             return ToolResult(

@@ -223,23 +223,15 @@ class E2ETestHarness:
         
         try:
             from mini_devin.orchestrator.agent import Agent
-            from mini_devin.config.settings import AgentGatesSettings
             from mini_devin.schemas.state import TaskState, TaskGoal, TaskStatus
             from mini_devin.llm.client import create_llm_client
             import uuid
-            
-            gates = AgentGatesSettings(
-                planning_required=gates_enabled,
-                review_required=gates_enabled,
-                use_llm_planning=False,
-            )
             
             llm = create_llm_client()
             
             agent = Agent(
                 llm_client=llm,
                 working_directory=workspace_dir,
-                gates_settings=gates,
                 max_iterations=20,
                 verbose=self.verbose,
             )

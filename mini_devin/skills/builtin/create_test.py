@@ -8,7 +8,7 @@ This skill creates tests for existing code by:
 4. Writing the test file
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from ..base import Skill, SkillContext, SkillResult, SkillParameter, SkillStatus
@@ -84,7 +84,7 @@ class CreateTestSkill(Skill):
             success=False,
             message="",
             status=SkillStatus.RUNNING,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         
         target_path = kwargs["target_path"]
@@ -163,7 +163,7 @@ class CreateTestSkill(Skill):
             result.status = SkillStatus.FAILED
             result.error = str(e)
         
-        result.completed_at = datetime.utcnow()
+        result.completed_at = datetime.now(timezone.utc)
         result.steps = self.get_steps()
         return result
     

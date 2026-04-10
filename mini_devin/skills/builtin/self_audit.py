@@ -8,7 +8,7 @@ This skill scans the Mini-Devin repository to identify:
 4. Consistency issues across the codebase
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 import os
 
@@ -52,7 +52,7 @@ class SelfAuditSkill(Skill):
             success=False,
             message="",
             status=SkillStatus.RUNNING,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         
         focus_area = kwargs.get("focus_area", "mini_devin")
@@ -129,6 +129,6 @@ class SelfAuditSkill(Skill):
             result.status = SkillStatus.FAILED
             result.error = str(e)
             
-        result.completed_at = datetime.utcnow()
+        result.completed_at = datetime.now(timezone.utc)
         result.steps = self.get_steps()
         return result

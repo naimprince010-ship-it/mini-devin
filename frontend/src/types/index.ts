@@ -38,6 +38,8 @@ export interface CreateSessionRequest {
   working_directory: string;
   model: string;
   max_iterations: number;
+  auto_git_commit?: boolean;
+  git_push?: boolean;
 }
 
 export interface CreateTaskRequest {

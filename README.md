@@ -1,309 +1,176 @@
-# Mini-Devin
+# Mini-Devin 🤖
 
-An autonomous AI software engineer agent with access to Terminal, Code Editor, and Web Browser.
+**An autonomous AI software engineer** — give it a task in plain English, it writes code, runs tests, fixes errors, and commits to Git — all automatically.
 
-## Overview
+![Mini-Devin UI](docs/screenshot.png)
 
-Mini-Devin is an AI-powered autonomous agent that can solve software engineering tasks by using tools to interact with your codebase. It can:
+---
 
-- Execute shell commands in a sandboxed environment
-- Read, write, search, and modify code files with LSP support
-- Search the web, fetch documentation, and interact with websites
-- Plan complex tasks and break them into steps
-- Review its own code changes before committing
-- Learn from reusable skills and procedures
+## What it does
 
-## Features
+| Capability | Description |
+|-----------|-------------|
+| 🖥️ **Terminal** | Runs shell commands, installs packages, executes tests |
+| 📝 **Code Editor** | Creates, reads, edits files across any language |
+| 🌐 **Web Browser** | Searches the web, reads docs, fetches pages |
+| 🧠 **Memory** | Remembers previous work, learns from past tasks |
+| 🔁 **Self-Correction** | Detects errors and fixes them automatically (up to 3 retries) |
+| 🔀 **Git Integration** | Auto-commits and pushes after task completion |
+| ✅ **Verification** | Runs lint + tests and auto-repairs failures |
 
-### Core Capabilities
+---
 
-- **Terminal Tool**: Execute shell commands with safety guards and command blocking
-- **Editor Tool**: Full file operations with LSP integration (go-to-definition, find references, hover info)
-- **Browser Tools**: Web search (Tavily/SerpAPI), page fetching, and Selenium-based interaction
-- **Memory System**: Code symbol indexing, vector store for semantic search, working memory
-
-### Agent Intelligence
-
-- **Planner Agent**: Creates detailed execution plans before starting work
-- **Reviewer Agent**: Reviews code changes and provides feedback before commits
-- **Gates System**: Enforces planning and review requirements with configurable policies
-- **Repair Loop**: Automatic fix attempts with bounded iterations
-
-### Safety & Security
-
-- **Safety Guards**: Blocks dangerous commands, large edits, and unauthorized dependency changes
-- **Docker Sandbox**: Non-root user, resource limits, capability restrictions, optional read-only filesystem
-- **Secrets Management**: Fernet encryption (AES-128-CBC) with PBKDF2 key derivation
-- **Stop Conditions**: Automatic stopping on errors, timeouts, or dangerous operations
-
-### Production Features
-
-- **Web Dashboard**: React + TypeScript frontend with real-time streaming
-- **Multi-Model Support**: OpenAI, Anthropic Claude, Azure OpenAI, Ollama (local models)
-- **Database Persistence**: PostgreSQL with SQLAlchemy/Alembic migrations
-- **Authentication**: JWT tokens and API key authentication
-- **Skills Library**: Reusable procedures for common tasks
-
-## Quick Start
+## Quick Start (Local)
 
 ### Prerequisites
-
 - Python 3.11+
-- Poetry (for dependency management)
-- Docker and Docker Compose (for containerized deployment)
-- An LLM API key (OpenAI, Anthropic, or Ollama for local models)
+- Node 18+
+- [Poetry](https://python-poetry.org/docs/#installation)
 
-### Installation
-
+### 1. Clone and configure
 ```bash
-# Clone the repository
-git clone https://github.com/naimprince010-ship-it/mini-devin.git
+git clone https://github.com/yourname/mini-devin.git
 cd mini-devin
-
-# Install dependencies
-poetry install
-
-# Install Playwright browsers (for browser tool)
-poetry run playwright install
-
-# Copy environment configuration
 cp .env.example .env
-
-# Edit .env and add your API keys
-nano .env
+# Edit .env and add your OPENAI_API_KEY
 ```
 
-### Running Mini-Devin
-
-**CLI Mode:**
+### 2. Install dependencies
 ```bash
-# Basic task execution
-poetry run mini-devin run "Fix the failing test in tests/test_api.py" --dir ./my-project
-
-# Interactive mode
-poetry run mini-devin interactive --dir ./my-project
-
-# With specific run mode
-RUN_MODE=browse poetry run mini-devin run "Research and implement a caching solution" --dir ./my-project
+poetry install
+cd frontend && npm install && cd ..
 ```
 
-**Web Dashboard:**
+### 3. Start backend
 ```bash
-# Start the backend
-poetry run uvicorn mini_devin.api.app:app --reload --port 8000
+poetry run uvicorn mini_devin.api.app:app --host 127.0.0.1 --port 8000
+```
 
-# Start the frontend (in another terminal)
+### 4. Start frontend (new terminal)
+```bash
 cd frontend
-npm install
 npm run dev
-
-# Open http://localhost:5173 in your browser
 ```
 
-**Docker Mode:**
+### 5. Open browser
+```
+http://localhost:5173
+```
+
+---
+
+## Quick Start (Docker)
+
+One command to run everything:
+
 ```bash
-# Start with Docker Compose
-docker-compose up -d
+# 1. Copy and configure
+cp .env.example .env
+# Edit .env: set OPENAI_API_KEY
 
-# Run a task
-docker-compose exec mini-devin mini-devin run "Your task here"
+# 2. Start all services
+docker compose up --build
 
-# With interactive browser (Selenium)
-docker-compose --profile interactive up -d
+# Frontend: http://localhost:3000
+# Backend API: http://localhost:8000
 ```
+
+To run with Selenium browser support:
+```bash
+docker compose --profile interactive up --build
+```
+
+---
+
+## How to use
+
+1. **Create a Session** — click **+** and set:
+   - Working Directory (where files will be created)
+   - Model (gpt-4o, gpt-4o-mini, claude-3-5-sonnet, etc.)
+   - Git options (auto-commit, push to remote)
+
+2. **Give a task** — type in plain English:
+   ```
+   Create a FastAPI web app with user authentication using JWT.
+   Include a /health endpoint and full pytest test suite.
+   ```
+
+3. **Watch it work** — the agent:
+   - Plans the steps
+   - Writes the code
+   - Runs tests
+   - Fixes any errors
+   - Reports results
+
+4. **View files** — click the **IDE** tab to see and edit created files
+
+---
+
+## Example Prompts
+
+```
+Build a Python web scraper for news.ycombinator.com that saves results to CSV
+```
+
+```
+Fix the bug in calculator.py where divide by zero crashes the program
+```
+
+```
+Add dark mode to this React app. Use Tailwind CSS.
+```
+
+```
+Create a REST API with CRUD operations for a todo list using FastAPI + SQLite
+```
+
+---
 
 ## Architecture
-
-Mini-Devin consists of five core layers:
-
-```
-+--------------------------------------------------+
-|              Web Dashboard (React)               |
-+--------------------------------------------------+
-                        |
-+--------------------------------------------------+
-|              FastAPI Backend (REST/WS)           |
-+--------------------------------------------------+
-                        |
-+--------------------------------------------------+
-|              Agent Runtime Layer                 |
-|  +------------+  +------------+  +------------+  |
-|  |  Planner   |  |   Agent    |  |  Reviewer  |  |
-|  |   Agent    |  |   Loop     |  |   Agent    |  |
-|  +------------+  +------------+  +------------+  |
-+--------------------------------------------------+
-                        |
-+--------------------------------------------------+
-|                 Tooling Layer                    |
-|  +----------+  +----------+  +----------------+  |
-|  | Terminal |  |  Editor  |  | Browser Tools  |  |
-|  +----------+  +----------+  +----------------+  |
-+--------------------------------------------------+
-                        |
-+--------------------------------------------------+
-|           Memory & Context Layer                 |
-|  +-------------+  +-------------+  +-----------+ |
-|  | Symbol Index|  | Vector Store|  |  Working  | |
-|  |             |  |             |  |  Memory   | |
-|  +-------------+  +-------------+  +-----------+ |
-+--------------------------------------------------+
-                        |
-+--------------------------------------------------+
-|           Safety & Sandbox Layer                 |
-|  +------------+  +------------+  +------------+  |
-|  |   Guards   |  |  Sandbox   |  |  Secrets   |  |
-|  +------------+  +------------+  +------------+  |
-+--------------------------------------------------+
-```
-
-## Project Structure
 
 ```
 mini-devin/
 ├── mini_devin/
-│   ├── agents/           # Planner and Reviewer agents
-│   ├── api/              # FastAPI backend (routes, WebSocket)
-│   ├── auth/             # Authentication (JWT, API keys)
-│   ├── config/           # Settings and configuration
-│   ├── core/             # LLM client, providers, tool interface
-│   ├── database/         # SQLAlchemy models and repository
-│   ├── evaluation/       # Benchmark and evaluation harness
-│   ├── lsp/              # Language Server Protocol integration
-│   ├── memory/           # Symbol index, vector store, working memory
-│   ├── orchestrator/     # Main agent loop and state machine
-│   ├── reliability/      # Repair signals, diff discipline
-│   ├── safety/           # Guards and stop conditions
-│   ├── sandbox/          # Docker sandbox management
-│   ├── schemas/          # Pydantic schemas for tools and state
-│   ├── secrets/          # Encrypted secrets management
-│   ├── sessions/         # Session and task management
-│   ├── skills/           # Skills library and built-in skills
-│   ├── tools/            # Terminal, Editor, Browser tools
-│   └── verification/     # Lint, test, typecheck runners
-├── frontend/             # React + TypeScript dashboard
-├── tests/
-│   ├── unit/             # Unit tests (202 tests)
-│   ├── e2e/              # End-to-end tests
-│   └── acceptance/       # Acceptance test scenarios
-├── alembic/              # Database migrations
-├── docker-compose.yml    # Docker deployment
-├── Dockerfile            # Container image
-└── pyproject.toml        # Python dependencies
+│   ├── api/              # FastAPI backend (WebSocket + REST)
+│   ├── orchestrator/     # Agent loop, planning, LLM calls
+│   ├── tools/            # Terminal, Editor, Browser, GitHub
+│   ├── memory/           # Vector store, symbol index, working memory
+│   ├── verification/     # Lint/test runner + LLM repair loop
+│   ├── integrations/     # GitHub, Vercel, test fix loop
+│   ├── sessions/         # Session management + database
+│   └── core/             # LLM client, providers, tool interface
+├── frontend/             # React + TypeScript + Tailwind UI
+├── docker-compose.yml    # Full stack deployment
+└── .env.example          # Configuration template
 ```
+
+---
 
 ## Configuration
 
-### Environment Variables
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENAI_API_KEY` | — | OpenAI API key (required for GPT models) |
+| `ANTHROPIC_API_KEY` | — | Anthropic API key (for Claude models) |
+| `LLM_MODEL` | `gpt-4o` | Default model |
+| `GITHUB_TOKEN` | — | For auto-commit/push |
+| `TAVILY_API_KEY` | — | Web search (optional) |
+| `MAX_ITERATIONS` | `50` | Max agent iterations per task |
+| `WORKSPACE_DIR` | `./workspace` | Default project directory |
 
-Copy `.env.example` to `.env` and configure:
+---
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `OPENAI_API_KEY` | OpenAI API key | Yes (or alternative) |
-| `ANTHROPIC_API_KEY` | Anthropic API key | Alternative to OpenAI |
-| `OLLAMA_BASE_URL` | Ollama server URL | For local models |
-| `DATABASE_URL` | PostgreSQL connection string | For persistence |
-| `JWT_SECRET_KEY` | Secret for JWT tokens | For authentication |
+## Supported Models
 
-### LLM Provider Configuration
+| Provider | Models |
+|----------|--------|
+| OpenAI | gpt-4o, gpt-4o-mini, gpt-4-turbo |
+| Anthropic | claude-3-5-sonnet, claude-3-haiku |
+| Ollama | llama3, codellama (local) |
+| Azure OpenAI | via LiteLLM |
 
-Mini-Devin supports multiple LLM providers:
-
-```bash
-# OpenAI (default)
-LLM_PROVIDER=openai
-LLM_MODEL=gpt-4o
-OPENAI_API_KEY=sk-...
-
-# Anthropic Claude
-LLM_PROVIDER=anthropic
-LLM_MODEL=claude-3-5-sonnet-20241022
-ANTHROPIC_API_KEY=sk-ant-...
-
-# Ollama (local)
-LLM_PROVIDER=ollama
-LLM_MODEL=llama3.2
-OLLAMA_BASE_URL=http://localhost:11434
-
-# Azure OpenAI
-LLM_PROVIDER=azure
-LLM_MODEL=gpt-4o
-AZURE_OPENAI_API_KEY=...
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
-AZURE_OPENAI_API_VERSION=2024-02-15-preview
-```
-
-### Run Modes
-
-| Mode | Tools Available | Use Case |
-|------|-----------------|----------|
-| `offline` | Terminal, Editor | Local code changes |
-| `browse` | + Search, Fetch | Research and documentation |
-| `interactive` | + Selenium | Web app testing |
-
-## Documentation
-
-- [Operations Guide](OPERATIONS.md) - Running and maintaining Mini-Devin
-- [API Documentation](docs/API.md) - REST and WebSocket API reference
-- [Developer Guide](docs/DEVELOPER.md) - Contributing and extending Mini-Devin
-- [Architecture](docs/ARCHITECTURE.md) - Detailed system architecture
-
-## Development
-
-### Running Tests
-
-```bash
-# Run all unit tests
-poetry run pytest tests/unit/ -v
-
-# Run with coverage
-poetry run pytest tests/unit/ --cov=mini_devin
-
-# Run E2E tests
-poetry run pytest tests/e2e/ -v
-```
-
-### Linting and Type Checking
-
-```bash
-# Run ruff linter
-poetry run ruff check mini_devin/
-
-# Run mypy type checker
-poetry run mypy mini_devin/
-
-# Run frontend linting
-cd frontend && npm run lint
-```
-
-### Database Migrations
-
-```bash
-# Create a new migration
-poetry run alembic revision --autogenerate -m "Description"
-
-# Apply migrations
-poetry run alembic upgrade head
-
-# Rollback one migration
-poetry run alembic downgrade -1
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Make your changes
-4. Run tests: `poetry run pytest tests/unit/ -v`
-5. Run linting: `poetry run ruff check mini_devin/`
-6. Commit your changes: `git commit -m "Add my feature"`
-7. Push to the branch: `git push origin feature/my-feature`
-8. Create a Pull Request
+---
 
 ## License
 
 MIT
-
-## Acknowledgments
-
-Mini-Devin is inspired by autonomous AI coding agents like Devin by Cognition AI. This project demonstrates how to build a similar system from scratch using modern Python, FastAPI, React, and LLM APIs.

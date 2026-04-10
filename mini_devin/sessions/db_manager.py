@@ -73,6 +73,8 @@ class DatabaseSessionManager:
         max_iterations: int = 50,
         session_id: str | None = None,
         use_sandbox: bool = False,
+        auto_git_commit: bool = False,
+        git_push: bool = False,
     ) -> Session:
         """Create a new agent session with database persistence."""
         async with self._session_lock:
@@ -113,6 +115,8 @@ class DatabaseSessionManager:
                     working_directory=working_directory,
                     max_iterations=max_iterations,
                     use_sandbox=use_sandbox,
+                    auto_git_commit=auto_git_commit,
+                    git_push=git_push,
                 )
                 if sandbox:
                     agent._sandbox = sandbox
@@ -241,8 +245,8 @@ class DatabaseSessionManager:
         # Inject into the LLM conversation history so the next LLM call sees it
         try:
             if hasattr(agent, 'llm') and agent.llm and hasattr(agent.llm, 'conversation'):
-                from ..core.llm_client import Message
-                agent.llm.conversation.append(Message(role='user', content=f'[User follow-up]: {message}'))
+                from ..core.llm_client import LLMMessage
+                agent.llm.conversation.append(LLMMessage(role='user', content=f'[User follow-up]: {message}'))
         except Exception as e:
             print(f'inject_followup error: {e}')
 
@@ -535,27 +539,40 @@ class DatabaseSessionManager:
                 status=AgentTaskStatus.PENDING,
             )
 
-            # Set up callbacks on the agent instance
+            # Set up callbacks on the agent instance.
+            # IMPORTANT: The callbacks are called from synchronous context inside the agent,
+            # so we use asyncio.ensure_future() to schedule the async on_update coroutine.
+            def _fire(coro):
+                """Schedule an async coroutine from a sync lambda context."""
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.ensure_future(coro)
+                    else:
+                        loop.run_until_complete(coro)
+                except Exception:
+                    pass
+
             agent.callbacks = {
-                "on_message": lambda token, is_token=False: on_update("tokens", {"content": token}),
-                "on_tool_start": lambda name, args: on_update("tool_started", {"tool": name, "input": args}),
-                "on_tool_result": lambda name, args, output, duration: on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration}),
-                "on_phase_change": lambda phase: on_update("phase_changed", {"phase": phase}),
-                    # on_clarification_needed callback: emit WS event so UI can show modal
-                    "on_clarification_needed": lambda question: asyncio.ensure_future(
-                        connection_manager.broadcast_to_session(session_id, WebSocketMessage(
-                            type=MessageType.CLARIFICATION_NEEDED,
-                            data={"question": question},
-                            task_id=task_id,
-                        ))
-                    ) if connection_manager else None,
-                    # Plan events
-                    "on_plan_created": lambda steps: on_update("plan_created", {"steps": steps}),
-                "on_step_started": lambda idx, text: on_update("step_started", {"index": idx, "text": text}),
-                "on_step_completed": lambda idx, text: on_update("step_completed", {"index": idx, "text": text}),
-                "on_iteration": lambda iteration, max_iter: on_update("iteration", {"iteration": iteration, "max": max_iter}),
+                "on_message": lambda token, is_token=False: _fire(on_update("tokens", {"content": token})),
+                "on_tool_start": lambda name, args: _fire(on_update("tool_started", {"tool": name, "input": args})),
+                "on_tool_result": lambda name, args, output, duration: _fire(on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration})),
+                "on_phase_change": lambda phase: _fire(on_update("phase_changed", {"phase": phase})),
+                # on_clarification_needed: emit WS event so UI can show modal
+                "on_clarification_needed": lambda question: asyncio.ensure_future(
+                    connection_manager.broadcast_to_session(session_id, WebSocketMessage(
+                        type=MessageType.CLARIFICATION_NEEDED,
+                        data={"question": question},
+                        task_id=task_id,
+                    ))
+                ) if connection_manager else None,
+                # Plan events
+                "on_plan_created": lambda steps: _fire(on_update("plan_created", {"steps": steps})),
+                "on_step_started": lambda idx, text="": _fire(on_update("step_started", {"index": idx, "text": text})),
+                "on_step_completed": lambda idx, text="": _fire(on_update("step_completed", {"index": idx, "text": text})),
+                "on_iteration": lambda iteration, max_iter: _fire(on_update("iteration", {"iteration": iteration, "max": max_iter})),
                 # Shell live streaming: each stdout line becomes a tool_output event
-                "on_command_output": lambda line: on_update("tool_output", {"line": line}),
+                "on_command_output": lambda line: _fire(on_update("tool_output", {"line": line})),
             }
 
             # Run the agent — track asyncio.Task for cancellation

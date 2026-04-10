@@ -7,6 +7,7 @@ LLM providers (OpenAI, Anthropic, etc.) with support for tool calling.
 
 import json
 import os
+import inspect
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -326,7 +327,7 @@ class LLMClient:
                     print(f"[TOKEN STREAM CHUNK]: {repr(chunk_text)}")
                     if on_token:
                         import asyncio
-                        if asyncio.iscoroutinefunction(on_token):
+                        if inspect.iscoroutinefunction(on_token):
                             await on_token(chunk_text)
                         else:
                             on_token(chunk_text)

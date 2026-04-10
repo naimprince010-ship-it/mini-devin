@@ -39,22 +39,32 @@ def run_server():
     while True:
         # Start server with uvicorn
         # We try to use uvicorn directly as a command first, fallback to python -m
-        print(f"[Bootstrap] Starting server on {host}:{port}...")
+        print(f"[Bootstrap] [{datetime.now().isoformat()}] Starting server on {host}:{port}...")
         try:
             process = subprocess.Popen(
-                ["uvicorn", f"{api_module}:app", "--host", host, "--port", port],
-                env=env
+                ["uvicorn", f"{api_module}:app", "--host", host, "--port", port, "--log-level", "debug"],
+                env=env,
+                stdout=None, # Inherit to show in platform logs
+                stderr=None
             )
-        except FileNotFoundError:
-            print("[Bootstrap] 'uvicorn' command not found in PATH, trying 'python -m uvicorn'...")
+        except Exception as e:
+            print(f"[Bootstrap] Failed to start with 'uvicorn' command: {e}. Trying 'python -m uvicorn'...")
             process = subprocess.Popen(
-                [sys.executable, "-m", "uvicorn", f"{api_module}:app", "--host", host, "--port", port],
-                env=env
+                [sys.executable, "-m", "uvicorn", f"{api_module}:app", "--host", host, "--port", port, "--log-level", "debug"],
+                env=env,
+                stdout=None,
+                stderr=None
             )
         
-        print(f"[Bootstrap] Mini-Devin running with PID: {process.pid}")
+        print(f"[Bootstrap] Mini-Devin process started with PID: {process.pid}")
         
+        last_ping = time.time()
         while process.poll() is None:
+            # Simple heartbeat in logs
+            if time.time() - last_ping > 60:
+                print(f"[Bootstrap] [{datetime.now().isoformat()}] Watchdog heartbeat: PID {process.pid} is alive.")
+                last_ping = time.time()
+
             # Check for restart signal
             if RESTART_FLAG.exists():
                 print("[Bootstrap] Restart signal detected. Terminating process...")

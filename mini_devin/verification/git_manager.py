@@ -8,7 +8,7 @@ and rollback capabilities to support safe agent operations.
 import asyncio
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -203,7 +203,7 @@ class GitManager:
             commit_hash=commit_hash,
             branch_name=branch,
             message=message,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
             files_at_checkpoint=files,
         )
         

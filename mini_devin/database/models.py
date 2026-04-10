@@ -121,7 +121,14 @@ class SessionModel(Base):
     tasks = relationship("TaskModel", back_populates="session", cascade="all, delete-orphan")
 
     def to_dict(self) -> dict:
-        """Convert to dictionary."""
+        """Convert to dictionary.
+
+        NOTE: Does NOT access lazy-loaded relationships (e.g. tasks) to avoid
+        MissingGreenlet errors when used outside an async greenlet context.
+        Use eager loading (selectinload) in queries if you need related data.
+        """
+        # Only access tasks if already eagerly loaded (present in __dict__)
+        tasks_list = self.__dict__.get("tasks")
         return {
             "session_id": self.id,
             "working_directory": self.working_directory,
@@ -129,7 +136,7 @@ class SessionModel(Base):
             "max_iterations": self.max_iterations,
             "status": self.status.value if self.status else "idle",
             "iteration": self.iteration,
-            "total_tasks": len(self.tasks) if self.tasks else 0,
+            "total_tasks": len(tasks_list) if tasks_list is not None else 0,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

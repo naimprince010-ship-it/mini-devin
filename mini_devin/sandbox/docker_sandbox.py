@@ -17,7 +17,7 @@ import json
 import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -316,7 +316,7 @@ class DockerSandbox:
         timeout = timeout or self.config.timeout_seconds
         work_dir = working_dir or self.config.workspace_path
         
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         try:
             # Build docker exec command
@@ -344,7 +344,7 @@ class DockerSandbox:
                 stdout, stderr = b"", b"Command timed out"
                 timed_out = True
             
-            end_time = datetime.utcnow()
+            end_time = datetime.now(timezone.utc)
             duration_ms = int((end_time - start_time).total_seconds() * 1000)
             
             return SandboxResult(
@@ -356,7 +356,7 @@ class DockerSandbox:
             )
             
         except Exception as e:
-            end_time = datetime.utcnow()
+            end_time = datetime.now(timezone.utc)
             duration_ms = int((end_time - start_time).total_seconds() * 1000)
             
             return SandboxResult(

@@ -16,6 +16,8 @@ import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import Optional
 from dotenv import load_dotenv
 import os
 
@@ -146,15 +148,45 @@ async def list_sessions():
         for s in sessions
     ]
 
+class CreateSessionRequest(BaseModel):
+    working_directory: str = "."
+    model: str = "gpt-4o"
+    max_iterations: int = 50
+    auto_git_commit: bool = False
+    git_push: bool = False
+
 @app.post("/api/sessions")
 @app.post("/sessions")
-async def create_session():
-    session = await session_manager.create_session()
+async def create_session(raw_request: Request):
+    working_dir = "."
+    model = "gpt-4o"
+    max_iterations = 50
+    auto_git_commit = False
+    git_push = False
+    try:
+        body = await raw_request.json()
+        working_dir = body.get("working_directory", ".") or "."
+        model = body.get("model", "gpt-4o") or "gpt-4o"
+        max_iterations = int(body.get("max_iterations", 50) or 50)
+        auto_git_commit = bool(body.get("auto_git_commit", False))
+        git_push = bool(body.get("git_push", False))
+    except Exception:
+        pass
+    session = await session_manager.create_session(
+        working_directory=working_dir,
+        model=model,
+        max_iterations=max_iterations,
+        auto_git_commit=auto_git_commit,
+        git_push=git_push,
+    )
     return {
         "session_id": session.session_id,
         "created_at": session.created_at.isoformat(),
         "status": session.status.value,
         "working_directory": session.working_directory,
+        "model": getattr(session, 'model', model),
+        "auto_git_commit": auto_git_commit,
+        "git_push": git_push,
         "iteration": session.iteration,
         "total_tasks": session.total_tasks
     }
@@ -342,6 +374,34 @@ async def stop_session_app(session_id: str):
     """Stop the running task in a session."""
     success = await session_manager.stop_session(session_id)
     return {"stopped": True, "session_id": session_id}
+
+
+@app.get("/api/sessions/{session_id}/history")
+@app.get("/sessions/{session_id}/history")
+async def get_session_history(session_id: str):
+    """Get chat conversation history for a session (agent messages)."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    agent = session_manager._agents.get(session_id)
+    if not agent:
+        return {"messages": [], "session_id": session_id}
+    # Return LLM conversation history, excluding system prompt
+    messages = []
+    for msg in agent.llm.conversation:
+        if msg.role == "system":
+            continue
+        entry = {
+            "role": msg.role,
+            "content": msg.content or "",
+        }
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            entry["tool_calls"] = [
+                {"name": tc.get("function", {}).get("name", ""), "args": tc.get("function", {}).get("arguments", {})}
+                for tc in msg.tool_calls
+            ]
+        messages.append(entry)
+    return {"messages": messages, "session_id": session_id, "total": len(messages)}
 
 @app.get("/api/sessions/{session_id}/tasks")
 @app.get("/sessions/{session_id}/tasks")

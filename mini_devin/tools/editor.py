@@ -83,6 +83,23 @@ Use this tool for all file operations during development."""
     @property
     def output_schema(self) -> type[ReadFileOutput]:
         return ReadFileOutput
+
+    def validate_input(self, input_data: Any) -> Any:
+        """
+        Preserve multi-action payloads for internal dispatch.
+
+        The base tool validation coerces inputs to ``input_schema``. Since this
+        tool supports multiple actions, coercing every dict into ``ReadFileInput``
+        would incorrectly route ``write_file``/``search``/etc. to read_file.
+        """
+        if isinstance(
+            input_data,
+            (ReadFileInput, WriteFileInput, ApplyPatchInput, SearchInput, ListDirectoryInput),
+        ):
+            return input_data
+        if isinstance(input_data, dict):
+            return input_data
+        return super().validate_input(input_data)
     
     def _resolve_path(self, path: str) -> str:
         """Resolve a path relative to working directory."""

@@ -5,6 +5,7 @@ from typing import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool, AsyncAdaptedQueuePool
 
 
 class Base(DeclarativeBase):
@@ -33,17 +34,32 @@ _engine = None
 _async_session_maker = None
 
 
+def _is_sqlite() -> bool:
+    """Check if we are using SQLite."""
+    return get_database_url().startswith("sqlite")
+
+
 def get_engine():
     """Get or create the async database engine."""
     global _engine
     if _engine is None:
-        _engine = create_async_engine(
-            get_database_url(),
-            echo=os.getenv("DATABASE_ECHO", "false").lower() == "true",
-            pool_pre_ping=True,
-            pool_size=5,
-            max_overflow=10,
-        )
+        url = get_database_url()
+        echo = os.getenv("DATABASE_ECHO", "false").lower() == "true"
+        if _is_sqlite():
+            # SQLite does not support connection pooling parameters
+            _engine = create_async_engine(
+                url,
+                echo=echo,
+                connect_args={"check_same_thread": False},
+            )
+        else:
+            _engine = create_async_engine(
+                url,
+                echo=echo,
+                pool_pre_ping=True,
+                pool_size=5,
+                max_overflow=10,
+            )
     return _engine
 
 
