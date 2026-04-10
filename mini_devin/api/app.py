@@ -803,6 +803,73 @@ async def write_file_content(session_id: str, req: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class LspDiagnosticsRequest(BaseModel):
+    path: str
+    content: Optional[str] = None
+
+
+class LspHoverRequest(BaseModel):
+    path: str
+    line: int  # 1-based (Monaco)
+    column: int = 1
+    content: Optional[str] = None
+
+
+@app.post("/api/sessions/{session_id}/lsp/diagnostics")
+@app.post("/sessions/{session_id}/lsp/diagnostics")
+async def session_lsp_diagnostics(session_id: str, body: LspDiagnosticsRequest):
+    """
+    Pull diagnostics for a workspace file (Python: Pyright/syntax; TS/JS: tsc when npx available).
+    Optional ``content`` uses an in-memory snapshot without writing the workspace file.
+    """
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    base_dir = os.path.abspath(session.working_directory or ".")
+    if not _check_rate_limit(f"lsp:diag:{session_id}", max_calls=60, window_seconds=60):
+        raise HTTPException(status_code=429, detail="Too many diagnostics requests")
+    try:
+        from ..lsp.diagnostics import collect_diagnostics
+
+        items, source = collect_diagnostics(base_dir, body.path, body.content)
+        return {"path": body.path, "diagnostics": items, "source": source}
+    except Exception as e:
+        print(f"[LSP] diagnostics error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/sessions/{session_id}/lsp/hover")
+@app.post("/sessions/{session_id}/lsp/hover")
+async def session_lsp_hover(session_id: str, body: LspHoverRequest):
+    """Symbol-aware hover (Tree-sitter) for Python / TS / JS."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    base_dir = os.path.abspath(session.working_directory or ".")
+    if not _check_rate_limit(f"lsp:hover:{session_id}", max_calls=120, window_seconds=60):
+        raise HTTPException(status_code=429, detail="Too many hover requests")
+    try:
+        from ..lsp.hover import collect_hover
+
+        text = collect_hover(base_dir, body.path, body.line, body.column, body.content)
+        return {"path": body.path, "contents": [{"value": text}] if text else []}
+    except Exception as e:
+        print(f"[LSP] hover error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/lsp/capabilities")
+@app.get("/lsp/capabilities")
+async def lsp_capabilities():
+    """Advertise LSP-style features for the IDE."""
+    return {
+        "diagnostics": True,
+        "hover": True,
+        "completion": False,
+        "note": "Diagnostics use Pyright/basedpyright when installed; TS/JS uses npx tsc.",
+    }
+
+
 @app.post("/api/sessions/{session_id}/stop")
 @app.post("/sessions/{session_id}/stop")
 async def stop_session_app(session_id: str):
