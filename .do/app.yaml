@@ -58,6 +58,12 @@ services:
       - key: DATABASE_URL
         scope: RUN_TIME
         value: "sqlite:///./minidevin.db"
+      - key: GIT_PYTHON_REFRESH
+        scope: RUN_TIME
+        value: "quiet"
+      - key: PYTHONIOENCODING
+        scope: RUN_TIME
+        value: "UTF-8"
 
 static_sites:
   - name: frontend

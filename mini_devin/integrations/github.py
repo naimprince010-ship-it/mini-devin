@@ -6,12 +6,25 @@ Handles PR creation, branch management, and commits
 import os
 import asyncio
 from typing import Optional, List, Dict, Any
-from github import Github, GithubException
-from github.Repository import Repository
-from github.PullRequest import PullRequest
-from git import Repo, InvalidGitRepositoryError
 from pathlib import Path
 import logging
+
+try:
+    from github import Github, GithubException
+    from github.Repository import Repository
+    from github.PullRequest import PullRequest
+    GITHUB_AVAILABLE = True
+except ImportError:
+    GITHUB_AVAILABLE = False
+    Github = None
+
+try:
+    from git import Repo, InvalidGitRepositoryError
+    GIT_AVAILABLE = True
+except Exception:
+    GIT_AVAILABLE = False
+    Repo = None
+    InvalidGitRepositoryError = Exception
 
 logger = logging.getLogger(__name__)
 
@@ -32,16 +45,22 @@ class GitHubIntegration:
         try:
             if not self.github_token:
                 raise ValueError("GitHub token required")
+            if not GITHUB_AVAILABLE:
+                logger.warning("PyGithub not available — GitHub integration disabled")
+                return False
                 
             self.github = Github(self.github_token)
             self.repo = self.github.get_repo(repo_name)
             
             # Initialize local git repository
-            try:
-                self.local_repo = Repo(repo_path)
-            except InvalidGitRepositoryError:
-                logger.error(f"Not a git repository: {repo_path}")
-                return False
+            if GIT_AVAILABLE:
+                try:
+                    self.local_repo = Repo(repo_path)
+                except InvalidGitRepositoryError:
+                    logger.error(f"Not a git repository: {repo_path}")
+                    return False
+            else:
+                logger.warning("GitPython not available — local git ops disabled")
                 
             logger.info(f"Connected to GitHub repo: {repo_name}")
             return True
