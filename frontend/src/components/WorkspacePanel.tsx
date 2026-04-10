@@ -82,7 +82,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
     const currentUrl = lastBrowserEvent?.url || lastBrowserEvent?.query;
 
     return (
-        <div className="flex-1 flex flex-col bg-[#0a0a0a] border-l border-[#262626]">
+        <div className="h-full w-full flex flex-col bg-[#0a0a0a] border-l border-[#262626]">
             {/* Tab Header */}
             <div className="flex items-center justify-between px-3 py-2 border-b border-[#262626] bg-[#111111]">
                 <div className="flex gap-1">
