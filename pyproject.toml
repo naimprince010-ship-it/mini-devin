@@ -40,6 +40,10 @@ aiosqlite = "^0.22.1"
 PyGithub = "^2.3.0"
 GitPython = "^3.1.40"
 slowapi = "^0.1.9"
+e2b = {version = "^2.9.0", optional = true}
+
+[tool.poetry.extras]
+sandbox-e2b = ["e2b"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"

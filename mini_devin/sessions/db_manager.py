@@ -105,8 +105,9 @@ class DatabaseSessionManager:
                 sandbox = None
                 if use_sandbox:
                     try:
-                        from ..sandbox.docker_sandbox import create_sandbox
-                        sandbox = create_sandbox(repo_path=working_directory)
+                        from ..sandbox.factory import create_execution_sandbox
+
+                        sandbox = create_execution_sandbox(repo_path=working_directory)
                     except Exception as e:
                         print(f"[Session] Sandbox creation failed, running without sandbox: {e}")
                 
@@ -288,12 +289,14 @@ class DatabaseSessionManager:
                 "session_id": session_id,
                 "container_id": existing.container_id,
                 "status": existing.status.value,
+                "backend": getattr(existing, "backend", "docker"),
             }
 
         try:
-            from ..sandbox.docker_sandbox import create_sandbox
+            from ..sandbox.factory import create_execution_sandbox
+
             working_dir = session.working_directory or "."
-            sandbox = create_sandbox(repo_path=working_dir)
+            sandbox = create_execution_sandbox(repo_path=working_dir)
             ok = await sandbox.start()
             if ok:
                 self._sandboxes[session_id] = sandbox
@@ -307,6 +310,7 @@ class DatabaseSessionManager:
                     "session_id": session_id,
                     "container_id": sandbox.container_id,
                     "status": sandbox.status.value,
+                    "backend": getattr(sandbox, "backend", "docker"),
                 }
             else:
                 return {"started": False, "error": "Docker failed to start the container"}

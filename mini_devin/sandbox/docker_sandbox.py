@@ -108,6 +108,8 @@ class DockerSandbox:
     
     Without access to the host filesystem or network (optionally).
     """
+
+    backend = "docker"
     
     def __init__(
         self,
