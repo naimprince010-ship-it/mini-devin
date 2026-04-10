@@ -5,6 +5,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    // SPA fallback — all routes serve index.html
+    historyApiFallback: true,
     proxy: {
       '/api/ws': {
         target: 'ws://localhost:8000',

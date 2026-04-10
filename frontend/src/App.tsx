@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Session } from './types';
 import { SessionList } from './components/SessionList';
@@ -209,6 +210,7 @@ const LAST_SESSION_KEY = 'mini-devin:last-session-id';
 function App() {
   const { user, loading } = useAuth();
   const { theme, toggleTheme, isDark } = useTheme();
+  const navigate = useNavigate();
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [showLogin, setShowLogin] = useState(false);
   const { toasts, dismiss } = useToastState();
@@ -311,12 +313,16 @@ function App() {
         >
           {/* Logo + close button (mobile) */}
           <div className="p-4 flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2.5">
+            <button
+              onClick={() => navigate('/')}
+              className="flex items-center gap-2.5 hover:opacity-80 transition-opacity"
+              title="Back to home"
+            >
               <div className="w-7 h-7 rounded-lg bg-[#00ff99]/10 border border-[#00ff99]/20 flex items-center justify-center">
                 <Bot style={{ color: accentColor }} size={16} />
               </div>
               <h1 className={`font-bold text-sm tracking-tight ${textPrimary}`}>Mini-Devin</h1>
-            </div>
+            </button>
             <button
               className={`md:hidden p-1 rounded-lg ${textMuted} ${bgHover} transition-colors`}
               onClick={() => setSidebarOpen(false)}
