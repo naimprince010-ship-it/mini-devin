@@ -1,11 +1,31 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import fs from 'fs'
+import path from 'path'
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    // After build, copy index.html into sub-route folders so static CDNs can serve them directly.
+    // This fixes 404 on /app when deployed to DigitalOcean / Netlify / any static host.
+    {
+      name: 'spa-static-route-fallback',
+      closeBundle() {
+        const dist = path.resolve(__dirname, 'dist')
+        const indexHtml = path.join(dist, 'index.html')
+        if (fs.existsSync(indexHtml)) {
+          const spaRoutes = ['app']
+          for (const route of spaRoutes) {
+            const dir = path.join(dist, route)
+            fs.mkdirSync(dir, { recursive: true })
+            fs.copyFileSync(indexHtml, path.join(dir, 'index.html'))
+          }
+        }
+      },
+    },
+  ],
   server: {
     port: 5173,
-    // SPA fallback — all routes serve index.html
     historyApiFallback: true,
     proxy: {
       '/api/ws': {
