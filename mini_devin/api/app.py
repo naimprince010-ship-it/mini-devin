@@ -396,10 +396,18 @@ async def get_session_history(session_id: str):
             "content": msg.content or "",
         }
         if hasattr(msg, "tool_calls") and msg.tool_calls:
-            entry["tool_calls"] = [
-                {"name": tc.get("function", {}).get("name", ""), "args": tc.get("function", {}).get("arguments", {})}
-                for tc in msg.tool_calls
-            ]
+            tool_calls_out = []
+            for tc in msg.tool_calls:
+                if isinstance(tc, dict):
+                    name = tc.get("function", {}).get("name", "") or tc.get("name", "")
+                    args = tc.get("function", {}).get("arguments", {}) or tc.get("args", {})
+                else:
+                    # ToolCall object
+                    fn = getattr(tc, "function", None) or tc
+                    name = getattr(fn, "name", "") or getattr(tc, "name", "")
+                    args = getattr(fn, "arguments", {}) or getattr(tc, "args", {})
+                tool_calls_out.append({"name": name, "args": args})
+            entry["tool_calls"] = tool_calls_out
         messages.append(entry)
     return {"messages": messages, "session_id": session_id, "total": len(messages)}
 
