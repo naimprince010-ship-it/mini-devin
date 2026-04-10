@@ -175,7 +175,7 @@ async def add_repo(request: Request):
     if github_token:
         clone_url = f"https://{github_token}@github.com/{owner}/{repo_name}.git"
 
-    local_path = os.path.join(_get_repos_root(), f"{owner}_{repo_name}")
+    local_path = os.path.join(_get_repos_root(), repo_name)
 
     repo_info = {
         "repo_id": repo_id,
@@ -197,39 +197,72 @@ async def add_repo(request: Request):
     asyncio.create_task(_clone_repo_bg(repo_id, clone_url, local_path, branch))
     return {k: v for k, v in repo_info.items() if not k.startswith("_")}
 
+async def _run_git(*args, cwd=None, timeout=60) -> tuple[int, str, str]:
+    """Run a git command asynchronously without blocking the event loop."""
+    proc = await asyncio.create_subprocess_exec(
+        "git", *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return -1, "", "timeout"
+    return proc.returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace")
+
+
 async def _clone_repo_bg(repo_id: str, clone_url: str, local_path: str, branch: str):
     """Clone a repo in the background and update status."""
-    import subprocess
     try:
-        if os.path.exists(local_path):
-            # Already cloned — just pull
-            result = subprocess.run(
-                ["git", "-C", local_path, "pull", "origin", branch],
-                capture_output=True, text=True, timeout=120
-            )
-        else:
-            result = subprocess.run(
-                ["git", "clone", "--depth", "1", "-b", branch, clone_url, local_path],
-                capture_output=True, text=True, timeout=120
-            )
-        if result.returncode == 0:
+        if os.path.exists(local_path) and os.path.exists(os.path.join(local_path, ".git")):
+            await _run_git("-C", local_path, "pull", timeout=60)
             if repo_id in _repos:
                 _repos[repo_id]["status"] = "cloned"
                 _repos[repo_id]["local_path"] = local_path
                 _repos[repo_id]["last_synced"] = datetime.now(timezone.utc).isoformat()
-        else:
-            # Try without branch (use default)
-            result2 = subprocess.run(
-                ["git", "clone", "--depth", "1", _repos[repo_id].get("_clone_url", clone_url), local_path],
-                capture_output=True, text=True, timeout=120
-            )
-            if result2.returncode == 0 and repo_id in _repos:
+            return
+
+        # Try clone with specified branch first
+        rc, _, stderr1 = await _run_git("clone", "--depth", "1", "-b", branch, clone_url, local_path, timeout=60)
+        if rc == 0:
+            if repo_id in _repos:
                 _repos[repo_id]["status"] = "cloned"
                 _repos[repo_id]["local_path"] = local_path
                 _repos[repo_id]["last_synced"] = datetime.now(timezone.utc).isoformat()
-            else:
-                if repo_id in _repos:
-                    _repos[repo_id]["status"] = "clone_failed"
+            return
+
+        # Remove partial clone and try without branch
+        import shutil
+        if os.path.exists(local_path):
+            shutil.rmtree(local_path, ignore_errors=True)
+        rc2, _, stderr2 = await _run_git("clone", "--depth", "1", clone_url, local_path, timeout=60)
+        if rc2 == 0 and repo_id in _repos:
+            _repos[repo_id]["status"] = "cloned"
+            _repos[repo_id]["local_path"] = local_path
+            _repos[repo_id]["last_synced"] = datetime.now(timezone.utc).isoformat()
+            return
+
+        # Both failed — check if empty repo
+        combined_err = (stderr1 + stderr2).lower()
+        is_empty = any(k in combined_err for k in ("empty", "did not", "no branch", "remote head", "warning: you appear"))
+        if is_empty or rc2 != 0:
+            # Empty repo — init a fresh local workspace and point remote to GitHub
+            os.makedirs(local_path, exist_ok=True)
+            await _run_git("init", cwd=local_path)
+            await _run_git("remote", "add", "origin", clone_url, cwd=local_path)
+            await _run_git("config", "user.email", "agent@mini-devin.local", cwd=local_path)
+            await _run_git("config", "user.name", "Mini-Devin Agent", cwd=local_path)
+            if repo_id in _repos:
+                _repos[repo_id]["status"] = "cloned"
+                _repos[repo_id]["local_path"] = local_path
+                _repos[repo_id]["last_synced"] = datetime.now(timezone.utc).isoformat()
+                _repos[repo_id]["note"] = "Empty repo — local workspace initialized, remote linked"
+        else:
+            if repo_id in _repos:
+                _repos[repo_id]["status"] = "clone_failed"
+                _repos[repo_id]["error"] = stderr2[:200] or "Unknown error"
     except Exception as e:
         if repo_id in _repos:
             _repos[repo_id]["status"] = "clone_failed"
