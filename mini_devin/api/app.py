@@ -15,7 +15,8 @@ import asyncio
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
 from dotenv import load_dotenv
@@ -1071,6 +1072,25 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     except Exception as e:
         print(f"WebSocket error: {e}")
         connection_manager.disconnect(websocket)
+
+
+# ─────────────────────────────────────────────────────────────
+# Serve React frontend (SPA) — must be LAST, after all API routes
+# ─────────────────────────────────────────────────────────────
+import pathlib
+
+_FRONTEND_DIST = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dist"
+
+if _FRONTEND_DIST.exists():
+    # Serve static assets (JS, CSS, images…)
+    app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        """Catch-all: serve index.html for all non-API routes so React Router works."""
+        index = _FRONTEND_DIST / "index.html"
+        return FileResponse(str(index))
+
 
 if __name__ == "__main__":
     import uvicorn

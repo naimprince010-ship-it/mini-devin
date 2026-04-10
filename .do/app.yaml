@@ -1,34 +1,6 @@
 name: mini-devin
 region: blr
 
-ingress:
-  rules:
-    - component:
-        name: backend
-      match:
-        path:
-          prefix: /api
-    - component:
-        name: backend
-      match:
-        path:
-          prefix: /ws
-    - component:
-        name: backend
-      match:
-        path:
-          prefix: /docs
-    - component:
-        name: backend
-      match:
-        path:
-          prefix: /health
-    - component:
-        name: frontend
-      match:
-        path:
-          prefix: /
-
 services:
   - name: backend
     github:
@@ -41,9 +13,11 @@ services:
     instance_count: 1
     instance_size_slug: basic-xxs
     health_check:
-      http_path: /health
-      initial_delay_seconds: 30
+      http_path: /api/health
+      initial_delay_seconds: 60
       period_seconds: 30
+    routes:
+      - path: /
     envs:
       - key: OPENAI_API_KEY
         scope: RUN_TIME
@@ -64,29 +38,13 @@ services:
       - key: PYTHONIOENCODING
         scope: RUN_TIME
         value: "UTF-8"
+      - key: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD
+        scope: RUN_TIME
+        value: "1"
       - key: BROWSERLESS_API_KEY
         scope: RUN_TIME
         type: SECRET
         value: ""
       - key: BROWSERLESS_WS_URL
         scope: RUN_TIME
-        value: ""
-
-static_sites:
-  - name: frontend
-    github:
-      repo: naimprince010-ship-it/mini-devin
-      branch: main
-      deploy_on_push: true
-    source_dir: /frontend
-    build_command: npm install && npm run build
-    output_dir: /dist
-    index_document: index.html
-    error_document: index.html
-    envs:
-      - key: VITE_API_URL
-        scope: BUILD_TIME
-        value: ""
-      - key: VITE_WS_URL
-        scope: BUILD_TIME
         value: ""
