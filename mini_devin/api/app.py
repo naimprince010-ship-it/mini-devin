@@ -570,6 +570,13 @@ async def list_models():
 @app.get("/status")
 async def get_system_status():
     """Get system status with uptime and metrics."""
+    # Determine browser mode
+    if os.getenv("BROWSERLESS_API_KEY") or os.getenv("BROWSERLESS_WS_URL"):
+        browser_mode = "browserless"
+    else:
+        import shutil
+        browser_mode = "local" if shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome") else "unavailable"
+
     return {
         "status": "running",
         "mode": "lightweight",
@@ -578,6 +585,7 @@ async def get_system_status():
         "total_tasks_completed": await session_manager.get_total_tasks_completed(),
         "uptime_seconds": session_manager.get_uptime_seconds(),
         "llm_configured": bool(os.getenv("OPENAI_API_KEY") or os.getenv("MiniDevin") or os.getenv("ANTHROPIC_API_KEY")),
+        "browser_mode": browser_mode,
     }
 
 

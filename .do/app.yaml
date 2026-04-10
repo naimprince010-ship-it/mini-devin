@@ -64,6 +64,13 @@ services:
       - key: PYTHONIOENCODING
         scope: RUN_TIME
         value: "UTF-8"
+      - key: BROWSERLESS_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: ""
+      - key: BROWSERLESS_WS_URL
+        scope: RUN_TIME
+        value: ""
 
 static_sites:
   - name: frontend

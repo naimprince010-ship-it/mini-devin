@@ -135,16 +135,73 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         self._context = None
         self._page = None
         self._initialized = False
+        self._mode = "unknown"  # 'browserless', 'local', or 'unavailable'
+
+    @staticmethod
+    def _get_browserless_ws_url() -> Optional[str]:
+        """
+        Build Browserless WebSocket endpoint from environment.
+
+        Supports:
+          - BROWSERLESS_API_KEY  → wss://chrome.browserless.io?token=KEY
+          - BROWSERLESS_WS_URL   → custom self-hosted endpoint
+        """
+        import os
+        ws_url = os.getenv("BROWSERLESS_WS_URL")
+        if ws_url:
+            return ws_url
+        api_key = os.getenv("BROWSERLESS_API_KEY")
+        if api_key:
+            return f"wss://chrome.browserless.io?token={api_key}"
+        return None
 
     async def _ensure_initialized(self) -> None:
-        """Lazily initialize Playwright on first use."""
+        """
+        Lazily initialize browser on first use.
+
+        Priority:
+          1. Browserless.io remote Chromium (if BROWSERLESS_API_KEY / BROWSERLESS_WS_URL set)
+          2. Local Chromium via Playwright
+          3. Raise clear error if neither available
+        """
         if self._initialized:
             return
 
         try:
             from playwright.async_api import async_playwright
-            self._playwright_manager = async_playwright()
-            self._playwright = await self._playwright_manager.start()
+        except ImportError:
+            raise ImportError(
+                "Playwright is required. Install with:\n"
+                "  pip install playwright\n"
+                "  playwright install chromium"
+            )
+
+        self._playwright_manager = async_playwright()
+        self._playwright = await self._playwright_manager.start()
+
+        # ── Option 1: Browserless remote Chromium ──────────────────────────
+        ws_url = self._get_browserless_ws_url()
+        if ws_url:
+            try:
+                self._browser = await self._playwright.chromium.connect_over_cdp(ws_url)
+                self._context = await self._browser.new_context(
+                    viewport={"width": self.window_width, "height": self.window_height},
+                    user_agent=(
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                )
+                self._page = await self._context.new_page()
+                self._page.set_default_timeout(self.timeout_ms)
+                self._initialized = True
+                self._mode = "browserless"
+                return
+            except Exception as e:
+                # Browserless connection failed — try local fallback
+                print(f"[Browser] Browserless connection failed ({e}), trying local Chromium...")
+
+        # ── Option 2: Local Chromium ────────────────────────────────────────
+        try:
             self._browser = await self._playwright.chromium.launch(
                 headless=self.headless,
                 args=[
@@ -164,15 +221,14 @@ class PlaywrightBrowserTool(BaseBrowserTool):
             self._page = await self._context.new_page()
             self._page.set_default_timeout(self.timeout_ms)
             self._initialized = True
-
-        except ImportError:
-            raise ImportError(
-                "Playwright is required. Install with:\n"
-                "  pip install playwright\n"
-                "  playwright install chromium"
-            )
+            self._mode = "local"
         except Exception as e:
-            raise RuntimeError(f"Failed to initialize Playwright: {e}")
+            raise RuntimeError(
+                f"Browser unavailable: {e}\n"
+                "To enable browser automation:\n"
+                "  • Set BROWSERLESS_API_KEY in .env (remote, no install needed)\n"
+                "  • Or run: playwright install chromium (local)"
+            )
 
     async def _take_screenshot(self, full_page: bool = False) -> Optional[str]:
         """Take a screenshot and return base64-encoded PNG."""
