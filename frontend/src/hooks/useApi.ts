@@ -316,6 +316,14 @@ export function useApi() {
     }
   }, []);
 
+  const getSessionHistory = useCallback(async (sessionId: string): Promise<{ messages: Array<{role: string; content: string; tool_calls?: any[]}>, total: number }> => {
+    try {
+      return await fetchApi(`/sessions/${sessionId}/history`);
+    } catch {
+      return { messages: [], total: 0 };
+    }
+  }, []);
+
   const listWorkspaceFiles = useCallback(async (sessionId: string, directory: string = '.'): Promise<any[]> => {
     setLoading(true);
     setError(null);
@@ -442,6 +450,7 @@ export function useApi() {
     uploadFile,
     listFiles,
     listWorkspaceFiles,
+    getSessionHistory,
     deleteFile,
     // Memory
     listMemories,

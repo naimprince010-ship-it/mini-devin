@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Session } from './types';
 import { SessionList } from './components/SessionList';
@@ -199,6 +199,8 @@ function NewSessionModal({
   );
 }
 
+const LAST_SESSION_KEY = 'mini-devin:last-session-id';
+
 function App() {
   const { user, loading } = useAuth();
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
@@ -207,6 +209,17 @@ function App() {
   const [showNewSession, setShowNewSession] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>('sessions');
   const api = useApi();
+
+  // Restore last selected session from localStorage on mount
+  useEffect(() => {
+    const savedId = localStorage.getItem(LAST_SESSION_KEY);
+    if (savedId && !selectedSession) {
+      api.getSession(savedId)
+        .then(s => { if (s) setSelectedSession(s); })
+        .catch(() => localStorage.removeItem(LAST_SESSION_KEY));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSelfEvolve = async () => {
     try {
@@ -253,6 +266,7 @@ function App() {
           onClose={() => setShowNewSession(false)}
           onCreated={(session) => {
             setSelectedSession(session);
+            localStorage.setItem(LAST_SESSION_KEY, session.session_id);
             setActiveTab('sessions');
           }}
         />
@@ -298,7 +312,10 @@ function App() {
           {activeTab === 'sessions' && (
             <div className="flex-1 mt-4 px-2 overflow-y-auto min-h-0 border-t border-[#1a1a1a] pt-4 custom-scrollbar">
               <SessionList
-                onSelectSession={setSelectedSession}
+                onSelectSession={(s) => {
+                  setSelectedSession(s);
+                  localStorage.setItem(LAST_SESSION_KEY, s.session_id);
+                }}
                 selectedSessionId={selectedSession?.session_id}
                 onNewSession={() => setShowNewSession(true)}
               />

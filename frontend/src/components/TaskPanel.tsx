@@ -252,6 +252,23 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     loadTasks();
     setStreamingContent('');
     events.resetForSession();
+    // Restore conversation history from backend on session load
+    api.getSessionHistory(session.session_id).then(hist => {
+      if (hist.total > 0) {
+        // Reconstruct a readable chat history from the conversation
+        const lines: string[] = [];
+        for (const msg of hist.messages) {
+          if (msg.role === 'user' && msg.content) {
+            lines.push(`**[You]:** ${msg.content}`);
+          } else if (msg.role === 'assistant' && msg.content) {
+            lines.push(msg.content);
+          }
+        }
+        if (lines.length > 0) {
+          setStreamingContent(lines.join('\n\n---\n\n') + '\n\n_— Session restored from history —_');
+        }
+      }
+    }).catch(() => {/* ignore */});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.session_id]);
 
