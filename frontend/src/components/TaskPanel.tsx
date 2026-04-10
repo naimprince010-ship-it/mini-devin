@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, Fragment } from 'react
 import { Session, Task, WebSocketMessage } from '../types';
 import { useApi } from '../hooks/useApi';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target, Coins, HelpCircle, X, DollarSign, Cpu, Download } from 'lucide-react';
+import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target, Coins, HelpCircle, X, DollarSign, Cpu, Download, FolderOpen } from 'lucide-react';
 import { StreamingOutput } from './StreamingOutput';
 import { useSessionEvents } from '../contexts/SessionEventsContext';
 import { PlanStepsView } from './PlanStepsView';
@@ -368,6 +368,18 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
                   <div className="flex items-center gap-1 text-[10px] text-[#525252]">
                     <Cpu size={9} />
                     <span>{session.model}</span>
+                  </div>
+                </>
+              )}
+              {/* Workspace badge */}
+              {session.working_directory && (
+                <>
+                  <span className="text-[#2a2a2a]">·</span>
+                  <div className="flex items-center gap-1 text-[10px] text-[#525252]" title={session.working_directory}>
+                    <FolderOpen size={9} />
+                    <span className="font-mono max-w-[120px] truncate">
+                      {session.working_directory.split(/[\\/]/).slice(-2).join('/')}
+                    </span>
                   </div>
                 </>
               )}

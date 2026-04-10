@@ -198,20 +198,44 @@ async def create_session(raw_request: Request):
     if not _check_rate_limit(f"create_session:{client_ip}", max_calls=10, window_seconds=60):
         raise HTTPException(status_code=429, detail="Too many requests. Please wait before creating another session.")
 
-    working_dir = "."
+    # Workspace root: outside mini-devin source code
+    _mini_devin_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    _workspaces_root = os.path.join(os.path.dirname(_mini_devin_root), "agent-workspace")
+
+    # Generate session ID early so we can create a per-session directory
+    new_session_id = str(uuid.uuid4())[:8]
+
     model = "gpt-4o"
     max_iterations = 50
     auto_git_commit = False
     git_push = False
+    requested_dir = ""
     try:
         body = await raw_request.json()
-        working_dir = body.get("working_directory", ".") or "."
+        requested_dir = body.get("working_directory", "") or ""
         model = body.get("model", "gpt-4o") or "gpt-4o"
         max_iterations = int(body.get("max_iterations", 50) or 50)
         auto_git_commit = bool(body.get("auto_git_commit", False))
         git_push = bool(body.get("git_push", False))
     except Exception:
         pass
+
+    # Determine working directory
+    if requested_dir in ("", ".", "./"):
+        # Per-session isolated workspace — each user/session gets their own folder
+        working_dir = os.path.join(_workspaces_root, new_session_id)
+        os.makedirs(working_dir, exist_ok=True)
+        # Initialize git in the fresh workspace so agent can commit
+        import subprocess
+        git_dir = os.path.join(working_dir, ".git")
+        if not os.path.exists(git_dir):
+            subprocess.run(["git", "init"], cwd=working_dir, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "agent@mini-devin.local"], cwd=working_dir, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Mini-Devin Agent"], cwd=working_dir, capture_output=True)
+    else:
+        # User provided a specific path — use it directly
+        working_dir = requested_dir
+
     try:
         session = await session_manager.create_session(
             working_directory=working_dir,
@@ -219,6 +243,7 @@ async def create_session(raw_request: Request):
             max_iterations=max_iterations,
             auto_git_commit=auto_git_commit,
             git_push=git_push,
+            session_id=new_session_id,
         )
     except Exception as e:
         import traceback
@@ -230,6 +255,7 @@ async def create_session(raw_request: Request):
         "created_at": session.created_at.isoformat(),
         "status": session.status.value,
         "working_directory": session.working_directory,
+        "workspace_path": session.working_directory,
         "model": getattr(session, 'model', model),
         "auto_git_commit": auto_git_commit,
         "git_push": git_push,

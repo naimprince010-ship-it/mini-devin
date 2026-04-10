@@ -46,7 +46,7 @@ function NewSessionModal({
   onClose: () => void;
   onCreated: (session: Session) => void;
 }) {
-  const [workingDir, setWorkingDir] = useState('.');
+  const [workingDir, setWorkingDir] = useState('');
   const [provider, setProvider] = useState('openai');
   const [model, setModel] = useState('gpt-4o-mini');
   const [maxIterations, setMaxIterations] = useState(50);
@@ -101,6 +101,7 @@ function NewSessionModal({
             <label className="flex items-center gap-1.5 text-xs font-medium text-[#a3a3a3] mb-2">
               <Cpu size={12} className="text-yellow-500/70" />
               Working Directory
+              <span className="ml-auto text-[10px] text-[#525252] font-normal">empty = safe default workspace</span>
             </label>
             <FolderPicker value={workingDir} onChange={setWorkingDir} />
           </div>
