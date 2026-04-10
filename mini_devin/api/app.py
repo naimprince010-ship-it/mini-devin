@@ -129,17 +129,147 @@ async def api_health():
     return {"status": "healthy", "mode": "lightweight"}
 
 
-# ── Repos stub endpoints ──────────────────────────────────────────────────────
-# Full repo management requires GitHub OAuth + git binary. For now we return
-# empty lists so the frontend doesn't show scary error banners.
+# ── Repo management endpoints ─────────────────────────────────────────────────
+# Supports cloning public (and token-authenticated private) GitHub repos.
+# No OAuth required — just paste the repo URL.
+
+# In-memory repo registry (persists until server restart)
+_repos: dict[str, dict] = {}
+
+def _get_repos_root() -> str:
+    _mini_devin_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    repos_root = os.path.join(os.path.dirname(_mini_devin_root), "agent-workspace", "repos")
+    os.makedirs(repos_root, exist_ok=True)
+    return repos_root
+
+def _parse_github_url(url: str) -> tuple[str, str]:
+    """Extract owner and repo_name from a GitHub URL."""
+    import re
+    url = url.strip().rstrip("/").replace(".git", "")
+    match = re.search(r"github\.com[:/]([^/]+)/([^/]+)", url)
+    if not match:
+        raise ValueError(f"Invalid GitHub URL: {url}")
+    return match.group(1), match.group(2)
 
 @app.get("/api/repos")
 async def list_repos():
-    return {"repos": [], "total": 0}
+    return {"repos": list(_repos.values()), "total": len(_repos)}
 
 @app.post("/api/repos")
 async def add_repo(request: Request):
-    raise HTTPException(status_code=501, detail="Repository management requires GitHub OAuth setup. Please configure GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET.")
+    body = await request.json()
+    repo_url = (body.get("repo_url") or "").strip()
+    github_token = body.get("github_token") or ""
+    branch = body.get("branch") or "main"
+
+    if not repo_url:
+        raise HTTPException(status_code=400, detail="repo_url is required")
+
+    try:
+        owner, repo_name = _parse_github_url(repo_url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    repo_id = str(uuid.uuid4())[:8]
+    clone_url = f"https://github.com/{owner}/{repo_name}.git"
+    if github_token:
+        clone_url = f"https://{github_token}@github.com/{owner}/{repo_name}.git"
+
+    local_path = os.path.join(_get_repos_root(), f"{owner}_{repo_name}")
+
+    repo_info = {
+        "repo_id": repo_id,
+        "repo_url": f"https://github.com/{owner}/{repo_name}",
+        "repo_name": repo_name,
+        "owner": owner,
+        "default_branch": branch,
+        "local_path": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "last_synced": None,
+        "status": "pending",
+        "has_token": bool(github_token),
+        "_clone_url": clone_url,
+        "_local_target": local_path,
+    }
+    _repos[repo_id] = repo_info
+
+    # Auto-clone in background
+    asyncio.create_task(_clone_repo_bg(repo_id, clone_url, local_path, branch))
+    return {k: v for k, v in repo_info.items() if not k.startswith("_")}
+
+async def _clone_repo_bg(repo_id: str, clone_url: str, local_path: str, branch: str):
+    """Clone a repo in the background and update status."""
+    import subprocess
+    try:
+        if os.path.exists(local_path):
+            # Already cloned — just pull
+            result = subprocess.run(
+                ["git", "-C", local_path, "pull", "origin", branch],
+                capture_output=True, text=True, timeout=120
+            )
+        else:
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", "-b", branch, clone_url, local_path],
+                capture_output=True, text=True, timeout=120
+            )
+        if result.returncode == 0:
+            if repo_id in _repos:
+                _repos[repo_id]["status"] = "cloned"
+                _repos[repo_id]["local_path"] = local_path
+                _repos[repo_id]["last_synced"] = datetime.now(timezone.utc).isoformat()
+        else:
+            # Try without branch (use default)
+            result2 = subprocess.run(
+                ["git", "clone", "--depth", "1", _repos[repo_id].get("_clone_url", clone_url), local_path],
+                capture_output=True, text=True, timeout=120
+            )
+            if result2.returncode == 0 and repo_id in _repos:
+                _repos[repo_id]["status"] = "cloned"
+                _repos[repo_id]["local_path"] = local_path
+                _repos[repo_id]["last_synced"] = datetime.now(timezone.utc).isoformat()
+            else:
+                if repo_id in _repos:
+                    _repos[repo_id]["status"] = "clone_failed"
+    except Exception as e:
+        if repo_id in _repos:
+            _repos[repo_id]["status"] = "clone_failed"
+        print(f"[Repos] Clone failed for {repo_id}: {e}")
+
+@app.post("/api/repos/{repo_id}/clone")
+async def clone_repo(repo_id: str):
+    if repo_id not in _repos:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = _repos[repo_id]
+    asyncio.create_task(_clone_repo_bg(
+        repo_id, repo.get("_clone_url", repo["repo_url"]),
+        repo.get("_local_target", repo["local_path"] or ""),
+        repo["default_branch"]
+    ))
+    return {"status": "cloning", "repo_id": repo_id}
+
+@app.post("/api/repos/{repo_id}/pull")
+async def pull_repo(repo_id: str):
+    if repo_id not in _repos:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = _repos[repo_id]
+    asyncio.create_task(_clone_repo_bg(
+        repo_id, repo.get("_clone_url", repo["repo_url"]),
+        repo.get("_local_target", repo["local_path"] or ""),
+        repo["default_branch"]
+    ))
+    return {"status": "pulling", "repo_id": repo_id}
+
+@app.delete("/api/repos/{repo_id}")
+async def delete_repo(repo_id: str):
+    if repo_id not in _repos:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = _repos.pop(repo_id)
+    # Optionally remove local clone
+    local_path = repo.get("local_path")
+    if local_path and os.path.exists(local_path):
+        import shutil
+        shutil.rmtree(local_path, ignore_errors=True)
+    return {"status": "deleted", "repo_id": repo_id}
 
 @app.get("/api/github/oauth/status")
 async def github_oauth_status():

@@ -42,11 +42,13 @@ type TabType = 'sessions' | 'skills' | 'repos' | 'reviews';
 function NewSessionModal({
   onClose,
   onCreated,
+  initialWorkingDir = '',
 }: {
   onClose: () => void;
   onCreated: (session: Session) => void;
+  initialWorkingDir?: string;
 }) {
-  const [workingDir, setWorkingDir] = useState('');
+  const [workingDir, setWorkingDir] = useState(initialWorkingDir);
   const [provider, setProvider] = useState('openai');
   const [model, setModel] = useState('gpt-4o-mini');
   const [maxIterations, setMaxIterations] = useState(50);
@@ -216,6 +218,7 @@ function App() {
   const [showLogin, setShowLogin] = useState(false);
   const { toasts, dismiss } = useToastState();
   const [showNewSession, setShowNewSession] = useState(false);
+  const [newSessionInitialDir, setNewSessionInitialDir] = useState('');
   const [activeTab, setActiveTab] = useState<TabType>('sessions');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const api = useApi();
@@ -282,7 +285,8 @@ function App() {
     <SessionEventsProvider>
       {showNewSession && (
         <NewSessionModal
-          onClose={() => setShowNewSession(false)}
+          onClose={() => { setShowNewSession(false); setNewSessionInitialDir(''); }}
+          initialWorkingDir={newSessionInitialDir}
           onCreated={(session) => {
             setSelectedSession(session);
             localStorage.setItem(LAST_SESSION_KEY, session.session_id);
@@ -488,6 +492,11 @@ function App() {
                       apiBaseUrl={apiBase}
                       sessionId={selectedSession?.session_id}
                       onRepoLinked={() => { }}
+                      onOpenInSession={(localPath, repoName) => {
+                        setNewSessionInitialDir(localPath);
+                        setShowNewSession(true);
+                        setActiveTab('sessions');
+                      }}
                     />
                   </ErrorBoundary>
                 ) : (

@@ -1,5 +1,5 @@
-import { useState, useCallback, useEffect } from 'react';
-import { GitBranch, GitFork, Trash2, RefreshCw, Plus, ExternalLink, Loader2, Check, AlertCircle, Link2, Github, LogOut, User } from 'lucide-react';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { GitBranch, GitFork, Trash2, RefreshCw, Plus, ExternalLink, Loader2, Check, AlertCircle, Link2, Github, LogOut, User, Play } from 'lucide-react';
 
 interface GitHubOAuthStatus {
   connected: boolean;
@@ -30,9 +30,10 @@ interface RepoManagerProps {
   apiBaseUrl?: string;
   sessionId?: string;
   onRepoLinked?: (repoId: string) => void;
+  onOpenInSession?: (localPath: string, repoName: string) => void;
 }
 
-export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionId, onRepoLinked }: RepoManagerProps) {
+export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionId, onRepoLinked, onOpenInSession }: RepoManagerProps) {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,6 +44,7 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
   const [adding, setAdding] = useState(false);
   const [cloning, setCloning] = useState<string | null>(null);
   const [expandedRepo, setExpandedRepo] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [githubStatus, setGithubStatus] = useState<GitHubOAuthStatus | null>(null);
   const [connectingGithub, setConnectingGithub] = useState(false);
   const [disconnectingGithub, setDisconnectingGithub] = useState(false);
@@ -155,6 +157,22 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
   useEffect(() => {
     loadRepos();
   }, [loadRepos]);
+
+  // Auto-poll while any repo is in pending/cloning state
+  useEffect(() => {
+    const hasPending = repos.some(r => r.status === 'pending');
+    if (hasPending && !pollRef.current) {
+      pollRef.current = setInterval(() => {
+        loadRepos();
+      }, 3000);
+    } else if (!hasPending && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    return () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    };
+  }, [repos, loadRepos]);
 
   const handleAddRepo = async () => {
     if (!newRepoUrl.trim()) return;
@@ -413,6 +431,7 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
       {showAddForm && (
         <div className="mb-4 p-4 bg-gray-700 rounded-lg">
           <h3 className="text-sm font-medium text-white mb-3">Add GitHub Repository</h3>
+          <p className="text-xs text-gray-400 mb-3">Paste any GitHub repo URL. Public repos clone instantly — no login needed!</p>
           <div className="space-y-3">
             <div>
               <label className="block text-xs text-gray-400 mb-1">Repository URL</label>
@@ -420,8 +439,10 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
                 type="text"
                 value={newRepoUrl}
                 onChange={(e) => setNewRepoUrl(e.target.value)}
-                placeholder="https://github.com/owner/repo"
+                onKeyDown={(e) => e.key === 'Enter' && handleAddRepo()}
+                placeholder="https://github.com/your-username/your-repo"
                 className="w-full px-3 py-2 bg-gray-600 text-white rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                autoFocus
               />
             </div>
             <div>
@@ -498,7 +519,16 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
                     </span>
                   </div>
                   <div className="flex items-center gap-1">
-                    {repo.status === 'cloned' && sessionId && (
+                    {repo.status === 'cloned' && onOpenInSession && repo.local_path && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onOpenInSession(repo.local_path!, repo.repo_name); }}
+                        className="p-1.5 text-gray-400 hover:text-green-400 rounded"
+                        title="Open in new session"
+                      >
+                        <Play size={14} />
+                      </button>
+                    )}
+                  {repo.status === 'cloned' && sessionId && (
                       <button
                         onClick={(e) => { e.stopPropagation(); handleLinkToSession(repo.repo_id); }}
                         className="p-1.5 text-gray-400 hover:text-blue-400 rounded"

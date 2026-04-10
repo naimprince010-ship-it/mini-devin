@@ -1,0 +1,21 @@
+=== START ===
+In main
+imported init_db
+DB done
+SESSION ERROR: cannot import name 'SessionStatus' from partially initialized module 'mini_devin.sessions.manager' (most likely due to a circular import) (E:\mini devin\mini-devin\mini_devin\sessions\manager.py)
+Traceback (most recent call last):
+  File "E:\mini devin\mini-devin\debug_session.py", line 28, in main
+    from mini_devin.sessions.db_manager import DatabaseSessionManager
+  File "E:\mini devin\mini-devin\mini_devin\sessions\__init__.py", line 11, in <module>
+    from .manager import SessionManager, Session, Task, TaskResult
+  File "E:\mini devin\mini-devin\mini_devin\sessions\manager.py", line 20, in <module>
+    from ..api.websocket import ConnectionManager
+  File "E:\mini devin\mini-devin\mini_devin\api\__init__.py", line 11, in <module>
+    from .app import create_app, app
+  File "E:\mini devin\mini-devin\mini_devin\api\app.py", line 30, in <module>
+    from ..sessions.db_manager import DatabaseSessionManager
+  File "E:\mini devin\mini-devin\mini_devin\sessions\db_manager.py", line 29, in <module>
+    from .manager import SessionStatus, TaskStatus, TaskResult, Task, Session
+ImportError: cannot import name 'SessionStatus' from partially initialized module 'mini_devin.sessions.manager' (most likely due to a circular import) (E:\mini devin\mini-devin\mini_devin\sessions\manager.py)
+
+=== DONE ===
