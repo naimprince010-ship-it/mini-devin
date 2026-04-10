@@ -19,10 +19,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 from dotenv import load_dotenv
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
+import time
 import os
 
 # Load environment variables
@@ -32,8 +29,21 @@ from .websocket import ConnectionManager, WebSocketMessage, MessageType
 from ..database.config import init_db
 from ..sessions.db_manager import DatabaseSessionManager
 
-# Rate limiter — 60 requests/minute per IP; WebSocket excluded
-limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+# Simple in-memory rate limiter (no external dependency)
+_rate_buckets: dict = {}
+
+def _check_rate_limit(key: str, max_calls: int, window_seconds: int = 60) -> bool:
+    """Returns True if allowed, False if rate limited."""
+    now = time.time()
+    bucket = _rate_buckets.get(key, {"count": 0, "reset_at": now + window_seconds})
+    if now > bucket["reset_at"]:
+        bucket = {"count": 0, "reset_at": now + window_seconds}
+    if bucket["count"] >= max_calls:
+        _rate_buckets[key] = bucket
+        return False
+    bucket["count"] += 1
+    _rate_buckets[key] = bucket
+    return True
 
 # Database-backed session management
 session_manager = DatabaseSessionManager()
@@ -70,11 +80,6 @@ app = FastAPI(
 def create_app() -> FastAPI:
     """Factory function to create the app instance."""
     return app
-
-# Rate limiting setup
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-app.add_middleware(SlowAPIMiddleware)
 
 # Configure CORS - allow all origins for production
 app.add_middleware(
@@ -170,8 +175,12 @@ class CreateSessionRequest(BaseModel):
 
 @app.post("/api/sessions")
 @app.post("/sessions")
-@limiter.limit("10/minute")
 async def create_session(raw_request: Request):
+    # Simple rate limiting: 10 sessions/minute per IP
+    client_ip = raw_request.client.host if raw_request.client else "unknown"
+    if not _check_rate_limit(f"create_session:{client_ip}", max_calls=10, window_seconds=60):
+        raise HTTPException(status_code=429, detail="Too many requests. Please wait before creating another session.")
+
     working_dir = "."
     model = "gpt-4o"
     max_iterations = 50
