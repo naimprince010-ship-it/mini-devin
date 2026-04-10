@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .symbol_index import Symbol, SymbolIndex, SymbolType
+from .tree_sitter_symbols import extract_symbols_ast, rag_chunks_from_symbols
 from .vector_store import Document, SearchResult, VectorStore
 
 
@@ -231,9 +232,10 @@ class RetrievalManager:
         # Index symbols
         symbol_count = self.symbol_index.index_directory()
         
-        # Index files for vector store
+        # Index files for vector store (line chunks + optional Tree-sitter symbol chunks for RAG)
         doc_count = 0
-        for ext in [".py", ".js", ".ts", ".go", ".rs", ".md", ".txt"]:
+        ast_chunk_count = 0
+        for ext in [".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".md", ".txt"]:
             for file_path in self.workspace_path.rglob(f"*{ext}"):
                 # Skip non-source directories
                 if any(part.startswith(".") or part in ["node_modules", "__pycache__", "venv", ".venv", "dist", "build"]
@@ -246,12 +248,27 @@ class RetrievalManager:
                     doc_count += len(documents)
                 except Exception:
                     pass
+
+                # AST-aligned chunks (Python / TS / JS) improve semantic retrieval vs raw line splits alone
+                if ext in (".py", ".ts", ".tsx", ".js", ".jsx"):
+                    try:
+                        rel = str(file_path.relative_to(self.workspace_path))
+                        content = file_path.read_text(errors="ignore")
+                        lang_map = {".py": "python", ".ts": "typescript", ".tsx": "typescript", ".js": "javascript", ".jsx": "javascript"}
+                        lang = lang_map.get(ext, "python")
+                        syms = extract_symbols_ast(rel, content, lang)
+                        for text, meta in rag_chunks_from_symbols(rel, syms):
+                            self.vector_store.add_batch([Document.from_text(text, meta)])
+                            ast_chunk_count += 1
+                    except Exception:
+                        pass
         
         self._indexed = True
         
         return {
             "symbols_indexed": symbol_count,
             "documents_indexed": doc_count,
+            "ast_chunks_indexed": ast_chunk_count,
         }
     
     def retrieve(
