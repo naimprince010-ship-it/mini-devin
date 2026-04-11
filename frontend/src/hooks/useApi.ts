@@ -12,20 +12,34 @@ import {
   Memory,
   ExportResponse,
 } from '../types';
+import { fetchWithTimeout, isAbortError } from '../utils/fetchWithTimeout';
 
 const API_BASE = import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : '/api';
 
-async function fetchApi<T>(
-  endpoint: string,
-  options: RequestInit = {}
-): Promise<T> {
-  const response = await fetch(`${API_BASE}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  });
+const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
+
+type FetchApiOptions = RequestInit & { timeoutMs?: number };
+
+async function fetchApi<T>(endpoint: string, options: FetchApiOptions = {}): Promise<T> {
+  const { timeoutMs = DEFAULT_FETCH_TIMEOUT_MS, ...rest } = options;
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(`${API_BASE}${endpoint}`, {
+      ...rest,
+      timeoutMs,
+      headers: {
+        'Content-Type': 'application/json',
+        ...rest.headers,
+      },
+    });
+  } catch (e) {
+    if (isAbortError(e)) {
+      throw new Error(
+        `Request timed out after ${timeoutMs / 1000}s. Start the backend (port 8000) or check VITE_API_URL.`
+      );
+    }
+    throw e;
+  }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
