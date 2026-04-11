@@ -22,6 +22,8 @@ from typing import Optional
 from dotenv import load_dotenv
 import time
 import os
+import shutil
+import subprocess
 
 # Load environment variables
 load_dotenv()
@@ -45,6 +47,49 @@ def _check_rate_limit(key: str, max_calls: int, window_seconds: int = 60) -> boo
     bucket["count"] += 1
     _rate_buckets[key] = bucket
     return True
+
+
+def _is_git_remote_url(value: str) -> bool:
+    v = (value or "").strip()
+    if not v:
+        return False
+    if v.startswith("git@"):
+        return True
+    lowered = v.lower()
+    return lowered.startswith("http://") or lowered.startswith("https://")
+
+
+def _git_clone_url_with_token(url: str) -> str:
+    """Inject GITHUB_TOKEN / GH_TOKEN for private HTTPS GitHub clones."""
+    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+    if not token:
+        return url.strip()
+    u = url.strip()
+    if "github.com" in u and u.startswith("https://"):
+        rest = u[len("https://") :]
+        if not rest.startswith("x-access-token:") and "@" not in rest.split("/", 1)[0]:
+            return f"https://x-access-token:{token}@{rest}"
+    return u
+
+
+def _init_git_workspace(working_dir: str) -> None:
+    git_dir = os.path.join(working_dir, ".git")
+    if os.path.exists(git_dir):
+        return
+    subprocess.run(["git", "init"], cwd=working_dir, capture_output=True, check=False)
+    subprocess.run(
+        ["git", "config", "user.email", "agent@mini-devin.local"],
+        cwd=working_dir,
+        capture_output=True,
+        check=False,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Mini-Devin Agent"],
+        cwd=working_dir,
+        capture_output=True,
+        check=False,
+    )
+
 
 # Database-backed session management
 session_manager = DatabaseSessionManager()
@@ -681,21 +726,56 @@ async def create_session(raw_request: Request):
     except Exception:
         pass
 
-    # Determine working directory
+    # Determine working directory (empty = fresh folder; URL = git clone like a local IDE repo)
+    os.makedirs(_workspaces_root, exist_ok=True)
     if requested_dir in ("", ".", "./"):
-        # Per-session isolated workspace — each user/session gets their own folder
         working_dir = os.path.join(_workspaces_root, new_session_id)
         os.makedirs(working_dir, exist_ok=True)
-        # Initialize git in the fresh workspace so agent can commit
-        import subprocess
-        git_dir = os.path.join(working_dir, ".git")
-        if not os.path.exists(git_dir):
-            subprocess.run(["git", "init"], cwd=working_dir, capture_output=True)
-            subprocess.run(["git", "config", "user.email", "agent@mini-devin.local"], cwd=working_dir, capture_output=True)
-            subprocess.run(["git", "config", "user.name", "Mini-Devin Agent"], cwd=working_dir, capture_output=True)
+        _init_git_workspace(working_dir)
+    elif _is_git_remote_url(requested_dir):
+        working_dir = os.path.join(_workspaces_root, new_session_id)
+        if os.path.isdir(working_dir):
+            shutil.rmtree(working_dir, ignore_errors=True)
+        os.makedirs(working_dir, exist_ok=True)
+        clone_url = _git_clone_url_with_token(requested_dir)
+        clone_timeout = int(os.getenv("GIT_CLONE_TIMEOUT_SEC", "240"))
+        try:
+            r = subprocess.run(
+                ["git", "clone", "--depth", "1", clone_url, "."],
+                cwd=working_dir,
+                capture_output=True,
+                text=True,
+                timeout=clone_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            shutil.rmtree(working_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=400,
+                detail="git clone timed out. Try a smaller repo or set GIT_CLONE_TIMEOUT_SEC.",
+            ) from None
+        if r.returncode != 0:
+            shutil.rmtree(working_dir, ignore_errors=True)
+            err = (r.stderr or r.stdout or "").strip()[:800]
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Could not clone that URL. Use public https://… or git@…, "
+                    "or set GITHUB_TOKEN for private GitHub. Git: "
+                    + err
+                ),
+            )
+        print(f"[API] create_session: cloned repo into {working_dir}")
     else:
-        # User provided a specific path — use it directly
-        working_dir = requested_dir
+        working_dir = os.path.abspath(os.path.expanduser(requested_dir.strip()))
+        if not os.path.isdir(working_dir):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Not a folder on the server: {working_dir}. "
+                    "Leave empty for a fresh workspace, paste a GitHub HTTPS/git URL to auto-clone, "
+                    "or use Browse when the API shares your filesystem."
+                ),
+            )
 
     try:
         session = await session_manager.create_session(

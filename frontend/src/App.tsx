@@ -23,7 +23,7 @@ import { useTheme } from './contexts/ThemeContext';
 import { SessionEventsProvider, useSessionEvents } from './contexts/SessionEventsContext';
 import { useApi } from './hooks/useApi';
 import { getApiBase } from './config/apiBase';
-import { ToastContainer, useToastState } from './components/Toast';
+import { ToastContainer, useToastState, useToast } from './components/Toast';
 import {
   Bot,
   Github,
@@ -68,6 +68,7 @@ function NewSessionModal({
   const [gitPush, setGitPush] = useState(false);
   const api = useApi();
   const events = useSessionEvents();
+  const toast = useToast();
 
   const handleCreate = async () => {
     try {
@@ -81,10 +82,21 @@ function NewSessionModal({
       if (acceptanceCriteria.trim()) {
         events.setAcceptanceCriteria(acceptanceCriteria.trim());
       }
+      const wd = workingDir.trim();
+      const looksLikeGitRemote =
+        /^https?:\/\//i.test(wd) || wd.startsWith('git@');
+      toast.success(
+        'Session ready',
+        looksLikeGitRemote
+          ? 'Repository cloned on the server — agent can use the terminal like a local IDE.'
+          : 'Agent workspace is set. Send a task to start.',
+      );
       onCreated(session);
       onClose();
     } catch (e) {
       console.error('Failed to create session:', e);
+      const msg = e instanceof Error ? e.message : 'Failed to create session';
+      toast.error('Could not create session', msg);
     }
   };
 
@@ -114,7 +126,9 @@ function NewSessionModal({
             <label className="flex items-center gap-1.5 text-xs font-medium text-[#a3a3a3] mb-2">
               <Cpu size={12} className="text-yellow-500/70" />
               Working Directory
-              <span className="ml-auto text-[10px] text-[#525252] font-normal">empty = safe default workspace</span>
+              <span className="ml-auto max-w-[140px] text-right text-[10px] text-[#525252] font-normal leading-tight">
+                GitHub URL = auto-clone on server (Cursor-style)
+              </span>
             </label>
             <FolderPicker value={workingDir} onChange={setWorkingDir} />
           </div>

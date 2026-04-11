@@ -65,7 +65,7 @@ export function FolderPicker({ value, onChange }: FolderPickerProps) {
                     value={value}
                     onChange={(e) => onChange(e.target.value)}
                     className="flex-1 px-3 py-2.5 bg-[#0a0a0a] text-white text-sm rounded-lg border border-[#262626] focus:border-[#00ff99]/40 focus:outline-none transition-colors placeholder-[#525252] font-mono"
-                    placeholder="Leave empty for default workspace"
+                    placeholder="Empty = fresh workspace · or paste https://github.com/org/repo to auto-clone"
                 />
                 <button
                     type="button"

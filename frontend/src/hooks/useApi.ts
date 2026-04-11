@@ -63,6 +63,8 @@ export function useApi() {
       const result = await fetchApi<Session>('/sessions', {
         method: 'POST',
         body: JSON.stringify(data),
+        // New session may git-clone a repo (up to a few minutes on slow networks)
+        timeoutMs: 300_000,
       });
       return result;
     } catch (e) {
