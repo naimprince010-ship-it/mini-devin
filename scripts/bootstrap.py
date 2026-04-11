@@ -16,6 +16,32 @@ from pathlib import Path
 
 RESTART_FLAG = Path(".restart_flag")
 
+
+def _resolve_listen_port() -> str:
+    """Pick a single numeric port from PORT (Railway injects this).
+
+    Duplicate ``PORT`` rows or copy-paste mistakes can produce multiline / comma-separated
+    values; ``str.isdigit()`` then fails and we used to fall back to 8000 while the edge
+    still targets 8080 → 502.
+    """
+    raw = (os.getenv("PORT") or "").strip()
+    if not raw:
+        return "8000"
+    first_line = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n", 1)[0].strip()
+    parts = [p.strip() for p in first_line.replace(",", " ").split() if p.strip()]
+    for token in parts:
+        if token.isdigit():
+            if raw != token and os.getenv("RAILWAY_ENVIRONMENT_ID"):
+                print(
+                    "[Bootstrap] Warning: PORT env had extra characters; "
+                    f"using first integer token {token!r} from raw {raw!r}. "
+                    "Remove duplicate/custom PORT variables in Railway."
+                )
+            return token
+    print(f"[Bootstrap] Invalid PORT={raw!r}, falling back to 8000")
+    return "8000"
+
+
 def run_server():
     """Run the Mini-Devin server and restart if flag is detected."""
     print(f"[Bootstrap] Initializing Mini-Devin Watchdog at {datetime.now().isoformat()}...")
@@ -30,12 +56,7 @@ def run_server():
     # Configuration
     api_module = "mini_devin.api.app"
     host = "0.0.0.0"
-    # Railway sets PORT; empty string must fall back or uvicorn gets --port "" and fails → 502.
-    _port_raw = (os.getenv("PORT") or "").strip()
-    port = _port_raw if _port_raw else "8000"
-    if not port.isdigit():
-        print(f"[Bootstrap] Invalid PORT={_port_raw!r}, falling back to 8000")
-        port = "8000"
+    port = _resolve_listen_port()
 
     # Ensure current directory is in PYTHONPATH
     env = os.environ.copy()
@@ -44,6 +65,8 @@ def run_server():
     env["PORT"] = port
 
     if os.getenv("RAILWAY_ENVIRONMENT_ID"):
+        port_keys = sorted(k for k in os.environ if "PORT" in k.upper())
+        print(f"[Bootstrap] Railway env keys containing PORT: {port_keys}")
         print(
             "[Bootstrap] Railway: Public Networking → domain → Target port must equal this "
             f"listen port ({port}) or the edge returns 502."
@@ -54,7 +77,7 @@ def run_server():
         # We try to use uvicorn directly as a command first, fallback to python -m
         print(
             f"[Bootstrap] [{datetime.now().isoformat()}] Starting server on {host}:{port} "
-            f"(PORT env was {os.environ.get('PORT', '')!r})..."
+            f"(resolved listen port {port!r}, raw PORT env was {os.environ.get('PORT', '')!r})..."
         )
         try:
             process = subprocess.Popen(

@@ -2,8 +2,8 @@
 # Service → Variables: see .env.example section "Railway (Variables tab)".
 # SQLite is ephemeral unless you add Postgres and set DATABASE_URL.
 #
-# PORT: Prefer Railway’s injected PORT; set Public Networking target port to the same value.
-# Do not duplicate PORT in Variables unless you intentionally override (must match target port).
+# PORT: Railway injects PORT — do NOT add another PORT in Variables (duplicate / multiline → 502).
+# Public Networking target port must equal the resolved listen port (see bootstrap deploy logs).
 #
 # If the public URL returns 502 but deploy logs show 200 from 10.x.x.x: the edge cannot reach
 # your process — enable Public Networking and set the domain's Target port = PORT (often 8080).
