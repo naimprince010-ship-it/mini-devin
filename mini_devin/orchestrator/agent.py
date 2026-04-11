@@ -254,6 +254,10 @@ class Agent:
             max_immediate_retries=self.max_immediate_retries
         )
         self._consecutive_failures = 0
+        # Last failed tool call before a self-correction retry (tool_name, args, stderr_snippet)
+        self._last_failed_tool: tuple[str, dict[str, Any], str] | None = None
+        # Short lines appended when self-correction succeeds (fed into save_task_summary)
+        self._session_self_correct_lessons: list[str] = []
         
         # Docker Sandbox (optional isolated execution)
         self.use_sandbox = use_sandbox
@@ -3013,6 +3017,7 @@ PREFER str_replace over write_file when editing existing files.""",
         self._current_step_idx = 0
         self._tools_used_count = 0
         self._no_tool_streak = 0
+        self._session_self_correct_lessons = []
         
         # Initialize artifact logger
         self._init_artifact_logger(task.task_id, task.goal.description)
@@ -3159,6 +3164,7 @@ Call a tool (editor or terminal) immediately as your first action."""
                     
                     # Execute each tool
                     for tc in response.tool_calls:
+                        self._last_failed_tool = None
                         if "on_tool_start" in self.callbacks:
                             await self._trigger_callback("on_tool_start", tc.name, tc.arguments)
                         
@@ -3202,6 +3208,34 @@ Call a tool (editor or terminal) immediately as your first action."""
                                     # Reset failures and notify UI about success
                                     self._consecutive_failures = 0
                                     await self._trigger_callback("on_message", f"✅ Successfully corrected error in {tc.name}", is_token=False)
+                                    lf = self._last_failed_tool
+                                    if lf and self._use_conversation_memory:
+                                        try:
+                                            tname, bad_args, err_txt = lf
+                                            good_args = (
+                                                dict(tc.arguments)
+                                                if isinstance(tc.arguments, dict)
+                                                else {"raw": tc.arguments}
+                                            )
+                                            self._correction_engine.record_correction(
+                                                {"name": tname, "arguments": bad_args},
+                                                err_txt,
+                                                {"name": tname, "arguments": good_args},
+                                            )
+                                            self.get_conversation_memory().add_error_pattern(
+                                                error=err_txt[:400],
+                                                cause=f"{tname} tool (self-correct)",
+                                                solution=json.dumps(good_args, default=str)[:500],
+                                                tags=["self_correction", tname],
+                                                session_id=getattr(self.state, "session_id", None),
+                                                task_id=task.task_id,
+                                            )
+                                            self._session_self_correct_lessons.append(
+                                                f"Self-corrected {tname}: {json.dumps(good_args, default=str)[:280]}"
+                                            )
+                                        except Exception as mem_err:
+                                            self._log(f"Warning: could not persist self-correction to memory: {mem_err}")
+                                    self._last_failed_tool = None
                                 break
                                 
                             # Tool failed
@@ -3212,6 +3246,11 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 break
                                 
                             # Need to retry with hint
+                            try:
+                                bad_args = dict(tc.arguments) if isinstance(tc.arguments, dict) else {"raw": tc.arguments}
+                            except Exception:
+                                bad_args = {}
+                            self._last_failed_tool = (tc.name, bad_args, str(result)[:1200])
                             retry_count += 1
                             hint = self._correction_engine.get_retry_hint(error_type, tc.name, tc.arguments, result)
                             
@@ -3409,7 +3448,7 @@ Call a tool (editor or terminal) immediately as your first action."""
                 self.save_task_summary(
                     task=task,
                     summary=summary,
-                    lessons_learned=[],
+                    lessons_learned=list(self._session_self_correct_lessons),
                 )
                 self._log("Task summary saved to conversation memory")
             except Exception as e:
