@@ -1635,6 +1635,120 @@ if _FRONTEND_DIST.exists():
         return FileResponse(str(index))
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# SWE-bench Benchmarking endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+class BenchmarkRunRequest(BaseModel):
+    split: str = "lite"
+    limit: int = 5
+    repo_filter: str = ""
+    name: str = ""
+    use_agent: bool = True
+
+
+@app.get("/api/benchmark/tasks")
+async def list_benchmark_tasks(
+    split: str = "lite",
+    limit: int = 10,
+    repo_filter: str = "",
+):
+    """List available SWE-bench tasks (preview, no run)."""
+    from ..integrations.swe_bench import load_tasks
+    tasks = load_tasks(split=split, limit=limit, repo_filter=repo_filter)
+    return {"tasks": [t.to_dict() for t in tasks], "total": len(tasks)}
+
+
+@app.get("/api/benchmark/runs")
+async def list_benchmark_runs():
+    from ..integrations.swe_bench import get_runner
+    return {"runs": get_runner().list_runs()}
+
+
+@app.get("/api/benchmark/runs/{run_id}")
+async def get_benchmark_run(run_id: str):
+    from ..integrations.swe_bench import get_runner
+    run = get_runner().get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
+
+
+@app.get("/api/benchmark/runs/{run_id}/results")
+async def get_benchmark_run_results(run_id: str):
+    from ..integrations.swe_bench import get_runner
+    results = get_runner().get_run_results(run_id)
+    return {"results": results}
+
+
+@app.post("/api/benchmark/runs")
+async def start_benchmark_run(req: BenchmarkRunRequest, background_tasks: BackgroundTasks):
+    from ..integrations.swe_bench import get_runner, make_agent_runner
+    runner = get_runner()
+    agent_fn = make_agent_runner(db_manager) if req.use_agent else None
+
+    async def _run():
+        await runner.start_run(
+            split=req.split,
+            limit=req.limit,
+            repo_filter=req.repo_filter,
+            name=req.name,
+            agent_runner=agent_fn,
+        )
+
+    background_tasks.add_task(_run)
+
+    # Return a preview run object immediately
+    from ..integrations.swe_bench import BenchmarkRun
+    from ..integrations.swe_bench import load_tasks
+    tasks = load_tasks(split=req.split, limit=req.limit, repo_filter=req.repo_filter)
+    preview = BenchmarkRun(
+        name=req.name or f"SWE-bench {req.split} × {len(tasks)}",
+        split=req.split,
+        limit=req.limit,
+        repo_filter=req.repo_filter,
+        status="running",
+        task_ids=[t.task_id for t in tasks],
+        total=len(tasks),
+    )
+    return preview.to_dict()
+
+
+@app.delete("/api/benchmark/runs/{run_id}")
+async def delete_benchmark_run(run_id: str):
+    from ..integrations.swe_bench import get_runner
+    ok = get_runner().delete_run(run_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {"deleted": True}
+
+
+@app.post("/api/benchmark/runs/cancel")
+async def cancel_benchmark_run():
+    from ..integrations.swe_bench import get_runner
+    get_runner().cancel_run()
+    return {"cancelled": True}
+
+
+@app.get("/api/benchmark/stats")
+async def benchmark_stats():
+    """Aggregate stats across all runs."""
+    from ..integrations.swe_bench import get_runner
+    runner = get_runner()
+    runs = runner.list_runs()
+    completed = [r for r in runs if r["status"] == "completed"]
+    total_resolved = sum(r["resolved"] for r in completed)
+    total_tasks = sum(r["total"] for r in completed)
+    return {
+        "total_runs": len(runs),
+        "completed_runs": len(completed),
+        "total_tasks_evaluated": total_tasks,
+        "total_resolved": total_resolved,
+        "overall_resolve_rate": round(total_resolved / total_tasks * 100, 1) if total_tasks > 0 else 0.0,
+        "best_run": max(completed, key=lambda r: r["resolve_rate"])["run_id"] if completed else None,
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

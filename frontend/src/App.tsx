@@ -14,6 +14,7 @@ import MonitorPanel from './components/MonitorPanel';
 import EnvParityPanel from './components/EnvParityPanel';
 import UITestPanel from './components/UITestPanel';
 import ProjectPlannerPanel from './components/ProjectPlannerPanel';
+import { BenchmarkPanel } from './components/BenchmarkPanel';
 import { ProviderSelector } from './components/ProviderSelector';
 import { FolderPicker } from './components/FolderPicker';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -43,9 +44,10 @@ import {
   Container,
   TestTube2,
   FolderKanban,
+  FlaskConical,
 } from 'lucide-react';
 
-type TabType = 'sessions' | 'skills' | 'repos' | 'reviews' | 'monitor' | 'env_parity' | 'ui_test' | 'projects';
+type TabType = 'sessions' | 'skills' | 'repos' | 'reviews' | 'monitor' | 'env_parity' | 'ui_test' | 'projects' | 'benchmark';
 
 function NewSessionModal({
   onClose,
@@ -278,6 +280,7 @@ function App() {
     { id: 'env_parity', icon: <Container size={18} />, label: 'Env Parity' },
     { id: 'ui_test', icon: <TestTube2 size={18} />, label: 'UI Tests' },
     { id: 'projects', icon: <FolderKanban size={18} />, label: 'Projects' },
+    { id: 'benchmark', icon: <FlaskConical size={18} />, label: 'Benchmark' },
   ];
 
   // Same-origin /api when API is served with the app (production). Override with VITE_API_URL for split deploys.
@@ -527,6 +530,10 @@ function App() {
                 ) : activeTab === 'projects' ? (
                   <ErrorBoundary>
                     <ProjectPlannerPanel />
+                  </ErrorBoundary>
+                ) : activeTab === 'benchmark' ? (
+                  <ErrorBoundary>
+                    <BenchmarkPanel />
                   </ErrorBoundary>
                 ) : (
                   <ErrorBoundary>
