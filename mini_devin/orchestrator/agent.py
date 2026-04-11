@@ -37,6 +37,7 @@ from ..tools.browser import (
     create_search_tool,
     create_fetch_tool,
     create_interactive_tool,
+    create_playwright_tool,
     create_citation_store,
 )
 from ..safety.guards import SafetyGuard, SafetyPolicy, SafetyViolation
@@ -137,7 +138,9 @@ _SYSTEM_PROMPT_TEMPLATE = """
 - `editor` with `str_replace` — Replace exact text in a file (token-efficient, preferred for edits)
 - `editor` with `apply_patch` — Apply a unified diff patch
 - `browser_search` — Search the web
-- `browser_fetch` — Fetch a web page
+- `browser_fetch` — Fetch a web page (HTTP; no JS console)
+- `browser_playwright` — **Preferred for UI bugs**: real Chromium, DOM outline, console + network + page errors, screenshots
+- `browser_interactive` — Legacy Selenium (use Playwright when available)
 - `github` — GitHub workflows
 - `monitor` — Check app health, fetch cloud/docker logs, register for continuous monitoring
 - `env_parity` — Generate Dockerfile/.env.example/docker-compose; diff local vs production env
@@ -300,6 +303,10 @@ class Agent:
         if not self.registry.get("browser_interactive"):
             browser_interactive = create_interactive_tool()
             self.registry.register(browser_interactive)
+
+        if not self.registry.get("browser_playwright"):
+            browser_pw = create_playwright_tool()
+            self.registry.register(browser_pw)
         
         # Citation store for tracking web references
         if not hasattr(self, "_citation_store"):
@@ -489,6 +496,55 @@ PREFER str_replace over write_file when editing existing files.""",
                         "type": "number",
                         "description": "Seconds to wait (for wait action)",
                     },
+                },
+                "required": ["action"],
+            },
+        })
+
+        schemas.append({
+            "name": "browser_playwright",
+            "description": (
+                "Headless Chromium (Playwright). Use for JS sites, UI debugging, and before/after checks. "
+                "Returns DOM outline (headings + body structure), console lines, XHR/fetch/document network log, "
+                "uncaught page errors, failed requests, and optional screenshots. "
+                "Actions: navigate (url, wait_until: domcontentloaded|networkidle, full_page), debug_snapshot "
+                "(settle_ms ms wait then dump), screenshot, click (selector|x,y), type/fill, wait_for "
+                "(selector|url|network_idle), get_text, get_html, evaluate (script), find_elements, reload, etc. "
+                "Requires: pip install playwright && playwright install chromium, or BROWSERLESS_API_KEY."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "navigate", "screenshot", "click", "type", "fill", "select", "scroll", "hover",
+                            "wait_for", "get_text", "get_html", "evaluate", "highlight", "find_elements",
+                            "pdf", "press", "go_back", "go_forward", "reload", "debug_snapshot",
+                        ],
+                        "description": "Playwright action to run",
+                    },
+                    "url": {"type": "string", "description": "For navigate / wait_for(url pattern)"},
+                    "selector": {"type": "string", "description": "CSS selector for click, type, fill, etc."},
+                    "text": {"type": "string", "description": "For type action"},
+                    "value": {"type": "string", "description": "For fill/select"},
+                    "script": {"type": "string", "description": "JavaScript for evaluate action"},
+                    "wait_until": {
+                        "type": "string",
+                        "description": "navigate load state: domcontentloaded | load | networkidle",
+                    },
+                    "full_page": {"type": "boolean", "description": "Full-page screenshot"},
+                    "network_idle": {"type": "boolean", "description": "For wait_for: wait until network idle"},
+                    "timeout": {"type": "integer", "description": "Timeout ms for waits"},
+                    "settle_ms": {
+                        "type": "integer",
+                        "description": "For debug_snapshot: extra wait before capture (default 400)",
+                    },
+                    "direction": {"type": "string", "description": "scroll: up|down|top|bottom"},
+                    "amount": {"type": "number", "description": "scroll pixels"},
+                    "key": {"type": "string", "description": "press: key name e.g. Enter"},
+                    "delay": {"type": "integer", "description": "type: ms between keys"},
+                    "x": {"type": "number"}, "y": {"type": "number"},
                 },
                 "required": ["action"],
             },
@@ -1308,6 +1364,35 @@ PREFER str_replace over write_file when editing existing files.""",
                     )
                 
                 return output
+
+            elif name == "browser_playwright":
+                result = await tool.execute(arguments)
+                if result.success:
+                    msg = result.message or ""
+                    if self._artifact_logger:
+                        duration_ms = int((time.time() - start_time) * 1000)
+                        self._artifact_logger.log_tool_call(
+                            call_id=call_id,
+                            tool_name="browser_playwright",
+                            arguments=arguments,
+                            result=msg[:12000],
+                            duration_ms=duration_ms,
+                            success=True,
+                        )
+                    return msg
+                err = result.error or result.message or "browser_playwright failed"
+                if self._artifact_logger:
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    self._artifact_logger.log_tool_call(
+                        call_id=call_id,
+                        tool_name="browser_playwright",
+                        arguments=arguments,
+                        result=err[:8000],
+                        duration_ms=duration_ms,
+                        success=False,
+                        error=err,
+                    )
+                return err
             
             elif name == "github":
                 action = arguments.get("action", "")

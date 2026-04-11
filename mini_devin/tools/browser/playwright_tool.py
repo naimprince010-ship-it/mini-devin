@@ -17,6 +17,7 @@ Uses async Playwright (fully async/await compatible with the agent loop).
 
 import asyncio
 import base64
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -46,6 +47,7 @@ class PlaywrightAction(str, Enum):
     GO_BACK = "go_back"
     GO_FORWARD = "go_forward"
     RELOAD = "reload"
+    DEBUG_SNAPSHOT = "debug_snapshot"
 
 
 @dataclass
@@ -72,6 +74,7 @@ class BrowserPageState:
     elements: list[ElementBoundingBox] = field(default_factory=list)
     evaluate_result: Any = None
     action_time_ms: int = 0
+    dom_outline: Optional[str] = None
 
 
 @dataclass
@@ -118,9 +121,10 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         super().__init__(
             name="browser_playwright",
             description=(
-                "Visual browser automation with Playwright. "
-                "Navigate pages, click elements, fill forms, take screenshots, "
-                "and extract content from any website."
+                "Headless Chromium (Playwright): navigate, click, type, screenshots, DOM/HTML, run JS. "
+                "Captures DevTools-style signals — console (log/warn/error), uncaught page errors, "
+                "XHR/fetch/document network lines, and a compact DOM outline — on navigate/reload/wait "
+                "and on action=debug_snapshot."
             ),
         )
         self.headless = headless
@@ -136,6 +140,11 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         self._page = None
         self._initialized = False
         self._mode = "unknown"  # 'browserless', 'local', or 'unavailable'
+        self._listeners_attached = False
+        self._debug_console: list[str] = []
+        self._debug_page_errors: list[str] = []
+        self._debug_network: list[str] = []
+        self._debug_request_failed: list[str] = []
 
     @staticmethod
     def _get_browserless_ws_url() -> Optional[str]:
@@ -193,6 +202,7 @@ class PlaywrightBrowserTool(BaseBrowserTool):
                 )
                 self._page = await self._context.new_page()
                 self._page.set_default_timeout(self.timeout_ms)
+                self._attach_debug_listeners()
                 self._initialized = True
                 self._mode = "browserless"
                 return
@@ -220,6 +230,7 @@ class PlaywrightBrowserTool(BaseBrowserTool):
             )
             self._page = await self._context.new_page()
             self._page.set_default_timeout(self.timeout_ms)
+            self._attach_debug_listeners()
             self._initialized = True
             self._mode = "local"
         except Exception as e:
@@ -248,6 +259,133 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         if screenshot and self.screenshot_on_action:
             screenshot_b64 = await self._take_screenshot(full_page=full_page)
         return BrowserPageState(url=url, title=title, screenshot_base64=screenshot_b64)
+
+    def _clear_debug_buffers(self) -> None:
+        self._debug_console.clear()
+        self._debug_page_errors.clear()
+        self._debug_network.clear()
+        self._debug_request_failed.clear()
+
+    def _attach_debug_listeners(self) -> None:
+        """Wire Playwright page events (console, errors, network) for agent-visible diagnostics."""
+        if self._listeners_attached or not self._page:
+            return
+        page = self._page
+
+        def on_console(msg: Any) -> None:
+            try:
+                line = f"[{msg.type}] {msg.text}"[:4000]
+                self._debug_console.append(line)
+                if len(self._debug_console) > 250:
+                    self._debug_console = self._debug_console[-250:]
+            except Exception:
+                pass
+
+        def on_page_error(err: Any) -> None:
+            try:
+                self._debug_page_errors.append(str(err)[:4000])
+                if len(self._debug_page_errors) > 60:
+                    self._debug_page_errors = self._debug_page_errors[-60:]
+            except Exception:
+                pass
+
+        def on_response(response: Any) -> None:
+            try:
+                req = response.request
+                url = response.url
+                if url.startswith(("data:", "blob:", "chrome-extension:")):
+                    return
+                rt = req.resource_type
+                if rt not in ("document", "xhr", "fetch", "websocket"):
+                    return
+                status = response.status
+                line = f"{req.method} {status} [{rt}] {url[:800]}"
+                self._debug_network.append(line)
+                if len(self._debug_network) > 150:
+                    self._debug_network = self._debug_network[-150:]
+            except Exception:
+                pass
+
+        def on_request_failed(request: Any) -> None:
+            try:
+                fail = request.failure
+                ftxt = str(fail) if fail else "?"
+                line = f"FAILED {request.method} {request.url[:600]} ({ftxt})"
+                self._debug_request_failed.append(line)
+                if len(self._debug_request_failed) > 50:
+                    self._debug_request_failed = self._debug_request_failed[-50:]
+            except Exception:
+                pass
+
+        page.on("console", on_console)
+        page.on("pageerror", on_page_error)
+        page.on("response", on_response)
+        page.on("requestfailed", on_request_failed)
+        self._listeners_attached = True
+
+    def _format_browser_diagnostics(self, max_chars: int = 16000) -> str:
+        """Format captured console / network / errors for the LLM."""
+        parts: list[str] = []
+        if self._debug_page_errors:
+            parts.append("--- Page errors (uncaught) ---")
+            parts.extend(self._debug_page_errors[-25:])
+        if self._debug_request_failed:
+            parts.append("\n--- Failed network requests ---")
+            parts.extend(self._debug_request_failed[-30:])
+        if self._debug_console:
+            parts.append("\n--- Console ---")
+            # Prefer errors/warnings first if present
+            errs = [l for l in self._debug_console if l.startswith("[error]") or l.startswith("[warning]")]
+            rest = [l for l in self._debug_console if l not in errs]
+            merged = errs[-40:] + rest[-(120 - min(40, len(errs))) :]
+            parts.extend(merged[-140:])
+        if self._debug_network:
+            parts.append("\n--- Network (document / xhr / fetch / websocket) ---")
+            parts.extend(self._debug_network[-90:])
+        text = "\n".join(parts).strip()
+        if len(text) > max_chars:
+            text = text[: max_chars - 80] + "\n… (truncated)"
+        return text
+
+    async def _get_dom_outline(self) -> str:
+        """Compact JSON outline: headings + body child tags (DevTools Elements-lite)."""
+        script = r"""() => {
+  const pick = (sel, n) => Array.from(document.querySelectorAll(sel)).slice(0, n).map(e => ({
+    t: e.tagName.toLowerCase(),
+    txt: (e.innerText || '').trim().slice(0, 64).replace(/\s+/g, ' ')
+  }));
+  const kids = Array.from(document.body.children).slice(0, 32).map(n => {
+    const id = n.id ? ('#' + n.id) : '';
+    const c = n.className && typeof n.className === 'string'
+      ? '.' + n.className.trim().split(/\s+/).slice(0, 2).join('.') : '';
+    return n.tagName.toLowerCase() + id + c;
+  });
+  return JSON.stringify({
+    url: location.href,
+    title: document.title,
+    headings: pick('h1,h2,h3', 12),
+    bodyChildren: kids
+  });
+}"""
+        try:
+            raw = await self._page.evaluate(script)
+            if isinstance(raw, dict):
+                return json.dumps(raw, indent=2, ensure_ascii=False)[:9000]
+            if isinstance(raw, str):
+                return raw[:9000]
+            return json.dumps(raw, indent=2, default=str, ensure_ascii=False)[:9000]
+        except Exception as e:
+            return f"(dom_outline error: {e})"
+
+    async def _debug_snapshot(self, input_data: Any) -> PlaywrightResponse:
+        """Wait briefly, capture DOM outline + screenshot + diagnostics (no navigation)."""
+        settle_ms = min(int(self._get(input_data, "settle_ms", 400)), 5000)
+        await asyncio.sleep(settle_ms / 1000.0)
+        full_page = self._get(input_data, "full_page", False)
+        outline = await self._get_dom_outline()
+        page_state = await self._get_page_state(screenshot=True, full_page=full_page)
+        page_state.dom_outline = outline
+        return PlaywrightResponse(success=True, action=PlaywrightAction.DEBUG_SNAPSHOT, page_state=page_state)
 
     async def _fire_event(self, action: str, page_state: BrowserPageState) -> None:
         """Stream browser event to frontend via callback."""
@@ -307,6 +445,7 @@ class PlaywrightBrowserTool(BaseBrowserTool):
                 PlaywrightAction.GO_BACK: self._go_back,
                 PlaywrightAction.GO_FORWARD: self._go_forward,
                 PlaywrightAction.RELOAD: self._reload,
+                PlaywrightAction.DEBUG_SNAPSHOT: self._debug_snapshot,
             }
 
             handler = dispatch.get(action)
@@ -344,7 +483,13 @@ class PlaywrightBrowserTool(BaseBrowserTool):
                         )
                 if response.page_state.screenshot_base64:
                     output_parts.append("[Screenshot captured and streamed to Browser Tab]")
+                if response.page_state.dom_outline:
+                    output_parts.append("--- DOM outline ---\n" + response.page_state.dom_outline[:8000])
                 output_parts.append(f"Action time: {elapsed_ms}ms")
+
+            diag = self._format_browser_diagnostics()
+            if diag:
+                output_parts.append("\n--- DevTools-style diagnostics (console / network / page errors) ---\n" + diag)
 
             message = f"browser_playwright '{action.value}' succeeded"
             output_text = "\n".join(output_parts) if output_parts else message
@@ -375,8 +520,10 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         wait_until = self._get(input_data, "wait_until", "domcontentloaded")  # or "networkidle"
         full_page = self._get(input_data, "full_page", False)
 
+        self._clear_debug_buffers()
         await self._page.goto(url, wait_until=wait_until)
         page_state = await self._get_page_state(screenshot=True, full_page=full_page)
+        page_state.dom_outline = await self._get_dom_outline()
         return PlaywrightResponse(success=True, action=PlaywrightAction.NAVIGATE, page_state=page_state)
 
     async def _screenshot(self, input_data: Any) -> PlaywrightResponse:
@@ -647,8 +794,10 @@ class PlaywrightBrowserTool(BaseBrowserTool):
 
     async def _reload(self, input_data: Any) -> PlaywrightResponse:
         """Reload the current page."""
+        self._clear_debug_buffers()
         await self._page.reload()
         page_state = await self._get_page_state()
+        page_state.dom_outline = await self._get_dom_outline()
         return PlaywrightResponse(success=True, action=PlaywrightAction.RELOAD, page_state=page_state)
 
     # ── Utilities ─────────────────────────────────────────────────────────────
@@ -675,6 +824,8 @@ class PlaywrightBrowserTool(BaseBrowserTool):
             pass
         finally:
             self._initialized = False
+            self._listeners_attached = False
+            self._clear_debug_buffers()
             self._page = None
             self._context = None
             self._browser = None
