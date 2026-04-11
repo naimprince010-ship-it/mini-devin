@@ -130,7 +130,7 @@ _SYSTEM_PROMPT_TEMPLATE = """
 5. **TASK COMPLETE**: Only after verification output confirms success (or you document why verification is N/A).
 
 ## Tool Usage
-- `terminal` — Run shell commands; prefer `python -m pip`, `python -m pytest`, `python -m unittest` per Runtime context
+- `terminal` — Run shell commands; prefer `python -m pip`, `python -m pytest`, `python -m unittest` per Runtime context. For long installs (`npm install`, `npx create-*`) pass **`timeout_seconds`** up to **300** (default 30 is too short).
 - `editor` with `read_file` — Read a file
 - `editor` with `write_file` — Write/create a file
 - `editor` with `search` — Search patterns in files
@@ -355,6 +355,13 @@ class Agent:
                     "working_directory": {
                         "type": "string",
                         "description": "Working directory for the command (default: current directory)",
+                    },
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "description": (
+                            "Max seconds before the command is killed (default 30, max 300). "
+                            "Use 180–300 for `npm install`, `npx create-*`, `pip install -r`, builds, etc."
+                        ),
                     },
                 },
                 "required": ["command"],
@@ -1008,9 +1015,16 @@ PREFER str_replace over write_file when editing existing files.""",
                 
                 # ── Regular Host Execution ──
                 from ..schemas.tools import TerminalInput
+                raw_timeout = arguments.get("timeout_seconds", 30)
+                try:
+                    timeout_seconds = int(raw_timeout)
+                except (TypeError, ValueError):
+                    timeout_seconds = 30
+                timeout_seconds = max(1, min(300, timeout_seconds))
                 input_data = TerminalInput(
                     command=command,
                     working_directory=arguments.get("working_directory", "."),
+                    timeout_seconds=timeout_seconds,
                 )
                 
                 exit_code = -1
