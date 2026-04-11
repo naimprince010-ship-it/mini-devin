@@ -69,9 +69,30 @@ from ..reliability.self_correction import SelfCorrectionEngine, ErrorType
 
 
 
-# System prompt for the agent
-SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer agent. You solve software engineering tasks end-to-end using tools.
+import sys as _sys_for_prompt
 
+
+def _make_system_prompt() -> str:
+    """Build system prompt with OS-specific environment notes."""
+    if _sys_for_prompt.platform == "win32":
+        os_note = (
+            "- The agent is running on **Windows** with **PowerShell**.\n"
+            "- Use `python` (not `python3`), `pip` (not `pip3`).\n"
+            "- Common Linux commands are auto-translated by the terminal tool: "
+            "`ls`, `cat`, `mkdir -p`, `rm -rf`, `grep`, `touch`, `which`, `cp`, `mv` all work.\n"
+            "- Chain commands with `;` not `&&`. Use relative paths only.\n"
+            "- `pytest` may not be installed globally — prefer `python -m pytest` or `python -m unittest`."
+        )
+    else:
+        os_note = (
+            "- The agent runs on **Linux/bash**.\n"
+            "- Use standard Linux commands (`python3`, `pip3`, etc.).\n"
+            "- Never use Windows drive paths (`C:\\\\`, `G:\\\\`)."
+        )
+    return _SYSTEM_PROMPT_TEMPLATE.format(os_env_note=os_note)
+
+
+_SYSTEM_PROMPT_TEMPLATE = """
 ## CRITICAL RULES — READ FIRST
 - **NEVER describe or narrate actions without calling a tool.** If you say "I will create a file", you MUST immediately call the `editor` tool to do it.
 - **NEVER write fake outputs.** Do not write "The tests passed" unless you actually ran `pytest` using the `terminal` tool and saw the output.
@@ -96,8 +117,8 @@ SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer agent.
 - `browser_search` — Search the web
 - `browser_fetch` — Fetch a web page
 - `github` — GitHub workflows
-- \monitor\ — Check app health, fetch cloud/docker logs, register for continuous monitoring
-- \env_parity\ — Generate Dockerfile/.env.example/docker-compose; diff local vs production env
+- `monitor` — Check app health, fetch cloud/docker logs, register for continuous monitoring
+- `env_parity` — Generate Dockerfile/.env.example/docker-compose; diff local vs production env
 
 ## Important Rules
 - Read a file before editing it (to avoid overwriting changes)
@@ -107,10 +128,12 @@ SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer agent.
 - When done: write **TASK COMPLETE** followed by a short summary of actual results.
 
 ## Environment (critical)
-- The agent runs on **Linux/bash** in the cloud/container, **not** on the user's Windows PC.
-- **Never** use Windows drive paths (`C:\\`, `G:\\`, `D:\\`) in `terminal` or `editor` paths—they do not exist here.
-- Use **paths under the workspace** only: relative paths like `./myself/index.html` or POSIX paths starting with the workspace root shown below.
-- Prefer **`editor` `write_file`** to create files and folders; it creates parent directories automatically."""
+{os_env_note}
+- Use **relative paths only** in all tool calls — never hardcoded absolute paths.
+- Prefer **`editor` `write_file`** to create files; it creates parent directories automatically.
+- When `terminal` commands fail, fix the command and retry — do NOT give up after one attempt."""
+
+SYSTEM_PROMPT = _make_system_prompt()
 
 
 class Agent:
@@ -266,10 +289,26 @@ class Agent:
         """Get tool schemas for LLM function calling."""
         schemas = []
         
-        # Terminal tool schema
+        # Terminal tool schema — OS-aware description
+        import sys as _sys
+        _on_windows = _sys.platform == "win32"
+        if _on_windows:
+            _terminal_desc = (
+                "Execute a shell command via PowerShell on Windows. "
+                "Common Linux commands are auto-translated (python3→python, ls, cat, mkdir -p, rm -rf, grep, touch, etc.). "
+                "Use relative paths from the workspace. Do NOT use absolute Windows paths like C:\\\\. "
+                "Prefer `python` over `python3`. Use `dir` or `ls` for listing. "
+                "Chain commands with `;` instead of `&&` when possible."
+            )
+        else:
+            _terminal_desc = (
+                "Execute a shell command in bash under the task workspace. "
+                "Use relative paths (./...) from the workspace. "
+                "Do not use Windows-style paths (C:\\\\, D:\\\\)."
+            )
         schemas.append({
             "name": "terminal",
-            "description": "Execute a shell command in Linux/bash under the task workspace. Do not use Windows paths (C:\\\\, G:\\\\). Use relative paths (./...) from the workspace.",
+            "description": _terminal_desc,
             "parameters": {
                 "type": "object",
                 "properties": {

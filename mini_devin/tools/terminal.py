@@ -4,15 +4,140 @@ Terminal Tool for Mini-Devin
 This module implements the terminal tool that allows the agent to execute
 shell commands in a controlled environment with proper output capture,
 timeouts, and safety policies.
+
+On Windows the tool automatically:
+  1. Translates common Linux/Unix commands to PowerShell equivalents
+  2. Runs through PowerShell so Unix-like aliases (ls, cat, pwd…) work
 """
 
 import asyncio
 import os
+import re
+import sys
 import time
 
 from ..core.tool_interface import BaseTool, ToolPolicy
 from .host_paths import command_uses_windows_drive_paths, linux_workspace_hint
 from ..schemas.tools import TerminalInput, TerminalOutput, ToolStatus
+
+# ── Windows command translation ────────────────────────────────────────────────
+
+_IS_WINDOWS = sys.platform == "win32"
+
+
+def _translate_for_windows(cmd: str) -> str:
+    """
+    Translate common Linux/Unix shell commands to PowerShell-compatible
+    equivalents so the agent's Linux-style commands work on Windows.
+
+    Rules are applied left-to-right, so more specific patterns come first.
+    """
+    if not _IS_WINDOWS:
+        return cmd
+
+    original = cmd.strip()
+
+    # ── python3 → python ──────────────────────────────────────────────────────
+    cmd = re.sub(r'\bpython3(\b|\s)', r'python\1', cmd)
+    cmd = re.sub(r'\bpython3\.\d+\b', 'python', cmd)
+
+    # ── pip3 → pip ────────────────────────────────────────────────────────────
+    cmd = re.sub(r'\bpip3\b', 'pip', cmd)
+
+    # ── chmod / chown → noop (no-op on Windows) ───────────────────────────────
+    if re.match(r'^\s*ch(mod|own)\b', cmd):
+        return 'echo "(chmod/chown skipped on Windows)"'
+
+    # ── which → where ─────────────────────────────────────────────────────────
+    cmd = re.sub(r'\bwhich\b', 'where', cmd)
+
+    # ── touch file → New-Item -Force ──────────────────────────────────────────
+    m = re.match(r'^\s*touch\s+(.+)$', cmd)
+    if m:
+        files = m.group(1).strip()
+        return f'foreach ($f in @({", ".join(repr(f) for f in files.split())})) {{ New-Item -Force -ItemType File -Path $f | Out-Null }}'
+
+    # ── mkdir -p dir → New-Item -Force ────────────────────────────────────────
+    m = re.match(r'^\s*mkdir\s+-p\s+(.+)$', cmd)
+    if m:
+        d = m.group(1).strip()
+        return f'New-Item -Force -ItemType Directory -Path "{d}" | Out-Null'
+
+    # ── rm -rf dir → Remove-Item -Recurse -Force ──────────────────────────────
+    m = re.match(r'^\s*rm\s+-rf?\s+(.+)$', cmd)
+    if m:
+        target = m.group(1).strip()
+        return f'Remove-Item -Recurse -Force "{target}"'
+
+    # ── rm file ────────────────────────────────────────────────────────────────
+    m = re.match(r'^\s*rm\s+(.+)$', cmd)
+    if m:
+        target = m.group(1).strip()
+        return f'Remove-Item "{target}"'
+
+    # ── cp src dst → Copy-Item ────────────────────────────────────────────────
+    m = re.match(r'^\s*cp\s+(-r\s+)?(.+?)\s+(\S+)$', cmd)
+    if m:
+        recurse = '-Recurse ' if m.group(1) else ''
+        src, dst = m.group(2).strip(), m.group(3).strip()
+        return f'Copy-Item {recurse}"{src}" "{dst}"'
+
+    # ── mv src dst → Move-Item ────────────────────────────────────────────────
+    m = re.match(r'^\s*mv\s+(.+?)\s+(\S+)$', cmd)
+    if m:
+        src, dst = m.group(1).strip(), m.group(2).strip()
+        return f'Move-Item "{src}" "{dst}"'
+
+    # ── cat file → Get-Content ────────────────────────────────────────────────
+    m = re.match(r'^\s*cat\s+(.+)$', cmd)
+    if m:
+        f = m.group(1).strip()
+        return f'Get-Content "{f}"'
+
+    # ── head -n N file ────────────────────────────────────────────────────────
+    m = re.match(r'^\s*head\s+(?:-n\s+)?(\d+)\s+(.+)$', cmd)
+    if m:
+        n, f = m.group(1), m.group(2).strip()
+        return f'Get-Content "{f}" | Select-Object -First {n}'
+
+    # ── tail -n N file ────────────────────────────────────────────────────────
+    m = re.match(r'^\s*tail\s+(?:-n\s+)?(\d+)\s+(.+)$', cmd)
+    if m:
+        n, f = m.group(1), m.group(2).strip()
+        return f'Get-Content "{f}" | Select-Object -Last {n}'
+
+    # ── grep pattern file → Select-String ────────────────────────────────────
+    m = re.match(r'^\s*grep\s+(?:-[^ ]+\s+)*"?([^"]+)"?\s+(.+)$', cmd)
+    if m:
+        pat, f = m.group(1), m.group(2).strip()
+        return f'Select-String -Pattern "{pat}" -Path "{f}"'
+
+    # ── wc -l file ────────────────────────────────────────────────────────────
+    m = re.match(r'^\s*wc\s+-l\s+(.+)$', cmd)
+    if m:
+        f = m.group(1).strip()
+        return f'(Get-Content "{f}").Count'
+
+    # ── export VAR=val → $env:VAR = val ──────────────────────────────────────
+    m = re.match(r'^\s*export\s+(\w+)=(.*)$', cmd)
+    if m:
+        var, val = m.group(1), m.group(2).strip()
+        return f'$env:{var} = "{val}"'
+
+    # ── source / . file → . file (PowerShell dot-sourcing) ───────────────────
+    m = re.match(r'^\s*(source|\\.)\s+(.+)$', cmd)
+    if m:
+        f = m.group(2).strip()
+        return f'. "{f}"'
+
+    # ── clear → Clear-Host ───────────────────────────────────────────────────
+    if re.match(r'^\s*clear\s*$', cmd):
+        return 'Clear-Host'
+
+    # ── /dev/null → $null ─────────────────────────────────────────────────────
+    cmd = cmd.replace('/dev/null', '$null')
+
+    return cmd
 
 
 class TerminalTool(BaseTool[TerminalInput, TerminalOutput]):
@@ -175,19 +300,33 @@ Output is captured and returned. Long outputs are truncated."""
         # Prepare environment
         env = os.environ.copy()
         env.update(input_data.env_vars)
-        
+
+        # Translate Linux commands to Windows equivalents when on Windows
+        command = _translate_for_windows(input_data.command)
+
         # Track file modifications
         before_time = time.time()
-        
+
         try:
-            # Run command with timeout
-            process = await asyncio.create_subprocess_shell(
-                input_data.command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=working_dir,
-                env=env,
-            )
+            # On Windows: run via PowerShell so Unix-like aliases (ls, cat, pwd…) work
+            if _IS_WINDOWS:
+                process = await asyncio.create_subprocess_exec(
+                    "powershell", "-NoProfile", "-NonInteractive",
+                    "-ExecutionPolicy", "Bypass",
+                    "-Command", command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=working_dir,
+                    env=env,
+                )
+            else:
+                process = await asyncio.create_subprocess_shell(
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=working_dir,
+                    env=env,
+                )
             
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -225,10 +364,15 @@ Output is captured and returned. Long outputs are truncated."""
             
             execution_time = int((time.time() - start_time) * 1000)
             
+            # Prefix translated command note if it changed
+            translated_note = ""
+            if _IS_WINDOWS and command != input_data.command:
+                translated_note = f"[Windows: translated '{input_data.command}' → '{command}']\n"
+
             return TerminalOutput(
                 status=status,
                 error_message=None if exit_code == 0 else f"Command exited with code {exit_code}",
-                stdout=stdout,
+                stdout=translated_note + stdout,
                 stderr=stderr,
                 exit_code=exit_code,
                 files_modified=modified_files,
