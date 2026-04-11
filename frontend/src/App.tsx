@@ -10,6 +10,8 @@ import { UserMenu } from './components/UserMenu';
 import { SkillsManager } from './components/SkillsManager';
 import { RepoManager } from './components/RepoManager';
 import { PRReview } from './components/PRReview';
+import MonitorPanel from './components/MonitorPanel';
+import EnvParityPanel from './components/EnvParityPanel';
 import { ProviderSelector } from './components/ProviderSelector';
 import { FolderPicker } from './components/FolderPicker';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -35,9 +37,11 @@ import {
   Sun,
   Moon,
   Menu,
+  Activity,
+  Container,
 } from 'lucide-react';
 
-type TabType = 'sessions' | 'skills' | 'repos' | 'reviews';
+type TabType = 'sessions' | 'skills' | 'repos' | 'reviews' | 'monitor' | 'env_parity';
 
 function NewSessionModal({
   onClose,
@@ -266,6 +270,8 @@ function App() {
     { id: 'skills', icon: <Wrench size={18} />, label: 'Skills' },
     { id: 'repos', icon: <GitFork size={18} />, label: 'Repos' },
     { id: 'reviews', icon: <GitPullRequest size={18} />, label: 'Reviews' },
+    { id: 'monitor', icon: <Activity size={18} />, label: 'Monitor' },
+    { id: 'env_parity', icon: <Container size={18} />, label: 'Env Parity' },
   ];
 
   // Same-origin /api when API is served with the app (production). Override with VITE_API_URL for split deploys.
@@ -499,6 +505,14 @@ function App() {
                         setActiveTab('sessions');
                       }}
                     />
+                  </ErrorBoundary>
+                ) : activeTab === 'monitor' ? (
+                  <ErrorBoundary>
+                    <MonitorPanel />
+                  </ErrorBoundary>
+                ) : activeTab === 'env_parity' ? (
+                  <ErrorBoundary>
+                    <EnvParityPanel />
                   </ErrorBoundary>
                 ) : (
                   <ErrorBoundary>

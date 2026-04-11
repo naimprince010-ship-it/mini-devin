@@ -13,6 +13,7 @@ import time
 import uuid
 import re
 import inspect
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
@@ -95,6 +96,8 @@ SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer agent.
 - `browser_search` — Search the web
 - `browser_fetch` — Fetch a web page
 - `github` — GitHub workflows
+- \monitor\ — Check app health, fetch cloud/docker logs, register for continuous monitoring
+- \env_parity\ — Generate Dockerfile/.env.example/docker-compose; diff local vs production env
 
 ## Important Rules
 - Read a file before editing it (to avoid overwriting changes)
@@ -439,6 +442,91 @@ PREFER str_replace over write_file when editing existing files.""",
                     },
                 },
                 "required": ["question"],
+            },
+        })
+
+        # Monitor tool schema
+        schemas.append({
+            "name": "monitor",
+            "description": (
+                "Self-healing monitor: check app health, fetch cloud/docker logs, and manage "
+                "continuous monitoring with auto-heal on crash."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["status", "health_check", "fetch_logs", "register", "start", "stop"],
+                        "description": (
+                            "status=show monitor state; health_check=one-shot HTTP check; "
+                            "fetch_logs=get logs from platform; register=add an app to continuous monitoring; "
+                            "start/stop=control the monitor loop."
+                        ),
+                    },
+                    "url": {"type": "string", "description": "App URL for health_check"},
+                    "platform": {
+                        "type": "string",
+                        "enum": ["digitalocean", "railway", "docker", "generic"],
+                        "description": "Platform for fetch_logs or register",
+                    },
+                    "config": {
+                        "type": "object",
+                        "description": (
+                            "Platform config dict. DO: {do_token, app_id}. "
+                            "Railway: {railway_token, service_id}. Docker: {container_name}."
+                        ),
+                    },
+                    "lines": {"type": "integer", "description": "Log lines to fetch (default 50)"},
+                    "name": {"type": "string", "description": "App name for register"},
+                    "health_url": {"type": "string", "description": "Health check URL for register"},
+                    "interval": {"type": "integer", "description": "Poll interval seconds (default 60)"},
+                    "failure_threshold": {"type": "integer", "description": "Failures before heal (default 3)"},
+                    "platform_config": {"type": "object", "description": "Platform-specific config for register"},
+                },
+                "required": ["action"],
+            },
+        })
+
+        # Environment parity tool schema
+        schemas.append({
+            "name": "env_parity",
+            "description": (
+                "Ensure local and production environments are identical. "
+                "Generate Dockerfiles, .env.example, docker-compose.yml, and diff environments."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["diff", "generate_dockerfile", "generate_env_example", "generate_docker_compose"],
+                        "description": (
+                            "diff=compare local .env vs production; "
+                            "generate_dockerfile=create optimized Dockerfile; "
+                            "generate_env_example=create .env.example from .env; "
+                            "generate_docker_compose=create local dev compose file."
+                        ),
+                    },
+                    "project_root": {"type": "string", "description": "Project root directory (default: workspace)"},
+                    "project_type": {
+                        "type": "string",
+                        "enum": ["auto", "python", "node", "fullstack"],
+                        "description": "Project type for Dockerfile generation (default: auto-detect)",
+                    },
+                    "frontend_dir": {"type": "string", "description": "Frontend subdirectory (default: frontend)"},
+                    "requirements_file": {"type": "string", "description": "Python requirements file (default: requirements.txt)"},
+                    "port": {"type": "integer", "description": "App port (default: auto-detect from .env)"},
+                    "health_path": {"type": "string", "description": "Healthcheck path (default: /health)"},
+                    "output_path": {"type": "string", "description": "Output file path (optional)"},
+                    "env_file": {"type": "string", "description": "Source .env file for diff (default: .env)"},
+                    "source_env_file": {"type": "string", "description": "Source .env file for .env.example generation"},
+                    "include_current_values": {"type": "boolean", "description": "Include non-secret values in .env.example"},
+                    "include_redis": {"type": "boolean", "description": "Include Redis in docker-compose"},
+                    "include_postgres": {"type": "boolean", "description": "Include Postgres in docker-compose"},
+                    "production_env": {"type": "object", "description": "Production env vars dict for diff comparison"},
+                },
+                "required": ["action"],
             },
         })
 
@@ -965,6 +1053,102 @@ PREFER str_replace over write_file when editing existing files.""",
                 
                 return output
             
+            elif name == "monitor":
+                action = arguments.get("action", "status")
+                from ..integrations.monitor import (
+                    check_app_health,
+                    fetch_app_logs,
+                    get_status,
+                    register_app,
+                    start_monitor,
+                    stop_monitor,
+                    MonitoredApp,
+                )
+                if action == "status":
+                    return json.dumps(get_status(), indent=2)
+                elif action == "health_check":
+                    url = arguments.get("url", "")
+                    if not url:
+                        return "Error: url is required for health_check"
+                    result = await check_app_health(url)
+                    return json.dumps(result, indent=2)
+                elif action == "fetch_logs":
+                    platform = arguments.get("platform", "docker")
+                    config = arguments.get("config", {})
+                    lines = int(arguments.get("lines", 50))
+                    logs = await fetch_app_logs(platform, config, lines)
+                    return logs or "(no logs returned)"
+                elif action == "register":
+                    app_cfg = MonitoredApp(
+                        name=arguments.get("name", "app"),
+                        health_url=arguments.get("health_url", ""),
+                        platform=arguments.get("platform", "generic"),
+                        platform_config=arguments.get("platform_config", {}),
+                        check_interval_seconds=int(arguments.get("interval", 60)),
+                        failure_threshold=int(arguments.get("failure_threshold", 3)),
+                        session_id=self.session_id if hasattr(self, "session_id") else None,
+                    )
+                    register_app(app_cfg)
+                    start_monitor()
+                    return f"Registered {app_cfg.name} and started monitor"
+                elif action == "start":
+                    start_monitor()
+                    return "Monitor started"
+                elif action == "stop":
+                    stop_monitor()
+                    return "Monitor stopped"
+                else:
+                    return f"Unknown monitor action: {action}"
+
+            elif name == "env_parity":
+                action = arguments.get("action", "diff")
+                project_root = arguments.get("project_root", self.working_directory or ".")
+                from ..integrations.env_parity import (
+                    generate_dockerfile,
+                    generate_env_example,
+                    generate_docker_compose,
+                    diff_environments,
+                )
+                if action == "diff":
+                    env_file = arguments.get("env_file", ".env")
+                    import os as _os
+                    prod_env = arguments.get("production_env")
+                    result = diff_environments(
+                        local_env_file=str(Path(project_root) / env_file),
+                        production_env=prod_env,
+                    )
+                    return json.dumps(result, indent=2)
+                elif action == "generate_dockerfile":
+                    content, path = generate_dockerfile(
+                        project_root,
+                        project_type=arguments.get("project_type", "auto"),
+                        frontend_dir=arguments.get("frontend_dir", "frontend"),
+                        requirements_file=arguments.get("requirements_file", "requirements.txt"),
+                        port=arguments.get("port"),
+                        health_path=arguments.get("health_path", "/health"),
+                        output_path=arguments.get("output_path"),
+                    )
+                    return f"Dockerfile generated at {path}:\n\n{content}"
+                elif action == "generate_env_example":
+                    content, path = generate_env_example(
+                        project_root,
+                        source_env_file=arguments.get("source_env_file", ".env"),
+                        output_path=arguments.get("output_path"),
+                        include_current_values=arguments.get("include_current_values", False),
+                    )
+                    return f".env.example generated at {path}:\n\n{content}"
+                elif action == "generate_docker_compose":
+                    content, path = generate_docker_compose(
+                        project_root,
+                        port=arguments.get("port"),
+                        include_redis=arguments.get("include_redis", False),
+                        include_postgres=arguments.get("include_postgres", False),
+                        output_path=arguments.get("output_path"),
+                    )
+                    return f"docker-compose.yml generated at {path}:\n\n{content}"
+                else:
+                    return f"Unknown env_parity action: {action}"
+
             else:
                 return f"Error: Tool '{name}' not implemented"
                 

@@ -83,8 +83,49 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         traceback.print_exc()
         # We don't exit here to allow health checks to potentially still pass if DB isn't critical
     
+    # Register self-heal callback so the monitor can trigger an agent fix
+    try:
+        from ..integrations.monitor import register_heal_callback
+
+        async def _auto_heal(app_name: str, logs_excerpt: str, heal_session_id: str | None):
+            """When a crash is detected, create an agent task to diagnose and fix it."""
+            print(f"[monitor] Auto-heal triggered for {app_name}")
+            task_description = (
+                f"The production app '{app_name}' appears to have crashed. "
+                f"Here are the relevant log lines:\n\n{logs_excerpt}\n\n"
+                "Please diagnose the root cause, fix the code, and redeploy."
+            )
+            try:
+                target_session = await session_manager.get_session(heal_session_id) if heal_session_id else None
+                if target_session is None:
+                    target_session = await session_manager.create_session()
+                task = await session_manager.create_task(
+                    session_id=target_session.session_id,
+                    description=task_description,
+                    connection_manager=connection_manager,
+                )
+                asyncio.create_task(session_manager.run_task(
+                    session_id=target_session.session_id,
+                    task_id=task.task_id,
+                    connection_manager=connection_manager,
+                ))
+                print(f"[monitor] Heal task created: session={target_session.session_id} task={task.task_id}")
+            except Exception as heal_err:
+                print(f"[monitor] Failed to create heal task: {heal_err}")
+
+        register_heal_callback(_auto_heal)
+        print("[API] Self-heal callback registered.")
+    except Exception as e:
+        print(f"[API] Warning: Could not register self-heal callback: {e}")
+
     yield
     print(f"[API] Shutting down Mini-Devin API at {datetime.now(timezone.utc).isoformat()}")
+    # Stop monitor on shutdown
+    try:
+        from ..integrations.monitor import stop_monitor
+        stop_monitor()
+    except Exception:
+        pass
 
 
 app = FastAPI(
@@ -1026,6 +1067,171 @@ async def list_skills():
         ],
         "message": "Demo skills - full functionality requires local deployment with OPENAI_API_KEY",
     }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Self-Healing Monitor endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+class MonitorRegisterRequest(BaseModel):
+    name: str
+    health_url: str
+    platform: str = "generic"
+    platform_config: dict = {}
+    check_interval_seconds: int = 60
+    failure_threshold: int = 3
+    session_id: Optional[str] = None
+
+
+@app.get("/api/monitor/status")
+async def monitor_status():
+    """Return current state of all monitored apps + recent history."""
+    from ..integrations.monitor import get_status
+    return get_status()
+
+
+@app.post("/api/monitor/register")
+async def monitor_register(req: MonitorRegisterRequest):
+    """Register an app for continuous health monitoring."""
+    from ..integrations.monitor import MonitoredApp, register_app, start_monitor
+    app_cfg = MonitoredApp(
+        name=req.name,
+        health_url=req.health_url,
+        platform=req.platform,
+        platform_config=req.platform_config,
+        check_interval_seconds=req.check_interval_seconds,
+        failure_threshold=req.failure_threshold,
+        session_id=req.session_id,
+    )
+    register_app(app_cfg)
+    start_monitor()
+    return {"message": f"Registered {req.name} and started monitor"}
+
+
+@app.delete("/api/monitor/{app_name}")
+async def monitor_unregister(app_name: str):
+    """Remove an app from continuous monitoring."""
+    from ..integrations.monitor import unregister_app
+    removed = unregister_app(app_name)
+    return {"removed": removed}
+
+
+@app.post("/api/monitor/health-check")
+async def monitor_one_shot(url: str):
+    """One-shot health check for any URL."""
+    from ..integrations.monitor import check_app_health
+    return await check_app_health(url)
+
+
+@app.post("/api/monitor/start")
+async def monitor_start():
+    """Start the background monitor loop."""
+    from ..integrations.monitor import start_monitor
+    start_monitor()
+    return {"message": "Monitor started"}
+
+
+@app.post("/api/monitor/stop")
+async def monitor_stop():
+    """Stop the background monitor loop."""
+    from ..integrations.monitor import stop_monitor
+    stop_monitor()
+    return {"message": "Monitor stopped"}
+
+
+@app.post("/api/monitor/fetch-logs")
+async def monitor_fetch_logs(platform: str = "docker", lines: int = 50, config: dict = {}):
+    """Fetch recent logs from a cloud platform or Docker container."""
+    from ..integrations.monitor import fetch_app_logs
+    logs = await fetch_app_logs(platform, config, lines)
+    return {"logs": logs}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Environment Parity endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+class EnvDiffRequest(BaseModel):
+    project_root: str = "."
+    env_file: str = ".env"
+    production_env: Optional[dict] = None
+
+
+class GenerateDockerfileRequest(BaseModel):
+    project_root: str = "."
+    project_type: str = "auto"
+    frontend_dir: str = "frontend"
+    requirements_file: str = "requirements.txt"
+    port: Optional[int] = None
+    health_path: str = "/health"
+    output_path: Optional[str] = None
+
+
+class GenerateEnvExampleRequest(BaseModel):
+    project_root: str = "."
+    source_env_file: str = ".env"
+    output_path: Optional[str] = None
+    include_current_values: bool = False
+
+
+class GenerateComposeRequest(BaseModel):
+    project_root: str = "."
+    port: Optional[int] = None
+    include_redis: bool = False
+    include_postgres: bool = False
+    output_path: Optional[str] = None
+
+
+@app.post("/api/env-parity/diff")
+async def env_parity_diff(req: EnvDiffRequest):
+    """Compare local .env with production environment."""
+    from ..integrations.env_parity import diff_environments
+    import os as _os
+    full_env = str(_os.path.join(req.project_root, req.env_file))
+    return diff_environments(local_env_file=full_env, production_env=req.production_env)
+
+
+@app.post("/api/env-parity/generate-dockerfile")
+async def env_parity_dockerfile(req: GenerateDockerfileRequest):
+    """Generate a production-ready Dockerfile for the project."""
+    from ..integrations.env_parity import generate_dockerfile
+    content, path = generate_dockerfile(
+        req.project_root,
+        project_type=req.project_type,
+        frontend_dir=req.frontend_dir,
+        requirements_file=req.requirements_file,
+        port=req.port,
+        health_path=req.health_path,
+        output_path=req.output_path,
+    )
+    return {"content": content, "path": path}
+
+
+@app.post("/api/env-parity/generate-env-example")
+async def env_parity_env_example(req: GenerateEnvExampleRequest):
+    """Generate .env.example from an existing .env file."""
+    from ..integrations.env_parity import generate_env_example
+    content, path = generate_env_example(
+        req.project_root,
+        source_env_file=req.source_env_file,
+        output_path=req.output_path,
+        include_current_values=req.include_current_values,
+    )
+    return {"content": content, "path": path}
+
+
+@app.post("/api/env-parity/generate-docker-compose")
+async def env_parity_compose(req: GenerateComposeRequest):
+    """Generate a docker-compose.yml for local dev parity."""
+    from ..integrations.env_parity import generate_docker_compose
+    content, path = generate_docker_compose(
+        req.project_root,
+        port=req.port,
+        include_redis=req.include_redis,
+        include_postgres=req.include_postgres,
+        output_path=req.output_path,
+    )
+    return {"content": content, "path": path}
 
 
 @app.websocket("/api/ws/{session_id}")
