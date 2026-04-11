@@ -1,4 +1,4 @@
-"""
+﻿"""
 Agent Orchestrator for Mini-Devin
 
 This module implements the main agent that orchestrates task execution
@@ -442,6 +442,89 @@ PREFER str_replace over write_file when editing existing files.""",
                     },
                 },
                 "required": ["question"],
+            },
+        })
+
+        # UI Test tool schema
+        schemas.append({
+            "name": "ui_test",
+            "description": (
+                "Run a structured browser-based UI test suite against a live URL using Playwright. "
+                "Each step can assert elements exist, check text, click buttons, fill forms, "
+                "verify URL changes, check for JS errors, or capture screenshots for visual regression. "
+                "Returns a full pass/fail report per step."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "suite_name": {"type": "string", "description": "Name for this test suite"},
+                    "url": {"type": "string", "description": "Starting URL to test"},
+                    "steps": {
+                        "type": "array",
+                        "description": "List of test steps to execute",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "navigate", "assert_element", "assert_text",
+                                        "assert_url", "assert_title", "click", "fill",
+                                        "select", "press_key", "wait", "wait_for_selector",
+                                        "screenshot", "evaluate", "assert_no_js_errors",
+                                        "hover", "scroll",
+                                    ],
+                                    "description": "Step type",
+                                },
+                                "selector": {"type": "string", "description": "CSS selector"},
+                                "url": {"type": "string", "description": "URL for navigate/assert_url steps"},
+                                "text": {"type": "string", "description": "Expected text for assert_text/assert_title"},
+                                "value": {"type": "string", "description": "Value for fill/select/press_key"},
+                                "script": {"type": "string", "description": "JavaScript for evaluate step"},
+                                "expected": {"description": "Expected JS return value for evaluate"},
+                                "screenshot_name": {"type": "string", "description": "Name for screenshot baseline"},
+                                "set_baseline": {"type": "boolean", "description": "Set this screenshot as new baseline"},
+                                "threshold_percent": {"type": "number", "description": "Visual diff threshold (default 0.5%)"},
+                                "ms": {"type": "integer", "description": "Milliseconds for wait step"},
+                                "timeout_ms": {"type": "integer", "description": "Timeout in ms (default 10000)"},
+                                "description": {"type": "string", "description": "Human-readable step description"},
+                            },
+                            "required": ["type"],
+                        },
+                    },
+                    "threshold_percent": {"type": "number", "description": "Default visual regression threshold (default 0.5%)"},
+                },
+                "required": ["suite_name", "url", "steps"],
+            },
+        })
+
+        # Visual regression tool schema
+        schemas.append({
+            "name": "visual_regression",
+            "description": (
+                "Manage screenshot baselines and run pixel-diff comparisons for visual regression testing. "
+                "Capture baselines, compare new screenshots against them, and get diff images."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["set_baseline", "compare", "list_baselines", "get_history", "delete_baseline"],
+                        "description": (
+                            "set_baseline=save screenshot as new baseline; "
+                            "compare=compare screenshot against baseline; "
+                            "list_baselines=show all stored baselines; "
+                            "get_history=show test history for a page; "
+                            "delete_baseline=remove a baseline."
+                        ),
+                    },
+                    "name": {"type": "string", "description": "Page/component name (e.g. 'homepage', 'dashboard')"},
+                    "screenshot_b64": {"type": "string", "description": "Base64-encoded PNG for set_baseline or compare"},
+                    "url": {"type": "string", "description": "URL associated with this screenshot (metadata only)"},
+                    "threshold_percent": {"type": "number", "description": "Max % changed pixels before fail (default 0.5)"},
+                },
+                "required": ["action"],
             },
         })
 
@@ -1053,6 +1136,103 @@ PREFER str_replace over write_file when editing existing files.""",
                 
                 return output
             
+            elif name == "ui_test":
+                from ..tools.browser.ui_tester import UITestRunner, steps_from_spec
+                suite_name = arguments.get("suite_name", "UI Test")
+                url = arguments.get("url", "")
+                raw_steps = arguments.get("steps", [])
+                threshold = float(arguments.get("threshold_percent", 0.5))
+
+                if not url:
+                    return "Error: url is required for ui_test"
+                if not raw_steps:
+                    return "Error: steps list is required for ui_test"
+
+                steps = steps_from_spec(raw_steps)
+                runner = UITestRunner(
+                    working_dir=self.working_directory or ".",
+                    headless=True,
+                )
+                result = await runner.run(
+                    suite_name=suite_name,
+                    start_url=url,
+                    steps=steps,
+                    threshold_percent=threshold,
+                )
+                # Build a readable report
+                lines = [result.summary(), ""]
+                for sr in result.steps:
+                    icon = "✅" if sr.passed else "❌"
+                    err = f" — {sr.error}" if sr.error else ""
+                    lines.append(f"  {icon} [{sr.step_type}] {sr.description}{err} ({sr.duration_ms}ms)")
+                    if sr.diff:
+                        lines.append(
+                            f"       Visual diff: {sr.diff.get('changed_percent')}% changed "
+                            f"(threshold {sr.diff.get('threshold_percent')}%)"
+                        )
+                if result.js_errors:
+                    lines.append(f"\nJS errors: {'; '.join(result.js_errors[:3])}")
+                return "\n".join(lines)
+
+            elif name == "visual_regression":
+                action = arguments.get("action", "list_baselines")
+                vr_name = arguments.get("name", "")
+                b64 = arguments.get("screenshot_b64", "")
+                url = arguments.get("url", "")
+                threshold = arguments.get("threshold_percent")
+                from ..tools.browser.visual_regression import get_engine
+
+                engine = get_engine(self.working_directory or ".")
+
+                if action == "list_baselines":
+                    baselines = engine.list_baselines()
+                    if not baselines:
+                        return "No baselines stored yet. Capture a screenshot with set_baseline=True first."
+                    lines = ["Stored baselines:"]
+                    for b in baselines:
+                        lines.append(f"  • {b.get('name')} — {b.get('width')}×{b.get('height')} @ {b.get('captured_at', '')[:19]}")
+                    return "\n".join(lines)
+
+                elif action == "set_baseline":
+                    if not vr_name:
+                        return "Error: name is required"
+                    if not b64:
+                        return "Error: screenshot_b64 is required"
+                    rec = engine.save_screenshot_b64(vr_name, b64, url=url, set_as_baseline=True)
+                    return f"Baseline set for '{vr_name}' ({rec.width}×{rec.height})"
+
+                elif action == "compare":
+                    if not vr_name:
+                        return "Error: name is required"
+                    if not b64:
+                        return "Error: screenshot_b64 is required"
+                    try:
+                        diff = engine.compare_b64(vr_name, b64, threshold_percent=threshold)
+                        icon = "✅ PASS" if diff.passed else "❌ FAIL"
+                        return (
+                            f"{icon} — '{vr_name}': {diff.changed_percent:.3f}% pixels changed "
+                            f"(threshold {diff.threshold_percent}%). "
+                            f"Changed pixels: {diff.changed_pixels}."
+                            + (f"\nDiff image: {diff.diff_path}" if diff.diff_path else "")
+                        )
+                    except FileNotFoundError as e:
+                        return f"Error: {e}"
+
+                elif action == "get_history":
+                    if not vr_name:
+                        return "Error: name is required"
+                    hist = engine.get_history(vr_name)
+                    return json.dumps(hist, indent=2)
+
+                elif action == "delete_baseline":
+                    if not vr_name:
+                        return "Error: name is required"
+                    removed = engine.delete_baseline(vr_name)
+                    return f"Baseline for '{vr_name}' {'deleted' if removed else 'not found'}"
+
+                else:
+                    return f"Unknown visual_regression action: {action}"
+
             elif name == "monitor":
                 action = arguments.get("action", "status")
                 from ..integrations.monitor import (

@@ -1070,6 +1070,104 @@ async def list_skills():
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Browser-Based UI Testing + Visual Regression endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+class UITestRequest(BaseModel):
+    suite_name: str = "UI Test"
+    url: str
+    steps: list
+    threshold_percent: float = 0.5
+    working_dir: str = "."
+
+
+class VisualRegressionSetBaselineRequest(BaseModel):
+    name: str
+    screenshot_b64: str
+    url: str = ""
+    working_dir: str = "."
+
+
+class VisualRegressionCompareRequest(BaseModel):
+    name: str
+    screenshot_b64: str
+    threshold_percent: Optional[float] = None
+    working_dir: str = "."
+
+
+@app.post("/api/ui-test/run")
+async def run_ui_test(req: UITestRequest):
+    """Run a structured browser UI test suite via Playwright."""
+    from ..tools.browser.ui_tester import UITestRunner, steps_from_spec
+    steps = steps_from_spec(req.steps)
+    runner = UITestRunner(working_dir=req.working_dir, headless=True)
+    result = await runner.run(
+        suite_name=req.suite_name,
+        start_url=req.url,
+        steps=steps,
+        threshold_percent=req.threshold_percent,
+    )
+    return result.to_dict()
+
+
+@app.get("/api/visual-regression/baselines")
+async def vr_list_baselines(working_dir: str = "."):
+    """List all stored visual regression baselines."""
+    from ..tools.browser.visual_regression import get_engine
+    engine = get_engine(working_dir)
+    return {"baselines": engine.list_baselines()}
+
+
+@app.post("/api/visual-regression/set-baseline")
+async def vr_set_baseline(req: VisualRegressionSetBaselineRequest):
+    """Store a screenshot as the new visual baseline."""
+    from ..tools.browser.visual_regression import get_engine
+    engine = get_engine(req.working_dir)
+    rec = engine.save_screenshot_b64(req.name, req.screenshot_b64, url=req.url, set_as_baseline=True)
+    return {"message": f"Baseline set for '{req.name}'", "width": rec.width, "height": rec.height}
+
+
+@app.post("/api/visual-regression/compare")
+async def vr_compare(req: VisualRegressionCompareRequest):
+    """Compare a screenshot against the stored baseline."""
+    from ..tools.browser.visual_regression import get_engine
+    engine = get_engine(req.working_dir)
+    try:
+        diff = engine.compare_b64(req.name, req.screenshot_b64, req.threshold_percent)
+        return diff.to_dict()
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/visual-regression/history/{name}")
+async def vr_history(name: str, working_dir: str = "."):
+    """Get the test history for a named page."""
+    from ..tools.browser.visual_regression import get_engine
+    engine = get_engine(working_dir)
+    return engine.get_history(name)
+
+
+@app.delete("/api/visual-regression/baseline/{name}")
+async def vr_delete_baseline(name: str, working_dir: str = "."):
+    """Delete a stored baseline."""
+    from ..tools.browser.visual_regression import get_engine
+    engine = get_engine(working_dir)
+    removed = engine.delete_baseline(name)
+    return {"removed": removed}
+
+
+@app.get("/api/visual-regression/screenshot")
+async def vr_screenshot(rel_path: str, working_dir: str = "."):
+    """Return a stored screenshot as base64."""
+    from ..tools.browser.visual_regression import get_engine
+    engine = get_engine(working_dir)
+    b64 = engine.get_screenshot_b64(rel_path)
+    if b64:
+        return {"b64": b64}
+    raise HTTPException(status_code=404, detail="Screenshot not found")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Self-Healing Monitor endpoints
 # ──────────────────────────────────────────────────────────────────────────────
 
