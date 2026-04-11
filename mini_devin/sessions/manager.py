@@ -161,6 +161,7 @@ class SessionManager:
                 llm_client=llm_client,
                 working_directory=working_directory,
                 max_iterations=max_iterations,
+                session_id=session_id,
             )
             
             session = Session(

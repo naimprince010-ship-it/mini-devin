@@ -29,6 +29,7 @@ import subprocess
 load_dotenv()
 
 from .websocket import ConnectionManager, WebSocketMessage, MessageType
+from ..bridge.manager import get_bridge_manager
 from ..database.config import init_db
 from ..sessions.db_manager import DatabaseSessionManager
 
@@ -859,6 +860,46 @@ async def answer_clarification(session_id: str, request: Request):
     if not ok:
         raise HTTPException(status_code=404, detail="No pending clarification for this session")
     return {"status": "answered", "session_id": session_id}
+
+
+@app.post("/api/sessions/{session_id}/bridge/token")
+@app.post("/sessions/{session_id}/bridge/token")
+async def issue_bridge_token(session_id: str, request: Request):
+    """
+    Mint a one-time WebSocket token so scripts/local_bridge.py can attach to this session.
+    Requires header X-MiniDevin-Bridge-Secret matching env BRIDGE_ISSUE_SECRET.
+    """
+    secret = (os.getenv("BRIDGE_ISSUE_SECRET") or "").strip()
+    if not secret:
+        raise HTTPException(
+            status_code=503,
+            detail="BRIDGE_ISSUE_SECRET is not set — cannot issue local bridge tokens.",
+        )
+    hdr = (request.headers.get("x-minidevin-bridge-secret") or "").strip()
+    if hdr != secret:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-MiniDevin-Bridge-Secret header")
+    s = await session_manager.get_session(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    bm = get_bridge_manager()
+    token = await bm.create_token(session_id)
+    return {
+        "session_id": session_id,
+        "token": token,
+        "expires_in_seconds": 900,
+        "websocket_query": f"token={token}",
+    }
+
+
+@app.post("/api/sessions/{session_id}/bridge/status")
+@app.post("/sessions/{session_id}/bridge/status")
+async def bridge_status(session_id: str):
+    """Whether a local bridge WebSocket is connected for this session."""
+    s = await session_manager.get_session(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    bm = get_bridge_manager()
+    return {"session_id": session_id, "local_bridge_connected": bm.is_connected(session_id)}
 
 
 @app.post("/api/sessions/{session_id}/sandbox/start")
@@ -1773,6 +1814,37 @@ async def env_parity_compose(req: GenerateComposeRequest):
         output_path=req.output_path,
     )
     return {"content": content, "path": path}
+
+
+@app.websocket("/api/bridge/ws")
+@app.websocket("/ws/bridge/ws")
+async def bridge_websocket(websocket: WebSocket):
+    """Local developer machine connects here; cloud agent forwards terminal exec over this socket."""
+    token = (websocket.query_params.get("token") or "").strip()
+    if not token:
+        await websocket.close(code=4400)
+        return
+    bm = get_bridge_manager()
+    session_id = await bm.consume_token(token)
+    if not session_id:
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+    await bm.register(session_id, websocket)
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            await bm.handle_bridge_message(session_id, data)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        print(f"[bridge] WebSocket error: {e}")
+    finally:
+        await bm.unregister(session_id, websocket)
 
 
 @app.websocket("/api/ws/{session_id}")

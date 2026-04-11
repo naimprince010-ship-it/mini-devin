@@ -120,6 +120,7 @@ class DatabaseSessionManager:
                     use_sandbox=use_sandbox,
                     auto_git_commit=auto_git_commit,
                     git_push=git_push,
+                    session_id=session_id,
                 )
                 if sandbox:
                     agent._sandbox = sandbox
@@ -408,6 +409,7 @@ class DatabaseSessionManager:
                     llm_client=llm_client,
                     working_directory=db_session.working_directory,
                     max_iterations=db_session.max_iterations,
+                    session_id=session_id,
                 )
                 
                 self._agents[session_id] = agent

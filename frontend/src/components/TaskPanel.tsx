@@ -696,7 +696,7 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
               }
             }}
             placeholder={isStreaming ? 'Send a follow-up message to the agent...' : 'Type a task for the agent...'}
-            className={`w-full bg-[#121212] border rounded-[20px] px-5 py-4 pr-24 text-sm focus:outline-none transition-colors resize-none placeholder-[#737373] min-h-[56px] max-h-40 custom-scrollbar ${isStreaming
+            className={`w-full bg-[#121212] text-[#f0f0f0] caret-[#00ff99] border rounded-[20px] px-5 py-4 pr-24 text-sm focus:outline-none transition-colors resize-none placeholder-[#737373] min-h-[56px] max-h-40 custom-scrollbar ${isStreaming
               ? 'border-[#00ff99]/20 focus:border-[#00ff99]/40'
               : 'border-[#262626] focus:border-[#00ff99]/50'
               }`}

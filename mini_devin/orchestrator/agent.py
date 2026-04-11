@@ -1,4 +1,4 @@
-﻿"""
+"""
 Agent Orchestrator for Mini-Devin
 
 This module implements the main agent that orchestrates task execution
@@ -193,6 +193,7 @@ class Agent:
         use_sandbox: bool = False,
         auto_git_commit: bool = False,
         git_push: bool = False,
+        session_id: str | None = None,
     ):
         self.llm = llm_client or create_llm_client()
         self.registry = tool_registry or get_global_registry()
@@ -206,10 +207,11 @@ class Agent:
         # Self-correction specific parameters
         self.max_immediate_retries = 3
         
-        # Initialize state
+        # Initialize state (session_id ties agent to DB session for local bridge, etc.)
+        sid = session_id if session_id else str(uuid.uuid4())
         self.state = AgentState(
             agent_id=str(uuid.uuid4()),
-            session_id=str(uuid.uuid4()),
+            session_id=sid,
             phase=AgentPhase.INTAKE,
         )
         
@@ -284,7 +286,10 @@ class Agent:
         """Register the default tools (terminal, editor, browser)."""
         # Only register if not already registered
         if not self.registry.get("terminal"):
-            terminal = create_terminal_tool(working_directory=self.working_directory)
+            terminal = create_terminal_tool(
+                working_directory=self.working_directory,
+                bridge_session_id=self.state.session_id,
+            )
             self.registry.register(terminal)
         
         if not self.registry.get("editor"):

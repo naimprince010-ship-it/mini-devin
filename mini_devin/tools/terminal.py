@@ -158,10 +158,12 @@ class TerminalTool(BaseTool[TerminalInput, TerminalOutput]):
         working_directory: str | None = None,
         blocked_commands: list[str] | None = None,
         max_output_length: int = 50000,
+        bridge_session_id: str | None = None,
     ):
         super().__init__(policy)
         self.working_directory = working_directory or os.getcwd()
         self.max_output_length = max_output_length
+        self.bridge_session_id = bridge_session_id
         
         # Default blocked commands for safety
         self.blocked_commands = blocked_commands or [
@@ -304,7 +306,60 @@ Output is captured and returned. Long outputs are truncated."""
                         execution_time_ms=0,
                     )
         
-        # Ensure working directory exists
+        # Ensure working directory exists (server-side); local bridge uses its own cwd
+        if not self.bridge_session_id and not os.path.isdir(working_dir):
+            return TerminalOutput(
+                status=ToolStatus.FAILURE,
+                error_message=f"Working directory does not exist: {working_dir}",
+                stdout="",
+                stderr=f"Directory not found: {working_dir}",
+                exit_code=-1,
+                execution_time_ms=0,
+            )
+
+        # Prepare environment
+        env = os.environ.copy()
+        env.update(input_data.env_vars)
+
+        # Translate Linux commands to Windows equivalents when on Windows
+        command = _translate_for_windows(input_data.command)
+
+        # Local bridge: run on the user's machine (Cursor-like) when connected
+        if self.bridge_session_id:
+            try:
+                from ..bridge.manager import get_bridge_manager
+
+                bm = get_bridge_manager()
+                if bm.is_connected(self.bridge_session_id):
+                    raw = await bm.forward_exec(
+                        self.bridge_session_id,
+                        input_data.command,
+                        working_dir,
+                        float(input_data.timeout_seconds),
+                        input_data.env_vars,
+                    )
+                    if raw is not None:
+                        execution_time = int((time.time() - start_time) * 1000)
+                        exit_code = int(raw.get("exit_code", -1))
+                        stdout = str(raw.get("stdout") or "")
+                        stderr = str(raw.get("stderr") or "")
+                        stdout, st1 = self._truncate_output(stdout)
+                        stderr, st2 = self._truncate_output(stderr)
+                        status = ToolStatus.SUCCESS if exit_code == 0 else ToolStatus.FAILURE
+                        prefix = "[local bridge] "
+                        return TerminalOutput(
+                            status=status,
+                            error_message=None if exit_code == 0 else f"Command exited with code {exit_code}",
+                            stdout=prefix + stdout,
+                            stderr=stderr,
+                            exit_code=exit_code,
+                            files_modified=[],
+                            truncated=st1 or st2,
+                            execution_time_ms=execution_time,
+                        )
+            except Exception as e:
+                print(f"[terminal] local bridge error (falling back to server shell): {e}")
+
         if not os.path.isdir(working_dir):
             return TerminalOutput(
                 status=ToolStatus.FAILURE,
@@ -314,13 +369,6 @@ Output is captured and returned. Long outputs are truncated."""
                 exit_code=-1,
                 execution_time_ms=0,
             )
-        
-        # Prepare environment
-        env = os.environ.copy()
-        env.update(input_data.env_vars)
-
-        # Translate Linux commands to Windows equivalents when on Windows
-        command = _translate_for_windows(input_data.command)
 
         # Track file modifications
         before_time = time.time()
@@ -414,9 +462,11 @@ Output is captured and returned. Long outputs are truncated."""
 def create_terminal_tool(
     working_directory: str | None = None,
     blocked_commands: list[str] | None = None,
+    bridge_session_id: str | None = None,
 ) -> TerminalTool:
     """Create a terminal tool with default settings."""
     return TerminalTool(
         working_directory=working_directory,
         blocked_commands=blocked_commands,
+        bridge_session_id=bridge_session_id,
     )
