@@ -39,6 +39,18 @@ export interface BrowserEvent {
     timestamp: Date;
 }
 
+export interface ShellLine {
+    text: string;
+    type: 'command' | 'output' | 'error';
+    ts: number;   // Unix ms
+}
+
+export interface ClarificationPayload {
+    question: string;
+    options: string[];
+    context: string;
+}
+
 export type AgentPhase =
     | 'intake'
     | 'explore'
@@ -61,7 +73,8 @@ interface SessionEventsState {
     iteration: number;
     maxIterations: number;
     toolCalls: ToolCallEntry[];
-    shellLines: string[];
+    shellLines: string[];          // kept for backward compat (plain text)
+    richShellLines: ShellLine[];   // new: structured with type + ts
     isRunning: boolean;
     planSteps: PlanStep[];
     currentStepIndex: number;
@@ -71,6 +84,8 @@ interface SessionEventsState {
     changedFiles: Set<string>;
     tokenUsage: TokenUsage;
     clarificationQuestion: string | null;
+    clarification: ClarificationPayload | null;  // new: full payload with options
+    runningCommand: string | null;               // new: currently executing command
 }
 
 interface SessionEventsContextValue extends SessionEventsState {
@@ -91,7 +106,10 @@ interface SessionEventsContextValue extends SessionEventsState {
     onFileChangedFromWS: (path: string, content: string) => void;
     onTokenUsage: (usage: TokenUsage) => void;
     onClarificationNeeded: (question: string) => void;
+    onClarificationFull: (payload: ClarificationPayload) => void;
     dismissClarification: () => void;
+    clearShell: () => void;
+    onRichShellLine: (line: ShellLine) => void;
 }
 
 const defaultState: SessionEventsState = {
@@ -100,6 +118,7 @@ const defaultState: SessionEventsState = {
     maxIterations: 50,
     toolCalls: [],
     shellLines: [],
+    richShellLines: [],
     isRunning: false,
     planSteps: [],
     currentStepIndex: -1,
@@ -109,6 +128,8 @@ const defaultState: SessionEventsState = {
     changedFiles: new Set<string>(),
     tokenUsage: { total_tokens: 0, prompt_tokens: 0, completion_tokens: 0 },
     clarificationQuestion: null,
+    clarification: null,
+    runningCommand: null,
 };
 
 const SessionEventsContext = createContext<SessionEventsContextValue>({
@@ -130,7 +151,10 @@ const SessionEventsContext = createContext<SessionEventsContextValue>({
     onFileChangedFromWS: () => { },
     onTokenUsage: () => { },
     onClarificationNeeded: () => { },
+    onClarificationFull: () => { },
     dismissClarification: () => { },
+    clearShell: () => { },
+    onRichShellLine: () => { },
 });
 
 const BROWSER_TOOLS = new Set(['browser_navigate', 'browser_screenshot', 'browser_click', 'web_search', 'search_web', 'browse', 'browser']);
@@ -326,7 +350,33 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
     }, []);
 
     const onShellLine = useCallback((line: string) => {
-        setState(prev => ({ ...prev, shellLines: [...prev.shellLines, line] }));
+        const isCmd = line.startsWith('$');
+        const isError = /error|fail|traceback/i.test(line);
+        const rich: ShellLine = {
+            text: line,
+            type: isCmd ? 'command' : isError ? 'error' : 'output',
+            ts: Date.now(),
+        };
+        setState(prev => ({
+            ...prev,
+            shellLines: [...prev.shellLines, line],
+            richShellLines: [...prev.richShellLines, rich],
+            runningCommand: isCmd ? line.slice(2) : prev.runningCommand,
+        }));
+    }, []);
+
+    const onRichShellLine = useCallback((line: ShellLine) => {
+        const isCmd = line.type === 'command';
+        setState(prev => ({
+            ...prev,
+            shellLines: [...prev.shellLines, line.text],
+            richShellLines: [...prev.richShellLines, line],
+            runningCommand: isCmd ? line.text.replace(/^\$ /, '') : prev.runningCommand,
+        }));
+    }, []);
+
+    const clearShell = useCallback(() => {
+        setState(prev => ({ ...prev, shellLines: [], richShellLines: [], runningCommand: null }));
     }, []);
 
     const onIterationUpdate = useCallback((iteration: number, max?: number) => {
@@ -343,12 +393,16 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
             isRunning: true,
             toolCalls: [],
             shellLines: [],
+            richShellLines: [],
             phase: null,
             iteration: 0,
             planSteps: [],
             currentStepIndex: -1,
             fileEdits: [],
             browserEvents: [],
+            runningCommand: null,
+            clarification: null,
+            clarificationQuestion: null,
         }));
     }, []);
 
@@ -413,11 +467,23 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
     }, []);
 
     const onClarificationNeeded = useCallback((question: string) => {
-        setState(prev => ({ ...prev, clarificationQuestion: question }));
+        setState(prev => ({
+            ...prev,
+            clarificationQuestion: question,
+            clarification: { question, options: [], context: '' },
+        }));
+    }, []);
+
+    const onClarificationFull = useCallback((payload: ClarificationPayload) => {
+        setState(prev => ({
+            ...prev,
+            clarificationQuestion: payload.question,
+            clarification: payload,
+        }));
     }, []);
 
     const dismissClarification = useCallback(() => {
-        setState(prev => ({ ...prev, clarificationQuestion: null }));
+        setState(prev => ({ ...prev, clarificationQuestion: null, clarification: null }));
     }, []);
 
     return (
@@ -441,7 +507,10 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
                 onFileChangedFromWS,
                 onTokenUsage,
                 onClarificationNeeded,
+                onClarificationFull,
                 dismissClarification,
+                clearShell,
+                onRichShellLine,
             }}
         >
             {children}

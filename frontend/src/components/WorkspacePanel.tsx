@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Terminal, FileCode, History, Maximize2, Globe, ExternalLink, Search, X, Brain } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Terminal, FileCode, History, Maximize2, Globe, ExternalLink, Search, X, Brain, Trash2, Copy, Check, Loader2 } from 'lucide-react';
 import { MemoryView } from './MemoryView';
 import { FileExplorer } from './FileExplorer';
 import { ToolCallLog } from './ToolCallLog';
@@ -20,12 +20,29 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
     // Monaco editor state: which file is open
     const [openFile, setOpenFile] = useState<string | null>(null);
 
+    // Shell UX state
+    const [shellSearch, setShellSearch] = useState('');
+    const [shellSearchVisible, setShellSearchVisible] = useState(false);
+    const [copied, setCopied] = useState(false);
+
     // Auto-scroll shell when new lines come in
     useEffect(() => {
         if (shellRef.current) {
             shellRef.current.scrollTop = shellRef.current.scrollHeight;
         }
-    }, [events.shellLines]);
+    }, [events.richShellLines]);
+
+    const handleCopyShell = useCallback(() => {
+        const text = events.richShellLines.map(l => l.text).join('\n');
+        navigator.clipboard.writeText(text).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        });
+    }, [events.richShellLines]);
+
+    const filteredShellLines = shellSearch.trim()
+        ? events.richShellLines.filter(l => l.text.toLowerCase().includes(shellSearch.toLowerCase()))
+        : events.richShellLines;
 
     // Switch to worklog when a tool starts
     useEffect(() => {
@@ -115,32 +132,135 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
 
                 {/* SHELL */}
                 {activeTab === 'shell' && (
-                    <div
-                        ref={shellRef}
-                        className="absolute inset-0 p-4 font-mono text-xs overflow-y-auto bg-[#050505] custom-scrollbar"
-                    >
-                        <div className="text-[#00ff99] mb-3 text-[11px]">
-                            ubuntu@mini-devin:~$ <span className="animate-pulse">_</span>
-                        </div>
-                        {events.shellLines.length === 0 ? (
-                            <div className="text-[#3a3a3a] italic text-[11px]">
-                                Shell output will appear here when the agent runs commands...
+                    <div className="absolute inset-0 flex flex-col bg-[#050505]">
+                        {/* Shell toolbar */}
+                        <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-[#111] bg-[#080808] flex-shrink-0">
+                            {/* Running command indicator */}
+                            <div className="flex-1 min-w-0 flex items-center gap-2">
+                                {events.isRunning && events.runningCommand ? (
+                                    <>
+                                        <Loader2 size={10} className="text-[#00ff99] animate-spin flex-shrink-0" />
+                                        <span className="text-[10px] font-mono text-[#00ff99] truncate">
+                                            {events.runningCommand.length > 60
+                                                ? events.runningCommand.slice(0, 57) + '…'
+                                                : events.runningCommand}
+                                        </span>
+                                    </>
+                                ) : (
+                                    <span className="text-[10px] text-[#3a3a3a] font-mono">
+                                        ubuntu@mini-devin:~$
+                                    </span>
+                                )}
                             </div>
-                        ) : (
-                            events.shellLines.map((line, i) => (
-                                <div
-                                    key={i}
-                                    className={`leading-5 ${line.startsWith('$')
-                                        ? 'text-[#00ff99]'
-                                        : line.toLowerCase().includes('error') || line.toLowerCase().includes('fail')
-                                            ? 'text-red-400'
-                                            : 'text-[#c0c0c0]'
-                                        }`}
+
+                            {/* Toolbar actions */}
+                            <div className="flex items-center gap-0.5 flex-shrink-0">
+                                <button
+                                    onClick={() => setShellSearchVisible(v => !v)}
+                                    className={`p-1 rounded transition-colors ${shellSearchVisible ? 'text-[#00ff99] bg-[#00ff99]/10' : 'text-[#525252] hover:text-[#a3a3a3] hover:bg-[#1a1a1a]'}`}
+                                    title="Search shell output"
                                 >
-                                    {line}
-                                </div>
-                            ))
+                                    <Search size={11} />
+                                </button>
+                                <button
+                                    onClick={handleCopyShell}
+                                    disabled={events.richShellLines.length === 0}
+                                    className="p-1 rounded text-[#525252] hover:text-[#a3a3a3] hover:bg-[#1a1a1a] transition-colors disabled:opacity-30"
+                                    title="Copy all"
+                                >
+                                    {copied ? <Check size={11} className="text-[#00ff99]" /> : <Copy size={11} />}
+                                </button>
+                                <button
+                                    onClick={() => { events.clearShell?.(); setShellSearch(''); }}
+                                    disabled={events.richShellLines.length === 0}
+                                    className="p-1 rounded text-[#525252] hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-30"
+                                    title="Clear shell"
+                                >
+                                    <Trash2 size={11} />
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Search bar */}
+                        {shellSearchVisible && (
+                            <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#111] bg-[#080808] flex-shrink-0">
+                                <Search size={11} className="text-[#525252] flex-shrink-0" />
+                                <input
+                                    autoFocus
+                                    type="text"
+                                    value={shellSearch}
+                                    onChange={e => setShellSearch(e.target.value)}
+                                    placeholder="Filter shell output..."
+                                    className="flex-1 bg-transparent text-[11px] font-mono text-[#d1d1d1] outline-none placeholder:text-[#3a3a3a]"
+                                />
+                                {shellSearch && (
+                                    <button onClick={() => setShellSearch('')} className="text-[#525252] hover:text-white">
+                                        <X size={11} />
+                                    </button>
+                                )}
+                                {shellSearch && (
+                                    <span className="text-[10px] text-[#525252]">
+                                        {filteredShellLines.length} match{filteredShellLines.length !== 1 ? 'es' : ''}
+                                    </span>
+                                )}
+                            </div>
                         )}
+
+                        {/* Shell output */}
+                        <div
+                            ref={shellRef}
+                            className="flex-1 overflow-y-auto custom-scrollbar p-4 font-mono text-xs"
+                        >
+                            {filteredShellLines.length === 0 && !shellSearch ? (
+                                <div className="text-[#3a3a3a] italic text-[11px]">
+                                    Shell output will appear here when the agent runs commands...
+                                </div>
+                            ) : filteredShellLines.length === 0 && shellSearch ? (
+                                <div className="text-[#3a3a3a] italic text-[11px]">
+                                    No matches for "<span className="text-[#525252]">{shellSearch}</span>"
+                                </div>
+                            ) : (
+                                filteredShellLines.map((line, i) => {
+                                    const ts = new Date(line.ts);
+                                    const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                                    return (
+                                        <div
+                                            key={i}
+                                            className={`flex items-start gap-2 leading-5 group ${
+                                                line.type === 'command'
+                                                    ? 'text-[#00ff99]'
+                                                    : line.type === 'error'
+                                                        ? 'text-red-400'
+                                                        : 'text-[#c0c0c0]'
+                                            }`}
+                                        >
+                                            {/* Timestamp */}
+                                            <span className="flex-shrink-0 text-[9px] text-[#2a2a2a] group-hover:text-[#3a3a3a] transition-colors mt-0.5 select-none w-16 text-right">
+                                                {timeStr}
+                                            </span>
+                                            {/* Line text, with search highlight */}
+                                            <span className="flex-1 break-all">
+                                                {shellSearch ? (
+                                                    (() => {
+                                                        const idx = line.text.toLowerCase().indexOf(shellSearch.toLowerCase());
+                                                        if (idx < 0) return line.text;
+                                                        return (
+                                                            <>
+                                                                {line.text.slice(0, idx)}
+                                                                <mark className="bg-yellow-500/30 text-yellow-200 rounded">
+                                                                    {line.text.slice(idx, idx + shellSearch.length)}
+                                                                </mark>
+                                                                {line.text.slice(idx + shellSearch.length)}
+                                                            </>
+                                                        );
+                                                    })()
+                                                ) : line.text}
+                                            </span>
+                                        </div>
+                                    );
+                                })
+                            )}
+                        </div>
                     </div>
                 )}
 

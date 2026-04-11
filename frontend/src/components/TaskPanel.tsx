@@ -95,10 +95,14 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
         }
         break;
 
-      case 'clarification_needed':
-        setClarificationQuestion(data.question as string || 'The agent needs clarification.');
-        events.onClarificationNeeded(data.question as string || '');
+      case 'clarification_needed': {
+        const question = (data.question as string) || 'The agent needs clarification.';
+        const options = (data.options as string[]) || [];
+        const context = (data.context as string) || '';
+        setClarificationQuestion(question);
+        events.onClarificationFull({ question, options, context });
         break;
+      }
 
       case 'response':
         setIsStreaming(true);
@@ -109,6 +113,7 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
         setIsStreaming(true);
         setStreamingContent('');
         setClarificationQuestion(null);
+        setClarificationAnswer('');
         events.onTaskStarted();
         break;
 
@@ -231,10 +236,16 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
         break;
 
       case 'tool_output': {
-        // Shell live streaming — add line to shell output in WorkspacePanel
+        // Shell live streaming — add structured line to shell output
         const line = data.line as string | undefined;
         if (line) {
-          events.onShellLine?.(line);
+          const lineType = (data.type as string) || (line.startsWith('$') ? 'command' : 'output');
+          const isError = /error|fail|traceback/i.test(line);
+          events.onRichShellLine?.({
+            text: line,
+            type: (lineType === 'command' ? 'command' : isError ? 'error' : 'output') as 'command' | 'output' | 'error',
+            ts: typeof data.ts === 'number' ? (data.ts as number) * 1000 : Date.now(),
+          });
         }
         break;
       }
@@ -320,14 +331,14 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     toast.error('Agent stopped', 'The agent was interrupted.');
   };
 
-  const handleAnswerClarification = async () => {
-    if (!clarificationAnswer.trim() || isSubmittingAnswer) return;
+  const submitAnswer = async (answer: string) => {
+    if (!answer.trim() || isSubmittingAnswer) return;
     setIsSubmittingAnswer(true);
     try {
       const response = await fetch(`/api/sessions/${session.session_id}/answer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ answer: clarificationAnswer })
+        body: JSON.stringify({ answer })
       });
       if (response.ok) {
         toast.success('Answer sent', 'The agent will now resume.');
@@ -343,6 +354,9 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
       setIsSubmittingAnswer(false);
     }
   };
+
+  const handleAnswerClarification = () => submitAnswer(clarificationAnswer);
+  const handleOptionSelect = (option: string) => submitAnswer(option);
 
   const currentPhase = events.phase;
   const phaseLabel = currentPhase ? (PHASE_LABELS[currentPhase] || currentPhase) : null;
@@ -651,64 +665,108 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
       </div>
 
       {/* Clarification Modal Overlay */}
-      {clarificationQuestion && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-6 animate-in fade-in duration-200">
-          <div className="bg-[#121212] border border-yellow-500/30 shadow-2xl rounded-2xl w-full max-w-lg overflow-hidden flex flex-col">
-            <div className="px-5 py-4 border-b border-[#262626] flex justify-between items-center bg-yellow-500/5">
-              <div className="flex items-center gap-2 text-yellow-500">
-                <HelpCircle size={18} />
-                <h3 className="font-semibold text-sm tracking-wide">Agent Needs Clarification</h3>
+      {clarificationQuestion && (() => {
+        const cl = events.clarification;
+        const options = cl?.options || [];
+        const context = cl?.context || '';
+        return (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-6 animate-in fade-in duration-200">
+            <div className="bg-[#121212] border border-yellow-500/30 shadow-2xl rounded-2xl w-full max-w-lg overflow-hidden flex flex-col">
+              {/* Header */}
+              <div className="px-5 py-4 border-b border-[#262626] flex justify-between items-center bg-yellow-500/5">
+                <div className="flex items-center gap-2 text-yellow-500">
+                  <HelpCircle size={18} />
+                  <h3 className="font-semibold text-sm tracking-wide">Agent Needs Your Input</h3>
+                </div>
+                <button
+                  onClick={() => { setClarificationQuestion(null); events.dismissClarification(); }}
+                  className="text-[#737373] hover:text-white transition-colors"
+                  title="Dismiss — agent will make its best guess"
+                >
+                  <X size={16} />
+                </button>
               </div>
-              <button
-                onClick={() => { setClarificationQuestion(null); events.dismissClarification(); }}
-                className="text-[#737373] hover:text-white transition-colors"
-                title="Dismiss (Agent will guess)"
-              >
-                <X size={16} />
-              </button>
-            </div>
 
-            <div className="p-6 flex-1 overflow-y-auto">
-              <p className="text-[#d1d1d1] text-sm leading-relaxed whitespace-pre-wrap font-medium">
-                {clarificationQuestion}
-              </p>
+              <div className="p-6 flex-1 overflow-y-auto space-y-4">
+                {/* Question */}
+                <p className="text-[#d1d1d1] text-sm leading-relaxed whitespace-pre-wrap font-medium">
+                  {clarificationQuestion}
+                </p>
 
-              <div className="mt-6 space-y-2">
-                <label className="text-[10px] uppercase tracking-wider text-[#737373] font-bold">Your Answer</label>
-                <textarea
-                  autoFocus
-                  value={clarificationAnswer}
-                  onChange={e => setClarificationAnswer(e.target.value)}
-                  placeholder="Type your answer here..."
-                  className="w-full bg-[#0f0f0f] border border-[#262626] focus:border-yellow-500/50 rounded-xl px-4 py-3 text-sm text-white resize-none h-24 custom-scrollbar outline-none transition-colors"
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleAnswerClarification();
-                    }
-                  }}
-                />
+                {/* Optional context block */}
+                {context && (
+                  <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-4 py-3 text-xs text-[#a3a3a3] leading-relaxed">
+                    {context}
+                  </div>
+                )}
+
+                {/* Clickable option buttons (A/B/C style) */}
+                {options.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-[10px] uppercase tracking-wider text-[#737373] font-bold">
+                      Choose an option:
+                    </p>
+                    {options.map((opt, idx) => {
+                      const letter = String.fromCharCode(65 + idx); // A, B, C …
+                      return (
+                        <button
+                          key={idx}
+                          onClick={() => handleOptionSelect(opt)}
+                          disabled={isSubmittingAnswer}
+                          className="w-full flex items-start gap-3 px-4 py-3 bg-[#1a1a1a] hover:bg-yellow-500/10 border border-[#2a2a2a] hover:border-yellow-500/40 rounded-xl text-left transition-all group disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <span className="flex-shrink-0 w-6 h-6 rounded-full bg-yellow-500/20 text-yellow-400 text-[11px] font-bold flex items-center justify-center group-hover:bg-yellow-500/30 transition-colors">
+                            {letter}
+                          </span>
+                          <span className="text-sm text-[#d1d1d1] group-hover:text-white transition-colors leading-snug">
+                            {opt}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Free-text answer area */}
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-wider text-[#737373] font-bold">
+                    {options.length > 0 ? 'Or type a custom answer:' : 'Your Answer'}
+                  </label>
+                  <textarea
+                    autoFocus={options.length === 0}
+                    value={clarificationAnswer}
+                    onChange={e => setClarificationAnswer(e.target.value)}
+                    placeholder={options.length > 0 ? 'Type a custom answer...' : 'Type your answer here...'}
+                    className="w-full bg-[#0f0f0f] border border-[#262626] focus:border-yellow-500/50 rounded-xl px-4 py-3 text-sm text-white resize-none h-20 custom-scrollbar outline-none transition-colors"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleAnswerClarification();
+                      }
+                    }}
+                  />
+                </div>
               </div>
-            </div>
 
-            <div className="p-4 border-t border-[#262626] bg-[#0f0f0f]/50 flex justify-end gap-3">
-              <button
-                onClick={() => { setClarificationQuestion(null); events.dismissClarification(); }}
-                className="px-4 py-2 text-xs font-semibold text-[#a3a3a3] hover:text-white transition-colors"
-              >
-                Ignore
-              </button>
-              <button
-                onClick={handleAnswerClarification}
-                disabled={!clarificationAnswer.trim() || isSubmittingAnswer}
-                className="px-5 py-2 text-xs font-bold rounded-lg bg-yellow-500 text-black hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {isSubmittingAnswer ? 'Sending...' : 'Send Answer'}
-              </button>
+              <div className="p-4 border-t border-[#262626] bg-[#0f0f0f]/50 flex justify-end gap-3">
+                <button
+                  onClick={() => { setClarificationQuestion(null); events.dismissClarification(); }}
+                  className="px-4 py-2 text-xs font-semibold text-[#a3a3a3] hover:text-white transition-colors"
+                >
+                  Ignore
+                </button>
+                <button
+                  onClick={handleAnswerClarification}
+                  disabled={!clarificationAnswer.trim() || isSubmittingAnswer}
+                  className="px-5 py-2 text-xs font-bold rounded-lg bg-yellow-500 text-black hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isSubmittingAnswer ? 'Sending...' : 'Send Answer'}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

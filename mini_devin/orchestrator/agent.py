@@ -432,13 +432,30 @@ PREFER str_replace over write_file when editing existing files.""",
         # Ask-user tool for proactive clarification
         schemas.append({
             "name": "ask_user",
-            "description": "Ask the user a clarifying question when the task is ambiguous or you need more information before proceeding. Use this sparingly, only when truly necessary.",
+            "description": (
+                "Ask the user a clarifying question when the task is ambiguous or blocked. "
+                "Optionally provide multiple-choice options so the user can click instead of type. "
+                "Use ONLY when you genuinely cannot proceed without human input."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "question": {
                         "type": "string",
                         "description": "The specific question to ask the user",
+                    },
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional list of choices to present as clickable buttons, e.g. "
+                            "['Use PostgreSQL', 'Use SQLite', 'Let me decide later']. "
+                            "When provided, the user clicks a button instead of typing."
+                        ),
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Optional additional context or explanation to show the user",
                     },
                 },
                 "required": ["question"],
@@ -774,15 +791,26 @@ PREFER str_replace over write_file when editing existing files.""",
         # ── ask_user: pause and request clarification from user ──
         if name == "ask_user":
             question = arguments.get("question", "Can you clarify?")
+            options = arguments.get("options")      # optional list of choice strings
+            context = arguments.get("context", "")  # optional extra context
+
             on_clarification = self.callbacks.get("on_clarification_needed")
             if on_clarification:
-                on_clarification(question)
+                # Pass full payload so frontend can render option buttons
+                on_clarification({
+                    "question": question,
+                    "options": options or [],
+                    "context": context,
+                })
             # Wait up to 5 minutes for user answer
             self._clarification_event = asyncio.Event()
             self._clarification_answer = None
             try:
                 await asyncio.wait_for(self._clarification_event.wait(), timeout=300)
             except asyncio.TimeoutError:
+                # Auto-select first option if available, otherwise best guess
+                if options:
+                    return f"User did not answer within 5 minutes. Proceeding with option: {options[0]}"
                 return "User did not answer within 5 minutes. Proceeding with best guess."
             answer = self._clarification_answer or "(no answer)"
             self._clarification_event = None
@@ -804,7 +832,10 @@ PREFER str_replace over write_file when editing existing files.""",
                 
                 # Emit command to shell stream
                 on_cmd_output = self.callbacks.get("on_command_output")
-                if on_cmd_output:
+                on_cmd_start = self.callbacks.get("on_command_start")
+                if on_cmd_start:
+                    on_cmd_start(command)   # fires a "command" typed line with ts
+                elif on_cmd_output:
                     on_cmd_output(f"$ {command}")
                 
                 # ── Docker Sandbox Execution ──

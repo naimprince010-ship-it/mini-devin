@@ -559,20 +559,31 @@ class DatabaseSessionManager:
                 "on_tool_result": lambda name, args, output, duration: _fire(on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration})),
                 "on_phase_change": lambda phase: _fire(on_update("phase_changed", {"phase": phase})),
                 # on_clarification_needed: emit WS event so UI can show modal
-                "on_clarification_needed": lambda question: asyncio.ensure_future(
+                # payload is now a dict with {question, options, context} or a plain string
+                "on_clarification_needed": lambda payload: asyncio.ensure_future(
                     connection_manager.broadcast_to_session(session_id, WebSocketMessage(
                         type=MessageType.CLARIFICATION_NEEDED,
-                        data={"question": question},
+                        data=payload if isinstance(payload, dict) else {"question": payload, "options": [], "context": ""},
                         task_id=task_id,
                     ))
                 ) if connection_manager else None,
+                # Shell live streaming with timestamp
+                "on_command_start": lambda cmd: _fire(on_update("tool_output", {
+                    "line": f"$ {cmd}",
+                    "type": "command",
+                    "ts": __import__("time").time(),
+                })),
                 # Plan events
                 "on_plan_created": lambda steps: _fire(on_update("plan_created", {"steps": steps})),
                 "on_step_started": lambda idx, text="": _fire(on_update("step_started", {"index": idx, "text": text})),
                 "on_step_completed": lambda idx, text="": _fire(on_update("step_completed", {"index": idx, "text": text})),
                 "on_iteration": lambda iteration, max_iter: _fire(on_update("iteration", {"iteration": iteration, "max": max_iter})),
                 # Shell live streaming: each stdout line becomes a tool_output event
-                "on_command_output": lambda line: _fire(on_update("tool_output", {"line": line})),
+                "on_command_output": lambda line: _fire(on_update("tool_output", {
+                    "line": line,
+                    "type": "output",
+                    "ts": __import__("time").time(),
+                })),
             }
 
             # Run the agent — track asyncio.Task for cancellation
