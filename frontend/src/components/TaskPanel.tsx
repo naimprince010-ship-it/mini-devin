@@ -328,13 +328,35 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
   }, [streamingContent, tasks]);
 
   const handleSubmitTask = async () => {
-    if (!taskDescription.trim()) return;
+    const desc = taskDescription.trim();
+    if (!desc) return;
 
     // If agent is running, send as follow-up via WebSocket
     if (isStreaming) {
-      sendMessage(taskDescription);
-      setStreamingContent(prev => prev + `\n\n**[You]:** ${taskDescription}\n`);
+      if (!sendMessage(desc)) {
+        toast.error(
+          'Message not sent',
+          'WebSocket is not ready. Wait for the green connection dot, then try again.',
+        );
+        return;
+      }
+      setStreamingContent(prev => prev + `\n\n**[You]:** ${desc}\n`);
       setTaskDescription('');
+      return;
+    }
+
+    if (!isConnected) {
+      toast.error(
+        'Agent offline',
+        'Not connected to the server. Refresh the page or wait a few seconds and retry.',
+      );
+      return;
+    }
+    if (!sendMessage(desc)) {
+      toast.error(
+        'Message not sent',
+        'Connection closed before send. Wait for reconnect or refresh, then try again.',
+      );
       return;
     }
 
@@ -342,7 +364,7 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     const mockTask: Task = {
       task_id: newTaskId,
       session_id: session.session_id,
-      description: taskDescription,
+      description: desc,
       status: 'running',
       created_at: new Date().toISOString(),
       started_at: new Date().toISOString(),
@@ -357,7 +379,6 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     setTaskDescription('');
     setStreamingContent('');
     setIsStreaming(true);
-    sendMessage(taskDescription);
   };
 
   const handleStop = async () => {

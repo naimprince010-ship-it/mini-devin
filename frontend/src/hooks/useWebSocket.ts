@@ -71,10 +71,13 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     }
   }, []);
 
-  const sendMessage = useCallback((data: string) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(data);
+  const sendMessage = useCallback((data: string): boolean => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(data);
+      return true;
     }
+    return false;
   }, []);
 
   const clearMessages = useCallback(() => {
