@@ -52,6 +52,8 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
   const [taskDescription, setTaskDescription] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  /** Which task row shows live / restored stream (must be state so reload re-renders). */
+  const [streamTaskId, setStreamTaskId] = useState<string | null>(null);
   const [showExport, setShowExport] = useState(false);
   const currentTaskIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -70,6 +72,16 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     try {
       const data = await api.listTasks(session.session_id);
       setTasks(data);
+      const running = data.find((t) => t.status === 'running');
+      const newest = data.length > 0 ? data[0] : undefined;
+      const id = running?.task_id || newest?.task_id || null;
+      if (id) {
+        currentTaskIdRef.current = id;
+        setStreamTaskId(id);
+      } else {
+        currentTaskIdRef.current = null;
+        setStreamTaskId(null);
+      }
     } catch (e) {
       console.error('Failed to load tasks:', e);
     }
@@ -95,22 +107,45 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
         }
         break;
 
-      case 'clarification_needed':
-        setClarificationQuestion(data.question as string || 'The agent needs clarification.');
-        events.onClarificationNeeded(data.question as string || '');
+      case 'clarification_needed': {
+        const question = (data.question as string) || 'The agent needs clarification.';
+        const options = (data.options as string[]) || [];
+        const context = (data.context as string) || '';
+        setClarificationQuestion(question);
+        events.onClarificationFull({ question, options, context });
         break;
+      }
 
       case 'response':
         setIsStreaming(true);
         setStreamingContent(prev => prev + (message.content || data.content as string || ''));
         break;
 
-      case 'task_started':
+      case 'task_started': {
+        const tid = message.task_id || '';
+        if (tid) {
+          setStreamTaskId(tid);
+          currentTaskIdRef.current = tid;
+          // Client adds an optimistic row with id `task-<timestamp>`; server uses DB UUID.
+          // Without this remap, streamTaskId !== task.task_id and the UI shows "loading" forever.
+          setTasks((prev) => {
+            const rev = [...prev].map((t, i) => ({ t, i })).reverse();
+            const hit = rev.find(
+              ({ t }) => t.status === 'running' && t.task_id.startsWith('task-') && t.task_id !== tid,
+            );
+            if (!hit) return prev;
+            const next = [...prev];
+            next[hit.i] = { ...hit.t, task_id: tid };
+            return next;
+          });
+        }
         setIsStreaming(true);
         setStreamingContent('');
         setClarificationQuestion(null);
+        setClarificationAnswer('');
         events.onTaskStarted();
         break;
+      }
 
       case 'phase_changed': {
         const phase = (data.phase as string || '').toLowerCase();
@@ -231,10 +266,16 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
         break;
 
       case 'tool_output': {
-        // Shell live streaming — add line to shell output in WorkspacePanel
+        // Shell live streaming — add structured line to shell output
         const line = data.line as string | undefined;
         if (line) {
-          events.onShellLine?.(line);
+          const lineType = (data.type as string) || (line.startsWith('$') ? 'command' : 'output');
+          const isError = /error|fail|traceback/i.test(line);
+          events.onRichShellLine?.({
+            text: line,
+            type: (lineType === 'command' ? 'command' : isError ? 'error' : 'output') as 'command' | 'output' | 'error',
+            ts: typeof data.ts === 'number' ? (data.ts as number) * 1000 : Date.now(),
+          });
         }
         break;
       }
@@ -252,12 +293,11 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
 
   useEffect(() => {
     loadTasks();
-    setStreamingContent('');
     events.resetForSession();
-    // Restore conversation history from backend on session load
+    setIsStreaming(false);
+    // Restore LLM conversation when agent is still in server memory (do not clear first — avoids flash)
     api.getSessionHistory(session.session_id).then(hist => {
       if (hist.total > 0) {
-        // Reconstruct a readable chat history from the conversation
         const lines: string[] = [];
         for (const msg of hist.messages) {
           if (msg.role === 'user' && msg.content) {
@@ -268,9 +308,15 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
         }
         if (lines.length > 0) {
           setStreamingContent(lines.join('\n\n---\n\n') + '\n\n_— Session restored from history —_');
+        } else {
+          setStreamingContent('');
         }
+      } else {
+        setStreamingContent('');
       }
-    }).catch(() => {/* ignore */});
+    }).catch(() => {
+      setStreamingContent('');
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.session_id]);
 
@@ -305,6 +351,7 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     };
 
     currentTaskIdRef.current = newTaskId;
+    setStreamTaskId(newTaskId);
     setTasks(prev => [...prev, mockTask]);
     setTaskDescription('');
     setStreamingContent('');
@@ -320,14 +367,14 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     toast.error('Agent stopped', 'The agent was interrupted.');
   };
 
-  const handleAnswerClarification = async () => {
-    if (!clarificationAnswer.trim() || isSubmittingAnswer) return;
+  const submitAnswer = async (answer: string) => {
+    if (!answer.trim() || isSubmittingAnswer) return;
     setIsSubmittingAnswer(true);
     try {
       const response = await fetch(`/api/sessions/${session.session_id}/answer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ answer: clarificationAnswer })
+        body: JSON.stringify({ answer })
       });
       if (response.ok) {
         toast.success('Answer sent', 'The agent will now resume.');
@@ -343,6 +390,9 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
       setIsSubmittingAnswer(false);
     }
   };
+
+  const handleAnswerClarification = () => submitAnswer(clarificationAnswer);
+  const handleOptionSelect = (option: string) => submitAnswer(option);
 
   const currentPhase = events.phase;
   const phaseLabel = currentPhase ? (PHASE_LABELS[currentPhase] || currentPhase) : null;
@@ -545,9 +595,14 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
                 </div>
                 <div className="space-y-3 flex-1">
                   <div className="text-sm leading-relaxed text-[#d1d1d1] whitespace-pre-wrap">
-                    {task.task_id === currentTaskIdRef.current && isStreaming ? (
+                    {(() => {
+                      const liveHere =
+                        streamTaskId !== null &&
+                        task.task_id === streamTaskId &&
+                        (isStreaming || streamingContent.length > 0);
+                      if (liveHere) {
+                        return (
                       <div className="space-y-3">
-                        {/* Inline tool call card (last running tool) */}
                         {events.toolCalls.length > 0 && (() => {
                           const last = events.toolCalls[events.toolCalls.length - 1];
                           if (last.status === 'running') return (
@@ -563,17 +618,24 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
                         })()}
                         <StreamingOutput content={streamingContent} isStreaming={isStreaming} />
                       </div>
-                    ) : (
-                      <div>
-                        {task.summary ? (
-                          <StreamingOutput content={task.summary} isStreaming={false} />
-                        ) : (
+                        );
+                      }
+                      if (task.summary) {
+                        return <StreamingOutput content={task.summary} isStreaming={false} />;
+                      }
+                      if (task.status === 'running' && !task.summary) {
+                        return (
                           <div className="p-4 bg-[#1a1a1a]/30 rounded-xl border border-[#262626] italic text-[#a3a3a3]">
-                            Agent response is loading...
+                            Agent response is loading… reconnect if this stays empty (server may have restarted).
                           </div>
-                        )}
-                      </div>
-                    )}
+                        );
+                      }
+                      return (
+                        <div className="p-4 bg-[#1a1a1a]/30 rounded-xl border border-[#262626] text-[#737373] text-sm">
+                          No transcript stored for this task.
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {task.error_message && (
@@ -651,64 +713,108 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
       </div>
 
       {/* Clarification Modal Overlay */}
-      {clarificationQuestion && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-6 animate-in fade-in duration-200">
-          <div className="bg-[#121212] border border-yellow-500/30 shadow-2xl rounded-2xl w-full max-w-lg overflow-hidden flex flex-col">
-            <div className="px-5 py-4 border-b border-[#262626] flex justify-between items-center bg-yellow-500/5">
-              <div className="flex items-center gap-2 text-yellow-500">
-                <HelpCircle size={18} />
-                <h3 className="font-semibold text-sm tracking-wide">Agent Needs Clarification</h3>
+      {clarificationQuestion && (() => {
+        const cl = events.clarification;
+        const options = cl?.options || [];
+        const context = cl?.context || '';
+        return (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-6 animate-in fade-in duration-200">
+            <div className="bg-[#121212] border border-yellow-500/30 shadow-2xl rounded-2xl w-full max-w-lg overflow-hidden flex flex-col">
+              {/* Header */}
+              <div className="px-5 py-4 border-b border-[#262626] flex justify-between items-center bg-yellow-500/5">
+                <div className="flex items-center gap-2 text-yellow-500">
+                  <HelpCircle size={18} />
+                  <h3 className="font-semibold text-sm tracking-wide">Agent Needs Your Input</h3>
+                </div>
+                <button
+                  onClick={() => { setClarificationQuestion(null); events.dismissClarification(); }}
+                  className="text-[#737373] hover:text-white transition-colors"
+                  title="Dismiss — agent will make its best guess"
+                >
+                  <X size={16} />
+                </button>
               </div>
-              <button
-                onClick={() => { setClarificationQuestion(null); events.dismissClarification(); }}
-                className="text-[#737373] hover:text-white transition-colors"
-                title="Dismiss (Agent will guess)"
-              >
-                <X size={16} />
-              </button>
-            </div>
 
-            <div className="p-6 flex-1 overflow-y-auto">
-              <p className="text-[#d1d1d1] text-sm leading-relaxed whitespace-pre-wrap font-medium">
-                {clarificationQuestion}
-              </p>
+              <div className="p-6 flex-1 overflow-y-auto space-y-4">
+                {/* Question */}
+                <p className="text-[#d1d1d1] text-sm leading-relaxed whitespace-pre-wrap font-medium">
+                  {clarificationQuestion}
+                </p>
 
-              <div className="mt-6 space-y-2">
-                <label className="text-[10px] uppercase tracking-wider text-[#737373] font-bold">Your Answer</label>
-                <textarea
-                  autoFocus
-                  value={clarificationAnswer}
-                  onChange={e => setClarificationAnswer(e.target.value)}
-                  placeholder="Type your answer here..."
-                  className="w-full bg-[#0f0f0f] border border-[#262626] focus:border-yellow-500/50 rounded-xl px-4 py-3 text-sm text-white resize-none h-24 custom-scrollbar outline-none transition-colors"
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleAnswerClarification();
-                    }
-                  }}
-                />
+                {/* Optional context block */}
+                {context && (
+                  <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-4 py-3 text-xs text-[#a3a3a3] leading-relaxed">
+                    {context}
+                  </div>
+                )}
+
+                {/* Clickable option buttons (A/B/C style) */}
+                {options.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-[10px] uppercase tracking-wider text-[#737373] font-bold">
+                      Choose an option:
+                    </p>
+                    {options.map((opt, idx) => {
+                      const letter = String.fromCharCode(65 + idx); // A, B, C …
+                      return (
+                        <button
+                          key={idx}
+                          onClick={() => handleOptionSelect(opt)}
+                          disabled={isSubmittingAnswer}
+                          className="w-full flex items-start gap-3 px-4 py-3 bg-[#1a1a1a] hover:bg-yellow-500/10 border border-[#2a2a2a] hover:border-yellow-500/40 rounded-xl text-left transition-all group disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <span className="flex-shrink-0 w-6 h-6 rounded-full bg-yellow-500/20 text-yellow-400 text-[11px] font-bold flex items-center justify-center group-hover:bg-yellow-500/30 transition-colors">
+                            {letter}
+                          </span>
+                          <span className="text-sm text-[#d1d1d1] group-hover:text-white transition-colors leading-snug">
+                            {opt}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Free-text answer area */}
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-wider text-[#737373] font-bold">
+                    {options.length > 0 ? 'Or type a custom answer:' : 'Your Answer'}
+                  </label>
+                  <textarea
+                    autoFocus={options.length === 0}
+                    value={clarificationAnswer}
+                    onChange={e => setClarificationAnswer(e.target.value)}
+                    placeholder={options.length > 0 ? 'Type a custom answer...' : 'Type your answer here...'}
+                    className="w-full bg-[#0f0f0f] border border-[#262626] focus:border-yellow-500/50 rounded-xl px-4 py-3 text-sm text-white resize-none h-20 custom-scrollbar outline-none transition-colors"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleAnswerClarification();
+                      }
+                    }}
+                  />
+                </div>
               </div>
-            </div>
 
-            <div className="p-4 border-t border-[#262626] bg-[#0f0f0f]/50 flex justify-end gap-3">
-              <button
-                onClick={() => { setClarificationQuestion(null); events.dismissClarification(); }}
-                className="px-4 py-2 text-xs font-semibold text-[#a3a3a3] hover:text-white transition-colors"
-              >
-                Ignore
-              </button>
-              <button
-                onClick={handleAnswerClarification}
-                disabled={!clarificationAnswer.trim() || isSubmittingAnswer}
-                className="px-5 py-2 text-xs font-bold rounded-lg bg-yellow-500 text-black hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {isSubmittingAnswer ? 'Sending...' : 'Send Answer'}
-              </button>
+              <div className="p-4 border-t border-[#262626] bg-[#0f0f0f]/50 flex justify-end gap-3">
+                <button
+                  onClick={() => { setClarificationQuestion(null); events.dismissClarification(); }}
+                  className="px-4 py-2 text-xs font-semibold text-[#a3a3a3] hover:text-white transition-colors"
+                >
+                  Ignore
+                </button>
+                <button
+                  onClick={handleAnswerClarification}
+                  disabled={!clarificationAnswer.trim() || isSubmittingAnswer}
+                  className="px-5 py-2 text-xs font-bold rounded-lg bg-yellow-500 text-black hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isSubmittingAnswer ? 'Sending...' : 'Send Answer'}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

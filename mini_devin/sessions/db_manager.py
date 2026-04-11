@@ -6,6 +6,7 @@ It wraps the existing SessionManager functionality while adding database persist
 """
 
 import asyncio
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -437,13 +438,15 @@ class DatabaseSessionManager:
             ws_dir = Path(db_task.description and agent.working_directory or ".")
             if agent.working_directory:
                 ws_dir = Path(agent.working_directory)
-            dep_cmds = []
+            # Cross-platform: use the same interpreter as the API (Windows-safe, no bash-only redirects).
+            _py = sys.executable.replace('"', '\\"')
+            dep_cmds: list[str] = []
             if (ws_dir / "requirements.txt").exists():
-                dep_cmds.append("pip install -r requirements.txt")
+                dep_cmds.append(f'"{_py}" -m pip install -r requirements.txt')
             if (ws_dir / "pyproject.toml").exists() and not (ws_dir / "requirements.txt").exists():
-                dep_cmds.append("pip install -e . 2>/dev/null || true")
+                dep_cmds.append(f'"{_py}" -m pip install -e .')
             if (ws_dir / "package.json").exists():
-                dep_cmds.append("npm install --prefer-offline 2>/dev/null || true")
+                dep_cmds.append("npm install --prefer-offline")
             if dep_cmds and connection_manager:
                 await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
                     type=MessageType.TOOL_OUTPUT,
@@ -517,6 +520,15 @@ class DatabaseSessionManager:
                                 data={"line": line},
                                 task_id=task_id,
                             ))
+                    elif update_type == "browser_event":
+                        await connection_manager.send_browser_event(
+                            session_id,
+                            task_id,
+                            data.get("event_type", "other"),
+                            data.get("url"),
+                            data.get("query"),
+                            data.get("screenshot_base64"),
+                        )
                     
                     # Update iteration and status in database with locking
                     # Skip for tokens to reduce database pressure during streaming
@@ -563,20 +575,35 @@ class DatabaseSessionManager:
                 "on_tool_result": lambda name, args, output, duration: _fire(on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration})),
                 "on_phase_change": lambda phase: _fire(on_update("phase_changed", {"phase": phase})),
                 # on_clarification_needed: emit WS event so UI can show modal
-                "on_clarification_needed": lambda question: asyncio.ensure_future(
+                # payload is now a dict with {question, options, context} or a plain string
+                "on_clarification_needed": lambda payload: asyncio.ensure_future(
                     connection_manager.broadcast_to_session(session_id, WebSocketMessage(
                         type=MessageType.CLARIFICATION_NEEDED,
-                        data={"question": question},
+                        data=payload if isinstance(payload, dict) else {"question": payload, "options": [], "context": ""},
                         task_id=task_id,
                     ))
                 ) if connection_manager else None,
+                # Shell live streaming with timestamp
+                "on_command_start": lambda cmd: _fire(on_update("tool_output", {
+                    "line": f"$ {cmd}",
+                    "type": "command",
+                    "ts": __import__("time").time(),
+                })),
                 # Plan events
                 "on_plan_created": lambda steps: _fire(on_update("plan_created", {"steps": steps})),
                 "on_step_started": lambda idx, text="": _fire(on_update("step_started", {"index": idx, "text": text})),
                 "on_step_completed": lambda idx, text="": _fire(on_update("step_completed", {"index": idx, "text": text})),
                 "on_iteration": lambda iteration, max_iter: _fire(on_update("iteration", {"iteration": iteration, "max": max_iter})),
                 # Shell live streaming: each stdout line becomes a tool_output event
-                "on_command_output": lambda line: _fire(on_update("tool_output", {"line": line})),
+                "on_command_output": lambda line: _fire(on_update("tool_output", {
+                    "line": line,
+                    "type": "output",
+                    "ts": __import__("time").time(),
+                })),
+                "on_browser_event": lambda payload: _fire(on_update(
+                    "browser_event",
+                    payload if isinstance(payload, dict) else {"event_type": "other"},
+                )),
             }
 
             # Run the agent — track asyncio.Task for cancellation

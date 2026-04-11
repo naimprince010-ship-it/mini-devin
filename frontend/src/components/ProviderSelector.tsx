@@ -18,27 +18,38 @@ export function ProviderSelector({
 }: ProviderSelectorProps) {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [showDropdown, setShowDropdown] = useState(false);
   const api = useApi();
 
   useEffect(() => {
+    let cancelled = false;
     const loadProviders = async () => {
+      setLoadError(null);
       try {
         const data = await api.listProviders();
-        setProviders(data);
-        if (data.length > 0 && !selectedProvider) {
-          onProviderChange(data[0].id);
-          if (data[0].models.length > 0) {
-            onModelChange(data[0].models[0]);
+        if (!cancelled) {
+          setProviders(data);
+          if (data.length > 0 && !selectedProvider) {
+            onProviderChange(data[0].id);
+            if (data[0].models.length > 0) {
+              onModelChange(data[0].models[0]);
+            }
           }
         }
       } catch (e) {
         console.error('Failed to load providers:', e);
+        if (!cancelled) {
+          setLoadError(e instanceof Error ? e.message : 'Failed to load providers');
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
     loadProviders();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const currentProvider = providers.find(p => p.id === selectedProvider);
@@ -58,6 +69,20 @@ export function ProviderSelector({
       <div className="flex items-center gap-2 text-gray-400">
         <Loader2 className="animate-spin" size={16} />
         <span className="text-sm">Loading providers...</span>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="space-y-2 text-sm">
+        <p className="text-red-400">{loadError}</p>
+        <p className="text-[#737373] text-xs leading-relaxed">
+          Dev: run the API on port 8000 (<code className="text-[#a3a3a3]">uvicorn mini_devin.api.app:app</code>) so
+          Vite can proxy <code className="text-[#a3a3a3]">/api/providers</code>. Set{' '}
+          <code className="text-[#a3a3a3]">OPENAI_API_KEY</code>, <code className="text-[#a3a3a3]">ANTHROPIC_API_KEY</code>, or{' '}
+          <code className="text-[#a3a3a3]">GEMINI_API_KEY</code> for models to appear.
+        </p>
       </div>
     );
   }

@@ -10,6 +10,11 @@ import { UserMenu } from './components/UserMenu';
 import { SkillsManager } from './components/SkillsManager';
 import { RepoManager } from './components/RepoManager';
 import { PRReview } from './components/PRReview';
+import MonitorPanel from './components/MonitorPanel';
+import EnvParityPanel from './components/EnvParityPanel';
+import UITestPanel from './components/UITestPanel';
+import ProjectPlannerPanel from './components/ProjectPlannerPanel';
+import { BenchmarkPanel } from './components/BenchmarkPanel';
 import { ProviderSelector } from './components/ProviderSelector';
 import { FolderPicker } from './components/FolderPicker';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -35,9 +40,14 @@ import {
   Sun,
   Moon,
   Menu,
+  Activity,
+  Container,
+  TestTube2,
+  FolderKanban,
+  FlaskConical,
 } from 'lucide-react';
 
-type TabType = 'sessions' | 'skills' | 'repos' | 'reviews';
+type TabType = 'sessions' | 'skills' | 'repos' | 'reviews' | 'monitor' | 'env_parity' | 'ui_test' | 'projects' | 'benchmark';
 
 function NewSessionModal({
   onClose,
@@ -221,6 +231,8 @@ function App() {
   const [newSessionInitialDir, setNewSessionInitialDir] = useState('');
   const [activeTab, setActiveTab] = useState<TabType>('sessions');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  /** Increment after a session is created so SessionList refetches immediately */
+  const [sessionListRefresh, setSessionListRefresh] = useState(0);
   const api = useApi();
 
   // Restore last selected session from localStorage on mount
@@ -266,6 +278,11 @@ function App() {
     { id: 'skills', icon: <Wrench size={18} />, label: 'Skills' },
     { id: 'repos', icon: <GitFork size={18} />, label: 'Repos' },
     { id: 'reviews', icon: <GitPullRequest size={18} />, label: 'Reviews' },
+    { id: 'monitor', icon: <Activity size={18} />, label: 'Monitor' },
+    { id: 'env_parity', icon: <Container size={18} />, label: 'Env Parity' },
+    { id: 'ui_test', icon: <TestTube2 size={18} />, label: 'UI Tests' },
+    { id: 'projects', icon: <FolderKanban size={18} />, label: 'Projects' },
+    { id: 'benchmark', icon: <FlaskConical size={18} />, label: 'Benchmark' },
   ];
 
   // Same-origin /api when API is served with the app (production). Override with VITE_API_URL for split deploys.
@@ -293,6 +310,7 @@ function App() {
             localStorage.setItem(LAST_SESSION_KEY, session.session_id);
             setActiveTab('sessions');
             setSidebarOpen(false);
+            setSessionListRefresh((n) => n + 1);
           }}
         />
       )}
@@ -368,6 +386,7 @@ function App() {
           {activeTab === 'sessions' && (
             <div className={`flex-1 mt-4 px-2 overflow-y-auto min-h-0 border-t ${borderColor} pt-4 custom-scrollbar`}>
               <SessionList
+                refreshTrigger={sessionListRefresh}
                 onSelectSession={(s) => {
                   setSelectedSession(s);
                   localStorage.setItem(LAST_SESSION_KEY, s.session_id);
@@ -499,6 +518,26 @@ function App() {
                         setActiveTab('sessions');
                       }}
                     />
+                  </ErrorBoundary>
+                ) : activeTab === 'monitor' ? (
+                  <ErrorBoundary>
+                    <MonitorPanel />
+                  </ErrorBoundary>
+                ) : activeTab === 'env_parity' ? (
+                  <ErrorBoundary>
+                    <EnvParityPanel />
+                  </ErrorBoundary>
+                ) : activeTab === 'ui_test' ? (
+                  <ErrorBoundary>
+                    <UITestPanel />
+                  </ErrorBoundary>
+                ) : activeTab === 'projects' ? (
+                  <ErrorBoundary>
+                    <ProjectPlannerPanel />
+                  </ErrorBoundary>
+                ) : activeTab === 'benchmark' ? (
+                  <ErrorBoundary>
+                    <BenchmarkPanel />
                   </ErrorBoundary>
                 ) : (
                   <ErrorBoundary>

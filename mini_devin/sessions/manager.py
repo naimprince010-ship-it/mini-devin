@@ -408,6 +408,10 @@ class SessionManager:
                 "on_step_started": lambda idx, text="": asyncio.create_task(on_update("step_started", {"index": idx, "text": text})),
                 "on_step_completed": lambda idx, text="": asyncio.create_task(on_update("step_completed", {"index": idx, "text": text})),
                 "on_iteration": lambda iter_n, max_n: asyncio.create_task(on_update("iteration", {"iteration": iter_n, "max": max_n})),
+                "on_browser_event": lambda payload: asyncio.create_task(on_update(
+                    "browser_event",
+                    payload if isinstance(payload, dict) else {"event_type": "other"},
+                )),
             }
 
             # Run the agent with the TaskState object — track the asyncio Task for cancellation

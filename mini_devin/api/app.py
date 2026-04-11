@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 import asyncio
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -83,8 +83,49 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         traceback.print_exc()
         # We don't exit here to allow health checks to potentially still pass if DB isn't critical
     
+    # Register self-heal callback so the monitor can trigger an agent fix
+    try:
+        from ..integrations.monitor import register_heal_callback
+
+        async def _auto_heal(app_name: str, logs_excerpt: str, heal_session_id: str | None):
+            """When a crash is detected, create an agent task to diagnose and fix it."""
+            print(f"[monitor] Auto-heal triggered for {app_name}")
+            task_description = (
+                f"The production app '{app_name}' appears to have crashed. "
+                f"Here are the relevant log lines:\n\n{logs_excerpt}\n\n"
+                "Please diagnose the root cause, fix the code, and redeploy."
+            )
+            try:
+                target_session = await session_manager.get_session(heal_session_id) if heal_session_id else None
+                if target_session is None:
+                    target_session = await session_manager.create_session()
+                task = await session_manager.create_task(
+                    session_id=target_session.session_id,
+                    description=task_description,
+                    connection_manager=connection_manager,
+                )
+                asyncio.create_task(session_manager.run_task(
+                    session_id=target_session.session_id,
+                    task_id=task.task_id,
+                    connection_manager=connection_manager,
+                ))
+                print(f"[monitor] Heal task created: session={target_session.session_id} task={task.task_id}")
+            except Exception as heal_err:
+                print(f"[monitor] Failed to create heal task: {heal_err}")
+
+        register_heal_callback(_auto_heal)
+        print("[API] Self-heal callback registered.")
+    except Exception as e:
+        print(f"[API] Warning: Could not register self-heal callback: {e}")
+
     yield
     print(f"[API] Shutting down Mini-Devin API at {datetime.now(timezone.utc).isoformat()}")
+    # Stop monitor on shutdown
+    try:
+        from ..integrations.monitor import stop_monitor
+        stop_monitor()
+    except Exception:
+        pass
 
 
 app = FastAPI(
@@ -573,6 +614,7 @@ async def create_session(raw_request: Request):
     auto_git_commit = False
     git_push = False
     requested_dir = ""
+    project_id = ""
     try:
         body = await raw_request.json()
         requested_dir = body.get("working_directory", "") or ""
@@ -580,6 +622,7 @@ async def create_session(raw_request: Request):
         max_iterations = int(body.get("max_iterations", 50) or 50)
         auto_git_commit = bool(body.get("auto_git_commit", False))
         git_push = bool(body.get("git_push", False))
+        project_id = body.get("project_id", "") or ""
     except Exception:
         pass
 
@@ -613,6 +656,23 @@ async def create_session(raw_request: Request):
         print(f"[API] create_session ERROR: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    # Store project_id on agent for memory auto-injection
+    if project_id:
+        agent = session_manager._agents.get(session.session_id)
+        if agent:
+            agent.session_id = session.session_id
+            agent._project_id = project_id
+            # Inject project context into agent's initial system context
+            try:
+                from ..integrations.project_memory import get_project_memory
+                pm = get_project_memory()
+                ctx = pm.get_context_for_task(project_id, "", max_tokens=600)
+                if ctx:
+                    agent._project_context_injection = ctx
+                    print(f"[API] Injected project memory for project '{project_id}' into session {session.session_id}")
+            except Exception as e:
+                print(f"[API] Could not inject project memory: {e}")
+
     return {
         "session_id": session.session_id,
         "created_at": session.created_at.isoformat(),
@@ -623,7 +683,8 @@ async def create_session(raw_request: Request):
         "auto_git_commit": auto_git_commit,
         "git_push": git_push,
         "iteration": session.iteration,
-        "total_tasks": session.total_tasks
+        "total_tasks": session.total_tasks,
+        "project_id": project_id or None,
     }
 
 @app.get("/api/sessions/{session_id}")
@@ -927,6 +988,8 @@ async def list_tasks(session_id: str):
             "created_at": t.created_at.isoformat() if t.created_at else None,
             "started_at": t.started_at.isoformat() if t.started_at else None,
             "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+            "error_message": t.error_message,
+            "summary": (t.result.summary if getattr(t, "result", None) else "") or "",
         }
         for t in tasks
     ]
@@ -1095,6 +1158,488 @@ async def list_skills():
     }
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Browser-Based UI Testing + Visual Regression endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+class UITestRequest(BaseModel):
+    suite_name: str = "UI Test"
+    url: str
+    steps: list
+    threshold_percent: float = 0.5
+    working_dir: str = "."
+
+
+class VisualRegressionSetBaselineRequest(BaseModel):
+    name: str
+    screenshot_b64: str
+    url: str = ""
+    working_dir: str = "."
+
+
+class VisualRegressionCompareRequest(BaseModel):
+    name: str
+    screenshot_b64: str
+    threshold_percent: Optional[float] = None
+    working_dir: str = "."
+
+
+@app.post("/api/ui-test/run")
+async def run_ui_test(req: UITestRequest):
+    """Run a structured browser UI test suite via Playwright."""
+    from ..tools.browser.ui_tester import UITestRunner, steps_from_spec
+    steps = steps_from_spec(req.steps)
+    runner = UITestRunner(working_dir=req.working_dir, headless=True)
+    result = await runner.run(
+        suite_name=req.suite_name,
+        start_url=req.url,
+        steps=steps,
+        threshold_percent=req.threshold_percent,
+    )
+    return result.to_dict()
+
+
+@app.get("/api/visual-regression/baselines")
+async def vr_list_baselines(working_dir: str = "."):
+    """List all stored visual regression baselines."""
+    from ..tools.browser.visual_regression import get_engine
+    engine = get_engine(working_dir)
+    return {"baselines": engine.list_baselines()}
+
+
+@app.post("/api/visual-regression/set-baseline")
+async def vr_set_baseline(req: VisualRegressionSetBaselineRequest):
+    """Store a screenshot as the new visual baseline."""
+    from ..tools.browser.visual_regression import get_engine
+    engine = get_engine(req.working_dir)
+    rec = engine.save_screenshot_b64(req.name, req.screenshot_b64, url=req.url, set_as_baseline=True)
+    return {"message": f"Baseline set for '{req.name}'", "width": rec.width, "height": rec.height}
+
+
+@app.post("/api/visual-regression/compare")
+async def vr_compare(req: VisualRegressionCompareRequest):
+    """Compare a screenshot against the stored baseline."""
+    from ..tools.browser.visual_regression import get_engine
+    engine = get_engine(req.working_dir)
+    try:
+        diff = engine.compare_b64(req.name, req.screenshot_b64, req.threshold_percent)
+        return diff.to_dict()
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/visual-regression/history/{name}")
+async def vr_history(name: str, working_dir: str = "."):
+    """Get the test history for a named page."""
+    from ..tools.browser.visual_regression import get_engine
+    engine = get_engine(working_dir)
+    return engine.get_history(name)
+
+
+@app.delete("/api/visual-regression/baseline/{name}")
+async def vr_delete_baseline(name: str, working_dir: str = "."):
+    """Delete a stored baseline."""
+    from ..tools.browser.visual_regression import get_engine
+    engine = get_engine(working_dir)
+    removed = engine.delete_baseline(name)
+    return {"removed": removed}
+
+
+@app.get("/api/visual-regression/screenshot")
+async def vr_screenshot(rel_path: str, working_dir: str = "."):
+    """Return a stored screenshot as base64."""
+    from ..tools.browser.visual_regression import get_engine
+    engine = get_engine(working_dir)
+    b64 = engine.get_screenshot_b64(rel_path)
+    if b64:
+        return {"b64": b64}
+    raise HTTPException(status_code=404, detail="Screenshot not found")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Self-Healing Monitor endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+class MonitorRegisterRequest(BaseModel):
+    name: str
+    health_url: str
+    platform: str = "generic"
+    platform_config: dict = {}
+    check_interval_seconds: int = 60
+    failure_threshold: int = 3
+    session_id: Optional[str] = None
+
+
+@app.get("/api/monitor/status")
+async def monitor_status():
+    """Return current state of all monitored apps + recent history."""
+    from ..integrations.monitor import get_status
+    return get_status()
+
+
+@app.post("/api/monitor/register")
+async def monitor_register(req: MonitorRegisterRequest):
+    """Register an app for continuous health monitoring."""
+    from ..integrations.monitor import MonitoredApp, register_app, start_monitor
+    app_cfg = MonitoredApp(
+        name=req.name,
+        health_url=req.health_url,
+        platform=req.platform,
+        platform_config=req.platform_config,
+        check_interval_seconds=req.check_interval_seconds,
+        failure_threshold=req.failure_threshold,
+        session_id=req.session_id,
+    )
+    register_app(app_cfg)
+    start_monitor()
+    return {"message": f"Registered {req.name} and started monitor"}
+
+
+@app.delete("/api/monitor/{app_name}")
+async def monitor_unregister(app_name: str):
+    """Remove an app from continuous monitoring."""
+    from ..integrations.monitor import unregister_app
+    removed = unregister_app(app_name)
+    return {"removed": removed}
+
+
+@app.post("/api/monitor/health-check")
+async def monitor_one_shot(url: str):
+    """One-shot health check for any URL."""
+    from ..integrations.monitor import check_app_health
+    return await check_app_health(url)
+
+
+@app.post("/api/monitor/start")
+async def monitor_start():
+    """Start the background monitor loop."""
+    from ..integrations.monitor import start_monitor
+    start_monitor()
+    return {"message": "Monitor started"}
+
+
+@app.post("/api/monitor/stop")
+async def monitor_stop():
+    """Stop the background monitor loop."""
+    from ..integrations.monitor import stop_monitor
+    stop_monitor()
+    return {"message": "Monitor stopped"}
+
+
+@app.post("/api/monitor/fetch-logs")
+async def monitor_fetch_logs(platform: str = "docker", lines: int = 50, config: dict = {}):
+    """Fetch recent logs from a cloud platform or Docker container."""
+    from ..integrations.monitor import fetch_app_logs
+    logs = await fetch_app_logs(platform, config, lines)
+    return {"logs": logs}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Project Memory endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+class CreateProjectRequest(BaseModel):
+    name: str
+    description: str = ""
+    repo_url: Optional[str] = None
+    tech_stack: list = []
+    project_id: Optional[str] = None
+
+
+class MemoryEntryRequest(BaseModel):
+    project_id: str
+    category: str = "context"
+    title: str
+    content: str
+    tags: list = []
+    importance: int = 5
+    session_id: Optional[str] = None
+
+
+class MemorySearchRequest(BaseModel):
+    project_id: str
+    query: str
+    top_k: int = 5
+    category: Optional[str] = None
+    min_importance: int = 1
+
+
+@app.post("/api/projects")
+async def create_project(req: CreateProjectRequest):
+    from ..integrations.project_memory import get_project_memory
+    pm = get_project_memory()
+    proj = pm.create_project(
+        name=req.name,
+        description=req.description,
+        repo_url=req.repo_url,
+        tech_stack=req.tech_stack,
+        project_id=req.project_id,
+    )
+    return proj.to_dict()
+
+
+@app.get("/api/projects")
+async def list_projects():
+    from ..integrations.project_memory import get_project_memory
+    pm = get_project_memory()
+    return {"projects": [p.to_dict() for p in pm.list_projects()]}
+
+
+@app.get("/api/projects/{project_id}")
+async def get_project(project_id: str):
+    from ..integrations.project_memory import get_project_memory
+    pm = get_project_memory()
+    proj = pm.get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return proj.to_dict()
+
+
+@app.delete("/api/projects/{project_id}")
+async def delete_project(project_id: str):
+    from ..integrations.project_memory import get_project_memory
+    pm = get_project_memory()
+    ok = pm.delete_project(project_id)
+    return {"deleted": ok}
+
+
+@app.post("/api/projects/{project_id}/memory")
+async def add_memory(project_id: str, req: MemoryEntryRequest):
+    from ..integrations.project_memory import get_project_memory, MemoryCategory
+    pm = get_project_memory()
+    try:
+        cat = MemoryCategory(req.category)
+    except ValueError:
+        cat = MemoryCategory.CONTEXT
+    entry = pm.add_entry(
+        project_id=project_id,
+        category=cat,
+        title=req.title,
+        content=req.content,
+        tags=req.tags,
+        importance=req.importance,
+        session_id=req.session_id,
+    )
+    return entry.to_dict()
+
+
+@app.get("/api/projects/{project_id}/memory")
+async def list_memory(project_id: str, category: Optional[str] = None, min_importance: int = 1):
+    from ..integrations.project_memory import get_project_memory, MemoryCategory
+    pm = get_project_memory()
+    cat = MemoryCategory(category) if category else None
+    entries = pm.list_entries(project_id, category=cat, min_importance=min_importance)
+    return {"entries": [e.to_dict() for e in entries]}
+
+
+@app.post("/api/projects/{project_id}/memory/search")
+async def search_memory(project_id: str, req: MemorySearchRequest):
+    from ..integrations.project_memory import get_project_memory, MemoryCategory
+    pm = get_project_memory()
+    cat = MemoryCategory(req.category) if req.category else None
+    results = pm.search(
+        project_id,
+        req.query,
+        top_k=req.top_k,
+        category=cat,
+        min_importance=req.min_importance,
+    )
+    return {"results": results}
+
+
+@app.get("/api/projects/{project_id}/memory/context")
+async def get_memory_context(project_id: str, task: str = ""):
+    from ..integrations.project_memory import get_project_memory
+    pm = get_project_memory()
+    ctx = pm.get_context_for_task(project_id, task)
+    return {"context": ctx}
+
+
+@app.delete("/api/memory/{entry_id}")
+async def delete_memory_entry(entry_id: str):
+    from ..integrations.project_memory import get_project_memory
+    pm = get_project_memory()
+    ok = pm.delete_entry(entry_id)
+    return {"deleted": ok}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Hierarchical Project Plan endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+class CreatePlanRequest(BaseModel):
+    project_id: str
+    goal: str
+    milestones: Optional[list] = None
+    working_dir: str = "."
+
+
+class RetryMilestoneRequest(BaseModel):
+    milestone_id: str
+
+
+@app.post("/api/project-plans")
+async def create_plan(req: CreatePlanRequest):
+    """Decompose a project goal into milestones using LLM."""
+    from ..integrations.hierarchical_planner import get_planner
+    from ..integrations.project_memory import get_project_memory
+    planner = get_planner()
+    # Fetch project context for better decomposition
+    try:
+        pm = get_project_memory()
+        ctx = pm.get_context_for_task(req.project_id, req.goal, max_tokens=400) if pm.get_project(req.project_id) else ""
+    except Exception:
+        ctx = ""
+    plan = await planner.create_plan(
+        project_id=req.project_id,
+        goal=req.goal,
+        milestones=req.milestones,
+        working_dir=req.working_dir,
+        project_context=ctx,
+    )
+    return plan.to_dict()
+
+
+@app.get("/api/project-plans")
+async def list_plans(project_id: Optional[str] = None):
+    from ..integrations.hierarchical_planner import get_planner
+    planner = get_planner()
+    plans = planner.list_plans(project_id)
+    return {"plans": [p.to_dict() for p in plans]}
+
+
+@app.get("/api/project-plans/{plan_id}")
+async def get_plan(plan_id: str):
+    from ..integrations.hierarchical_planner import get_planner
+    planner = get_planner()
+    plan = planner.get_plan(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    return plan.to_dict()
+
+
+@app.delete("/api/project-plans/{plan_id}")
+async def delete_plan(plan_id: str):
+    from ..integrations.hierarchical_planner import get_planner
+    planner = get_planner()
+    ok = planner.delete_plan(plan_id)
+    return {"deleted": ok}
+
+
+@app.post("/api/project-plans/{plan_id}/execute")
+async def execute_plan(plan_id: str):
+    """Start executing remaining milestones as sub-agent tasks."""
+    from ..integrations.hierarchical_planner import get_planner
+    planner = get_planner()
+    plan = planner.get_plan(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    asyncio.create_task(
+        planner.execute_plan(
+            plan_id,
+            session_manager,
+            connection_manager,
+        )
+    )
+    return {"message": f"Execution started for plan {plan_id}", "plan_id": plan_id}
+
+
+@app.post("/api/project-plans/{plan_id}/retry")
+async def retry_milestone_endpoint(plan_id: str, req: RetryMilestoneRequest):
+    from ..integrations.hierarchical_planner import get_planner
+    planner = get_planner()
+    ok = planner.retry_milestone(plan_id, req.milestone_id)
+    return {"reset": ok}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Environment Parity endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+class EnvDiffRequest(BaseModel):
+    project_root: str = "."
+    env_file: str = ".env"
+    production_env: Optional[dict] = None
+
+
+class GenerateDockerfileRequest(BaseModel):
+    project_root: str = "."
+    project_type: str = "auto"
+    frontend_dir: str = "frontend"
+    requirements_file: str = "requirements.txt"
+    port: Optional[int] = None
+    health_path: str = "/health"
+    output_path: Optional[str] = None
+
+
+class GenerateEnvExampleRequest(BaseModel):
+    project_root: str = "."
+    source_env_file: str = ".env"
+    output_path: Optional[str] = None
+    include_current_values: bool = False
+
+
+class GenerateComposeRequest(BaseModel):
+    project_root: str = "."
+    port: Optional[int] = None
+    include_redis: bool = False
+    include_postgres: bool = False
+    output_path: Optional[str] = None
+
+
+@app.post("/api/env-parity/diff")
+async def env_parity_diff(req: EnvDiffRequest):
+    """Compare local .env with production environment."""
+    from ..integrations.env_parity import diff_environments
+    import os as _os
+    full_env = str(_os.path.join(req.project_root, req.env_file))
+    return diff_environments(local_env_file=full_env, production_env=req.production_env)
+
+
+@app.post("/api/env-parity/generate-dockerfile")
+async def env_parity_dockerfile(req: GenerateDockerfileRequest):
+    """Generate a production-ready Dockerfile for the project."""
+    from ..integrations.env_parity import generate_dockerfile
+    content, path = generate_dockerfile(
+        req.project_root,
+        project_type=req.project_type,
+        frontend_dir=req.frontend_dir,
+        requirements_file=req.requirements_file,
+        port=req.port,
+        health_path=req.health_path,
+        output_path=req.output_path,
+    )
+    return {"content": content, "path": path}
+
+
+@app.post("/api/env-parity/generate-env-example")
+async def env_parity_env_example(req: GenerateEnvExampleRequest):
+    """Generate .env.example from an existing .env file."""
+    from ..integrations.env_parity import generate_env_example
+    content, path = generate_env_example(
+        req.project_root,
+        source_env_file=req.source_env_file,
+        output_path=req.output_path,
+        include_current_values=req.include_current_values,
+    )
+    return {"content": content, "path": path}
+
+
+@app.post("/api/env-parity/generate-docker-compose")
+async def env_parity_compose(req: GenerateComposeRequest):
+    """Generate a docker-compose.yml for local dev parity."""
+    from ..integrations.env_parity import generate_docker_compose
+    content, path = generate_docker_compose(
+        req.project_root,
+        port=req.port,
+        include_redis=req.include_redis,
+        include_postgres=req.include_postgres,
+        output_path=req.output_path,
+    )
+    return {"content": content, "path": path}
+
+
 @app.websocket("/api/ws/{session_id}")
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
@@ -1154,9 +1699,128 @@ if _FRONTEND_DIST.exists():
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str):
-        """Catch-all: serve index.html for all non-API routes so React Router works."""
+        """Catch-all: serve index.html for non-API routes so React Router works.
+
+        Unknown /api/* paths must not return the SPA shell (would confuse clients and tests).
+        """
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found")
         index = _FRONTEND_DIST / "index.html"
         return FileResponse(str(index))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SWE-bench Benchmarking endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+class BenchmarkRunRequest(BaseModel):
+    split: str = "lite"
+    limit: int = 5
+    repo_filter: str = ""
+    name: str = ""
+    use_agent: bool = True
+
+
+@app.get("/api/benchmark/tasks")
+async def list_benchmark_tasks(
+    split: str = "lite",
+    limit: int = 10,
+    repo_filter: str = "",
+):
+    """List available SWE-bench tasks (preview, no run)."""
+    from ..integrations.swe_bench import load_tasks
+    tasks = load_tasks(split=split, limit=limit, repo_filter=repo_filter)
+    return {"tasks": [t.to_dict() for t in tasks], "total": len(tasks)}
+
+
+@app.get("/api/benchmark/runs")
+async def list_benchmark_runs():
+    from ..integrations.swe_bench import get_runner
+    return {"runs": get_runner().list_runs()}
+
+
+@app.get("/api/benchmark/runs/{run_id}")
+async def get_benchmark_run(run_id: str):
+    from ..integrations.swe_bench import get_runner
+    run = get_runner().get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
+
+
+@app.get("/api/benchmark/runs/{run_id}/results")
+async def get_benchmark_run_results(run_id: str):
+    from ..integrations.swe_bench import get_runner
+    results = get_runner().get_run_results(run_id)
+    return {"results": results}
+
+
+@app.post("/api/benchmark/runs")
+async def start_benchmark_run(req: BenchmarkRunRequest, background_tasks: BackgroundTasks):
+    from ..integrations.swe_bench import get_runner, make_agent_runner
+    runner = get_runner()
+    agent_fn = make_agent_runner(db_manager) if req.use_agent else None
+
+    async def _run():
+        await runner.start_run(
+            split=req.split,
+            limit=req.limit,
+            repo_filter=req.repo_filter,
+            name=req.name,
+            agent_runner=agent_fn,
+        )
+
+    background_tasks.add_task(_run)
+
+    # Return a preview run object immediately
+    from ..integrations.swe_bench import BenchmarkRun
+    from ..integrations.swe_bench import load_tasks
+    tasks = load_tasks(split=req.split, limit=req.limit, repo_filter=req.repo_filter)
+    preview = BenchmarkRun(
+        name=req.name or f"SWE-bench {req.split} × {len(tasks)}",
+        split=req.split,
+        limit=req.limit,
+        repo_filter=req.repo_filter,
+        status="running",
+        task_ids=[t.task_id for t in tasks],
+        total=len(tasks),
+    )
+    return preview.to_dict()
+
+
+@app.delete("/api/benchmark/runs/{run_id}")
+async def delete_benchmark_run(run_id: str):
+    from ..integrations.swe_bench import get_runner
+    ok = get_runner().delete_run(run_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {"deleted": True}
+
+
+@app.post("/api/benchmark/runs/cancel")
+async def cancel_benchmark_run():
+    from ..integrations.swe_bench import get_runner
+    get_runner().cancel_run()
+    return {"cancelled": True}
+
+
+@app.get("/api/benchmark/stats")
+async def benchmark_stats():
+    """Aggregate stats across all runs."""
+    from ..integrations.swe_bench import get_runner
+    runner = get_runner()
+    runs = runner.list_runs()
+    completed = [r for r in runs if r["status"] == "completed"]
+    total_resolved = sum(r["resolved"] for r in completed)
+    total_tasks = sum(r["total"] for r in completed)
+    return {
+        "total_runs": len(runs),
+        "completed_runs": len(completed),
+        "total_tasks_evaluated": total_tasks,
+        "total_resolved": total_resolved,
+        "overall_resolve_rate": round(total_resolved / total_tasks * 100, 1) if total_tasks > 0 else 0.0,
+        "best_run": max(completed, key=lambda r: r["resolve_rate"])["run_id"] if completed else None,
+    }
 
 
 if __name__ == "__main__":

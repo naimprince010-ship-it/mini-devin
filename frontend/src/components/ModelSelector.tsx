@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { ChevronDown, Cpu, Cloud, Server, Zap, CheckCircle2 } from 'lucide-react';
+import { fetchJsonWithTimeout } from '../utils/fetchWithTimeout';
 
 export interface Model {
   id: string;
@@ -45,13 +46,16 @@ export function ModelSelector({ value, onChange, className = '', showDetails = f
 
   useEffect(() => {
     const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+    const base = `${apiUrl.replace(/\/$/, '')}/api`;
     Promise.all([
-      fetch(`${apiUrl}/api/models`).then(r => r.json()).catch(() => ({ models: [] })),
-      fetch(`${apiUrl}/api/providers`).then(r => r.json()).catch(() => ({ providers: [] })),
-    ]).then(([m, p]) => {
-      setModels(m.models || []);
-      setProviders(p.providers || []);
-    }).finally(() => setLoading(false));
+      fetchJsonWithTimeout<{ models: Model[] }>(`${base}/models`).catch(() => ({ models: [] })),
+      fetchJsonWithTimeout<{ providers: Provider[] }>(`${base}/providers`).catch(() => ({ providers: [] })),
+    ])
+      .then(([m, p]) => {
+        setModels(m.models || []);
+        setProviders(p.providers || []);
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   // Close on outside click

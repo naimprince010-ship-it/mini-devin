@@ -107,6 +107,7 @@ from .verification import (
     CompletionCriteria,
     # Pre-built suites
     create_python_verification_suite,
+    create_auto_verification_suite,
     create_javascript_verification_suite,
     create_git_verification_suite,
 )
@@ -204,6 +205,7 @@ __all__ = [
     "CompletionCriteria",
     # Pre-built suites
     "create_python_verification_suite",
+    "create_auto_verification_suite",
     "create_javascript_verification_suite",
     "create_git_verification_suite",
 ]

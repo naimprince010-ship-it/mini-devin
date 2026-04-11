@@ -1,4 +1,4 @@
-"""
+﻿"""
 Agent Orchestrator for Mini-Devin
 
 This module implements the main agent that orchestrates task execution
@@ -13,6 +13,7 @@ import time
 import uuid
 import re
 import inspect
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,6 +28,7 @@ from ..schemas.state import (
 )
 from ..schemas.verification import (
     VerificationSuite,
+    create_auto_verification_suite,
     create_python_verification_suite,
 )
 from ..tools.terminal import create_terminal_tool
@@ -35,6 +37,7 @@ from ..tools.browser import (
     create_search_tool,
     create_fetch_tool,
     create_interactive_tool,
+    create_playwright_tool,
     create_citation_store,
 )
 from ..safety.guards import SafetyGuard, SafetyPolicy, SafetyViolation
@@ -68,32 +71,79 @@ from ..reliability.self_correction import SelfCorrectionEngine, ErrorType
 
 
 
-# System prompt for the agent
-SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer agent. You solve software engineering tasks end-to-end using tools.
+import sys as _sys_for_prompt
 
+
+def _make_system_prompt() -> str:
+    """Build system prompt with OS-specific environment notes."""
+    if _sys_for_prompt.platform == "win32":
+        os_note = (
+            "- The agent is running on **Windows** with **PowerShell**.\n"
+            "- Use `python` (not `python3`), `pip` (not `pip3`).\n"
+            "- Common Linux commands are auto-translated by the terminal tool: "
+            "`ls`, `cat`, `mkdir -p`, `rm -rf`, `grep`, `touch`, `which`, `cp`, `mv` all work.\n"
+            "- Chain commands with `;` not `&&`. Use relative paths only.\n"
+            "- `pytest` may not be installed globally — prefer `python -m pytest` or `python -m unittest`."
+        )
+    else:
+        os_note = (
+            "- The agent runs on **Linux/bash**.\n"
+            "- Use standard Linux commands (`python3`, `pip3`, etc.).\n"
+            "- Never use Windows drive paths (`C:\\\\`, `G:\\\\`)."
+        )
+    return _SYSTEM_PROMPT_TEMPLATE.format(os_env_note=os_note)
+
+
+def _runtime_context_block(working_directory: str | None) -> str:
+    """Inject exact Python path and OS so the model runs commands that work on this machine."""
+    exe = _sys_for_prompt.executable.replace("\\", "/")
+    plat = _sys_for_prompt.platform
+    wd = working_directory or "."
+    if plat == "win32":
+        test_hint = (
+            f"Use `{exe} -m pytest` or `{exe} -m unittest discover` (not bare `pytest` if it is not on PATH)."
+        )
+    else:
+        test_hint = (
+            "Use `python3 -m pytest` or `python3 -m unittest discover` when `pytest` is missing from PATH."
+        )
+    return f"""## Runtime context (use these exact values in terminal commands)
+- **Platform**: `{plat}`
+- **Python executable**: `{exe}`
+- **Workspace cwd** for terminal: `{wd}`
+- **Tests**: {test_hint}
+- **Unit tests you write** must assert behavior that matches your implementation (avoid contradictory expected values)."""
+
+
+_SYSTEM_PROMPT_TEMPLATE = """
 ## CRITICAL RULES — READ FIRST
 - **NEVER describe or narrate actions without calling a tool.** If you say "I will create a file", you MUST immediately call the `editor` tool to do it.
-- **NEVER write fake outputs.** Do not write "The tests passed" unless you actually ran `pytest` using the `terminal` tool and saw the output.
-- **NEVER say TASK COMPLETE unless you have used at least one tool** and verified the result with actual tool output.
+- **NEVER write fake outputs.** Do not write "The tests passed" unless you actually ran tests via `terminal` using the **Python executable from Runtime context** and saw exit code 0 in the output.
+- **NEVER say TASK COMPLETE unless you have used at least one tool** AND run verification (tests or a minimal run of the code) with real tool output showing success.
 - **Do NOT just write a plan as text and stop.** After your brief plan, immediately call the first tool.
 
 ## Workflow
 1. **Brief plan** (2-3 lines max): State what you will do.
 2. **ACT immediately**: Call the first tool right away — do not wait.
 3. **Continue**: After each tool result, call the next tool needed.
-4. **Verify**: Run tests or check output with real tool calls.
-5. **TASK COMPLETE**: Only after you have seen real tool output confirming success.
+4. **Verify**: Run tests with the workspace Python (`python -m …` / Runtime context). If tests fail, fix code or tests until green or you hit a clear blocker you report.
+5. **TASK COMPLETE**: Only after verification output confirms success (or you document why verification is N/A).
 
 ## Tool Usage
-- `terminal` — Run shell commands (pytest, pip, git, etc.)
+- `terminal` — Run shell commands; prefer `python -m pip`, `python -m pytest`, `python -m unittest` per Runtime context. For long installs (`npm install`, `npx create-*`) pass **`timeout_seconds`** up to **300** (default 30 is too short).
 - `editor` with `read_file` — Read a file
 - `editor` with `write_file` — Write/create a file
 - `editor` with `search` — Search patterns in files
 - `editor` with `list_directory` — List directory contents
+- `editor` with `str_replace` — Replace exact text in a file (token-efficient, preferred for edits)
 - `editor` with `apply_patch` — Apply a unified diff patch
 - `browser_search` — Search the web
-- `browser_fetch` — Fetch a web page
+- `browser_fetch` — Fetch a web page (HTTP; no JS console)
+- `browser_playwright` — **Preferred for UI bugs**: real Chromium, DOM outline, console + network + page errors, screenshots
+- `browser_interactive` — Legacy Selenium (use Playwright when available)
 - `github` — GitHub workflows
+- `monitor` — Check app health, fetch cloud/docker logs, register for continuous monitoring
+- `env_parity` — Generate Dockerfile/.env.example/docker-compose; diff local vs production env
 
 ## Important Rules
 - Read a file before editing it (to avoid overwriting changes)
@@ -103,10 +153,12 @@ SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer agent.
 - When done: write **TASK COMPLETE** followed by a short summary of actual results.
 
 ## Environment (critical)
-- The agent runs on **Linux/bash** in the cloud/container, **not** on the user's Windows PC.
-- **Never** use Windows drive paths (`C:\\`, `G:\\`, `D:\\`) in `terminal` or `editor` paths—they do not exist here.
-- Use **paths under the workspace** only: relative paths like `./myself/index.html` or POSIX paths starting with the workspace root shown below.
-- Prefer **`editor` `write_file`** to create files and folders; it creates parent directories automatically."""
+{os_env_note}
+- Use **relative paths only** in all tool calls — never hardcoded absolute paths.
+- Prefer **`editor` `write_file`** to create files; it creates parent directories automatically.
+- When `terminal` commands fail, fix the command and retry — do NOT give up after one attempt."""
+
+SYSTEM_PROMPT = _make_system_prompt()
 
 
 class Agent:
@@ -205,6 +257,10 @@ class Agent:
             max_immediate_retries=self.max_immediate_retries
         )
         self._consecutive_failures = 0
+        # Last failed tool call before a self-correction retry (tool_name, args, stderr_snippet)
+        self._last_failed_tool: tuple[str, dict[str, Any], str] | None = None
+        # Short lines appended when self-correction succeeds (fed into save_task_summary)
+        self._session_self_correct_lessons: list[str] = []
         
         # Docker Sandbox (optional isolated execution)
         self.use_sandbox = use_sandbox
@@ -247,6 +303,13 @@ class Agent:
         if not self.registry.get("browser_interactive"):
             browser_interactive = create_interactive_tool()
             self.registry.register(browser_interactive)
+
+        if not self.registry.get("browser_playwright"):
+            agent = self
+            browser_pw = create_playwright_tool(
+                on_browser_event=lambda p: agent._emit_playwright_browser_event(p),
+            )
+            self.registry.register(browser_pw)
         
         # Citation store for tracking web references
         if not hasattr(self, "_citation_store"):
@@ -262,10 +325,26 @@ class Agent:
         """Get tool schemas for LLM function calling."""
         schemas = []
         
-        # Terminal tool schema
+        # Terminal tool schema — OS-aware description
+        import sys as _sys
+        _on_windows = _sys.platform == "win32"
+        if _on_windows:
+            _terminal_desc = (
+                "Execute a shell command via PowerShell on Windows. "
+                "Common Linux commands are auto-translated (python3→python, ls, cat, mkdir -p, rm -rf, grep, touch, etc.). "
+                "Use relative paths from the workspace. Do NOT use absolute Windows paths like C:\\\\. "
+                "Prefer `python` over `python3`. Use `dir` or `ls` for listing. "
+                "Chain commands with `;` instead of `&&` when possible."
+            )
+        else:
+            _terminal_desc = (
+                "Execute a shell command in bash under the task workspace. "
+                "Use relative paths (./...) from the workspace. "
+                "Do not use Windows-style paths (C:\\\\, D:\\\\)."
+            )
         schemas.append({
             "name": "terminal",
-            "description": "Execute a shell command in Linux/bash under the task workspace. Do not use Windows paths (C:\\\\, G:\\\\). Use relative paths (./...) from the workspace.",
+            "description": _terminal_desc,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -277,6 +356,13 @@ class Agent:
                         "type": "string",
                         "description": "Working directory for the command (default: current directory)",
                     },
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "description": (
+                            "Max seconds before the command is killed (default 30, max 300). "
+                            "Use 180–300 for `npm install`, `npx create-*`, `pip install -r`, builds, etc."
+                        ),
+                    },
                 },
                 "required": ["command"],
             },
@@ -287,16 +373,19 @@ class Agent:
             "name": "editor",
             "description": """Perform file operations. Supports multiple actions:
 - read_file: Read a file's contents
-- write_file: Write content to a file
+- write_file: Write/create a file with full content
+- str_replace: Replace an exact string in a file (PREFERRED for edits — token-efficient, precise)
 - search: Search for patterns in files
 - list_directory: List directory contents
-- apply_patch: Apply a unified diff patch""",
+- apply_patch: Apply a unified diff patch
+
+PREFER str_replace over write_file when editing existing files.""",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["read_file", "write_file", "search", "list_directory", "apply_patch"],
+                        "enum": ["read_file", "write_file", "str_replace", "search", "list_directory", "apply_patch"],
                         "description": "The action to perform",
                     },
                     "path": {
@@ -306,6 +395,18 @@ class Agent:
                     "content": {
                         "type": "string",
                         "description": "Content to write (for write_file action)",
+                    },
+                    "old_str": {
+                        "type": "string",
+                        "description": "Exact string to find and replace (for str_replace action — must be unique in file)",
+                    },
+                    "new_str": {
+                        "type": "string",
+                        "description": "Replacement string (for str_replace action — use empty string to delete)",
+                    },
+                    "allow_multiple": {
+                        "type": "boolean",
+                        "description": "Replace all occurrences (for str_replace action, default false)",
                     },
                     "pattern": {
                         "type": "string",
@@ -409,11 +510,64 @@ class Agent:
                 "required": ["action"],
             },
         })
+
+        schemas.append({
+            "name": "browser_playwright",
+            "description": (
+                "Headless Chromium (Playwright). Use for JS sites, UI debugging, and before/after checks. "
+                "Returns DOM outline (headings + body structure), console lines, XHR/fetch/document network log, "
+                "uncaught page errors, failed requests, and optional screenshots. "
+                "Actions: navigate (url, wait_until: domcontentloaded|networkidle, full_page), debug_snapshot "
+                "(settle_ms ms wait then dump), screenshot, click (selector|x,y), type/fill, wait_for "
+                "(selector|url|network_idle), get_text, get_html, evaluate (script), find_elements, reload, etc. "
+                "Requires: pip install playwright && playwright install chromium, or BROWSERLESS_API_KEY."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "navigate", "screenshot", "click", "type", "fill", "select", "scroll", "hover",
+                            "wait_for", "get_text", "get_html", "evaluate", "highlight", "find_elements",
+                            "pdf", "press", "go_back", "go_forward", "reload", "debug_snapshot",
+                        ],
+                        "description": "Playwright action to run",
+                    },
+                    "url": {"type": "string", "description": "For navigate / wait_for(url pattern)"},
+                    "selector": {"type": "string", "description": "CSS selector for click, type, fill, etc."},
+                    "text": {"type": "string", "description": "For type action"},
+                    "value": {"type": "string", "description": "For fill/select"},
+                    "script": {"type": "string", "description": "JavaScript for evaluate action"},
+                    "wait_until": {
+                        "type": "string",
+                        "description": "navigate load state: domcontentloaded | load | networkidle",
+                    },
+                    "full_page": {"type": "boolean", "description": "Full-page screenshot"},
+                    "network_idle": {"type": "boolean", "description": "For wait_for: wait until network idle"},
+                    "timeout": {"type": "integer", "description": "Timeout ms for waits"},
+                    "settle_ms": {
+                        "type": "integer",
+                        "description": "For debug_snapshot: extra wait before capture (default 400)",
+                    },
+                    "direction": {"type": "string", "description": "scroll: up|down|top|bottom"},
+                    "amount": {"type": "number", "description": "scroll pixels"},
+                    "key": {"type": "string", "description": "press: key name e.g. Enter"},
+                    "delay": {"type": "integer", "description": "type: ms between keys"},
+                    "x": {"type": "number"}, "y": {"type": "number"},
+                },
+                "required": ["action"],
+            },
+        })
         
         # Ask-user tool for proactive clarification
         schemas.append({
             "name": "ask_user",
-            "description": "Ask the user a clarifying question when the task is ambiguous or you need more information before proceeding. Use this sparingly, only when truly necessary.",
+            "description": (
+                "Ask the user a clarifying question when the task is ambiguous or blocked. "
+                "Optionally provide multiple-choice options so the user can click instead of type. "
+                "Use ONLY when you genuinely cannot proceed without human input."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -421,8 +575,289 @@ class Agent:
                         "type": "string",
                         "description": "The specific question to ask the user",
                     },
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional list of choices to present as clickable buttons, e.g. "
+                            "['Use PostgreSQL', 'Use SQLite', 'Let me decide later']. "
+                            "When provided, the user clicks a button instead of typing."
+                        ),
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Optional additional context or explanation to show the user",
+                    },
                 },
                 "required": ["question"],
+            },
+        })
+
+        # Project memory tool schema
+        schemas.append({
+            "name": "project_memory",
+            "description": (
+                "Long-term vector memory for a project. Store architecture decisions, "
+                "tech stack choices, constraints, and lessons learned that persist "
+                "across sessions. Search memory semantically to recall past decisions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "remember", "search", "list", "get_context",
+                            "create_project", "list_projects", "delete_entry",
+                        ],
+                        "description": (
+                            "remember=store a new memory entry; "
+                            "search=semantic search over project memory; "
+                            "list=list all entries for a project; "
+                            "get_context=get formatted context string for a task; "
+                            "create_project=create a new project; "
+                            "list_projects=show all projects; "
+                            "delete_entry=remove a memory entry."
+                        ),
+                    },
+                    "project_id": {"type": "string", "description": "Project identifier"},
+                    "project_name": {"type": "string", "description": "Human-readable project name (for create_project)"},
+                    "project_description": {"type": "string", "description": "Project description (for create_project)"},
+                    "tech_stack": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tech stack list (for create_project)",
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["architecture", "decision", "constraint", "api_contract", "lesson", "milestone", "user_preference", "code_snippet", "context"],
+                        "description": "Memory category",
+                    },
+                    "title": {"type": "string", "description": "Short title for the memory entry"},
+                    "content": {"type": "string", "description": "Full content of the memory entry"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for filtering"},
+                    "importance": {"type": "integer", "description": "Importance 1–10 (10=critical, default 5)"},
+                    "query": {"type": "string", "description": "Search query for 'search' and 'get_context' actions"},
+                    "entry_id": {"type": "string", "description": "Entry ID for delete_entry"},
+                    "top_k": {"type": "integer", "description": "Max results for search (default 5)"},
+                },
+                "required": ["action"],
+            },
+        })
+
+        # Project plan tool schema
+        schemas.append({
+            "name": "project_plan",
+            "description": (
+                "Hierarchical project planner. Decompose a large goal into milestones, "
+                "create a persistent plan, execute each milestone as an isolated sub-agent, "
+                "and resume across sessions. Perfect for month-long projects."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "get", "list", "execute", "retry_milestone", "delete"],
+                        "description": (
+                            "create=decompose goal into milestones (LLM-powered); "
+                            "get=show plan status; "
+                            "list=list all plans; "
+                            "execute=run remaining milestones as sub-agents; "
+                            "retry_milestone=reset a failed milestone; "
+                            "delete=remove a plan."
+                        ),
+                    },
+                    "plan_id": {"type": "string", "description": "Plan ID for get/execute/retry/delete"},
+                    "project_id": {"type": "string", "description": "Project ID for create/list"},
+                    "goal": {"type": "string", "description": "High-level project goal for 'create'"},
+                    "milestones": {
+                        "type": "array",
+                        "description": "Manual milestone list (optional, skips LLM decomposition)",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "description": {"type": "string"},
+                                "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
+                                "depends_on_indexes": {"type": "array", "items": {"type": "integer"}},
+                                "estimated_hours": {"type": "number"},
+                                "tags": {"type": "array", "items": {"type": "string"}},
+                            },
+                        },
+                    },
+                    "milestone_id": {"type": "string", "description": "Milestone ID for retry_milestone"},
+                    "working_dir": {"type": "string", "description": "Working directory for execution"},
+                },
+                "required": ["action"],
+            },
+        })
+
+        # UI Test tool schema
+        schemas.append({
+            "name": "ui_test",
+            "description": (
+                "Run a structured browser-based UI test suite against a live URL using Playwright. "
+                "Each step can assert elements exist, check text, click buttons, fill forms, "
+                "verify URL changes, check for JS errors, or capture screenshots for visual regression. "
+                "Returns a full pass/fail report per step."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "suite_name": {"type": "string", "description": "Name for this test suite"},
+                    "url": {"type": "string", "description": "Starting URL to test"},
+                    "steps": {
+                        "type": "array",
+                        "description": "List of test steps to execute",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "navigate", "assert_element", "assert_text",
+                                        "assert_url", "assert_title", "click", "fill",
+                                        "select", "press_key", "wait", "wait_for_selector",
+                                        "screenshot", "evaluate", "assert_no_js_errors",
+                                        "hover", "scroll",
+                                    ],
+                                    "description": "Step type",
+                                },
+                                "selector": {"type": "string", "description": "CSS selector"},
+                                "url": {"type": "string", "description": "URL for navigate/assert_url steps"},
+                                "text": {"type": "string", "description": "Expected text for assert_text/assert_title"},
+                                "value": {"type": "string", "description": "Value for fill/select/press_key"},
+                                "script": {"type": "string", "description": "JavaScript for evaluate step"},
+                                "expected": {"description": "Expected JS return value for evaluate"},
+                                "screenshot_name": {"type": "string", "description": "Name for screenshot baseline"},
+                                "set_baseline": {"type": "boolean", "description": "Set this screenshot as new baseline"},
+                                "threshold_percent": {"type": "number", "description": "Visual diff threshold (default 0.5%)"},
+                                "ms": {"type": "integer", "description": "Milliseconds for wait step"},
+                                "timeout_ms": {"type": "integer", "description": "Timeout in ms (default 10000)"},
+                                "description": {"type": "string", "description": "Human-readable step description"},
+                            },
+                            "required": ["type"],
+                        },
+                    },
+                    "threshold_percent": {"type": "number", "description": "Default visual regression threshold (default 0.5%)"},
+                },
+                "required": ["suite_name", "url", "steps"],
+            },
+        })
+
+        # Visual regression tool schema
+        schemas.append({
+            "name": "visual_regression",
+            "description": (
+                "Manage screenshot baselines and run pixel-diff comparisons for visual regression testing. "
+                "Capture baselines, compare new screenshots against them, and get diff images."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["set_baseline", "compare", "list_baselines", "get_history", "delete_baseline"],
+                        "description": (
+                            "set_baseline=save screenshot as new baseline; "
+                            "compare=compare screenshot against baseline; "
+                            "list_baselines=show all stored baselines; "
+                            "get_history=show test history for a page; "
+                            "delete_baseline=remove a baseline."
+                        ),
+                    },
+                    "name": {"type": "string", "description": "Page/component name (e.g. 'homepage', 'dashboard')"},
+                    "screenshot_b64": {"type": "string", "description": "Base64-encoded PNG for set_baseline or compare"},
+                    "url": {"type": "string", "description": "URL associated with this screenshot (metadata only)"},
+                    "threshold_percent": {"type": "number", "description": "Max % changed pixels before fail (default 0.5)"},
+                },
+                "required": ["action"],
+            },
+        })
+
+        # Monitor tool schema
+        schemas.append({
+            "name": "monitor",
+            "description": (
+                "Self-healing monitor: check app health, fetch cloud/docker logs, and manage "
+                "continuous monitoring with auto-heal on crash."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["status", "health_check", "fetch_logs", "register", "start", "stop"],
+                        "description": (
+                            "status=show monitor state; health_check=one-shot HTTP check; "
+                            "fetch_logs=get logs from platform; register=add an app to continuous monitoring; "
+                            "start/stop=control the monitor loop."
+                        ),
+                    },
+                    "url": {"type": "string", "description": "App URL for health_check"},
+                    "platform": {
+                        "type": "string",
+                        "enum": ["digitalocean", "railway", "docker", "generic"],
+                        "description": "Platform for fetch_logs or register",
+                    },
+                    "config": {
+                        "type": "object",
+                        "description": (
+                            "Platform config dict. DO: {do_token, app_id}. "
+                            "Railway: {railway_token, service_id}. Docker: {container_name}."
+                        ),
+                    },
+                    "lines": {"type": "integer", "description": "Log lines to fetch (default 50)"},
+                    "name": {"type": "string", "description": "App name for register"},
+                    "health_url": {"type": "string", "description": "Health check URL for register"},
+                    "interval": {"type": "integer", "description": "Poll interval seconds (default 60)"},
+                    "failure_threshold": {"type": "integer", "description": "Failures before heal (default 3)"},
+                    "platform_config": {"type": "object", "description": "Platform-specific config for register"},
+                },
+                "required": ["action"],
+            },
+        })
+
+        # Environment parity tool schema
+        schemas.append({
+            "name": "env_parity",
+            "description": (
+                "Ensure local and production environments are identical. "
+                "Generate Dockerfiles, .env.example, docker-compose.yml, and diff environments."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["diff", "generate_dockerfile", "generate_env_example", "generate_docker_compose"],
+                        "description": (
+                            "diff=compare local .env vs production; "
+                            "generate_dockerfile=create optimized Dockerfile; "
+                            "generate_env_example=create .env.example from .env; "
+                            "generate_docker_compose=create local dev compose file."
+                        ),
+                    },
+                    "project_root": {"type": "string", "description": "Project root directory (default: workspace)"},
+                    "project_type": {
+                        "type": "string",
+                        "enum": ["auto", "python", "node", "fullstack"],
+                        "description": "Project type for Dockerfile generation (default: auto-detect)",
+                    },
+                    "frontend_dir": {"type": "string", "description": "Frontend subdirectory (default: frontend)"},
+                    "requirements_file": {"type": "string", "description": "Python requirements file (default: requirements.txt)"},
+                    "port": {"type": "integer", "description": "App port (default: auto-detect from .env)"},
+                    "health_path": {"type": "string", "description": "Healthcheck path (default: /health)"},
+                    "output_path": {"type": "string", "description": "Output file path (optional)"},
+                    "env_file": {"type": "string", "description": "Source .env file for diff (default: .env)"},
+                    "source_env_file": {"type": "string", "description": "Source .env file for .env.example generation"},
+                    "include_current_values": {"type": "boolean", "description": "Include non-secret values in .env.example"},
+                    "include_redis": {"type": "boolean", "description": "Include Redis in docker-compose"},
+                    "include_postgres": {"type": "boolean", "description": "Include Postgres in docker-compose"},
+                    "production_env": {"type": "object", "description": "Production env vars dict for diff comparison"},
+                },
+                "required": ["action"],
             },
         })
 
@@ -487,15 +922,26 @@ class Agent:
         # ── ask_user: pause and request clarification from user ──
         if name == "ask_user":
             question = arguments.get("question", "Can you clarify?")
+            options = arguments.get("options")      # optional list of choice strings
+            context = arguments.get("context", "")  # optional extra context
+
             on_clarification = self.callbacks.get("on_clarification_needed")
             if on_clarification:
-                on_clarification(question)
+                # Pass full payload so frontend can render option buttons
+                on_clarification({
+                    "question": question,
+                    "options": options or [],
+                    "context": context,
+                })
             # Wait up to 5 minutes for user answer
             self._clarification_event = asyncio.Event()
             self._clarification_answer = None
             try:
                 await asyncio.wait_for(self._clarification_event.wait(), timeout=300)
             except asyncio.TimeoutError:
+                # Auto-select first option if available, otherwise best guess
+                if options:
+                    return f"User did not answer within 5 minutes. Proceeding with option: {options[0]}"
                 return "User did not answer within 5 minutes. Proceeding with best guess."
             answer = self._clarification_answer or "(no answer)"
             self._clarification_event = None
@@ -517,7 +963,10 @@ class Agent:
                 
                 # Emit command to shell stream
                 on_cmd_output = self.callbacks.get("on_command_output")
-                if on_cmd_output:
+                on_cmd_start = self.callbacks.get("on_command_start")
+                if on_cmd_start:
+                    on_cmd_start(command)   # fires a "command" typed line with ts
+                elif on_cmd_output:
                     on_cmd_output(f"$ {command}")
                 
                 # ── Docker Sandbox Execution ──
@@ -566,9 +1015,16 @@ class Agent:
                 
                 # ── Regular Host Execution ──
                 from ..schemas.tools import TerminalInput
+                raw_timeout = arguments.get("timeout_seconds", 30)
+                try:
+                    timeout_seconds = int(raw_timeout)
+                except (TypeError, ValueError):
+                    timeout_seconds = 30
+                timeout_seconds = max(1, min(300, timeout_seconds))
                 input_data = TerminalInput(
                     command=command,
                     working_directory=arguments.get("working_directory", "."),
+                    timeout_seconds=timeout_seconds,
                 )
                 
                 exit_code = -1
@@ -663,7 +1119,34 @@ class Agent:
                             self._artifact_logger.add_file_modified(file_path)
                     else:
                         output = f"Error: {result.error_message}"
-                
+
+                elif action == "str_replace":
+                    old_str = arguments.get("old_str", "")
+                    new_str = arguments.get("new_str", "")
+                    allow_multiple = arguments.get("allow_multiple", False)
+
+                    dep_violation = self._check_dependency_safety(file_path)
+                    if dep_violation and dep_violation.blocked:
+                        self._update_phase(AgentPhase.BLOCKED)
+                        return f"BLOCKED: {dep_violation.message}. Task moved to BLOCKED state."
+
+                    from ..schemas.tools import StrReplaceInput
+                    input_data = StrReplaceInput(
+                        path=file_path,
+                        old_str=old_str,
+                        new_str=new_str,
+                        allow_multiple=allow_multiple,
+                    )
+                    result = await tool.execute(input_data)
+                    if result.status.value == "success":
+                        output = f"str_replace: {result.replacements_made} replacement(s) in {result.path}"
+                        if self._artifact_logger:
+                            self._artifact_logger.add_file_modified(file_path)
+                        # Notify frontend of file change
+                        await self._trigger_callback("on_file_changed", file_path)
+                    else:
+                        output = f"Error: {result.error_message}"
+
                 elif action == "search":
                     from ..schemas.tools import SearchInput
                     input_data = SearchInput(
@@ -867,6 +1350,21 @@ class Agent:
                             output_parts.append(f"\nPage text:\n{text}")
                     
                     output = "\n".join(output_parts)
+                    # Stream screenshot / URL to dashboard Browser tab (tool_completed only sends strings)
+                    if page_state:
+                        shot = getattr(page_state, "screenshot_base64", None) or None
+                        ev = "screenshot" if shot else (
+                            "navigate" if str(action).lower() == "navigate" else "other"
+                        )
+                        await self._trigger_callback(
+                            "on_browser_event",
+                            {
+                                "event_type": ev,
+                                "url": page_state.url,
+                                "query": None,
+                                "screenshot_base64": shot,
+                            },
+                        )
                 else:
                     output = f"Browser action failed: {result.message}"
                 
@@ -883,6 +1381,35 @@ class Agent:
                     )
                 
                 return output
+
+            elif name == "browser_playwright":
+                result = await tool.execute(arguments)
+                if result.success:
+                    msg = result.message or ""
+                    if self._artifact_logger:
+                        duration_ms = int((time.time() - start_time) * 1000)
+                        self._artifact_logger.log_tool_call(
+                            call_id=call_id,
+                            tool_name="browser_playwright",
+                            arguments=arguments,
+                            result=msg[:12000],
+                            duration_ms=duration_ms,
+                            success=True,
+                        )
+                    return msg
+                err = result.error or result.message or "browser_playwright failed"
+                if self._artifact_logger:
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    self._artifact_logger.log_tool_call(
+                        call_id=call_id,
+                        tool_name="browser_playwright",
+                        arguments=arguments,
+                        result=err[:8000],
+                        duration_ms=duration_ms,
+                        success=False,
+                        error=err,
+                    )
+                return err
             
             elif name == "github":
                 action = arguments.get("action", "")
@@ -922,6 +1449,410 @@ class Agent:
                 
                 return output
             
+            elif name == "project_memory":
+                action = arguments.get("action", "list_projects")
+                from ..integrations.project_memory import (
+                    get_project_memory, MemoryCategory
+                )
+                pm = get_project_memory()
+
+                if action == "create_project":
+                    pname = arguments.get("project_name", "")
+                    if not pname:
+                        return "Error: project_name is required"
+                    proj = pm.create_project(
+                        name=pname,
+                        description=arguments.get("project_description", ""),
+                        tech_stack=arguments.get("tech_stack", []),
+                        project_id=arguments.get("project_id"),
+                    )
+                    return f"Project created: {proj.name} (id={proj.id})"
+
+                elif action == "list_projects":
+                    projects = pm.list_projects()
+                    if not projects:
+                        return "No projects yet. Use create_project to start one."
+                    lines = ["Projects:"]
+                    for p in projects:
+                        lines.append(f"  • [{p.id}] {p.name} — {p.description[:80]}")
+                    return "\n".join(lines)
+
+                elif action == "remember":
+                    pid = arguments.get("project_id", "")
+                    if not pid:
+                        return "Error: project_id is required"
+                    title = arguments.get("title", "")
+                    content = arguments.get("content", "")
+                    if not title or not content:
+                        return "Error: title and content are required"
+                    cat_str = arguments.get("category", "context")
+                    try:
+                        cat = MemoryCategory(cat_str)
+                    except ValueError:
+                        cat = MemoryCategory.CONTEXT
+                    entry = pm.add_entry(
+                        project_id=pid,
+                        category=cat,
+                        title=title,
+                        content=content,
+                        tags=arguments.get("tags", []),
+                        importance=int(arguments.get("importance", 5)),
+                        session_id=getattr(self, "session_id", None),
+                    )
+                    return f"Memory stored: [{entry.category.upper()}] {entry.title} (id={entry.id})"
+
+                elif action == "search":
+                    pid = arguments.get("project_id", "")
+                    query = arguments.get("query", "")
+                    if not pid or not query:
+                        return "Error: project_id and query are required"
+                    results = pm.search(
+                        pid, query,
+                        top_k=int(arguments.get("top_k", 5)),
+                    )
+                    if not results:
+                        return "No relevant memories found."
+                    lines = [f"Found {len(results)} relevant memories:"]
+                    for r in results:
+                        e = r["entry"]
+                        lines.append(
+                            f"  [{e['category'].upper()}] {e['title']} (score={r['score']})\n"
+                            f"    {e['content'][:200]}"
+                        )
+                    return "\n".join(lines)
+
+                elif action == "get_context":
+                    pid = arguments.get("project_id", "")
+                    query = arguments.get("query", "")
+                    if not pid:
+                        return "Error: project_id is required"
+                    ctx = pm.get_context_for_task(pid, query)
+                    return ctx
+
+                elif action == "list":
+                    pid = arguments.get("project_id", "")
+                    if not pid:
+                        return "Error: project_id is required"
+                    entries = pm.list_entries(pid)
+                    if not entries:
+                        return f"No memories for project '{pid}' yet."
+                    lines = [f"Memories for {pid} ({len(entries)} entries):"]
+                    for e in sorted(entries, key=lambda x: -x.importance):
+                        lines.append(
+                            f"  [{e.category.upper()} ★{e.importance}] {e.title}: {e.content[:120]}"
+                        )
+                    return "\n".join(lines)
+
+                elif action == "delete_entry":
+                    eid = arguments.get("entry_id", "")
+                    if not eid:
+                        return "Error: entry_id is required"
+                    removed = pm.delete_entry(eid)
+                    return f"Entry {'deleted' if removed else 'not found'}: {eid}"
+
+                else:
+                    return f"Unknown project_memory action: {action}"
+
+            elif name == "project_plan":
+                action = arguments.get("action", "list")
+                from ..integrations.hierarchical_planner import get_planner
+                planner = get_planner()
+
+                if action == "create":
+                    pid = arguments.get("project_id", "")
+                    goal = arguments.get("goal", "")
+                    if not pid or not goal:
+                        return "Error: project_id and goal are required"
+                    # Optionally get project context from memory
+                    try:
+                        from ..integrations.project_memory import get_project_memory
+                        pm = get_project_memory()
+                        ctx = pm.get_context_for_task(pid, goal, max_tokens=400) if pm.get_project(pid) else ""
+                    except Exception:
+                        ctx = ""
+                    plan = await planner.create_plan(
+                        project_id=pid,
+                        goal=goal,
+                        milestones=arguments.get("milestones"),
+                        working_dir=arguments.get("working_dir", self.working_directory or "."),
+                        project_context=ctx,
+                    )
+                    lines = [f"Plan created: {plan.id}", f"Goal: {plan.goal}", f"Milestones ({len(plan.milestones)}):"]
+                    for m in plan.milestones:
+                        lines.append(
+                            f"  {m.index + 1}. {m.name} (~{m.estimated_hours}h) — {m.description[:100]}"
+                        )
+                    return "\n".join(lines)
+
+                elif action == "get":
+                    plan_id = arguments.get("plan_id", "")
+                    if not plan_id:
+                        return "Error: plan_id is required"
+                    plan = planner.get_plan(plan_id)
+                    if not plan:
+                        return f"Plan '{plan_id}' not found"
+                    prog = plan.progress()
+                    lines = [
+                        f"Plan: {plan.id} | Status: {plan.status}",
+                        f"Goal: {plan.goal}",
+                        f"Progress: {prog['completed']}/{prog['total']} milestones ({prog['percent']}%)",
+                        "",
+                    ]
+                    for m in plan.milestones:
+                        r = plan.results.get(m.id)
+                        status = r.status.value if r else "pending"
+                        icon = {"completed": "✅", "failed": "❌", "running": "🔄", "pending": "⏳"}.get(status, "⏳")
+                        lines.append(f"  {icon} {m.index + 1}. {m.name}")
+                        if r and r.error:
+                            lines.append(f"      Error: {r.error[:120]}")
+                    return "\n".join(lines)
+
+                elif action == "list":
+                    pid = arguments.get("project_id")
+                    plans = planner.list_plans(pid)
+                    if not plans:
+                        return "No project plans found."
+                    lines = ["Project plans:"]
+                    for p in plans:
+                        prog = p.progress()
+                        lines.append(
+                            f"  [{p.id}] {p.goal[:60]} — {prog['completed']}/{prog['total']} done ({p.status})"
+                        )
+                    return "\n".join(lines)
+
+                elif action == "execute":
+                    plan_id = arguments.get("plan_id", "")
+                    if not plan_id:
+                        return "Error: plan_id is required"
+                    plan = planner.get_plan(plan_id)
+                    if not plan:
+                        return f"Plan '{plan_id}' not found"
+                    # Get session manager from callbacks
+                    sm = self.callbacks.get("session_manager")
+                    cm = self.callbacks.get("connection_manager")
+                    if not sm or not cm:
+                        return (
+                            "Cannot execute plan from within an agent tool — "
+                            "use the POST /api/project-plans/{plan_id}/execute endpoint instead."
+                        )
+                    updated = await planner.execute_plan(plan_id, sm, cm)
+                    prog = updated.progress()
+                    return (
+                        f"Execution finished. Status: {updated.status}. "
+                        f"{prog['completed']}/{prog['total']} milestones completed."
+                    )
+
+                elif action == "retry_milestone":
+                    plan_id = arguments.get("plan_id", "")
+                    mid = arguments.get("milestone_id", "")
+                    if not plan_id or not mid:
+                        return "Error: plan_id and milestone_id are required"
+                    ok = planner.retry_milestone(plan_id, mid)
+                    return f"Milestone reset to pending: {ok}"
+
+                elif action == "delete":
+                    plan_id = arguments.get("plan_id", "")
+                    if not plan_id:
+                        return "Error: plan_id is required"
+                    ok = planner.delete_plan(plan_id)
+                    return f"Plan {'deleted' if ok else 'not found'}: {plan_id}"
+
+                else:
+                    return f"Unknown project_plan action: {action}"
+
+            elif name == "ui_test":
+                from ..tools.browser.ui_tester import UITestRunner, steps_from_spec
+                suite_name = arguments.get("suite_name", "UI Test")
+                url = arguments.get("url", "")
+                raw_steps = arguments.get("steps", [])
+                threshold = float(arguments.get("threshold_percent", 0.5))
+
+                if not url:
+                    return "Error: url is required for ui_test"
+                if not raw_steps:
+                    return "Error: steps list is required for ui_test"
+
+                steps = steps_from_spec(raw_steps)
+                runner = UITestRunner(
+                    working_dir=self.working_directory or ".",
+                    headless=True,
+                )
+                result = await runner.run(
+                    suite_name=suite_name,
+                    start_url=url,
+                    steps=steps,
+                    threshold_percent=threshold,
+                )
+                # Build a readable report
+                lines = [result.summary(), ""]
+                for sr in result.steps:
+                    icon = "✅" if sr.passed else "❌"
+                    err = f" — {sr.error}" if sr.error else ""
+                    lines.append(f"  {icon} [{sr.step_type}] {sr.description}{err} ({sr.duration_ms}ms)")
+                    if sr.diff:
+                        lines.append(
+                            f"       Visual diff: {sr.diff.get('changed_percent')}% changed "
+                            f"(threshold {sr.diff.get('threshold_percent')}%)"
+                        )
+                if result.js_errors:
+                    lines.append(f"\nJS errors: {'; '.join(result.js_errors[:3])}")
+                return "\n".join(lines)
+
+            elif name == "visual_regression":
+                action = arguments.get("action", "list_baselines")
+                vr_name = arguments.get("name", "")
+                b64 = arguments.get("screenshot_b64", "")
+                url = arguments.get("url", "")
+                threshold = arguments.get("threshold_percent")
+                from ..tools.browser.visual_regression import get_engine
+
+                engine = get_engine(self.working_directory or ".")
+
+                if action == "list_baselines":
+                    baselines = engine.list_baselines()
+                    if not baselines:
+                        return "No baselines stored yet. Capture a screenshot with set_baseline=True first."
+                    lines = ["Stored baselines:"]
+                    for b in baselines:
+                        lines.append(f"  • {b.get('name')} — {b.get('width')}×{b.get('height')} @ {b.get('captured_at', '')[:19]}")
+                    return "\n".join(lines)
+
+                elif action == "set_baseline":
+                    if not vr_name:
+                        return "Error: name is required"
+                    if not b64:
+                        return "Error: screenshot_b64 is required"
+                    rec = engine.save_screenshot_b64(vr_name, b64, url=url, set_as_baseline=True)
+                    return f"Baseline set for '{vr_name}' ({rec.width}×{rec.height})"
+
+                elif action == "compare":
+                    if not vr_name:
+                        return "Error: name is required"
+                    if not b64:
+                        return "Error: screenshot_b64 is required"
+                    try:
+                        diff = engine.compare_b64(vr_name, b64, threshold_percent=threshold)
+                        icon = "✅ PASS" if diff.passed else "❌ FAIL"
+                        return (
+                            f"{icon} — '{vr_name}': {diff.changed_percent:.3f}% pixels changed "
+                            f"(threshold {diff.threshold_percent}%). "
+                            f"Changed pixels: {diff.changed_pixels}."
+                            + (f"\nDiff image: {diff.diff_path}" if diff.diff_path else "")
+                        )
+                    except FileNotFoundError as e:
+                        return f"Error: {e}"
+
+                elif action == "get_history":
+                    if not vr_name:
+                        return "Error: name is required"
+                    hist = engine.get_history(vr_name)
+                    return json.dumps(hist, indent=2)
+
+                elif action == "delete_baseline":
+                    if not vr_name:
+                        return "Error: name is required"
+                    removed = engine.delete_baseline(vr_name)
+                    return f"Baseline for '{vr_name}' {'deleted' if removed else 'not found'}"
+
+                else:
+                    return f"Unknown visual_regression action: {action}"
+
+            elif name == "monitor":
+                action = arguments.get("action", "status")
+                from ..integrations.monitor import (
+                    check_app_health,
+                    fetch_app_logs,
+                    get_status,
+                    register_app,
+                    start_monitor,
+                    stop_monitor,
+                    MonitoredApp,
+                )
+                if action == "status":
+                    return json.dumps(get_status(), indent=2)
+                elif action == "health_check":
+                    url = arguments.get("url", "")
+                    if not url:
+                        return "Error: url is required for health_check"
+                    result = await check_app_health(url)
+                    return json.dumps(result, indent=2)
+                elif action == "fetch_logs":
+                    platform = arguments.get("platform", "docker")
+                    config = arguments.get("config", {})
+                    lines = int(arguments.get("lines", 50))
+                    logs = await fetch_app_logs(platform, config, lines)
+                    return logs or "(no logs returned)"
+                elif action == "register":
+                    app_cfg = MonitoredApp(
+                        name=arguments.get("name", "app"),
+                        health_url=arguments.get("health_url", ""),
+                        platform=arguments.get("platform", "generic"),
+                        platform_config=arguments.get("platform_config", {}),
+                        check_interval_seconds=int(arguments.get("interval", 60)),
+                        failure_threshold=int(arguments.get("failure_threshold", 3)),
+                        session_id=self.session_id if hasattr(self, "session_id") else None,
+                    )
+                    register_app(app_cfg)
+                    start_monitor()
+                    return f"Registered {app_cfg.name} and started monitor"
+                elif action == "start":
+                    start_monitor()
+                    return "Monitor started"
+                elif action == "stop":
+                    stop_monitor()
+                    return "Monitor stopped"
+                else:
+                    return f"Unknown monitor action: {action}"
+
+            elif name == "env_parity":
+                action = arguments.get("action", "diff")
+                project_root = arguments.get("project_root", self.working_directory or ".")
+                from ..integrations.env_parity import (
+                    generate_dockerfile,
+                    generate_env_example,
+                    generate_docker_compose,
+                    diff_environments,
+                )
+                if action == "diff":
+                    env_file = arguments.get("env_file", ".env")
+                    import os as _os
+                    prod_env = arguments.get("production_env")
+                    result = diff_environments(
+                        local_env_file=str(Path(project_root) / env_file),
+                        production_env=prod_env,
+                    )
+                    return json.dumps(result, indent=2)
+                elif action == "generate_dockerfile":
+                    content, path = generate_dockerfile(
+                        project_root,
+                        project_type=arguments.get("project_type", "auto"),
+                        frontend_dir=arguments.get("frontend_dir", "frontend"),
+                        requirements_file=arguments.get("requirements_file", "requirements.txt"),
+                        port=arguments.get("port"),
+                        health_path=arguments.get("health_path", "/health"),
+                        output_path=arguments.get("output_path"),
+                    )
+                    return f"Dockerfile generated at {path}:\n\n{content}"
+                elif action == "generate_env_example":
+                    content, path = generate_env_example(
+                        project_root,
+                        source_env_file=arguments.get("source_env_file", ".env"),
+                        output_path=arguments.get("output_path"),
+                        include_current_values=arguments.get("include_current_values", False),
+                    )
+                    return f".env.example generated at {path}:\n\n{content}"
+                elif action == "generate_docker_compose":
+                    content, path = generate_docker_compose(
+                        project_root,
+                        port=arguments.get("port"),
+                        include_redis=arguments.get("include_redis", False),
+                        include_postgres=arguments.get("include_postgres", False),
+                        output_path=arguments.get("output_path"),
+                    )
+                    return f"docker-compose.yml generated at {path}:\n\n{content}"
+                else:
+                    return f"Unknown env_parity action: {action}"
+
             else:
                 return f"Error: Tool '{name}' not implemented"
                 
@@ -1055,7 +1986,7 @@ class Agent:
             return None
         
         if suite is None:
-            suite = create_python_verification_suite(self.working_directory or ".")
+            suite = create_auto_verification_suite(self.working_directory or ".")
         
         self._log("Running verification checks...")
         result = await runner.run_suite(suite, task_id)
@@ -1094,7 +2025,7 @@ class Agent:
             return None
         
         if suite is None:
-            suite = create_python_verification_suite(self.working_directory or ".")
+            suite = create_auto_verification_suite(self.working_directory or ".")
         
         self._log("Running repair loop...")
         result = await repair_loop.run(suite, task_id, repair_fn)
@@ -2159,6 +3090,16 @@ class Agent:
             "executor_initialized": self._parallel_executor is not None,
             "batch_caller_initialized": self._batch_caller is not None,
         }
+
+    def _emit_playwright_browser_event(self, payload: dict[str, Any]) -> None:
+        """Forward Playwright live rows to the dashboard (session wires on_browser_event → WebSocket)."""
+        fn = (self.callbacks or {}).get("on_browser_event")
+        if not fn:
+            return
+        try:
+            fn(payload)
+        except Exception:
+            pass
     
     async def _trigger_callback(self, name: str, *args, **kwargs) -> None:
         """Trigger a callback if it exists, awaiting it if it's a coroutine."""
@@ -2203,6 +3144,7 @@ class Agent:
         self._current_step_idx = 0
         self._tools_used_count = 0
         self._no_tool_streak = 0
+        self._session_self_correct_lessons = []
         
         # Initialize artifact logger
         self._init_artifact_logger(task.task_id, task.goal.description)
@@ -2213,8 +3155,27 @@ class Agent:
         self._log(f"Starting task: {task.goal.description}")
         await self._update_phase(AgentPhase.INTAKE)
         
+        # Prepend project memory context if this session has a linked project
+        _proj_ctx = getattr(self, "_project_context_injection", None)
+        if _proj_ctx:
+            # Also do a semantic refresh for this specific task
+            try:
+                _pid = getattr(self, "_project_id", None)
+                if _pid:
+                    from ..integrations.project_memory import get_project_memory  # type: ignore
+                    _pm = get_project_memory()
+                    _proj_ctx = _pm.get_context_for_task(_pid, task.goal.description)
+            except Exception:
+                pass
+
         # Add task description to conversation
-        task_message = f"""Task: {task.goal.description}
+        _proj_prefix = f"\n\n{_proj_ctx}\n\n---\n" if _proj_ctx else ""
+        _rtc = _runtime_context_block(self.working_directory)
+        task_message = f"""{_proj_prefix}{_rtc}
+
+---
+
+Task: {task.goal.description}
 
 Acceptance Criteria:
 {chr(10).join(f'- {c}' for c in task.goal.acceptance_criteria) if task.goal.acceptance_criteria else '- Complete the task successfully'}
@@ -2330,6 +3291,7 @@ Call a tool (editor or terminal) immediately as your first action."""
                     
                     # Execute each tool
                     for tc in response.tool_calls:
+                        self._last_failed_tool = None
                         if "on_tool_start" in self.callbacks:
                             await self._trigger_callback("on_tool_start", tc.name, tc.arguments)
                         
@@ -2373,6 +3335,34 @@ Call a tool (editor or terminal) immediately as your first action."""
                                     # Reset failures and notify UI about success
                                     self._consecutive_failures = 0
                                     await self._trigger_callback("on_message", f"✅ Successfully corrected error in {tc.name}", is_token=False)
+                                    lf = self._last_failed_tool
+                                    if lf and self._use_conversation_memory:
+                                        try:
+                                            tname, bad_args, err_txt = lf
+                                            good_args = (
+                                                dict(tc.arguments)
+                                                if isinstance(tc.arguments, dict)
+                                                else {"raw": tc.arguments}
+                                            )
+                                            self._correction_engine.record_correction(
+                                                {"name": tname, "arguments": bad_args},
+                                                err_txt,
+                                                {"name": tname, "arguments": good_args},
+                                            )
+                                            self.get_conversation_memory().add_error_pattern(
+                                                error=err_txt[:400],
+                                                cause=f"{tname} tool (self-correct)",
+                                                solution=json.dumps(good_args, default=str)[:500],
+                                                tags=["self_correction", tname],
+                                                session_id=getattr(self.state, "session_id", None),
+                                                task_id=task.task_id,
+                                            )
+                                            self._session_self_correct_lessons.append(
+                                                f"Self-corrected {tname}: {json.dumps(good_args, default=str)[:280]}"
+                                            )
+                                        except Exception as mem_err:
+                                            self._log(f"Warning: could not persist self-correction to memory: {mem_err}")
+                                    self._last_failed_tool = None
                                 break
                                 
                             # Tool failed
@@ -2383,6 +3373,11 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 break
                                 
                             # Need to retry with hint
+                            try:
+                                bad_args = dict(tc.arguments) if isinstance(tc.arguments, dict) else {"raw": tc.arguments}
+                            except Exception:
+                                bad_args = {}
+                            self._last_failed_tool = (tc.name, bad_args, str(result)[:1200])
                             retry_count += 1
                             hint = self._correction_engine.get_retry_hint(error_type, tc.name, tc.arguments, result)
                             
@@ -2493,7 +3488,7 @@ Call a tool (editor or terminal) immediately as your first action."""
                         elif response.finish_reason == "stop":
                             # Nudge with forced tool use on the next iteration
                             self._no_tool_streak = getattr(self, '_no_tool_streak', 0) + 1
-                            if self._no_tool_streak >= 2:
+                            if self._no_tool_streak >= 1:
                                 # After 2 text-only turns, force a tool call
                                 self._log("Multiple text-only turns — injecting forced tool call.")
                                 forced_response = await self.llm.complete(
@@ -2538,7 +3533,11 @@ Call a tool (editor or terminal) immediately as your first action."""
         if iteration >= self.max_iterations:
             self._log("Max iterations reached")
             task.status = TaskStatus.FAILED
-            task.last_error = "Max iterations reached"
+            task.last_error = (
+                f"Max iterations ({self.max_iterations}) reached. "
+                "Increase max iterations in New Session, split the task into smaller steps, "
+                "or ensure API keys and workspace paths are correct."
+            )
         
         # Update token usage
         usage = self.llm.get_usage_stats()
@@ -2576,13 +3575,73 @@ Call a tool (editor or terminal) immediately as your first action."""
                 self.save_task_summary(
                     task=task,
                     summary=summary,
-                    lessons_learned=[],
+                    lessons_learned=list(self._session_self_correct_lessons),
                 )
                 self._log("Task summary saved to conversation memory")
             except Exception as e:
                 self._log(f"Warning: Failed to save task summary to memory: {e}")
 
-        # Auto git commit after task completion
+        # ── Checkpoint → Verify → Rollback-on-failure ──────────────────────────
+        # Skip when the agent made no repo edits and ran no shell commands (e.g. browse-only tasks),
+        # so pytest/npm verification does not fail unrelated workspaces.
+        _skip_post_verify = (
+            not task.files_changed
+            and not task.commands_executed
+        )
+        if task.status == TaskStatus.COMPLETED and self.working_directory:
+            git_mgr = self._get_git_manager()
+            if git_mgr and _skip_post_verify:
+                self._log("Skipping post-task verification (no file edits or terminal commands)")
+                await self._trigger_callback(
+                    "on_message",
+                    "ℹ️ **Git**: Skipping automated verification — no workspace file edits or shell commands this run.",
+                    is_token=False,
+                )
+            elif git_mgr:
+                checkpoint_id = f"post-task-{task.task_id}"
+                try:
+                    # Create a checkpoint with the current changes
+                    await git_mgr.create_checkpoint(checkpoint_id, f"agent: {task.goal.description[:60]}")
+                    self._log(f"Checkpoint created: {checkpoint_id}")
+                    await self._trigger_callback(
+                        "on_message",
+                        "📌 **Git**: Checkpoint created — running verification…",
+                        is_token=False,
+                    )
+
+                    # Run verification (tests, lints)
+                    verification = await self.run_verification(task_id=task.task_id)
+
+                    if verification and not verification.passed and verification.blocking_failures:
+                        # Tests failed — rollback to checkpoint
+                        await self._trigger_callback(
+                            "on_message",
+                            f"⚠️ **Verification failed** ({len(verification.blocking_failures)} issue(s)). "
+                            "Rolling back to last checkpoint…",
+                            is_token=False,
+                        )
+                        self._log(f"Verification failed. Rolling back to {checkpoint_id}")
+                        await git_mgr.rollback_to_checkpoint(checkpoint_id, hard=True)
+                        task.status = TaskStatus.FAILED
+                        task.last_error = (
+                            f"Verification failed: {', '.join(verification.blocking_failures)}"
+                        )
+                        await self._trigger_callback(
+                            "on_message",
+                            "🔄 **Rolled back** to pre-task state. Please review errors and retry.",
+                            is_token=False,
+                        )
+                    elif verification and verification.passed:
+                        self._log("Verification passed — keeping changes")
+                        await self._trigger_callback(
+                            "on_message",
+                            f"✅ **Verification passed** ({verification.checks_passed}/{verification.total_checks} checks)",
+                            is_token=False,
+                        )
+                except Exception as e:
+                    self._log(f"Checkpoint/verify step skipped: {e}")
+
+        # Auto git commit after task completion (only if still COMPLETED after verification)
         if self.auto_git_commit and task.status == TaskStatus.COMPLETED and self.working_directory:
             await self._auto_commit_changes(task)
 

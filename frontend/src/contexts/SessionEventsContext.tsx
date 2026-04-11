@@ -30,13 +30,35 @@ export interface FileEdit {
     toolId: string;
 }
 
+export type BrowserEventType =
+    | 'navigate'
+    | 'screenshot'
+    | 'search'
+    | 'click'
+    | 'console'
+    | 'network'
+    | 'pageerror'
+    | 'other';
+
 export interface BrowserEvent {
     id: string;
-    type: 'navigate' | 'screenshot' | 'search' | 'click' | 'other';
+    type: BrowserEventType;
     url?: string;
     query?: string;
     screenshotBase64?: string;
     timestamp: Date;
+}
+
+export interface ShellLine {
+    text: string;
+    type: 'command' | 'output' | 'error';
+    ts: number;   // Unix ms
+}
+
+export interface ClarificationPayload {
+    question: string;
+    options: string[];
+    context: string;
 }
 
 export type AgentPhase =
@@ -61,7 +83,8 @@ interface SessionEventsState {
     iteration: number;
     maxIterations: number;
     toolCalls: ToolCallEntry[];
-    shellLines: string[];
+    shellLines: string[];          // kept for backward compat (plain text)
+    richShellLines: ShellLine[];   // new: structured with type + ts
     isRunning: boolean;
     planSteps: PlanStep[];
     currentStepIndex: number;
@@ -71,6 +94,8 @@ interface SessionEventsState {
     changedFiles: Set<string>;
     tokenUsage: TokenUsage;
     clarificationQuestion: string | null;
+    clarification: ClarificationPayload | null;  // new: full payload with options
+    runningCommand: string | null;               // new: currently executing command
 }
 
 interface SessionEventsContextValue extends SessionEventsState {
@@ -91,7 +116,10 @@ interface SessionEventsContextValue extends SessionEventsState {
     onFileChangedFromWS: (path: string, content: string) => void;
     onTokenUsage: (usage: TokenUsage) => void;
     onClarificationNeeded: (question: string) => void;
+    onClarificationFull: (payload: ClarificationPayload) => void;
     dismissClarification: () => void;
+    clearShell: () => void;
+    onRichShellLine: (line: ShellLine) => void;
 }
 
 const defaultState: SessionEventsState = {
@@ -100,6 +128,7 @@ const defaultState: SessionEventsState = {
     maxIterations: 50,
     toolCalls: [],
     shellLines: [],
+    richShellLines: [],
     isRunning: false,
     planSteps: [],
     currentStepIndex: -1,
@@ -109,6 +138,8 @@ const defaultState: SessionEventsState = {
     changedFiles: new Set<string>(),
     tokenUsage: { total_tokens: 0, prompt_tokens: 0, completion_tokens: 0 },
     clarificationQuestion: null,
+    clarification: null,
+    runningCommand: null,
 };
 
 const SessionEventsContext = createContext<SessionEventsContextValue>({
@@ -130,10 +161,74 @@ const SessionEventsContext = createContext<SessionEventsContextValue>({
     onFileChangedFromWS: () => { },
     onTokenUsage: () => { },
     onClarificationNeeded: () => { },
+    onClarificationFull: () => { },
     dismissClarification: () => { },
+    clearShell: () => { },
+    onRichShellLine: () => { },
 });
 
-const BROWSER_TOOLS = new Set(['browser_navigate', 'browser_screenshot', 'browser_click', 'web_search', 'search_web', 'browse', 'browser']);
+/** Tools that should surface rows in the workspace Browser tab (names must match backend agent tools). */
+const BROWSER_TOOLS = new Set([
+    'browser_navigate',
+    'browser_screenshot',
+    'browser_click',
+    'web_search',
+    'search_web',
+    'browse',
+    'browser',
+    'browser_search',
+    'browser_fetch',
+    'browser_interactive',
+    'browser_playwright',
+]);
+
+function browserMetaFromTool(tool: string, input: Record<string, unknown>): { type: BrowserEvent['type']; url?: string; query?: string } {
+    const action = String(input.action ?? '').toLowerCase();
+
+    if (tool === 'browser_search' || tool === 'web_search' || tool === 'search_web') {
+        return { type: 'search', query: (input.query as string) || undefined };
+    }
+    if (tool === 'browser_fetch') {
+        return { type: 'navigate', url: (input.url as string) || undefined };
+    }
+    if (tool === 'browser_interactive' || tool === 'browser_playwright') {
+        if (action === 'search') {
+            return { type: 'search', query: (input.query as string) || undefined };
+        }
+        if (action === 'navigate' || action === 'fetch') {
+            return { type: 'navigate', url: (input.url as string) || undefined };
+        }
+        if (action === 'screenshot') {
+            return { type: 'screenshot', url: (input.url as string) || undefined };
+        }
+        if (action === 'click' || action === 'type') {
+            return {
+                type: action === 'click' ? 'click' : 'other',
+                url: (input.url as string) || undefined,
+                query: (input.selector as string) || undefined,
+            };
+        }
+        if (input.url) {
+            return { type: 'navigate', url: input.url as string };
+        }
+        return { type: 'other', query: action || undefined };
+    }
+
+    const t = tool.toLowerCase();
+    if (t.includes('navigate') || t === 'browse') {
+        return { type: 'navigate', url: (input.url as string) || (input.query as string) || undefined };
+    }
+    if (t.includes('screenshot')) {
+        return { type: 'screenshot', url: (input.url as string) || undefined };
+    }
+    if (t.includes('search')) {
+        return { type: 'search', query: (input.query as string) || (input.url as string) || undefined };
+    }
+    if (t.includes('click')) {
+        return { type: 'click', url: (input.url as string) || undefined, query: (input.selector as string) || undefined };
+    }
+    return { type: 'other', url: (input.url as string) || undefined, query: (input.query as string) || undefined };
+}
 const FILE_WRITE_TOOLS = new Set(['write_file', 'edit_file', 'str_replace_editor', 'create_file', 'write_to_file', 'patch_file', 'overwrite_file']);
 
 export function SessionEventsProvider({ children }: { children: React.ReactNode }) {
@@ -193,17 +288,14 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
                 newState.shellLines = [...prev.shellLines, `$ ${cmd}`];
             }
 
-            // Browser events
+            // Browser events (live run only — not replayed after page refresh)
             if (BROWSER_TOOLS.has(tool)) {
+                const meta = browserMetaFromTool(tool, input);
                 const browserEvent: BrowserEvent = {
                     id,
-                    type: tool.includes('navigate') || tool === 'browse' ? 'navigate'
-                        : tool.includes('screenshot') ? 'screenshot'
-                            : tool.includes('search') ? 'search'
-                                : tool.includes('click') ? 'click'
-                                    : 'other',
-                    url: (input.url as string) || (input.query as string) || undefined,
-                    query: (input.query as string) || undefined,
+                    type: meta.type,
+                    url: meta.url,
+                    query: meta.query,
                     timestamp: new Date(),
                 };
                 newState.browserEvents = [...prev.browserEvents, browserEvent];
@@ -326,7 +418,33 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
     }, []);
 
     const onShellLine = useCallback((line: string) => {
-        setState(prev => ({ ...prev, shellLines: [...prev.shellLines, line] }));
+        const isCmd = line.startsWith('$');
+        const isError = /error|fail|traceback/i.test(line);
+        const rich: ShellLine = {
+            text: line,
+            type: isCmd ? 'command' : isError ? 'error' : 'output',
+            ts: Date.now(),
+        };
+        setState(prev => ({
+            ...prev,
+            shellLines: [...prev.shellLines, line],
+            richShellLines: [...prev.richShellLines, rich],
+            runningCommand: isCmd ? line.slice(2) : prev.runningCommand,
+        }));
+    }, []);
+
+    const onRichShellLine = useCallback((line: ShellLine) => {
+        const isCmd = line.type === 'command';
+        setState(prev => ({
+            ...prev,
+            shellLines: [...prev.shellLines, line.text],
+            richShellLines: [...prev.richShellLines, line],
+            runningCommand: isCmd ? line.text.replace(/^\$ /, '') : prev.runningCommand,
+        }));
+    }, []);
+
+    const clearShell = useCallback(() => {
+        setState(prev => ({ ...prev, shellLines: [], richShellLines: [], runningCommand: null }));
     }, []);
 
     const onIterationUpdate = useCallback((iteration: number, max?: number) => {
@@ -343,12 +461,16 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
             isRunning: true,
             toolCalls: [],
             shellLines: [],
+            richShellLines: [],
             phase: null,
             iteration: 0,
             planSteps: [],
             currentStepIndex: -1,
             fileEdits: [],
             browserEvents: [],
+            runningCommand: null,
+            clarification: null,
+            clarificationQuestion: null,
         }));
     }, []);
 
@@ -372,10 +494,16 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
         query?: string,
         screenshotBase64?: string,
     ) => {
+        const allowed: BrowserEventType[] = [
+            'navigate', 'screenshot', 'search', 'click', 'console', 'network', 'pageerror', 'other',
+        ];
+        const normalized: BrowserEventType = allowed.includes(eventType as BrowserEventType)
+            ? (eventType as BrowserEventType)
+            : 'other';
         setState(prev => {
             const browserEvent: BrowserEvent = {
-                id: `browser-${Date.now()}`,
-                type: eventType as BrowserEvent['type'],
+                id: `browser-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                type: normalized,
                 url,
                 query,
                 screenshotBase64,
@@ -413,11 +541,23 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
     }, []);
 
     const onClarificationNeeded = useCallback((question: string) => {
-        setState(prev => ({ ...prev, clarificationQuestion: question }));
+        setState(prev => ({
+            ...prev,
+            clarificationQuestion: question,
+            clarification: { question, options: [], context: '' },
+        }));
+    }, []);
+
+    const onClarificationFull = useCallback((payload: ClarificationPayload) => {
+        setState(prev => ({
+            ...prev,
+            clarificationQuestion: payload.question,
+            clarification: payload,
+        }));
     }, []);
 
     const dismissClarification = useCallback(() => {
-        setState(prev => ({ ...prev, clarificationQuestion: null }));
+        setState(prev => ({ ...prev, clarificationQuestion: null, clarification: null }));
     }, []);
 
     return (
@@ -441,7 +581,10 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
                 onFileChangedFromWS,
                 onTokenUsage,
                 onClarificationNeeded,
+                onClarificationFull,
                 dismissClarification,
+                clearShell,
+                onRichShellLine,
             }}
         >
             {children}
