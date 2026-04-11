@@ -50,40 +50,41 @@ def _check_rate_limit(key: str, max_calls: int, window_seconds: int = 60) -> boo
 session_manager = DatabaseSessionManager()
 connection_manager = ConnectionManager()
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Application lifespan manager."""
-    print(f"[API] Starting Mini-Devin API at {datetime.now(timezone.utc).isoformat()}")
-    print(f"[API] Environment: PORT={os.getenv('PORT')}, DATABASE_URL={'Set' if os.getenv('DATABASE_URL') else 'Default SLite'}")
-    
+
+async def _background_startup() -> None:
+    """DB init + hooks that must not block HTTP readiness (Railway health checks / 502)."""
+    import traceback
+
+    init_timeout = float(os.getenv("DATABASE_INIT_TIMEOUT", "120"))
+
     try:
-        print("[API] Initializing Database...")
-        await init_db()
+        print("[API] Initializing Database (background)...")
+        await asyncio.wait_for(init_db(), timeout=init_timeout)
         print("[API] Database initialized successfully.")
-        
-        # Reset stale sessions (IDLE/RUNNING) from previous server runs
-        try:
-            from sqlalchemy import update
-            from ..database.models import SessionModel, SessionStatus as DBSessionStatus
-            from ..database.config import get_session_maker
-            async with get_session_maker()() as db:
-                result = await db.execute(
-                    update(SessionModel)
-                    .where(SessionModel.status.in_([DBSessionStatus.IDLE, DBSessionStatus.RUNNING]))
-                    .values(status=DBSessionStatus.TERMINATED)
-                )
-                await db.commit()
-                if result.rowcount > 0:
-                    print(f"[API] Reset {result.rowcount} stale session(s) from previous run.")
-        except Exception as cleanup_err:
-            print(f"[API] Warning: Could not reset stale sessions: {cleanup_err}")
+    except asyncio.TimeoutError:
+        print(f"[API] Database init timed out after {init_timeout}s (DATABASE_INIT_TIMEOUT).")
     except Exception as e:
         print(f"[API] Error initializing database: {e}")
-        import traceback
         traceback.print_exc()
-        # We don't exit here to allow health checks to potentially still pass if DB isn't critical
-    
-    # Register self-heal callback so the monitor can trigger an agent fix
+
+    try:
+        from sqlalchemy import update
+
+        from ..database.config import get_session_maker
+        from ..database.models import SessionModel, SessionStatus as DBSessionStatus
+
+        async with get_session_maker()() as db:
+            result = await db.execute(
+                update(SessionModel)
+                .where(SessionModel.status.in_([DBSessionStatus.IDLE, DBSessionStatus.RUNNING]))
+                .values(status=DBSessionStatus.TERMINATED)
+            )
+            await db.commit()
+            if result.rowcount > 0:
+                print(f"[API] Reset {result.rowcount} stale session(s) from previous run.")
+    except Exception as cleanup_err:
+        print(f"[API] Warning: Could not reset stale sessions: {cleanup_err}")
+
     try:
         from ..integrations.monitor import register_heal_callback
 
@@ -104,11 +105,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     description=task_description,
                     connection_manager=connection_manager,
                 )
-                asyncio.create_task(session_manager.run_task(
-                    session_id=target_session.session_id,
-                    task_id=task.task_id,
-                    connection_manager=connection_manager,
-                ))
+                asyncio.create_task(
+                    session_manager.run_task(
+                        session_id=target_session.session_id,
+                        task_id=task.task_id,
+                        connection_manager=connection_manager,
+                    )
+                )
                 print(f"[monitor] Heal task created: session={target_session.session_id} task={task.task_id}")
             except Exception as heal_err:
                 print(f"[monitor] Failed to create heal task: {heal_err}")
@@ -118,11 +121,39 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         print(f"[API] Warning: Could not register self-heal callback: {e}")
 
+
+def _log_task_result(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        print(f"[API] Background startup task failed: {exc}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Application lifespan manager."""
+    print(f"[API] Starting Mini-Devin API at {datetime.now(timezone.utc).isoformat()}")
+    print(
+        f"[API] Environment: PORT={os.getenv('PORT')}, "
+        f"DATABASE_URL={'Set' if os.getenv('DATABASE_URL') else 'Default SLite'}"
+    )
+
+    startup_task = asyncio.create_task(_background_startup())
+    startup_task.add_done_callback(_log_task_result)
+    app.state._db_startup_task = startup_task
+
     yield
+
     print(f"[API] Shutting down Mini-Devin API at {datetime.now(timezone.utc).isoformat()}")
-    # Stop monitor on shutdown
+    startup_task.cancel()
+    try:
+        await startup_task
+    except asyncio.CancelledError:
+        pass
     try:
         from ..integrations.monitor import stop_monitor
+
         stop_monitor()
     except Exception:
         pass

@@ -1,11 +1,10 @@
 """Database configuration and connection management."""
 
 import os
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy.pool import NullPool, AsyncAdaptedQueuePool
 
 
 class Base(DeclarativeBase):
@@ -51,6 +50,26 @@ def _is_sqlite() -> bool:
     return get_database_url().startswith("sqlite")
 
 
+def _asyncpg_connect_args(url: str) -> dict[str, Any]:
+    """asyncpg ignores libpq sslmode= in the URL; add ssl + connect timeout explicitly."""
+    raw_timeout = (os.getenv("DATABASE_CONNECT_TIMEOUT") or "15").strip()
+    try:
+        timeout = float(raw_timeout)
+    except ValueError:
+        timeout = 15.0
+    args: dict[str, Any] = {"timeout": timeout}
+    ul = url.lower()
+    if (
+        "sslmode=require" in ul
+        or "sslmode=verify-full" in ul
+        or "sslmode=verify-ca" in ul
+        or "ssl=true" in ul
+        or os.getenv("DATABASE_SSL_REQUIRE", "").lower() in ("1", "true", "yes")
+    ):
+        args["ssl"] = True
+    return args
+
+
 def get_engine():
     """Get or create the async database engine."""
     global _engine
@@ -65,13 +84,15 @@ def get_engine():
                 connect_args={"check_same_thread": False},
             )
         else:
-            _engine = create_async_engine(
-                url,
-                echo=echo,
-                pool_pre_ping=True,
-                pool_size=5,
-                max_overflow=10,
-            )
+            extra: dict[str, Any] = {
+                "echo": echo,
+                "pool_pre_ping": True,
+                "pool_size": 5,
+                "max_overflow": 10,
+            }
+            if "+asyncpg" in url:
+                extra["connect_args"] = _asyncpg_connect_args(url)
+            _engine = create_async_engine(url, **extra)
     return _engine
 
 
