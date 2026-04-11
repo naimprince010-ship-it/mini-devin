@@ -55,14 +55,26 @@ class SelfCorrectionEngine:
             
             if "syntaxerror" in out_lower or "indentationerror" in out_lower:
                 return ErrorType.SYNTAX_ERROR
-                
-            if "modulenotfounderror" in out_lower or "importerror" in out_lower or "command not found" in out_lower:
+
+            if (
+                "modulenotfounderror" in out_lower
+                or "importerror" in out_lower
+                or "command not found" in out_lower
+                or "not recognized as an internal or external command" in out_lower
+                or "'python3' is not recognized" in out_lower
+                or '"python3" is not recognized' in out_lower
+                or "no module named pytest" in out_lower
+            ):
                 return ErrorType.DEPENDENCY_MISSING
-                
-            if "no such file or directory" in out_lower:
+
+            if (
+                "no such file or directory" in out_lower
+                or "cannot find the path specified" in out_lower
+                or "the system cannot find the path specified" in out_lower
+            ):
                 return ErrorType.FILE_NOT_FOUND
-                
-            if "permission denied" in out_lower:
+
+            if "permission denied" in out_lower or "access is denied" in out_lower:
                 return ErrorType.PERMISSION_DENIED
                 
             if "timeout" in out_lower or "timed out" in out_lower:
@@ -111,13 +123,17 @@ class SelfCorrectionEngine:
             return "There is a syntax error in the code you executed or wrote. Please carefully check indentation, brackets, and syntax rules for the language, fix the error, and try again."
             
         elif error_type == ErrorType.DEPENDENCY_MISSING:
-            return "A dependency or command is missing. You may need to run `pip install`, `npm install`, or `apt-get install` to install the required package before retrying."
+            return (
+                "A dependency or command is missing. Use the **Python executable from Runtime context**: "
+                "`<that-python> -m pip install <package>` or `<that-python> -m pytest` / `-m unittest`. "
+                "On Windows use `python`, not `python3`. On Linux servers use `python3` if `python` is missing."
+            )
             
         elif error_type == ErrorType.FILE_NOT_FOUND:
             return (
                 "The file or directory was not found. Use `editor` list_directory or terminal `pwd` / `ls` "
-                "under the task workspace. On Linux servers, do NOT use Windows paths (C:\\\\, G:\\\\). "
-                "Use relative paths like `./src` or paths under the workspace root from the system prompt."
+                "under the task workspace. On Linux, do NOT use Windows paths (C:\\\\). "
+                "Use relative paths like `./src` from the workspace root shown in Runtime context."
             )
             
         elif error_type == ErrorType.PERMISSION_DENIED:

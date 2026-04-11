@@ -92,22 +92,43 @@ def _make_system_prompt() -> str:
     return _SYSTEM_PROMPT_TEMPLATE.format(os_env_note=os_note)
 
 
+def _runtime_context_block(working_directory: str | None) -> str:
+    """Inject exact Python path and OS so the model runs commands that work on this machine."""
+    exe = _sys_for_prompt.executable.replace("\\", "/")
+    plat = _sys_for_prompt.platform
+    wd = working_directory or "."
+    if plat == "win32":
+        test_hint = (
+            f"Use `{exe} -m pytest` or `{exe} -m unittest discover` (not bare `pytest` if it is not on PATH)."
+        )
+    else:
+        test_hint = (
+            "Use `python3 -m pytest` or `python3 -m unittest discover` when `pytest` is missing from PATH."
+        )
+    return f"""## Runtime context (use these exact values in terminal commands)
+- **Platform**: `{plat}`
+- **Python executable**: `{exe}`
+- **Workspace cwd** for terminal: `{wd}`
+- **Tests**: {test_hint}
+- **Unit tests you write** must assert behavior that matches your implementation (avoid contradictory expected values)."""
+
+
 _SYSTEM_PROMPT_TEMPLATE = """
 ## CRITICAL RULES — READ FIRST
 - **NEVER describe or narrate actions without calling a tool.** If you say "I will create a file", you MUST immediately call the `editor` tool to do it.
-- **NEVER write fake outputs.** Do not write "The tests passed" unless you actually ran `pytest` using the `terminal` tool and saw the output.
-- **NEVER say TASK COMPLETE unless you have used at least one tool** and verified the result with actual tool output.
+- **NEVER write fake outputs.** Do not write "The tests passed" unless you actually ran tests via `terminal` using the **Python executable from Runtime context** and saw exit code 0 in the output.
+- **NEVER say TASK COMPLETE unless you have used at least one tool** AND run verification (tests or a minimal run of the code) with real tool output showing success.
 - **Do NOT just write a plan as text and stop.** After your brief plan, immediately call the first tool.
 
 ## Workflow
 1. **Brief plan** (2-3 lines max): State what you will do.
 2. **ACT immediately**: Call the first tool right away — do not wait.
 3. **Continue**: After each tool result, call the next tool needed.
-4. **Verify**: Run tests or check output with real tool calls.
-5. **TASK COMPLETE**: Only after you have seen real tool output confirming success.
+4. **Verify**: Run tests with the workspace Python (`python -m …` / Runtime context). If tests fail, fix code or tests until green or you hit a clear blocker you report.
+5. **TASK COMPLETE**: Only after verification output confirms success (or you document why verification is N/A).
 
 ## Tool Usage
-- `terminal` — Run shell commands (pytest, pip, git, etc.)
+- `terminal` — Run shell commands; prefer `python -m pip`, `python -m pytest`, `python -m unittest` per Runtime context
 - `editor` with `read_file` — Read a file
 - `editor` with `write_file` — Write/create a file
 - `editor` with `search` — Search patterns in files
@@ -3016,7 +3037,12 @@ PREFER str_replace over write_file when editing existing files.""",
 
         # Add task description to conversation
         _proj_prefix = f"\n\n{_proj_ctx}\n\n---\n" if _proj_ctx else ""
-        task_message = f"""{_proj_prefix}Task: {task.goal.description}
+        _rtc = _runtime_context_block(self.working_directory)
+        task_message = f"""{_proj_prefix}{_rtc}
+
+---
+
+Task: {task.goal.description}
 
 Acceptance Criteria:
 {chr(10).join(f'- {c}' for c in task.goal.acceptance_criteria) if task.goal.acceptance_criteria else '- Complete the task successfully'}
@@ -3295,7 +3321,7 @@ Call a tool (editor or terminal) immediately as your first action."""
                         elif response.finish_reason == "stop":
                             # Nudge with forced tool use on the next iteration
                             self._no_tool_streak = getattr(self, '_no_tool_streak', 0) + 1
-                            if self._no_tool_streak >= 2:
+                            if self._no_tool_streak >= 1:
                                 # After 2 text-only turns, force a tool call
                                 self._log("Multiple text-only turns — injecting forced tool call.")
                                 forced_response = await self.llm.complete(
@@ -3340,7 +3366,11 @@ Call a tool (editor or terminal) immediately as your first action."""
         if iteration >= self.max_iterations:
             self._log("Max iterations reached")
             task.status = TaskStatus.FAILED
-            task.last_error = "Max iterations reached"
+            task.last_error = (
+                f"Max iterations ({self.max_iterations}) reached. "
+                "Increase max iterations in New Session, split the task into smaller steps, "
+                "or ensure API keys and workspace paths are correct."
+            )
         
         # Update token usage
         usage = self.llm.get_usage_stats()

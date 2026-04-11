@@ -6,6 +6,7 @@ It wraps the existing SessionManager functionality while adding database persist
 """
 
 import asyncio
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -433,13 +434,15 @@ class DatabaseSessionManager:
             ws_dir = Path(db_task.description and agent.working_directory or ".")
             if agent.working_directory:
                 ws_dir = Path(agent.working_directory)
-            dep_cmds = []
+            # Cross-platform: use the same interpreter as the API (Windows-safe, no bash-only redirects).
+            _py = sys.executable.replace('"', '\\"')
+            dep_cmds: list[str] = []
             if (ws_dir / "requirements.txt").exists():
-                dep_cmds.append("pip install -r requirements.txt")
+                dep_cmds.append(f'"{_py}" -m pip install -r requirements.txt')
             if (ws_dir / "pyproject.toml").exists() and not (ws_dir / "requirements.txt").exists():
-                dep_cmds.append("pip install -e . 2>/dev/null || true")
+                dep_cmds.append(f'"{_py}" -m pip install -e .')
             if (ws_dir / "package.json").exists():
-                dep_cmds.append("npm install --prefer-offline 2>/dev/null || true")
+                dep_cmds.append("npm install --prefer-offline")
             if dep_cmds and connection_manager:
                 await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
                     type=MessageType.TOOL_OUTPUT,
