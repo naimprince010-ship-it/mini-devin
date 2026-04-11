@@ -22,6 +22,7 @@ import { useAuth } from './contexts/AuthContext';
 import { useTheme } from './contexts/ThemeContext';
 import { SessionEventsProvider, useSessionEvents } from './contexts/SessionEventsContext';
 import { useApi } from './hooks/useApi';
+import { getApiBase } from './config/apiBase';
 import { ToastContainer, useToastState } from './components/Toast';
 import {
   Bot,
@@ -285,10 +286,7 @@ function App() {
     { id: 'benchmark', icon: <FlaskConical size={18} />, label: 'Benchmark' },
   ];
 
-  // Same-origin /api when API is served with the app (production). Override with VITE_API_URL for split deploys.
-  const apiBase = import.meta.env.VITE_API_URL
-    ? `${import.meta.env.VITE_API_URL}/api`
-    : '/api';
+  const apiBase = getApiBase();
 
   const accentColor = isDark ? '#00ff99' : '#00aa66';
   const bgPrimary = isDark ? 'bg-[#0f0f0f]' : 'bg-[#f5f5f5]';

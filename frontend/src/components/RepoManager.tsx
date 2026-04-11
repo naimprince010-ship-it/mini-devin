@@ -4,6 +4,8 @@ import {
   Loader2, Check, AlertCircle, Link2, Github, LogOut, User,
   Play, GitPullRequest, Bug, GitCommit, Key, ChevronDown, ChevronRight, X
 } from 'lucide-react';
+import { getApiBase } from '../config/apiBase';
+import { detailFromJsonBody, readJsonResponse } from '../utils/readResponseJson';
 
 interface GitHubOAuthStatus {
   connected: boolean;
@@ -40,7 +42,7 @@ interface RepoManagerProps {
   onOpenInSession?: (localPath: string, repoName: string) => void;
 }
 
-export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionId, onRepoLinked, onOpenInSession }: RepoManagerProps) {
+export function RepoManager({ apiBaseUrl = getApiBase(), sessionId, onRepoLinked, onOpenInSession }: RepoManagerProps) {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -73,7 +75,8 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
   const loadGitHubStatus = useCallback(async () => {
     try {
       const response = await fetch(`${apiBaseUrl}/github/oauth/status`);
-      if (response.ok) setGithubStatus(await response.json());
+      const { json } = await readJsonResponse<GitHubOAuthStatus>(response);
+      if (response.ok && json) setGithubStatus(json);
       else setGithubStatus({ connected: false, github_configured: false });
     } catch { setGithubStatus({ connected: false, github_configured: false }); }
   }, [apiBaseUrl]);
@@ -86,9 +89,9 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
     try {
       const response = await fetch(`${apiBaseUrl}/repos`);
       if (response.status === 404 || response.status === 501) { setRepos([]); return; }
-      if (!response.ok) throw new Error('Failed to load repositories');
-      const data = await response.json();
-      setRepos(data.repos || []);
+      const { json, text } = await readJsonResponse<{ repos?: Repo[] }>(response);
+      if (!response.ok) throw new Error(detailFromJsonBody(json) || text || 'Failed to load repositories');
+      setRepos(json?.repos || []);
     } catch (e) {
       console.warn('Repos API unavailable:', e);
       setRepos([]);
@@ -116,9 +119,14 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ repo_url: newRepoUrl, github_token: newRepoToken || null, branch: newRepoBranch })
       });
-      if (!response.ok) { const e = await response.json(); throw new Error(e.detail || 'Failed to add repository'); }
-      const data = await response.json();
-      setRepos(prev => [data, ...prev]);
+      const { json, text } = await readJsonResponse<Repo>(response);
+      if (!response.ok) {
+        throw new Error(detailFromJsonBody(json) || text || `HTTP ${response.status}: Failed to add repository`);
+      }
+      if (!json || typeof json !== 'object' || !('repo_id' in json)) {
+        throw new Error(text ? 'Server returned invalid data' : 'Server returned empty response (is the API running on port 8000?)');
+      }
+      setRepos(prev => [json as Repo, ...prev]);
       setShowAddForm(false); setNewRepoUrl(''); setNewRepoToken(''); setNewRepoBranch('main');
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to add repository'); }
     finally { setAdding(false); }
@@ -168,20 +176,24 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
     try {
       if (tab === 'pulls') {
         const r = await fetch(`${apiBaseUrl}/repos/${repoId}/pulls`);
-        if (r.ok) { const d = await r.json(); setPulls(prev => ({ ...prev, [repoId]: d.pulls })); }
-        else { const e = await r.json(); setError(e.detail); }
+        const { json, text } = await readJsonResponse<{ pulls?: PR[] }>(r);
+        if (r.ok && json?.pulls) setPulls(prev => ({ ...prev, [repoId]: json.pulls! }));
+        else setError(detailFromJsonBody(json) || text || 'Failed to load pulls');
       } else if (tab === 'issues') {
         const r = await fetch(`${apiBaseUrl}/repos/${repoId}/issues`);
-        if (r.ok) { const d = await r.json(); setIssues(prev => ({ ...prev, [repoId]: d.issues })); }
-        else { const e = await r.json(); setError(e.detail); }
+        const { json, text } = await readJsonResponse<{ issues?: Issue[] }>(r);
+        if (r.ok && json?.issues) setIssues(prev => ({ ...prev, [repoId]: json.issues! }));
+        else setError(detailFromJsonBody(json) || text || 'Failed to load issues');
       } else if (tab === 'commits') {
         const r = await fetch(`${apiBaseUrl}/repos/${repoId}/commits`);
-        if (r.ok) { const d = await r.json(); setCommits(prev => ({ ...prev, [repoId]: d.commits })); }
-        else { const e = await r.json(); setError(e.detail); }
+        const { json, text } = await readJsonResponse<{ commits?: Commit[] }>(r);
+        if (r.ok && json?.commits) setCommits(prev => ({ ...prev, [repoId]: json.commits! }));
+        else setError(detailFromJsonBody(json) || text || 'Failed to load commits');
       } else if (tab === 'branches') {
         const r = await fetch(`${apiBaseUrl}/repos/${repoId}/branches`);
-        if (r.ok) { const d = await r.json(); setBranches(prev => ({ ...prev, [repoId]: d.branches })); }
-        else { const e = await r.json(); setError(e.detail); }
+        const { json, text } = await readJsonResponse<{ branches?: string[] }>(r);
+        if (r.ok && json?.branches) setBranches(prev => ({ ...prev, [repoId]: json.branches! }));
+        else setError(detailFromJsonBody(json) || text || 'Failed to load branches');
       }
     } catch { setError('GitHub API failed. Make sure you have added a token.'); }
     finally { setTabLoading(null); }
@@ -193,9 +205,9 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(prForm)
       });
-      if (!r.ok) { const e = await r.json(); throw new Error(e.detail); }
-      const d = await r.json();
-      window.open(d.url, '_blank');
+      const { json, text } = await readJsonResponse<{ detail?: string; url?: string }>(r);
+      if (!r.ok) throw new Error(detailFromJsonBody(json) || text || 'Failed to create PR');
+      if (json?.url) window.open(json.url, '_blank');
       setShowCreatePR(null); setPrForm({ title: '', body: '', head: '', base: '' });
       loadTab(repoId, 'pulls');
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to create PR'); }
@@ -207,9 +219,9 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(issueForm)
       });
-      if (!r.ok) { const e = await r.json(); throw new Error(e.detail); }
-      const d = await r.json();
-      window.open(d.url, '_blank');
+      const { json, text } = await readJsonResponse<{ detail?: string; url?: string }>(r);
+      if (!r.ok) throw new Error(detailFromJsonBody(json) || text || 'Failed to create issue');
+      if (json?.url) window.open(json.url, '_blank');
       setShowCreateIssue(null); setIssueForm({ title: '', body: '' });
       loadTab(repoId, 'issues');
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to create issue'); }
@@ -222,7 +234,8 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ branch_name: branchForm.name, from_branch: branchForm.from || repo?.default_branch })
       });
-      if (!r.ok) { const e = await r.json(); throw new Error(e.detail); }
+      const { json, text } = await readJsonResponse<{ detail?: string }>(r);
+      if (!r.ok) throw new Error(detailFromJsonBody(json) || text || 'Failed to create branch');
       setShowCreateBranch(null); setBranchForm({ name: '', from: '' });
       loadTab(repoId, 'branches');
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to create branch'); }
@@ -234,12 +247,13 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newRepoForm)
       });
-      if (!r.ok) { const e = await r.json(); throw new Error(e.detail); }
-      const d = await r.json();
+      const { json, text } = await readJsonResponse<{ detail?: string; repo_url?: string }>(r);
+      if (!r.ok) throw new Error(detailFromJsonBody(json) || text || 'Failed to create repo');
+      if (!json?.repo_url) throw new Error('Server did not return repo_url');
       setShowCreateRepo(false);
       setNewRepoForm({ name: '', description: '', private: false, token: '' });
       // Auto-add the new repo
-      setNewRepoUrl(d.repo_url);
+      setNewRepoUrl(json.repo_url);
       setShowAddForm(true);
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to create repo'); }
   };

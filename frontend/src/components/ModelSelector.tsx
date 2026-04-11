@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { ChevronDown, Cpu, Cloud, Server, Zap, CheckCircle2 } from 'lucide-react';
 import { fetchJsonWithTimeout } from '../utils/fetchWithTimeout';
+import { getApiBase } from '../config/apiBase';
 
 export interface Model {
   id: string;
@@ -45,8 +46,7 @@ export function ModelSelector({ value, onChange, className = '', showDetails = f
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-    const base = `${apiUrl.replace(/\/$/, '')}/api`;
+    const base = getApiBase();
     Promise.all([
       fetchJsonWithTimeout<{ models: Model[] }>(`${base}/models`).catch(() => ({ models: [] })),
       fetchJsonWithTimeout<{ providers: Provider[] }>(`${base}/providers`).catch(() => ({ providers: [] })),

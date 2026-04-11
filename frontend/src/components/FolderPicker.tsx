@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { getApiBase } from '../config/apiBase';
 import { FolderOpen, Folder, ChevronRight, X, Check, ArrowLeft, Loader2 } from 'lucide-react';
 
 interface DirEntry {
@@ -28,7 +29,7 @@ export function FolderPicker({ value, onChange }: FolderPickerProps) {
         setLoading(true);
         setError('');
         try {
-            const res = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
+            const res = await fetch(`${getApiBase()}/browse?path=${encodeURIComponent(path)}`);
             if (!res.ok) throw new Error('Cannot open this folder');
             const json: BrowseResult = await res.json();
             setData(json);

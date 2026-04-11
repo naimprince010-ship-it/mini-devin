@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import Editor, { OnMount } from '@monaco-editor/react';
 import type * as Monaco from 'monaco-editor';
 import { Save, X, AlertCircle, Loader2 } from 'lucide-react';
+import { getApiBase } from '../config/apiBase';
 
 interface MonacoEditorPanelProps {
     sessionId: string;
@@ -41,8 +42,6 @@ function getLanguage(path: string): string {
     };
     return map[ext] ?? 'plaintext';
 }
-
-const API_BASE = import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : '/api';
 
 const DIAG_DEBOUNCE_MS = 700;
 
@@ -80,7 +79,7 @@ export function MonacoEditorPanel({
         }
         setLoading(true);
         setError(null);
-        fetch(`${API_BASE}/sessions/${sessionId}/file?path=${encodeURIComponent(filePath)}`)
+        fetch(`${getApiBase()}/sessions/${sessionId}/file?path=${encodeURIComponent(filePath)}`)
             .then(r => {
                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
                 return r.json();
@@ -107,7 +106,7 @@ export function MonacoEditorPanel({
             return;
         }
         try {
-            const r = await fetch(`${API_BASE}/sessions/${sessionId}/lsp/diagnostics`, {
+            const r = await fetch(`${getApiBase()}/sessions/${sessionId}/lsp/diagnostics`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ path: filePath, content: model.getValue() }),
@@ -171,7 +170,7 @@ export function MonacoEditorPanel({
         const d = monaco.languages.registerHoverProvider(lid, {
             provideHover: async (m, position) => {
                 try {
-                    const r = await fetch(`${API_BASE}/sessions/${sessionId}/lsp/hover`, {
+                    const r = await fetch(`${getApiBase()}/sessions/${sessionId}/lsp/hover`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -205,7 +204,7 @@ export function MonacoEditorPanel({
         setSaving(true);
         setError(null);
         try {
-            const r = await fetch(`${API_BASE}/sessions/${sessionId}/file`, {
+            const r = await fetch(`${getApiBase()}/sessions/${sessionId}/file`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ path: filePath, content: current }),

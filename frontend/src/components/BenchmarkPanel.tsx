@@ -16,6 +16,7 @@ import {
   ExternalLink,
   Code2,
 } from 'lucide-react';
+import { getApiBase } from '../config/apiBase';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -144,7 +145,7 @@ export const BenchmarkPanel: React.FC = () => {
 
   const fetchRuns = useCallback(async () => {
     try {
-      const res = await fetch('/api/benchmark/runs');
+      const res = await fetch(`${getApiBase()}/benchmark/runs`);
       const data = await res.json();
       setRuns(data.runs || []);
     } catch { /* ignore */ }
@@ -152,7 +153,7 @@ export const BenchmarkPanel: React.FC = () => {
 
   const fetchStats = useCallback(async () => {
     try {
-      const res = await fetch('/api/benchmark/stats');
+      const res = await fetch(`${getApiBase()}/benchmark/stats`);
       const data = await res.json();
       setStats(data);
     } catch { /* ignore */ }
@@ -163,7 +164,7 @@ export const BenchmarkPanel: React.FC = () => {
     try {
       const params = new URLSearchParams({ limit: '20' });
       if (taskFilter) params.set('repo_filter', taskFilter);
-      const res = await fetch(`/api/benchmark/tasks?${params}`);
+      const res = await fetch(`${getApiBase()}/benchmark/tasks?${params}`);
       const data = await res.json();
       setTasks(data.tasks || []);
     } catch { /* ignore */ } finally {
@@ -174,7 +175,7 @@ export const BenchmarkPanel: React.FC = () => {
   const fetchRunResults = useCallback(async (runId: string) => {
     if (runResults[runId]) return;
     try {
-      const res = await fetch(`/api/benchmark/runs/${runId}/results`);
+      const res = await fetch(`${getApiBase()}/benchmark/runs/${runId}/results`);
       const data = await res.json();
       setRunResults(prev => ({ ...prev, [runId]: data.results || [] }));
     } catch { /* ignore */ }
@@ -209,7 +210,7 @@ export const BenchmarkPanel: React.FC = () => {
   const handleStartRun = async () => {
     setIsStarting(true);
     try {
-      await fetch('/api/benchmark/runs', {
+      await fetch(`${getApiBase()}/benchmark/runs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -232,14 +233,14 @@ export const BenchmarkPanel: React.FC = () => {
   const handleDeleteRun = async (runId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!confirm('Delete this benchmark run?')) return;
-    await fetch(`/api/benchmark/runs/${runId}`, { method: 'DELETE' });
+    await fetch(`${getApiBase()}/benchmark/runs/${runId}`, { method: 'DELETE' });
     setRuns(prev => prev.filter(r => r.run_id !== runId));
     setRunResults(prev => { const copy = { ...prev }; delete copy[runId]; return copy; });
     fetchStats();
   };
 
   const handleCancelRun = async () => {
-    await fetch('/api/benchmark/runs/cancel', { method: 'POST' });
+    await fetch(`${getApiBase()}/benchmark/runs/cancel`, { method: 'POST' });
     fetchRuns();
   };
 

@@ -3,6 +3,29 @@ import react from '@vitejs/plugin-react'
 import fs from 'fs'
 import path from 'path'
 
+/** Shared dev + preview: API on :8000; production build under /app uses /app/api (rewrite to /api). */
+const apiProxy: Record<string, object> = {
+  '/app/api': {
+    target: 'http://localhost:8000',
+    changeOrigin: true,
+    rewrite: (p: string) => p.replace(/^\/app\/api/, '/api'),
+  },
+  '/api/ws': {
+    target: 'ws://localhost:8000',
+    ws: true,
+    changeOrigin: true,
+  },
+  '/api': {
+    target: 'http://localhost:8000',
+    changeOrigin: true,
+  },
+  '/ws': {
+    target: 'ws://localhost:8000',
+    ws: true,
+    changeOrigin: true,
+  },
+}
+
 export default defineConfig({
   plugins: [
     react(),
@@ -26,22 +49,17 @@ export default defineConfig({
   ],
   server: {
     port: 5173,
-    historyApiFallback: true,
-    proxy: {
-      '/api/ws': {
-        target: 'ws://localhost:8000',
-        ws: true,
-        changeOrigin: true,
-      },
-      '/api': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-      '/ws': {
-        target: 'ws://localhost:8000',
-        ws: true,
-        changeOrigin: true,
-      },
-    },
+    strictPort: false,
+    // Cursor / Simple Browser + port forwarding: listen on all interfaces
+    host: true,
+    open: '/app',
+    proxy: apiProxy,
+  },
+  preview: {
+    port: 4173,
+    strictPort: false,
+    host: true,
+    open: '/app',
+    proxy: apiProxy,
   },
 })

@@ -1,7 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { User, LoginRequest, RegisterRequest, TokenResponse } from '../types';
-
-const API_BASE = '/api';
+import { getApiBase } from '../config/apiBase';
 
 interface AuthContextType {
   user: User | null;
@@ -41,7 +40,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       headers['Authorization'] = `Bearer ${token}`;
     }
 
-    const response = await fetch(`${API_BASE}${endpoint}`, {
+    const response = await fetch(`${getApiBase()}${endpoint}`, {
       ...options,
       headers,
     });
@@ -81,7 +80,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null);
 
     try {
-      const response = await fetch(`${API_BASE}/auth/login`, {
+      const response = await fetch(`${getApiBase()}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
@@ -96,7 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       localStorage.setItem(TOKEN_KEY, tokenData.access_token);
       setToken(tokenData.access_token);
 
-      const userData = await fetch(`${API_BASE}/auth/me`, {
+      const userData = await fetch(`${getApiBase()}/auth/me`, {
         headers: { 'Authorization': `Bearer ${tokenData.access_token}` },
       }).then(r => r.json());
 
@@ -114,7 +113,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null);
 
     try {
-      const response = await fetch(`${API_BASE}/auth/register`, {
+      const response = await fetch(`${getApiBase()}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),

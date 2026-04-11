@@ -140,6 +140,28 @@ def create_app() -> FastAPI:
     """Factory function to create the app instance."""
     return app
 
+
+class AppApiPrefixMiddleware:
+    """ASGI: map ``/app/api`` → ``/api`` so POST works when the SPA lives under ``/app`` (some edges return 405 on root ``/api``)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            path = scope.get("path") or ""
+            prefix = "/app/api"
+            if path == prefix or path.startswith(prefix + "/"):
+                suffix = path[len(prefix) :]
+                new_path = "/api" + suffix
+                scope = dict(scope)
+                scope["path"] = new_path
+                raw = scope.get("raw_path")
+                if isinstance(raw, (bytes, bytearray)):
+                    scope["raw_path"] = new_path.encode("utf-8")
+        await self.app(scope, receive, send)
+
+
 # Configure CORS - allow all origins for production
 app.add_middleware(
     CORSMiddleware,
@@ -148,6 +170,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Outermost: normalize /app/api → /api before routing (register after CORS so this runs first on the request)
+app.add_middleware(AppApiPrefixMiddleware)
 
 
 @app.get("/")

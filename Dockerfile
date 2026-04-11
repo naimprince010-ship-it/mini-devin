@@ -2,6 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Must be set before `poetry install`: playwright is a dependency and otherwise
+# tries to download browser binaries during install (fails / OOM on Railway).
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV POETRY_HTTP_TIMEOUT=300
+ENV POETRY_NO_INTERACTION=1
+
 # Install system dependencies — git, curl, Node.js
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -11,8 +19,8 @@ RUN apt-get update && apt-get install -y \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Install poetry
-RUN pip install poetry --no-cache-dir
+# Pin Poetry 1.x (stable with existing lockfiles)
+RUN pip install "poetry>=1.8.5,<2.0" --no-cache-dir
 
 # Copy backend files and install Python deps first (layer cache)
 COPY pyproject.toml poetry.lock* ./
@@ -22,7 +30,9 @@ RUN poetry config virtualenvs.create false && \
 # Copy frontend and build it
 COPY frontend/ ./frontend/
 WORKDIR /app/frontend
-RUN npm install && npm run build
+# Large Vite bundle: avoid OOM on small Railway builders
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi \
+    && NODE_OPTIONS=--max-old-space-size=4096 npm run build
 
 # Copy rest of the app
 WORKDIR /app
@@ -34,7 +44,6 @@ EXPOSE 8000
 # Environment hardening
 ENV GIT_PYTHON_REFRESH=quiet
 ENV PYTHONIOENCODING=UTF-8
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 # Run the bootstrap watchdog
 CMD ["python", "scripts/bootstrap.py"]

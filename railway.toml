@@ -1,0 +1,12 @@
+# Mini-Devin on Railway — Docker image (Python + Node build inside Dockerfile).
+# Dashboard: set OPENAI_API_KEY (secret). Railway injects PORT automatically.
+# SQLite lives on ephemeral disk unless you attach a volume at /app or set DATABASE_URL (Postgres).
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/api/health"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"

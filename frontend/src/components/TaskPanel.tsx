@@ -8,6 +8,7 @@ import { useSessionEvents } from '../contexts/SessionEventsContext';
 import { PlanStepsView } from './PlanStepsView';
 import { useToast } from './Toast';
 import { ExportButtons } from './ExportButtons';
+import { getApiBase } from '../config/apiBase';
 
 interface TaskPanelProps {
   session: Session;
@@ -371,7 +372,7 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     if (!answer.trim() || isSubmittingAnswer) return;
     setIsSubmittingAnswer(true);
     try {
-      const response = await fetch(`/api/sessions/${session.session_id}/answer`, {
+      const response = await fetch(`${getApiBase()}/sessions/${session.session_id}/answer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ answer })

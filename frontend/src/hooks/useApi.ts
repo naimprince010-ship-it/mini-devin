@@ -13,8 +13,7 @@ import {
   ExportResponse,
 } from '../types';
 import { fetchWithTimeout, isAbortError } from '../utils/fetchWithTimeout';
-
-const API_BASE = import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : '/api';
+import { getApiBase } from '../config/apiBase';
 
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
 
@@ -22,9 +21,10 @@ type FetchApiOptions = RequestInit & { timeoutMs?: number };
 
 async function fetchApi<T>(endpoint: string, options: FetchApiOptions = {}): Promise<T> {
   const { timeoutMs = DEFAULT_FETCH_TIMEOUT_MS, ...rest } = options;
+  const apiBase = getApiBase();
   let response: Response;
   try {
-    response = await fetchWithTimeout(`${API_BASE}${endpoint}`, {
+    response = await fetchWithTimeout(`${apiBase}${endpoint}`, {
       ...rest,
       timeoutMs,
       headers: {
@@ -299,7 +299,7 @@ export function useApi() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const response = await fetch(`${API_BASE}/sessions/${sessionId}/files`, {
+      const response = await fetch(`${getApiBase()}/sessions/${sessionId}/files`, {
         method: 'POST',
         body: formData,
       });

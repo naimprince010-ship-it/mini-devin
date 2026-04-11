@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { WebSocketMessage } from '../types';
+import { getApiWsUrl } from '../config/apiBase';
 
 interface UseWebSocketOptions {
   sessionId?: string;
@@ -23,21 +24,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   }, [options]);
 
   const connect = useCallback(() => {
-    let wsProtocol: string;
-    let apiHost: string;
-    if (import.meta.env.VITE_API_URL) {
-      const apiUrl = import.meta.env.VITE_API_URL;
-      wsProtocol = apiUrl.startsWith('https') ? 'wss:' : 'ws:';
-      apiHost = apiUrl.replace(/^https?:\/\//, '');
-    } else {
-      // Same-domain: use current window location
-      wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      apiHost = window.location.host;
-    }
-    const wsUrl = sessionId
-      ? `${wsProtocol}//${apiHost}/api/ws/${sessionId}`
-      : `${wsProtocol}//${apiHost}/api/ws`;
-
+    const wsUrl = getApiWsUrl(sessionId);
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
