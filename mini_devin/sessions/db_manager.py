@@ -516,6 +516,15 @@ class DatabaseSessionManager:
                                 data={"line": line},
                                 task_id=task_id,
                             ))
+                    elif update_type == "browser_event":
+                        await connection_manager.send_browser_event(
+                            session_id,
+                            task_id,
+                            data.get("event_type", "other"),
+                            data.get("url"),
+                            data.get("query"),
+                            data.get("screenshot_base64"),
+                        )
                     
                     # Update iteration and status in database with locking
                     # Skip for tokens to reduce database pressure during streaming
@@ -587,6 +596,10 @@ class DatabaseSessionManager:
                     "type": "output",
                     "ts": __import__("time").time(),
                 })),
+                "on_browser_event": lambda payload: _fire(on_update(
+                    "browser_event",
+                    payload if isinstance(payload, dict) else {"event_type": "other"},
+                )),
             }
 
             # Run the agent — track asyncio.Task for cancellation

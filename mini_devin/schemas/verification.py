@@ -301,13 +301,33 @@ class CompletionCriteria(BaseModel):
 # =============================================================================
 
 
+def _has_discoverable_python_tests(root: Path) -> bool:
+    """Heuristic: pytest would find tests (avoid exit code 5 / failures when no tests exist)."""
+    tests_dir = root / "tests"
+    if tests_dir.is_dir():
+        for p in tests_dir.rglob("*.py"):
+            if p.is_file() and (p.name.startswith("test_") or p.name.endswith("_test.py")):
+                return True
+    for p in root.glob("test_*.py"):
+        if p.is_file():
+            return True
+    return False
+
+
 def create_python_verification_suite(
     project_path: str,
     test_command: str = "pytest",
     lint_command: str = "ruff check .",
     typecheck_command: str = "mypy .",
+    *,
+    block_on_tests_only_if_discovered: bool = False,
 ) -> VerificationSuite:
     """Create a standard verification suite for Python projects."""
+    root = Path(project_path)
+    noop = 'python -c "import sys; sys.exit(0)"'
+    tests_ok = _has_discoverable_python_tests(root) if block_on_tests_only_if_discovered else True
+    test_cmd = test_command if tests_ok else noop
+    test_severity = CheckSeverity.BLOCKING if tests_ok else CheckSeverity.WARNING
     return VerificationSuite(
         suite_id="python_standard",
         name="Python Standard Verification",
@@ -336,13 +356,31 @@ def create_python_verification_suite(
                 check_type=CheckType.UNIT_TESTS,
                 name="Unit Tests",
                 description="Run unit tests",
-                command=test_command,
+                command=test_cmd,
                 working_directory=project_path,
-                severity=CheckSeverity.BLOCKING,
+                severity=test_severity,
                 timeout_seconds=600,
             ),
         ],
     )
+
+
+def _looks_like_node_frontend(root: Path) -> bool:
+    """Prefer npm-based verification for typical JS/TS app roots even if requirements.txt exists."""
+    if not (root / "package.json").exists():
+        return False
+    markers = (
+        "next.config.js",
+        "next.config.mjs",
+        "next.config.ts",
+        "vite.config.ts",
+        "vite.config.mjs",
+        "vite.config.js",
+        "angular.json",
+        "nuxt.config.ts",
+        "nuxt.config.js",
+    )
+    return any((root / m).exists() for m in markers)
 
 
 def create_auto_verification_suite(project_path: str) -> VerificationSuite:
@@ -364,10 +402,13 @@ def create_auto_verification_suite(project_path: str) -> VerificationSuite:
     py_files = list(root.glob("*.py"))
     strong_python = py_markers or len(py_files) >= 3
 
-    if has_pkg and not strong_python:
+    if has_pkg and (not strong_python or _looks_like_node_frontend(root)):
         return _create_node_verification_suite(str(root))
 
-    return create_python_verification_suite(str(root))
+    return create_python_verification_suite(
+        str(root),
+        block_on_tests_only_if_discovered=True,
+    )
 
 
 def _create_node_verification_suite(project_path: str) -> VerificationSuite:

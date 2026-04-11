@@ -1277,6 +1277,21 @@ PREFER str_replace over write_file when editing existing files.""",
                             output_parts.append(f"\nPage text:\n{text}")
                     
                     output = "\n".join(output_parts)
+                    # Stream screenshot / URL to dashboard Browser tab (tool_completed only sends strings)
+                    if page_state:
+                        shot = getattr(page_state, "screenshot_base64", None) or None
+                        ev = "screenshot" if shot else (
+                            "navigate" if str(action).lower() == "navigate" else "other"
+                        )
+                        await self._trigger_callback(
+                            "on_browser_event",
+                            {
+                                "event_type": ev,
+                                "url": page_state.url,
+                                "query": None,
+                                "screenshot_base64": shot,
+                            },
+                        )
                 else:
                     output = f"Browser action failed: {result.message}"
                 
@@ -3455,9 +3470,22 @@ Call a tool (editor or terminal) immediately as your first action."""
                 self._log(f"Warning: Failed to save task summary to memory: {e}")
 
         # ── Checkpoint → Verify → Rollback-on-failure ──────────────────────────
+        # Skip when the agent made no repo edits and ran no shell commands (e.g. browse-only tasks),
+        # so pytest/npm verification does not fail unrelated workspaces.
+        _skip_post_verify = (
+            not task.files_changed
+            and not task.commands_executed
+        )
         if task.status == TaskStatus.COMPLETED and self.working_directory:
             git_mgr = self._get_git_manager()
-            if git_mgr:
+            if git_mgr and _skip_post_verify:
+                self._log("Skipping post-task verification (no file edits or terminal commands)")
+                await self._trigger_callback(
+                    "on_message",
+                    "ℹ️ **Git**: Skipping automated verification — no workspace file edits or shell commands this run.",
+                    is_token=False,
+                )
+            elif git_mgr:
                 checkpoint_id = f"post-task-{task.task_id}"
                 try:
                     # Create a checkpoint with the current changes
