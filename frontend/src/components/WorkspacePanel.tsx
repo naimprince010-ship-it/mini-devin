@@ -330,12 +330,18 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
                 {activeTab === 'browser' && (
                     <div className="absolute inset-0 flex flex-col bg-[#050505]">
                         {events.browserEvents.length === 0 ? (
-                            <div className="flex flex-col items-center justify-center h-full text-center p-8 gap-4">
+                            <div className="flex flex-col items-center justify-center h-full text-center p-8 gap-4 max-w-sm mx-auto">
                                 <Globe size={48} className="text-[#2a2a2a]" />
-                                <div>
+                                <div className="space-y-2">
                                     <p className="text-[#525252] text-sm font-medium">Browser</p>
-                                    <p className="text-[#3a3a3a] text-xs mt-1">
-                                        Web browser activity will be visible here when the agent browses the internet.
+                                    <p className="text-[#3a3a3a] text-xs leading-relaxed">
+                                        While a task is running, searches, fetches, and interactive browser steps appear here as the agent uses{' '}
+                                        <span className="text-[#525252] font-mono">browser_search</span>,{' '}
+                                        <span className="text-[#525252] font-mono">browser_fetch</span>, or{' '}
+                                        <span className="text-[#525252] font-mono">browser_interactive</span>.
+                                    </p>
+                                    <p className="text-[#3a3a3a] text-[11px] leading-relaxed border-t border-[#1a1a1a] pt-3">
+                                        This feed is not saved: if you reload the page or open a session restored from history, the Browser tab starts empty even though the chat summary may mention web work.
                                     </p>
                                 </div>
                             </div>

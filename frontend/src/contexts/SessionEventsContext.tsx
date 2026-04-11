@@ -157,7 +157,68 @@ const SessionEventsContext = createContext<SessionEventsContextValue>({
     onRichShellLine: () => { },
 });
 
-const BROWSER_TOOLS = new Set(['browser_navigate', 'browser_screenshot', 'browser_click', 'web_search', 'search_web', 'browse', 'browser']);
+/** Tools that should surface rows in the workspace Browser tab (names must match backend agent tools). */
+const BROWSER_TOOLS = new Set([
+    'browser_navigate',
+    'browser_screenshot',
+    'browser_click',
+    'web_search',
+    'search_web',
+    'browse',
+    'browser',
+    'browser_search',
+    'browser_fetch',
+    'browser_interactive',
+    'browser_playwright',
+]);
+
+function browserMetaFromTool(tool: string, input: Record<string, unknown>): { type: BrowserEvent['type']; url?: string; query?: string } {
+    const action = String(input.action ?? '').toLowerCase();
+
+    if (tool === 'browser_search' || tool === 'web_search' || tool === 'search_web') {
+        return { type: 'search', query: (input.query as string) || undefined };
+    }
+    if (tool === 'browser_fetch') {
+        return { type: 'navigate', url: (input.url as string) || undefined };
+    }
+    if (tool === 'browser_interactive' || tool === 'browser_playwright') {
+        if (action === 'search') {
+            return { type: 'search', query: (input.query as string) || undefined };
+        }
+        if (action === 'navigate' || action === 'fetch') {
+            return { type: 'navigate', url: (input.url as string) || undefined };
+        }
+        if (action === 'screenshot') {
+            return { type: 'screenshot', url: (input.url as string) || undefined };
+        }
+        if (action === 'click' || action === 'type') {
+            return {
+                type: action === 'click' ? 'click' : 'other',
+                url: (input.url as string) || undefined,
+                query: (input.selector as string) || undefined,
+            };
+        }
+        if (input.url) {
+            return { type: 'navigate', url: input.url as string };
+        }
+        return { type: 'other', query: action || undefined };
+    }
+
+    const t = tool.toLowerCase();
+    if (t.includes('navigate') || t === 'browse') {
+        return { type: 'navigate', url: (input.url as string) || (input.query as string) || undefined };
+    }
+    if (t.includes('screenshot')) {
+        return { type: 'screenshot', url: (input.url as string) || undefined };
+    }
+    if (t.includes('search')) {
+        return { type: 'search', query: (input.query as string) || (input.url as string) || undefined };
+    }
+    if (t.includes('click')) {
+        return { type: 'click', url: (input.url as string) || undefined, query: (input.selector as string) || undefined };
+    }
+    return { type: 'other', url: (input.url as string) || undefined, query: (input.query as string) || undefined };
+}
 const FILE_WRITE_TOOLS = new Set(['write_file', 'edit_file', 'str_replace_editor', 'create_file', 'write_to_file', 'patch_file', 'overwrite_file']);
 
 export function SessionEventsProvider({ children }: { children: React.ReactNode }) {
@@ -217,17 +278,14 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
                 newState.shellLines = [...prev.shellLines, `$ ${cmd}`];
             }
 
-            // Browser events
+            // Browser events (live run only — not replayed after page refresh)
             if (BROWSER_TOOLS.has(tool)) {
+                const meta = browserMetaFromTool(tool, input);
                 const browserEvent: BrowserEvent = {
                     id,
-                    type: tool.includes('navigate') || tool === 'browse' ? 'navigate'
-                        : tool.includes('screenshot') ? 'screenshot'
-                            : tool.includes('search') ? 'search'
-                                : tool.includes('click') ? 'click'
-                                    : 'other',
-                    url: (input.url as string) || (input.query as string) || undefined,
-                    query: (input.query as string) || undefined,
+                    type: meta.type,
+                    url: meta.url,
+                    query: meta.query,
                     timestamp: new Date(),
                 };
                 newState.browserEvents = [...prev.browserEvents, browserEvent];
