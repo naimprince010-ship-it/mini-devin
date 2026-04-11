@@ -7,6 +7,8 @@ interface SessionListProps {
   onSelectSession: (session: Session) => void;
   selectedSessionId?: string;
   onNewSession?: () => void;
+  /** When this number changes, reload sessions from the API (e.g. after creating a session). */
+  refreshTrigger?: number;
 }
 
 function formatTime(dateStr: string): string {
@@ -24,7 +26,12 @@ function StatusIcon({ status }: { status: string }) {
   return <CheckCircle2 size={12} className="text-[#525252]" />;
 }
 
-export function SessionList({ onSelectSession, selectedSessionId, onNewSession }: SessionListProps) {
+export function SessionList({
+  onSelectSession,
+  selectedSessionId,
+  onNewSession,
+  refreshTrigger = 0,
+}: SessionListProps) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionTitles, setSessionTitles] = useState<Record<string, string>>({});
   const [searchQuery, setSearchQuery] = useState('');
@@ -71,6 +78,12 @@ export function SessionList({ onSelectSession, selectedSessionId, onNewSession }
     const interval = setInterval(loadSessions, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (refreshTrigger > 0) {
+      loadSessions();
+    }
+  }, [refreshTrigger]);
 
   useEffect(() => {
     if (showSearch && searchRef.current) {

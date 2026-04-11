@@ -231,6 +231,8 @@ function App() {
   const [newSessionInitialDir, setNewSessionInitialDir] = useState('');
   const [activeTab, setActiveTab] = useState<TabType>('sessions');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  /** Increment after a session is created so SessionList refetches immediately */
+  const [sessionListRefresh, setSessionListRefresh] = useState(0);
   const api = useApi();
 
   // Restore last selected session from localStorage on mount
@@ -308,6 +310,7 @@ function App() {
             localStorage.setItem(LAST_SESSION_KEY, session.session_id);
             setActiveTab('sessions');
             setSidebarOpen(false);
+            setSessionListRefresh((n) => n + 1);
           }}
         />
       )}
@@ -383,6 +386,7 @@ function App() {
           {activeTab === 'sessions' && (
             <div className={`flex-1 mt-4 px-2 overflow-y-auto min-h-0 border-t ${borderColor} pt-4 custom-scrollbar`}>
               <SessionList
+                refreshTrigger={sessionListRefresh}
                 onSelectSession={(s) => {
                   setSelectedSession(s);
                   localStorage.setItem(LAST_SESSION_KEY, s.session_id);
