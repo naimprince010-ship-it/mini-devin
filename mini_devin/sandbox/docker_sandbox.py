@@ -121,7 +121,45 @@ class DockerSandbox:
         self.container_id: str | None = None
         self.status = SandboxStatus.CREATED
         self.sandbox_id = str(uuid.uuid4())[:8]
-    
+
+    def _resolve_container_workdir(self, working_dir: str | None) -> str:
+        """Map agent-supplied paths to a directory inside the container (repo is mounted at workspace_path)."""
+        ws = self.config.workspace_path
+        base = ws.rstrip("/")
+        if working_dir is None:
+            return ws
+        wd = str(working_dir).strip().replace("\\", "/")
+        if wd in (".", ""):
+            return ws
+        rp = self.repo_path.replace("\\", "/")
+        if os.path.isabs(wd):
+            wd_abs = os.path.abspath(wd).replace("\\", "/")
+            if wd_abs.startswith(rp):
+                rel = os.path.relpath(wd_abs, self.repo_path).replace("\\", "/")
+                if rel in (".", ""):
+                    return ws
+                candidate = f"{base}/{rel}"
+            else:
+                candidate = ws
+        else:
+            candidate = f"{base}/{wd}".replace("//", "/")
+        host_candidate = self._host_path_for_container_workdir(candidate)
+        if os.path.isdir(host_candidate):
+            return candidate
+        return ws
+
+    def _host_path_for_container_workdir(self, container_wd: str) -> str:
+        """Inverse of mount: workspace_path -> repo_path, subdirs preserved."""
+        ws = self.config.workspace_path
+        base = ws.rstrip("/")
+        cw = container_wd.replace("\\", "/")
+        if cw.rstrip("/") == base or cw == ws:
+            return self.repo_path
+        if cw.startswith(base + "/"):
+            rel = cw[len(base) + 1 :]
+            return os.path.normpath(os.path.join(self.repo_path, rel))
+        return self.repo_path
+
     def _validate_mount_path(self, host_path: str) -> bool:
         """Validate that a mount path is in the allowlist."""
         if not self.config.mount_allowlist:
@@ -316,8 +354,23 @@ class DockerSandbox:
             )
         
         timeout = timeout or self.config.timeout_seconds
-        work_dir = working_dir or self.config.workspace_path
-        
+        work_dir = self._resolve_container_workdir(working_dir)
+
+        cmd_stripped = command.strip()
+        if cmd_stripped.startswith("npm init") and "-y" in cmd_stripped:
+            host_pkg = os.path.join(self._host_path_for_container_workdir(work_dir), "package.json")
+            if os.path.isfile(host_pkg):
+                return SandboxResult(
+                    stdout="",
+                    stderr=(
+                        f"`package.json` already exists at {host_pkg}. "
+                        "Do not run `npm init -y` in this directory; edit the existing manifest "
+                        "or create a new subfolder first."
+                    ),
+                    exit_code=1,
+                    duration_ms=0,
+                )
+
         start_time = datetime.now(timezone.utc)
         
         try:

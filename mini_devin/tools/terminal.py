@@ -285,6 +285,24 @@ Output is captured and returned. Long outputs are truncated."""
         if not os.path.isabs(working_dir):
             working_dir = os.path.join(self.working_directory, working_dir)
         working_dir = os.path.abspath(working_dir)
+
+        # Clearer than npm's error when agents blindly re-run init in an existing JS project
+        if not _IS_WINDOWS:
+            cs = input_data.command.strip()
+            if cs.startswith("npm init") and "-y" in cs:
+                pkg_json = os.path.join(working_dir, "package.json")
+                if os.path.isfile(pkg_json):
+                    return TerminalOutput(
+                        status=ToolStatus.FAILURE,
+                        error_message="package.json already exists; skip npm init -y in this directory.",
+                        stdout="",
+                        stderr=(
+                            f"`package.json` already exists at {pkg_json}. "
+                            "Edit it or use a new subfolder before running `npm init -y`."
+                        ),
+                        exit_code=1,
+                        execution_time_ms=0,
+                    )
         
         # Ensure working directory exists
         if not os.path.isdir(working_dir):
