@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 import asyncio
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -1630,7 +1630,12 @@ if _FRONTEND_DIST.exists():
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str):
-        """Catch-all: serve index.html for all non-API routes so React Router works."""
+        """Catch-all: serve index.html for non-API routes so React Router works.
+
+        Unknown /api/* paths must not return the SPA shell (would confuse clients and tests).
+        """
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found")
         index = _FRONTEND_DIST / "index.html"
         return FileResponse(str(index))
 

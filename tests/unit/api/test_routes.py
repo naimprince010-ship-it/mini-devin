@@ -170,8 +170,8 @@ class TestTasksEndpoint:
             "/api/tasks",
             json={"description": "Test task"},
         )
-        # Should fail without session, due to missing state, or 404 if not registered
-        assert response.status_code in [400, 404, 422, 401, 500]
+        # No POST /api/tasks (tasks live under /api/sessions/{id}/tasks) → often 405
+        assert response.status_code in [400, 404, 422, 401, 405, 500]
 
 
 class TestAPIErrorHandling:
