@@ -126,6 +126,18 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
         if (tid) {
           setStreamTaskId(tid);
           currentTaskIdRef.current = tid;
+          // Client adds an optimistic row with id `task-<timestamp>`; server uses DB UUID.
+          // Without this remap, streamTaskId !== task.task_id and the UI shows "loading" forever.
+          setTasks((prev) => {
+            const rev = [...prev].map((t, i) => ({ t, i })).reverse();
+            const hit = rev.find(
+              ({ t }) => t.status === 'running' && t.task_id.startsWith('task-') && t.task_id !== tid,
+            );
+            if (!hit) return prev;
+            const next = [...prev];
+            next[hit.i] = { ...hit.t, task_id: tid };
+            return next;
+          });
         }
         setIsStreaming(true);
         setStreamingContent('');
