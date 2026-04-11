@@ -1741,31 +1741,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         connection_manager.disconnect(websocket)
 
 
-# ─────────────────────────────────────────────────────────────
-# Serve React frontend (SPA) — must be LAST, after all API routes
-# ─────────────────────────────────────────────────────────────
-import pathlib
-
-_FRONTEND_DIST = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dist"
-
-if _FRONTEND_DIST.exists():
-    # Serve static assets (JS, CSS, images…)
-    app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="assets")
-
-    @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_spa(full_path: str):
-        """Catch-all: serve index.html for non-API routes so React Router works.
-
-        Unknown /api/* paths must not return the SPA shell (would confuse clients and tests).
-        """
-        if full_path.startswith("api/"):
-            raise HTTPException(status_code=404, detail="Not found")
-        index = _FRONTEND_DIST / "index.html"
-        return FileResponse(str(index))
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # SWE-bench Benchmarking endpoints
+# (SPA static mount + catch-all route are registered at end of file after all /api routes.)
 # ──────────────────────────────────────────────────────────────────────────────
 
 class BenchmarkRunRequest(BaseModel):
@@ -1876,6 +1854,29 @@ async def benchmark_stats():
         "overall_resolve_rate": round(total_resolved / total_tasks * 100, 1) if total_tasks > 0 else 0.0,
         "best_run": max(completed, key=lambda r: r["resolve_rate"])["run_id"] if completed else None,
     }
+
+
+# ─────────────────────────────────────────────────────────────
+# Serve React frontend (SPA) — MUST be last: catch-all `/{full_path:path}` otherwise
+# shadows later `/api/*` registrations and can confuse routing at the edge.
+# ─────────────────────────────────────────────────────────────
+import pathlib
+
+_FRONTEND_DIST = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dist"
+
+if _FRONTEND_DIST.exists():
+    app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        """Catch-all: serve index.html for non-API routes so React Router works.
+
+        Unknown /api/* paths must not return the SPA shell (would confuse clients and tests).
+        """
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        index = _FRONTEND_DIST / "index.html"
+        return FileResponse(str(index))
 
 
 if __name__ == "__main__":

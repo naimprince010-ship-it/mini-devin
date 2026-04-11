@@ -5,14 +5,17 @@
 # PORT: Prefer Railway’s injected PORT; set Public Networking target port to the same value.
 # Do not duplicate PORT in Variables unless you intentionally override (must match target port).
 #
-# If the public URL returns 502 but deploy logs show a healthy server: Settings → Networking →
-# domain → Target port = process listen port (same as PORT, often 8080).
+# If the public URL returns 502 but deploy logs show 200 from 10.x.x.x: the edge cannot reach
+# your process — enable Public Networking and set the domain's Target port = PORT (often 8080).
+# HTTP Logs 502 on / while Deploy Logs show /api/health 200 internally: same fix (target port).
 
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
+# Explicit start matches Dockerfile CMD (avoids an empty/wrong command in the Railway UI).
+startCommand = "python scripts/bootstrap.py"
 healthcheckPath = "/api/health"
 # Cold import (FastAPI + DB) can exceed 120s on small builders
 healthcheckTimeout = 300
