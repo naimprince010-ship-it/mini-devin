@@ -8,17 +8,21 @@ This module provides multi-session support for:
 - Resource management and cleanup
 """
 
+from __future__ import annotations
+
 import asyncio
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
-from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
-from ..orchestrator.agent import Agent
 from ..api.websocket import ConnectionManager
 from ..schemas.state import TaskState, TaskGoal, TaskStatus as AgentTaskStatus
+
+if TYPE_CHECKING:
+    from ..orchestrator.agent import Agent
 
 
 class SessionStatus(str, Enum):
@@ -150,7 +154,9 @@ class SessionManager:
             from ..core.llm_client import create_llm_client
             llm_client = create_llm_client(model=model)
             
-            # Create agent
+            # Create agent (lazy import keeps API process startup fast on Railway)
+            from ..orchestrator.agent import Agent
+
             agent = Agent(
                 llm_client=llm_client,
                 working_directory=working_directory,

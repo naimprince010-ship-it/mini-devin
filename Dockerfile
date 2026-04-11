@@ -38,9 +38,9 @@ RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi \
 WORKDIR /app
 COPY . .
 
-# Default listen port (Railway / PaaS override with PORT at runtime)
-ENV PORT=8000
-EXPOSE 8000
+# Do not set PORT here — Railway injects PORT at runtime (often 8080). Local runs
+# use scripts/bootstrap.py fallback when PORT is unset. EXPOSE documents typical PaaS port.
+EXPOSE 8080
 
 # Environment hardening
 ENV GIT_PYTHON_REFRESH=quiet

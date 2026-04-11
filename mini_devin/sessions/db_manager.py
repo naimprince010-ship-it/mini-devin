@@ -25,7 +25,6 @@ from ..database.repository import (
     ArtifactRepository,
 )
 from ..database.config import get_session_maker
-from ..orchestrator.agent import Agent
 from ..api.websocket import ConnectionManager
 from .manager import SessionStatus, TaskStatus, TaskResult, Task, Session
 from ..schemas.state import TaskState, TaskGoal, TaskStatus as AgentTaskStatus
@@ -47,8 +46,8 @@ class DatabaseSessionManager:
         self.artifacts_base_dir = Path(artifacts_base_dir)
         self.max_concurrent_sessions = max_concurrent_sessions
         
-        # In-memory agent instances (not persisted)
-        self._agents: dict[str, Agent] = {}
+        # In-memory agent instances (not persisted); Agent loaded lazily (see create_session / run_task)
+        self._agents: dict[str, Any] = {}
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}  # Track asyncio Tasks for cancellation
         self._session_titles: dict[str, str] = {}  # Cache titles in-memory
@@ -111,7 +110,9 @@ class DatabaseSessionManager:
                         sandbox = create_execution_sandbox(repo_path=working_directory)
                     except Exception as e:
                         print(f"[Session] Sandbox creation failed, running without sandbox: {e}")
-                
+
+                from ..orchestrator.agent import Agent
+
                 agent = Agent(
                     llm_client=llm_client,
                     working_directory=working_directory,
@@ -399,8 +400,10 @@ class DatabaseSessionManager:
                     raise ValueError(f"Session {session_id} not found")
                 
                 from ..core.llm_client import create_llm_client
+                from ..orchestrator.agent import Agent
+
                 llm_client = create_llm_client(model=db_session.model)
-                
+
                 agent = Agent(
                     llm_client=llm_client,
                     working_directory=db_session.working_directory,

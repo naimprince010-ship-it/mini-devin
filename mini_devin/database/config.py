@@ -13,13 +13,25 @@ class Base(DeclarativeBase):
     pass
 
 
+def _normalize_async_database_url(url: str) -> str:
+    """Railway/Heroku often set postgres:// or postgresql:// without a SQLAlchemy async driver."""
+    if not url or url.startswith("sqlite"):
+        return url
+    if "+asyncpg" in url or "+psycopg" in url or "+psycopg2" in url:
+        return url
+    if url.startswith("postgres://"):
+        return "postgresql+asyncpg://" + url[len("postgres://") :]
+    if url.startswith("postgresql://"):
+        return "postgresql+asyncpg://" + url[len("postgresql://") :]
+    return url
+
+
 def get_database_url() -> str:
     """Get the database URL from environment variables."""
-    # Default to local SQLite database for persistence
-    return os.getenv(
-        "DATABASE_URL",
-        "sqlite+aiosqlite:///minidevin.db"
-    )
+    raw = os.getenv("DATABASE_URL")
+    if not raw:
+        return "sqlite+aiosqlite:///minidevin.db"
+    return _normalize_async_database_url(raw.strip())
 
 
 def get_sync_database_url() -> str:

@@ -1,6 +1,12 @@
 # Mini-Devin on Railway — Docker image (Python + Node build inside Dockerfile).
-# Dashboard: set OPENAI_API_KEY (secret). Railway injects PORT automatically.
-# SQLite lives on ephemeral disk unless you attach a volume at /app or set DATABASE_URL (Postgres).
+# Service → Variables: see .env.example section "Railway (Variables tab)".
+# SQLite is ephemeral unless you add Postgres and set DATABASE_URL.
+#
+# PORT: Prefer Railway’s injected PORT; set Public Networking target port to the same value.
+# Do not duplicate PORT in Variables unless you intentionally override (must match target port).
+#
+# If the public URL returns 502 but deploy logs show a healthy server: Settings → Networking →
+# domain → Target port = process listen port (same as PORT, often 8080).
 
 [build]
 builder = "DOCKERFILE"

@@ -42,7 +42,13 @@ def run_server():
     env["PYTHONPATH"] = f".{os.pathsep}{env.get('PYTHONPATH', '')}"
     # Child must see the same port Railway expects (some platforms pass PORT only to PID 1).
     env["PORT"] = port
-    
+
+    if os.getenv("RAILWAY_ENVIRONMENT_ID"):
+        print(
+            "[Bootstrap] Railway: Public Networking → domain → Target port must equal this "
+            f"listen port ({port}) or the edge returns 502."
+        )
+
     while True:
         # Start server with uvicorn
         # We try to use uvicorn directly as a command first, fallback to python -m
