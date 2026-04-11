@@ -52,6 +52,8 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
   const [taskDescription, setTaskDescription] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  /** Which task row shows live / restored stream (must be state so reload re-renders). */
+  const [streamTaskId, setStreamTaskId] = useState<string | null>(null);
   const [showExport, setShowExport] = useState(false);
   const currentTaskIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -70,6 +72,16 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     try {
       const data = await api.listTasks(session.session_id);
       setTasks(data);
+      const running = data.find((t) => t.status === 'running');
+      const newest = data.length > 0 ? data[0] : undefined;
+      const id = running?.task_id || newest?.task_id || null;
+      if (id) {
+        currentTaskIdRef.current = id;
+        setStreamTaskId(id);
+      } else {
+        currentTaskIdRef.current = null;
+        setStreamTaskId(null);
+      }
     } catch (e) {
       console.error('Failed to load tasks:', e);
     }
@@ -109,13 +121,19 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
         setStreamingContent(prev => prev + (message.content || data.content as string || ''));
         break;
 
-      case 'task_started':
+      case 'task_started': {
+        const tid = message.task_id || '';
+        if (tid) {
+          setStreamTaskId(tid);
+          currentTaskIdRef.current = tid;
+        }
         setIsStreaming(true);
         setStreamingContent('');
         setClarificationQuestion(null);
         setClarificationAnswer('');
         events.onTaskStarted();
         break;
+      }
 
       case 'phase_changed': {
         const phase = (data.phase as string || '').toLowerCase();
@@ -263,12 +281,11 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
 
   useEffect(() => {
     loadTasks();
-    setStreamingContent('');
     events.resetForSession();
-    // Restore conversation history from backend on session load
+    setIsStreaming(false);
+    // Restore LLM conversation when agent is still in server memory (do not clear first — avoids flash)
     api.getSessionHistory(session.session_id).then(hist => {
       if (hist.total > 0) {
-        // Reconstruct a readable chat history from the conversation
         const lines: string[] = [];
         for (const msg of hist.messages) {
           if (msg.role === 'user' && msg.content) {
@@ -279,9 +296,15 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
         }
         if (lines.length > 0) {
           setStreamingContent(lines.join('\n\n---\n\n') + '\n\n_— Session restored from history —_');
+        } else {
+          setStreamingContent('');
         }
+      } else {
+        setStreamingContent('');
       }
-    }).catch(() => {/* ignore */});
+    }).catch(() => {
+      setStreamingContent('');
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.session_id]);
 
@@ -316,6 +339,7 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     };
 
     currentTaskIdRef.current = newTaskId;
+    setStreamTaskId(newTaskId);
     setTasks(prev => [...prev, mockTask]);
     setTaskDescription('');
     setStreamingContent('');
@@ -559,9 +583,14 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
                 </div>
                 <div className="space-y-3 flex-1">
                   <div className="text-sm leading-relaxed text-[#d1d1d1] whitespace-pre-wrap">
-                    {task.task_id === currentTaskIdRef.current && isStreaming ? (
+                    {(() => {
+                      const liveHere =
+                        streamTaskId !== null &&
+                        task.task_id === streamTaskId &&
+                        (isStreaming || streamingContent.length > 0);
+                      if (liveHere) {
+                        return (
                       <div className="space-y-3">
-                        {/* Inline tool call card (last running tool) */}
                         {events.toolCalls.length > 0 && (() => {
                           const last = events.toolCalls[events.toolCalls.length - 1];
                           if (last.status === 'running') return (
@@ -577,17 +606,24 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
                         })()}
                         <StreamingOutput content={streamingContent} isStreaming={isStreaming} />
                       </div>
-                    ) : (
-                      <div>
-                        {task.summary ? (
-                          <StreamingOutput content={task.summary} isStreaming={false} />
-                        ) : (
+                        );
+                      }
+                      if (task.summary) {
+                        return <StreamingOutput content={task.summary} isStreaming={false} />;
+                      }
+                      if (task.status === 'running' && !task.summary) {
+                        return (
                           <div className="p-4 bg-[#1a1a1a]/30 rounded-xl border border-[#262626] italic text-[#a3a3a3]">
-                            Agent response is loading...
+                            Agent response is loading… reconnect if this stays empty (server may have restarted).
                           </div>
-                        )}
-                      </div>
-                    )}
+                        );
+                      }
+                      return (
+                        <div className="p-4 bg-[#1a1a1a]/30 rounded-xl border border-[#262626] text-[#737373] text-sm">
+                          No transcript stored for this task.
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {task.error_message && (

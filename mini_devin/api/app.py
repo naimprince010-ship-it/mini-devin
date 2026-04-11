@@ -921,6 +921,8 @@ async def list_tasks(session_id: str):
             "created_at": t.created_at.isoformat() if t.created_at else None,
             "started_at": t.started_at.isoformat() if t.started_at else None,
             "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+            "error_message": t.error_message,
+            "summary": (t.result.summary if getattr(t, "result", None) else "") or "",
         }
         for t in tasks
     ]
