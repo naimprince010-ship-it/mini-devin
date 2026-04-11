@@ -8,6 +8,7 @@ This module defines the Pydantic schemas for verification and "done" signals:
 """
 
 import json
+import os
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -328,10 +329,11 @@ def create_python_verification_suite(
     tests_ok = _has_discoverable_python_tests(root) if block_on_tests_only_if_discovered else True
     test_cmd = test_command if tests_ok else noop
     test_severity = CheckSeverity.BLOCKING if tests_ok else CheckSeverity.WARNING
+    lint_sev = CheckSeverity.BLOCKING if _env_truthy("VERIFICATION_BLOCKING_LINT") else CheckSeverity.WARNING
     return VerificationSuite(
         suite_id="python_standard",
         name="Python Standard Verification",
-        description="Standard checks for Python projects",
+        description="Standard checks for Python projects; lint is WARNING unless VERIFICATION_BLOCKING_LINT=1",
         checks=[
             VerificationCheck(
                 check_id="lint",
@@ -340,7 +342,7 @@ def create_python_verification_suite(
                 description="Run linter to check code style",
                 command=lint_command,
                 working_directory=project_path,
-                severity=CheckSeverity.BLOCKING,
+                severity=lint_sev,
             ),
             VerificationCheck(
                 check_id="typecheck",
@@ -411,8 +413,17 @@ def create_auto_verification_suite(project_path: str) -> VerificationSuite:
     )
 
 
+def _env_truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _create_node_verification_suite(project_path: str) -> VerificationSuite:
-    """npm-based checks; do not block completion on missing test/lint scripts."""
+    """npm-based checks; do not block completion on missing test/lint scripts.
+
+    ``npm run lint`` is WARNING by default: agent-generated or partial trees often fail ESLint
+    while still being useful; blocking lint used to roll back the whole task (bad UX).
+    Set ``VERIFICATION_BLOCKING_LINT=1`` to treat lint failures like CI (rollback on fail).
+    """
     scripts: dict[str, Any] = {}
     try:
         pkg = Path(project_path) / "package.json"
@@ -425,7 +436,9 @@ def _create_node_verification_suite(project_path: str) -> VerificationSuite:
 
     if "lint" in scripts:
         lint_cmd = "npm run lint"
-        lint_severity = CheckSeverity.BLOCKING
+        lint_severity = (
+            CheckSeverity.BLOCKING if _env_truthy("VERIFICATION_BLOCKING_LINT") else CheckSeverity.WARNING
+        )
     else:
         lint_cmd = noop
         lint_severity = CheckSeverity.WARNING
@@ -447,7 +460,8 @@ def _create_node_verification_suite(project_path: str) -> VerificationSuite:
     return VerificationSuite(
         suite_id="node_auto",
         name="Node / frontend auto verification",
-        description="Lint/build/test via npm when scripts exist; missing scripts are non-blocking",
+        description="Lint/build/test via npm when scripts exist; missing scripts non-blocking; "
+        "lint is WARNING unless VERIFICATION_BLOCKING_LINT=1",
         checks=[
             VerificationCheck(
                 check_id="lint",
