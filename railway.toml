@@ -8,5 +8,6 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 healthcheckPath = "/api/health"
-healthcheckTimeout = 120
+# Cold import (FastAPI + DB) can exceed 120s on small builders
+healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"

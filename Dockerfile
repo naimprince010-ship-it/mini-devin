@@ -38,7 +38,8 @@ RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi \
 WORKDIR /app
 COPY . .
 
-# Expose port
+# Default listen port (Railway / PaaS override with PORT at runtime)
+ENV PORT=8000
 EXPOSE 8000
 
 # Environment hardening

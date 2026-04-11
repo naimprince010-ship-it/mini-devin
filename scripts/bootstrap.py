@@ -30,16 +30,26 @@ def run_server():
     # Configuration
     api_module = "mini_devin.api.app"
     host = "0.0.0.0"
-    port = os.getenv("PORT", "8000")
-    
+    # Railway sets PORT; empty string must fall back or uvicorn gets --port "" and fails → 502.
+    _port_raw = (os.getenv("PORT") or "").strip()
+    port = _port_raw if _port_raw else "8000"
+    if not port.isdigit():
+        print(f"[Bootstrap] Invalid PORT={_port_raw!r}, falling back to 8000")
+        port = "8000"
+
     # Ensure current directory is in PYTHONPATH
     env = os.environ.copy()
     env["PYTHONPATH"] = f".{os.pathsep}{env.get('PYTHONPATH', '')}"
+    # Child must see the same port Railway expects (some platforms pass PORT only to PID 1).
+    env["PORT"] = port
     
     while True:
         # Start server with uvicorn
         # We try to use uvicorn directly as a command first, fallback to python -m
-        print(f"[Bootstrap] [{datetime.now().isoformat()}] Starting server on {host}:{port}...")
+        print(
+            f"[Bootstrap] [{datetime.now().isoformat()}] Starting server on {host}:{port} "
+            f"(PORT env was {os.environ.get('PORT', '')!r})..."
+        )
         try:
             process = subprocess.Popen(
                 ["uvicorn", f"{api_module}:app", "--host", host, "--port", port, "--log-level", "debug"],
