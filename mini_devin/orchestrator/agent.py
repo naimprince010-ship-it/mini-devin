@@ -28,6 +28,7 @@ from ..schemas.state import (
 )
 from ..schemas.verification import (
     VerificationSuite,
+    create_auto_verification_suite,
     create_python_verification_suite,
 )
 from ..tools.terminal import create_terminal_tool
@@ -1864,7 +1865,7 @@ PREFER str_replace over write_file when editing existing files.""",
             return None
         
         if suite is None:
-            suite = create_python_verification_suite(self.working_directory or ".")
+            suite = create_auto_verification_suite(self.working_directory or ".")
         
         self._log("Running verification checks...")
         result = await runner.run_suite(suite, task_id)
@@ -1903,7 +1904,7 @@ PREFER str_replace over write_file when editing existing files.""",
             return None
         
         if suite is None:
-            suite = create_python_verification_suite(self.working_directory or ".")
+            suite = create_auto_verification_suite(self.working_directory or ".")
         
         self._log("Running repair loop...")
         result = await repair_loop.run(suite, task_id, repair_fn)
