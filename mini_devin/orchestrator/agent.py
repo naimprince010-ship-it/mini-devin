@@ -90,6 +90,7 @@ SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer agent.
 - `editor` with `write_file` — Write/create a file
 - `editor` with `search` — Search patterns in files
 - `editor` with `list_directory` — List directory contents
+- `editor` with `str_replace` — Replace exact text in a file (token-efficient, preferred for edits)
 - `editor` with `apply_patch` — Apply a unified diff patch
 - `browser_search` — Search the web
 - `browser_fetch` — Fetch a web page
@@ -287,16 +288,19 @@ class Agent:
             "name": "editor",
             "description": """Perform file operations. Supports multiple actions:
 - read_file: Read a file's contents
-- write_file: Write content to a file
+- write_file: Write/create a file with full content
+- str_replace: Replace an exact string in a file (PREFERRED for edits — token-efficient, precise)
 - search: Search for patterns in files
 - list_directory: List directory contents
-- apply_patch: Apply a unified diff patch""",
+- apply_patch: Apply a unified diff patch
+
+PREFER str_replace over write_file when editing existing files.""",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["read_file", "write_file", "search", "list_directory", "apply_patch"],
+                        "enum": ["read_file", "write_file", "str_replace", "search", "list_directory", "apply_patch"],
                         "description": "The action to perform",
                     },
                     "path": {
@@ -306,6 +310,18 @@ class Agent:
                     "content": {
                         "type": "string",
                         "description": "Content to write (for write_file action)",
+                    },
+                    "old_str": {
+                        "type": "string",
+                        "description": "Exact string to find and replace (for str_replace action — must be unique in file)",
+                    },
+                    "new_str": {
+                        "type": "string",
+                        "description": "Replacement string (for str_replace action — use empty string to delete)",
+                    },
+                    "allow_multiple": {
+                        "type": "boolean",
+                        "description": "Replace all occurrences (for str_replace action, default false)",
                     },
                     "pattern": {
                         "type": "string",
@@ -663,7 +679,34 @@ class Agent:
                             self._artifact_logger.add_file_modified(file_path)
                     else:
                         output = f"Error: {result.error_message}"
-                
+
+                elif action == "str_replace":
+                    old_str = arguments.get("old_str", "")
+                    new_str = arguments.get("new_str", "")
+                    allow_multiple = arguments.get("allow_multiple", False)
+
+                    dep_violation = self._check_dependency_safety(file_path)
+                    if dep_violation and dep_violation.blocked:
+                        self._update_phase(AgentPhase.BLOCKED)
+                        return f"BLOCKED: {dep_violation.message}. Task moved to BLOCKED state."
+
+                    from ..schemas.tools import StrReplaceInput
+                    input_data = StrReplaceInput(
+                        path=file_path,
+                        old_str=old_str,
+                        new_str=new_str,
+                        allow_multiple=allow_multiple,
+                    )
+                    result = await tool.execute(input_data)
+                    if result.status.value == "success":
+                        output = f"str_replace: {result.replacements_made} replacement(s) in {result.path}"
+                        if self._artifact_logger:
+                            self._artifact_logger.add_file_modified(file_path)
+                        # Notify frontend of file change
+                        await self._trigger_callback("on_file_changed", file_path)
+                    else:
+                        output = f"Error: {result.error_message}"
+
                 elif action == "search":
                     from ..schemas.tools import SearchInput
                     input_data = SearchInput(
@@ -2582,7 +2625,54 @@ Call a tool (editor or terminal) immediately as your first action."""
             except Exception as e:
                 self._log(f"Warning: Failed to save task summary to memory: {e}")
 
-        # Auto git commit after task completion
+        # ── Checkpoint → Verify → Rollback-on-failure ──────────────────────────
+        if task.status == TaskStatus.COMPLETED and self.working_directory:
+            git_mgr = self._get_git_manager()
+            if git_mgr:
+                checkpoint_id = f"post-task-{task.task_id}"
+                try:
+                    # Create a checkpoint with the current changes
+                    await git_mgr.create_checkpoint(checkpoint_id, f"agent: {task.goal.description[:60]}")
+                    self._log(f"Checkpoint created: {checkpoint_id}")
+                    await self._trigger_callback(
+                        "on_message",
+                        "📌 **Git**: Checkpoint created — running verification…",
+                        is_token=False,
+                    )
+
+                    # Run verification (tests, lints)
+                    verification = await self.run_verification(task_id=task.task_id)
+
+                    if verification and not verification.passed and verification.blocking_failures:
+                        # Tests failed — rollback to checkpoint
+                        await self._trigger_callback(
+                            "on_message",
+                            f"⚠️ **Verification failed** ({len(verification.blocking_failures)} issue(s)). "
+                            "Rolling back to last checkpoint…",
+                            is_token=False,
+                        )
+                        self._log(f"Verification failed. Rolling back to {checkpoint_id}")
+                        await git_mgr.rollback_to_checkpoint(checkpoint_id, hard=True)
+                        task.status = TaskStatus.FAILED
+                        task.last_error = (
+                            f"Verification failed: {', '.join(verification.blocking_failures)}"
+                        )
+                        await self._trigger_callback(
+                            "on_message",
+                            "🔄 **Rolled back** to pre-task state. Please review errors and retry.",
+                            is_token=False,
+                        )
+                    elif verification and verification.passed:
+                        self._log("Verification passed — keeping changes")
+                        await self._trigger_callback(
+                            "on_message",
+                            f"✅ **Verification passed** ({verification.checks_passed}/{verification.total_checks} checks)",
+                            is_token=False,
+                        )
+                except Exception as e:
+                    self._log(f"Checkpoint/verify step skipped: {e}")
+
+        # Auto git commit after task completion (only if still COMPLETED after verification)
         if self.auto_git_commit and task.status == TaskStatus.COMPLETED and self.working_directory:
             await self._auto_commit_changes(task)
 

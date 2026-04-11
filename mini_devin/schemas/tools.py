@@ -87,6 +87,7 @@ class EditorAction(str, Enum):
     """Available editor actions."""
     READ_FILE = "read_file"
     WRITE_FILE = "write_file"
+    STR_REPLACE = "str_replace"
     APPLY_PATCH = "apply_patch"
     SEARCH = "search"
     LIST_DIRECTORY = "list_directory"
@@ -141,6 +142,24 @@ class WriteFileOutput(BaseToolOutput):
     """Output from writing a file."""
     bytes_written: int = Field(description="Number of bytes written")
     path: str = Field(description="Absolute path to the written file")
+
+
+class StrReplaceInput(BaseToolInput):
+    """Input for str_replace — replace an exact string in a file (token-efficient)."""
+    action: EditorAction = EditorAction.STR_REPLACE
+    path: str = Field(description="Path to the file to edit")
+    old_str: str = Field(description="Exact string to find and replace (must be unique in file)")
+    new_str: str = Field(description="Replacement string (use empty string to delete)")
+    allow_multiple: bool = Field(
+        default=False,
+        description="If True, replace all occurrences; if False, fail when >1 match found"
+    )
+
+
+class StrReplaceOutput(BaseToolOutput):
+    """Output from str_replace."""
+    replacements_made: int = Field(description="Number of replacements made")
+    path: str = Field(description="Absolute path to the modified file")
 
 
 class ApplyPatchInput(BaseToolInput):
