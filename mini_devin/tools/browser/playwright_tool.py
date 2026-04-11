@@ -145,6 +145,34 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         self._debug_page_errors: list[str] = []
         self._debug_network: list[str] = []
         self._debug_request_failed: list[str] = []
+        # WS stream budget (reset on navigate/reload clear)
+        self._ws_console_log_budget = 18
+
+    def _emit_browser_ws(
+        self,
+        event_type: str,
+        url: Optional[str] = None,
+        query: Optional[str] = None,
+        screenshot_base64: Optional[str] = None,
+    ) -> None:
+        """Push a row to the dashboard Browser tab (via agent on_browser_event callback)."""
+        if not self.on_browser_event:
+            return
+        try:
+            payload = {
+                "event_type": event_type,
+                "url": url or "",
+                "query": query,
+                "screenshot_base64": screenshot_base64,
+            }
+            res = self.on_browser_event(payload)
+            import asyncio
+            if asyncio.iscoroutine(res):
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(res)
+        except Exception:
+            pass
 
     @staticmethod
     def _get_browserless_ws_url() -> Optional[str]:
@@ -265,6 +293,7 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         self._debug_page_errors.clear()
         self._debug_network.clear()
         self._debug_request_failed.clear()
+        self._ws_console_log_budget = 18
 
     def _attach_debug_listeners(self) -> None:
         """Wire Playwright page events (console, errors, network) for agent-visible diagnostics."""
@@ -278,14 +307,32 @@ class PlaywrightBrowserTool(BaseBrowserTool):
                 self._debug_console.append(line)
                 if len(self._debug_console) > 250:
                     self._debug_console = self._debug_console[-250:]
+                cur_url = ""
+                try:
+                    cur_url = page.url or ""
+                except Exception:
+                    pass
+                mtype = getattr(msg, "type", "log")
+                if mtype in ("error", "warning"):
+                    self._emit_browser_ws("console", cur_url, line)
+                elif mtype == "log" and self._ws_console_log_budget > 0:
+                    self._ws_console_log_budget -= 1
+                    self._emit_browser_ws("console", cur_url, line)
             except Exception:
                 pass
 
         def on_page_error(err: Any) -> None:
             try:
-                self._debug_page_errors.append(str(err)[:4000])
+                etxt = str(err)[:4000]
+                self._debug_page_errors.append(etxt)
                 if len(self._debug_page_errors) > 60:
                     self._debug_page_errors = self._debug_page_errors[-60:]
+                cur_url = ""
+                try:
+                    cur_url = page.url or ""
+                except Exception:
+                    pass
+                self._emit_browser_ws("pageerror", cur_url, etxt)
             except Exception:
                 pass
 
@@ -303,6 +350,8 @@ class PlaywrightBrowserTool(BaseBrowserTool):
                 self._debug_network.append(line)
                 if len(self._debug_network) > 150:
                     self._debug_network = self._debug_network[-150:]
+                if status >= 400:
+                    self._emit_browser_ws("network", url[:900], line)
             except Exception:
                 pass
 
@@ -314,6 +363,11 @@ class PlaywrightBrowserTool(BaseBrowserTool):
                 self._debug_request_failed.append(line)
                 if len(self._debug_request_failed) > 50:
                     self._debug_request_failed = self._debug_request_failed[-50:]
+                self._emit_browser_ws(
+                    "network",
+                    request.url[:900] if request.url else "",
+                    line,
+                )
             except Exception:
                 pass
 
@@ -394,6 +448,7 @@ class PlaywrightBrowserTool(BaseBrowserTool):
                 event_data = {
                     "event_type": action,
                     "url": page_state.url,
+                    "query": None,
                     "screenshot_base64": page_state.screenshot_base64,
                 }
                 result = self.on_browser_event(event_data)

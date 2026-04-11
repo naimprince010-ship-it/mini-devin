@@ -305,7 +305,10 @@ class Agent:
             self.registry.register(browser_interactive)
 
         if not self.registry.get("browser_playwright"):
-            browser_pw = create_playwright_tool()
+            agent = self
+            browser_pw = create_playwright_tool(
+                on_browser_event=lambda p: agent._emit_playwright_browser_event(p),
+            )
             self.registry.register(browser_pw)
         
         # Citation store for tracking web references
@@ -3073,6 +3076,16 @@ PREFER str_replace over write_file when editing existing files.""",
             "executor_initialized": self._parallel_executor is not None,
             "batch_caller_initialized": self._batch_caller is not None,
         }
+
+    def _emit_playwright_browser_event(self, payload: dict[str, Any]) -> None:
+        """Forward Playwright live rows to the dashboard (session wires on_browser_event → WebSocket)."""
+        fn = (self.callbacks or {}).get("on_browser_event")
+        if not fn:
+            return
+        try:
+            fn(payload)
+        except Exception:
+            pass
     
     async def _trigger_callback(self, name: str, *args, **kwargs) -> None:
         """Trigger a callback if it exists, awaiting it if it's a coroutine."""

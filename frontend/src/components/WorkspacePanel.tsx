@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Terminal, FileCode, History, Maximize2, Globe, ExternalLink, Search, X, Brain, Trash2, Copy, Check, Loader2 } from 'lucide-react';
+import { Terminal, FileCode, History, Maximize2, Globe, ExternalLink, Search, X, Brain, Trash2, Copy, Check, Loader2, Wifi, AlertTriangle } from 'lucide-react';
 import { MemoryView } from './MemoryView';
 import { FileExplorer } from './FileExplorer';
 import { ToolCallLog } from './ToolCallLog';
@@ -96,7 +96,26 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
     ];
 
     const lastBrowserEvent = events.browserEvents[events.browserEvents.length - 1];
-    const currentUrl = lastBrowserEvent?.url || lastBrowserEvent?.query;
+    const lastHttpUrl = [...events.browserEvents].reverse().find(e => e.url?.startsWith('http'))?.url;
+    const currentUrl = lastHttpUrl || lastBrowserEvent?.url || '';
+
+    const browserRowIcon = (t: string) => {
+        if (t === 'search') return <Search size={11} className="text-[#00ff99]" />;
+        if (t === 'console') return <Terminal size={11} className="text-amber-400" />;
+        if (t === 'network') return <Wifi size={11} className="text-sky-400" />;
+        if (t === 'pageerror') return <AlertTriangle size={11} className="text-red-400" />;
+        return <Globe size={11} className="text-[#00ff99]" />;
+    };
+    const browserRowTitle = (t: string) => {
+        if (t === 'navigate') return 'Navigate';
+        if (t === 'search') return 'Search';
+        if (t === 'screenshot') return 'Screenshot';
+        if (t === 'click') return 'Click';
+        if (t === 'console') return 'Console';
+        if (t === 'network') return 'Network';
+        if (t === 'pageerror') return 'Page error';
+        return t;
+    };
 
     return (
         <div className="h-full w-full flex flex-col bg-[#0a0a0a] border-l border-[#262626]">
@@ -384,15 +403,26 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
                                             {[...events.browserEvents].reverse().map((ev, i) => (
                                                 <div key={ev.id} className={`flex items-start gap-2.5 p-2.5 rounded-lg border ${i === 0 ? 'bg-[#0d1a0d] border-[#00ff99]/15' : 'bg-[#0d0d0d] border-[#1a1a1a]'}`}>
                                                     <div className="flex-shrink-0 mt-0.5">
-                                                        {ev.type === 'search' ? <Search size={11} className="text-[#00ff99]" /> : <Globe size={11} className="text-[#00ff99]" />}
+                                                        {browserRowIcon(ev.type)}
                                                     </div>
                                                     <div className="flex-1 min-w-0">
                                                         <p className="text-[10px] font-bold uppercase tracking-wider text-[#525252] mb-0.5">
-                                                            {ev.type === 'navigate' ? 'Navigate' : ev.type === 'search' ? 'Search' : ev.type === 'screenshot' ? 'Screenshot' : ev.type}
+                                                            {browserRowTitle(ev.type)}
                                                         </p>
-                                                        <p className="text-[11px] text-[#a3a3a3] truncate font-mono">
-                                                            {ev.url || ev.query || '—'}
-                                                        </p>
+                                                        {(ev.type === 'console' || ev.type === 'pageerror' || ev.type === 'network') && ev.query ? (
+                                                            <>
+                                                                {ev.url ? (
+                                                                    <p className="text-[10px] text-[#525252] font-mono truncate mb-1" title={ev.url}>{ev.url}</p>
+                                                                ) : null}
+                                                                <p className="text-[11px] text-[#a3a3a3] font-mono whitespace-pre-wrap break-words max-h-28 overflow-y-auto custom-scrollbar leading-relaxed">
+                                                                    {ev.query}
+                                                                </p>
+                                                            </>
+                                                        ) : (
+                                                            <p className="text-[11px] text-[#a3a3a3] truncate font-mono">
+                                                                {ev.url || ev.query || '—'}
+                                                            </p>
+                                                        )}
                                                     </div>
                                                     <span className="text-[9px] text-[#3a3a3a] flex-shrink-0">
                                                         {ev.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}

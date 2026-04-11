@@ -30,9 +30,19 @@ export interface FileEdit {
     toolId: string;
 }
 
+export type BrowserEventType =
+    | 'navigate'
+    | 'screenshot'
+    | 'search'
+    | 'click'
+    | 'console'
+    | 'network'
+    | 'pageerror'
+    | 'other';
+
 export interface BrowserEvent {
     id: string;
-    type: 'navigate' | 'screenshot' | 'search' | 'click' | 'other';
+    type: BrowserEventType;
     url?: string;
     query?: string;
     screenshotBase64?: string;
@@ -484,10 +494,16 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
         query?: string,
         screenshotBase64?: string,
     ) => {
+        const allowed: BrowserEventType[] = [
+            'navigate', 'screenshot', 'search', 'click', 'console', 'network', 'pageerror', 'other',
+        ];
+        const normalized: BrowserEventType = allowed.includes(eventType as BrowserEventType)
+            ? (eventType as BrowserEventType)
+            : 'other';
         setState(prev => {
             const browserEvent: BrowserEvent = {
-                id: `browser-${Date.now()}`,
-                type: eventType as BrowserEvent['type'],
+                id: `browser-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                type: normalized,
                 url,
                 query,
                 screenshotBase64,
