@@ -13,6 +13,7 @@ import { PRReview } from './components/PRReview';
 import MonitorPanel from './components/MonitorPanel';
 import EnvParityPanel from './components/EnvParityPanel';
 import UITestPanel from './components/UITestPanel';
+import ProjectPlannerPanel from './components/ProjectPlannerPanel';
 import { ProviderSelector } from './components/ProviderSelector';
 import { FolderPicker } from './components/FolderPicker';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -41,9 +42,10 @@ import {
   Activity,
   Container,
   TestTube2,
+  FolderKanban,
 } from 'lucide-react';
 
-type TabType = 'sessions' | 'skills' | 'repos' | 'reviews' | 'monitor' | 'env_parity' | 'ui_test';
+type TabType = 'sessions' | 'skills' | 'repos' | 'reviews' | 'monitor' | 'env_parity' | 'ui_test' | 'projects';
 
 function NewSessionModal({
   onClose,
@@ -275,6 +277,7 @@ function App() {
     { id: 'monitor', icon: <Activity size={18} />, label: 'Monitor' },
     { id: 'env_parity', icon: <Container size={18} />, label: 'Env Parity' },
     { id: 'ui_test', icon: <TestTube2 size={18} />, label: 'UI Tests' },
+    { id: 'projects', icon: <FolderKanban size={18} />, label: 'Projects' },
   ];
 
   // Same-origin /api when API is served with the app (production). Override with VITE_API_URL for split deploys.
@@ -520,6 +523,10 @@ function App() {
                 ) : activeTab === 'ui_test' ? (
                   <ErrorBoundary>
                     <UITestPanel />
+                  </ErrorBoundary>
+                ) : activeTab === 'projects' ? (
+                  <ErrorBoundary>
+                    <ProjectPlannerPanel />
                   </ErrorBoundary>
                 ) : (
                   <ErrorBoundary>

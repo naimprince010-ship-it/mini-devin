@@ -445,6 +445,106 @@ PREFER str_replace over write_file when editing existing files.""",
             },
         })
 
+        # Project memory tool schema
+        schemas.append({
+            "name": "project_memory",
+            "description": (
+                "Long-term vector memory for a project. Store architecture decisions, "
+                "tech stack choices, constraints, and lessons learned that persist "
+                "across sessions. Search memory semantically to recall past decisions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "remember", "search", "list", "get_context",
+                            "create_project", "list_projects", "delete_entry",
+                        ],
+                        "description": (
+                            "remember=store a new memory entry; "
+                            "search=semantic search over project memory; "
+                            "list=list all entries for a project; "
+                            "get_context=get formatted context string for a task; "
+                            "create_project=create a new project; "
+                            "list_projects=show all projects; "
+                            "delete_entry=remove a memory entry."
+                        ),
+                    },
+                    "project_id": {"type": "string", "description": "Project identifier"},
+                    "project_name": {"type": "string", "description": "Human-readable project name (for create_project)"},
+                    "project_description": {"type": "string", "description": "Project description (for create_project)"},
+                    "tech_stack": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tech stack list (for create_project)",
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["architecture", "decision", "constraint", "api_contract", "lesson", "milestone", "user_preference", "code_snippet", "context"],
+                        "description": "Memory category",
+                    },
+                    "title": {"type": "string", "description": "Short title for the memory entry"},
+                    "content": {"type": "string", "description": "Full content of the memory entry"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for filtering"},
+                    "importance": {"type": "integer", "description": "Importance 1–10 (10=critical, default 5)"},
+                    "query": {"type": "string", "description": "Search query for 'search' and 'get_context' actions"},
+                    "entry_id": {"type": "string", "description": "Entry ID for delete_entry"},
+                    "top_k": {"type": "integer", "description": "Max results for search (default 5)"},
+                },
+                "required": ["action"],
+            },
+        })
+
+        # Project plan tool schema
+        schemas.append({
+            "name": "project_plan",
+            "description": (
+                "Hierarchical project planner. Decompose a large goal into milestones, "
+                "create a persistent plan, execute each milestone as an isolated sub-agent, "
+                "and resume across sessions. Perfect for month-long projects."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "get", "list", "execute", "retry_milestone", "delete"],
+                        "description": (
+                            "create=decompose goal into milestones (LLM-powered); "
+                            "get=show plan status; "
+                            "list=list all plans; "
+                            "execute=run remaining milestones as sub-agents; "
+                            "retry_milestone=reset a failed milestone; "
+                            "delete=remove a plan."
+                        ),
+                    },
+                    "plan_id": {"type": "string", "description": "Plan ID for get/execute/retry/delete"},
+                    "project_id": {"type": "string", "description": "Project ID for create/list"},
+                    "goal": {"type": "string", "description": "High-level project goal for 'create'"},
+                    "milestones": {
+                        "type": "array",
+                        "description": "Manual milestone list (optional, skips LLM decomposition)",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "description": {"type": "string"},
+                                "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
+                                "depends_on_indexes": {"type": "array", "items": {"type": "integer"}},
+                                "estimated_hours": {"type": "number"},
+                                "tags": {"type": "array", "items": {"type": "string"}},
+                            },
+                        },
+                    },
+                    "milestone_id": {"type": "string", "description": "Milestone ID for retry_milestone"},
+                    "working_dir": {"type": "string", "description": "Working directory for execution"},
+                },
+                "required": ["action"],
+            },
+        })
+
         # UI Test tool schema
         schemas.append({
             "name": "ui_test",
@@ -1136,6 +1236,217 @@ PREFER str_replace over write_file when editing existing files.""",
                 
                 return output
             
+            elif name == "project_memory":
+                action = arguments.get("action", "list_projects")
+                from ..integrations.project_memory import (
+                    get_project_memory, MemoryCategory
+                )
+                pm = get_project_memory()
+
+                if action == "create_project":
+                    pname = arguments.get("project_name", "")
+                    if not pname:
+                        return "Error: project_name is required"
+                    proj = pm.create_project(
+                        name=pname,
+                        description=arguments.get("project_description", ""),
+                        tech_stack=arguments.get("tech_stack", []),
+                        project_id=arguments.get("project_id"),
+                    )
+                    return f"Project created: {proj.name} (id={proj.id})"
+
+                elif action == "list_projects":
+                    projects = pm.list_projects()
+                    if not projects:
+                        return "No projects yet. Use create_project to start one."
+                    lines = ["Projects:"]
+                    for p in projects:
+                        lines.append(f"  • [{p.id}] {p.name} — {p.description[:80]}")
+                    return "\n".join(lines)
+
+                elif action == "remember":
+                    pid = arguments.get("project_id", "")
+                    if not pid:
+                        return "Error: project_id is required"
+                    title = arguments.get("title", "")
+                    content = arguments.get("content", "")
+                    if not title or not content:
+                        return "Error: title and content are required"
+                    cat_str = arguments.get("category", "context")
+                    try:
+                        cat = MemoryCategory(cat_str)
+                    except ValueError:
+                        cat = MemoryCategory.CONTEXT
+                    entry = pm.add_entry(
+                        project_id=pid,
+                        category=cat,
+                        title=title,
+                        content=content,
+                        tags=arguments.get("tags", []),
+                        importance=int(arguments.get("importance", 5)),
+                        session_id=getattr(self, "session_id", None),
+                    )
+                    return f"Memory stored: [{entry.category.upper()}] {entry.title} (id={entry.id})"
+
+                elif action == "search":
+                    pid = arguments.get("project_id", "")
+                    query = arguments.get("query", "")
+                    if not pid or not query:
+                        return "Error: project_id and query are required"
+                    results = pm.search(
+                        pid, query,
+                        top_k=int(arguments.get("top_k", 5)),
+                    )
+                    if not results:
+                        return "No relevant memories found."
+                    lines = [f"Found {len(results)} relevant memories:"]
+                    for r in results:
+                        e = r["entry"]
+                        lines.append(
+                            f"  [{e['category'].upper()}] {e['title']} (score={r['score']})\n"
+                            f"    {e['content'][:200]}"
+                        )
+                    return "\n".join(lines)
+
+                elif action == "get_context":
+                    pid = arguments.get("project_id", "")
+                    query = arguments.get("query", "")
+                    if not pid:
+                        return "Error: project_id is required"
+                    ctx = pm.get_context_for_task(pid, query)
+                    return ctx
+
+                elif action == "list":
+                    pid = arguments.get("project_id", "")
+                    if not pid:
+                        return "Error: project_id is required"
+                    entries = pm.list_entries(pid)
+                    if not entries:
+                        return f"No memories for project '{pid}' yet."
+                    lines = [f"Memories for {pid} ({len(entries)} entries):"]
+                    for e in sorted(entries, key=lambda x: -x.importance):
+                        lines.append(
+                            f"  [{e.category.upper()} ★{e.importance}] {e.title}: {e.content[:120]}"
+                        )
+                    return "\n".join(lines)
+
+                elif action == "delete_entry":
+                    eid = arguments.get("entry_id", "")
+                    if not eid:
+                        return "Error: entry_id is required"
+                    removed = pm.delete_entry(eid)
+                    return f"Entry {'deleted' if removed else 'not found'}: {eid}"
+
+                else:
+                    return f"Unknown project_memory action: {action}"
+
+            elif name == "project_plan":
+                action = arguments.get("action", "list")
+                from ..integrations.hierarchical_planner import get_planner
+                planner = get_planner()
+
+                if action == "create":
+                    pid = arguments.get("project_id", "")
+                    goal = arguments.get("goal", "")
+                    if not pid or not goal:
+                        return "Error: project_id and goal are required"
+                    # Optionally get project context from memory
+                    try:
+                        from ..integrations.project_memory import get_project_memory
+                        pm = get_project_memory()
+                        ctx = pm.get_context_for_task(pid, goal, max_tokens=400) if pm.get_project(pid) else ""
+                    except Exception:
+                        ctx = ""
+                    plan = await planner.create_plan(
+                        project_id=pid,
+                        goal=goal,
+                        milestones=arguments.get("milestones"),
+                        working_dir=arguments.get("working_dir", self.working_directory or "."),
+                        project_context=ctx,
+                    )
+                    lines = [f"Plan created: {plan.id}", f"Goal: {plan.goal}", f"Milestones ({len(plan.milestones)}):"]
+                    for m in plan.milestones:
+                        lines.append(
+                            f"  {m.index + 1}. {m.name} (~{m.estimated_hours}h) — {m.description[:100]}"
+                        )
+                    return "\n".join(lines)
+
+                elif action == "get":
+                    plan_id = arguments.get("plan_id", "")
+                    if not plan_id:
+                        return "Error: plan_id is required"
+                    plan = planner.get_plan(plan_id)
+                    if not plan:
+                        return f"Plan '{plan_id}' not found"
+                    prog = plan.progress()
+                    lines = [
+                        f"Plan: {plan.id} | Status: {plan.status}",
+                        f"Goal: {plan.goal}",
+                        f"Progress: {prog['completed']}/{prog['total']} milestones ({prog['percent']}%)",
+                        "",
+                    ]
+                    for m in plan.milestones:
+                        r = plan.results.get(m.id)
+                        status = r.status.value if r else "pending"
+                        icon = {"completed": "✅", "failed": "❌", "running": "🔄", "pending": "⏳"}.get(status, "⏳")
+                        lines.append(f"  {icon} {m.index + 1}. {m.name}")
+                        if r and r.error:
+                            lines.append(f"      Error: {r.error[:120]}")
+                    return "\n".join(lines)
+
+                elif action == "list":
+                    pid = arguments.get("project_id")
+                    plans = planner.list_plans(pid)
+                    if not plans:
+                        return "No project plans found."
+                    lines = ["Project plans:"]
+                    for p in plans:
+                        prog = p.progress()
+                        lines.append(
+                            f"  [{p.id}] {p.goal[:60]} — {prog['completed']}/{prog['total']} done ({p.status})"
+                        )
+                    return "\n".join(lines)
+
+                elif action == "execute":
+                    plan_id = arguments.get("plan_id", "")
+                    if not plan_id:
+                        return "Error: plan_id is required"
+                    plan = planner.get_plan(plan_id)
+                    if not plan:
+                        return f"Plan '{plan_id}' not found"
+                    # Get session manager from callbacks
+                    sm = self.callbacks.get("session_manager")
+                    cm = self.callbacks.get("connection_manager")
+                    if not sm or not cm:
+                        return (
+                            "Cannot execute plan from within an agent tool — "
+                            "use the POST /api/project-plans/{plan_id}/execute endpoint instead."
+                        )
+                    updated = await planner.execute_plan(plan_id, sm, cm)
+                    prog = updated.progress()
+                    return (
+                        f"Execution finished. Status: {updated.status}. "
+                        f"{prog['completed']}/{prog['total']} milestones completed."
+                    )
+
+                elif action == "retry_milestone":
+                    plan_id = arguments.get("plan_id", "")
+                    mid = arguments.get("milestone_id", "")
+                    if not plan_id or not mid:
+                        return "Error: plan_id and milestone_id are required"
+                    ok = planner.retry_milestone(plan_id, mid)
+                    return f"Milestone reset to pending: {ok}"
+
+                elif action == "delete":
+                    plan_id = arguments.get("plan_id", "")
+                    if not plan_id:
+                        return "Error: plan_id is required"
+                    ok = planner.delete_plan(plan_id)
+                    return f"Plan {'deleted' if ok else 'not found'}: {plan_id}"
+
+                else:
+                    return f"Unknown project_plan action: {action}"
+
             elif name == "ui_test":
                 from ..tools.browser.ui_tester import UITestRunner, steps_from_spec
                 suite_name = arguments.get("suite_name", "UI Test")
@@ -2620,8 +2931,22 @@ PREFER str_replace over write_file when editing existing files.""",
         self._log(f"Starting task: {task.goal.description}")
         await self._update_phase(AgentPhase.INTAKE)
         
+        # Prepend project memory context if this session has a linked project
+        _proj_ctx = getattr(self, "_project_context_injection", None)
+        if _proj_ctx:
+            # Also do a semantic refresh for this specific task
+            try:
+                _pid = getattr(self, "_project_id", None)
+                if _pid:
+                    from ..integrations.project_memory import get_project_memory  # type: ignore
+                    _pm = get_project_memory()
+                    _proj_ctx = _pm.get_context_for_task(_pid, task.goal.description)
+            except Exception:
+                pass
+
         # Add task description to conversation
-        task_message = f"""Task: {task.goal.description}
+        _proj_prefix = f"\n\n{_proj_ctx}\n\n---\n" if _proj_ctx else ""
+        task_message = f"""{_proj_prefix}Task: {task.goal.description}
 
 Acceptance Criteria:
 {chr(10).join(f'- {c}' for c in task.goal.acceptance_criteria) if task.goal.acceptance_criteria else '- Complete the task successfully'}

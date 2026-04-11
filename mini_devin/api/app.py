@@ -614,6 +614,7 @@ async def create_session(raw_request: Request):
     auto_git_commit = False
     git_push = False
     requested_dir = ""
+    project_id = ""
     try:
         body = await raw_request.json()
         requested_dir = body.get("working_directory", "") or ""
@@ -621,6 +622,7 @@ async def create_session(raw_request: Request):
         max_iterations = int(body.get("max_iterations", 50) or 50)
         auto_git_commit = bool(body.get("auto_git_commit", False))
         git_push = bool(body.get("git_push", False))
+        project_id = body.get("project_id", "") or ""
     except Exception:
         pass
 
@@ -654,6 +656,23 @@ async def create_session(raw_request: Request):
         print(f"[API] create_session ERROR: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    # Store project_id on agent for memory auto-injection
+    if project_id:
+        agent = session_manager._agents.get(session.session_id)
+        if agent:
+            agent.session_id = session.session_id
+            agent._project_id = project_id
+            # Inject project context into agent's initial system context
+            try:
+                from ..integrations.project_memory import get_project_memory
+                pm = get_project_memory()
+                ctx = pm.get_context_for_task(project_id, "", max_tokens=600)
+                if ctx:
+                    agent._project_context_injection = ctx
+                    print(f"[API] Injected project memory for project '{project_id}' into session {session.session_id}")
+            except Exception as e:
+                print(f"[API] Could not inject project memory: {e}")
+
     return {
         "session_id": session.session_id,
         "created_at": session.created_at.isoformat(),
@@ -664,7 +683,8 @@ async def create_session(raw_request: Request):
         "auto_git_commit": auto_git_commit,
         "git_push": git_push,
         "iteration": session.iteration,
-        "total_tasks": session.total_tasks
+        "total_tasks": session.total_tasks,
+        "project_id": project_id or None,
     }
 
 @app.get("/api/sessions/{session_id}")
@@ -1243,6 +1263,225 @@ async def monitor_fetch_logs(platform: str = "docker", lines: int = 50, config: 
     from ..integrations.monitor import fetch_app_logs
     logs = await fetch_app_logs(platform, config, lines)
     return {"logs": logs}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Project Memory endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+class CreateProjectRequest(BaseModel):
+    name: str
+    description: str = ""
+    repo_url: Optional[str] = None
+    tech_stack: list = []
+    project_id: Optional[str] = None
+
+
+class MemoryEntryRequest(BaseModel):
+    project_id: str
+    category: str = "context"
+    title: str
+    content: str
+    tags: list = []
+    importance: int = 5
+    session_id: Optional[str] = None
+
+
+class MemorySearchRequest(BaseModel):
+    project_id: str
+    query: str
+    top_k: int = 5
+    category: Optional[str] = None
+    min_importance: int = 1
+
+
+@app.post("/api/projects")
+async def create_project(req: CreateProjectRequest):
+    from ..integrations.project_memory import get_project_memory
+    pm = get_project_memory()
+    proj = pm.create_project(
+        name=req.name,
+        description=req.description,
+        repo_url=req.repo_url,
+        tech_stack=req.tech_stack,
+        project_id=req.project_id,
+    )
+    return proj.to_dict()
+
+
+@app.get("/api/projects")
+async def list_projects():
+    from ..integrations.project_memory import get_project_memory
+    pm = get_project_memory()
+    return {"projects": [p.to_dict() for p in pm.list_projects()]}
+
+
+@app.get("/api/projects/{project_id}")
+async def get_project(project_id: str):
+    from ..integrations.project_memory import get_project_memory
+    pm = get_project_memory()
+    proj = pm.get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return proj.to_dict()
+
+
+@app.delete("/api/projects/{project_id}")
+async def delete_project(project_id: str):
+    from ..integrations.project_memory import get_project_memory
+    pm = get_project_memory()
+    ok = pm.delete_project(project_id)
+    return {"deleted": ok}
+
+
+@app.post("/api/projects/{project_id}/memory")
+async def add_memory(project_id: str, req: MemoryEntryRequest):
+    from ..integrations.project_memory import get_project_memory, MemoryCategory
+    pm = get_project_memory()
+    try:
+        cat = MemoryCategory(req.category)
+    except ValueError:
+        cat = MemoryCategory.CONTEXT
+    entry = pm.add_entry(
+        project_id=project_id,
+        category=cat,
+        title=req.title,
+        content=req.content,
+        tags=req.tags,
+        importance=req.importance,
+        session_id=req.session_id,
+    )
+    return entry.to_dict()
+
+
+@app.get("/api/projects/{project_id}/memory")
+async def list_memory(project_id: str, category: Optional[str] = None, min_importance: int = 1):
+    from ..integrations.project_memory import get_project_memory, MemoryCategory
+    pm = get_project_memory()
+    cat = MemoryCategory(category) if category else None
+    entries = pm.list_entries(project_id, category=cat, min_importance=min_importance)
+    return {"entries": [e.to_dict() for e in entries]}
+
+
+@app.post("/api/projects/{project_id}/memory/search")
+async def search_memory(project_id: str, req: MemorySearchRequest):
+    from ..integrations.project_memory import get_project_memory, MemoryCategory
+    pm = get_project_memory()
+    cat = MemoryCategory(req.category) if req.category else None
+    results = pm.search(
+        project_id,
+        req.query,
+        top_k=req.top_k,
+        category=cat,
+        min_importance=req.min_importance,
+    )
+    return {"results": results}
+
+
+@app.get("/api/projects/{project_id}/memory/context")
+async def get_memory_context(project_id: str, task: str = ""):
+    from ..integrations.project_memory import get_project_memory
+    pm = get_project_memory()
+    ctx = pm.get_context_for_task(project_id, task)
+    return {"context": ctx}
+
+
+@app.delete("/api/memory/{entry_id}")
+async def delete_memory_entry(entry_id: str):
+    from ..integrations.project_memory import get_project_memory
+    pm = get_project_memory()
+    ok = pm.delete_entry(entry_id)
+    return {"deleted": ok}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Hierarchical Project Plan endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+class CreatePlanRequest(BaseModel):
+    project_id: str
+    goal: str
+    milestones: Optional[list] = None
+    working_dir: str = "."
+
+
+class RetryMilestoneRequest(BaseModel):
+    milestone_id: str
+
+
+@app.post("/api/project-plans")
+async def create_plan(req: CreatePlanRequest):
+    """Decompose a project goal into milestones using LLM."""
+    from ..integrations.hierarchical_planner import get_planner
+    from ..integrations.project_memory import get_project_memory
+    planner = get_planner()
+    # Fetch project context for better decomposition
+    try:
+        pm = get_project_memory()
+        ctx = pm.get_context_for_task(req.project_id, req.goal, max_tokens=400) if pm.get_project(req.project_id) else ""
+    except Exception:
+        ctx = ""
+    plan = await planner.create_plan(
+        project_id=req.project_id,
+        goal=req.goal,
+        milestones=req.milestones,
+        working_dir=req.working_dir,
+        project_context=ctx,
+    )
+    return plan.to_dict()
+
+
+@app.get("/api/project-plans")
+async def list_plans(project_id: Optional[str] = None):
+    from ..integrations.hierarchical_planner import get_planner
+    planner = get_planner()
+    plans = planner.list_plans(project_id)
+    return {"plans": [p.to_dict() for p in plans]}
+
+
+@app.get("/api/project-plans/{plan_id}")
+async def get_plan(plan_id: str):
+    from ..integrations.hierarchical_planner import get_planner
+    planner = get_planner()
+    plan = planner.get_plan(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    return plan.to_dict()
+
+
+@app.delete("/api/project-plans/{plan_id}")
+async def delete_plan(plan_id: str):
+    from ..integrations.hierarchical_planner import get_planner
+    planner = get_planner()
+    ok = planner.delete_plan(plan_id)
+    return {"deleted": ok}
+
+
+@app.post("/api/project-plans/{plan_id}/execute")
+async def execute_plan(plan_id: str):
+    """Start executing remaining milestones as sub-agent tasks."""
+    from ..integrations.hierarchical_planner import get_planner
+    planner = get_planner()
+    plan = planner.get_plan(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    asyncio.create_task(
+        planner.execute_plan(
+            plan_id,
+            session_manager,
+            connection_manager,
+        )
+    )
+    return {"message": f"Execution started for plan {plan_id}", "plan_id": plan_id}
+
+
+@app.post("/api/project-plans/{plan_id}/retry")
+async def retry_milestone_endpoint(plan_id: str, req: RetryMilestoneRequest):
+    from ..integrations.hierarchical_planner import get_planner
+    planner = get_planner()
+    ok = planner.retry_milestone(plan_id, req.milestone_id)
+    return {"reset": ok}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
