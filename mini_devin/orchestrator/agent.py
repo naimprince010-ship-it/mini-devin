@@ -118,6 +118,7 @@ def _runtime_context_block(working_directory: str | None) -> str:
 
 _SYSTEM_PROMPT_TEMPLATE = """
 ## CRITICAL RULES — READ FIRST
+- **If the workspace root already contains `.git`**, this folder **is already a Git checkout** (e.g. the UI cloned a GitHub URL at session start). **Do NOT run `git clone` into `.`** or you will get "destination path already exists" / non-empty directory errors. Start with `editor` `list_directory` / `read_file` (e.g. README) or `terminal` from the repo root.
 - **NEVER describe or narrate actions without calling a tool.** If you say "I will create a file", you MUST immediately call the `editor` tool to do it.
 - **NEVER write fake outputs.** Do not write "The tests passed" unless you actually ran tests via `terminal` using the **Python executable from Runtime context** and saw exit code 0 in the output.
 - **NEVER say TASK COMPLETE unless you have used at least one tool** AND run verification (tests or a minimal run of the code) with real tool output showing success.
@@ -278,10 +279,18 @@ class Agent:
         
         # Set system prompt (inject workspace so models stop inventing Windows paths)
         wd = self.working_directory or os.getcwd()
-        self.llm.set_system_prompt(
-            SYSTEM_PROMPT
-            + f"\n\n**Workspace root (authoritative):** `{wd}`\n"
-        )
+        _spec_key = (os.environ.get("AGENT_SPECIALIZATION") or "default").strip().lower()
+        _spec_extra = ""
+        try:
+            from ..agents.specialized_prompts import get_specialization_system_suffix
+
+            _spec_extra = get_specialization_system_suffix(_spec_key)
+        except Exception:
+            pass
+        _sys = SYSTEM_PROMPT + f"\n\n**Workspace root (authoritative):** `{wd}`\n"
+        if _spec_extra:
+            _sys = _sys + "\n" + _spec_extra + "\n"
+        self.llm.set_system_prompt(_sys)
     
     def _register_default_tools(self) -> None:
         """Register the default tools (terminal, editor, browser)."""
@@ -2319,6 +2328,41 @@ PREFER str_replace over write_file when editing existing files.""",
             session_id=self.state.session_id,
         )
         return result or ""
+
+    def _inject_knowledge_augmentations(self, task_description: str) -> None:
+        """Golden curated examples + optional global corpus RAG (env-gated)."""
+        # Golden / synthetic few-shot block
+        try:
+            from ..learning.golden_context import default_golden_path, format_golden_context_for_prompt
+
+            gpath = os.environ.get("GOLDEN_DATA_PATH", "").strip()
+            golden = format_golden_context_for_prompt(
+                gpath or default_golden_path(),
+                max_records=int(os.environ.get("GOLDEN_MAX_RECORDS", "8")),
+                max_chars=int(os.environ.get("GOLDEN_MAX_CHARS", "6000")),
+            )
+            if golden:
+                self.llm.add_user_message(golden)
+                self._log("Injected golden / curated examples context")
+        except Exception as e:
+            self._log(f"Golden context skipped: {e}")
+
+        # Global RAG over pre-built corpus
+        if os.environ.get("GLOBAL_RAG_ENABLED", "").lower() not in ("1", "true", "yes"):
+            return
+        try:
+            from ..memory.global_corpus import format_global_corpus_block
+
+            block = format_global_corpus_block(
+                task_description,
+                limit=int(os.environ.get("GLOBAL_RAG_TOP_K", "8")),
+                max_chars=int(os.environ.get("GLOBAL_RAG_MAX_CHARS", "8000")),
+            )
+            if block:
+                self.llm.add_user_message(block)
+                self._log("Injected global corpus RAG context")
+        except Exception as e:
+            self._log(f"Global RAG skipped: {e}")
     
     def add_error_pattern_to_memory(
         self,
@@ -3186,6 +3230,19 @@ PREFER str_replace over write_file when editing existing files.""",
         
         self._log(f"Starting task: {task.goal.description}")
         await self._update_phase(AgentPhase.INTAKE)
+
+        # Index + README capture ("self-learning" on repo open)
+        try:
+            from .workspace_bootstrap import run_workspace_bootstrap
+
+            _boot = run_workspace_bootstrap(self)
+            if _boot.get("readme_chars"):
+                self._log(
+                    f"Workspace bootstrap: README {_boot.get('readme_file', '')} "
+                    f"({_boot.get('readme_chars')} chars)"
+                )
+        except Exception as e:
+            self._log(f"Workspace bootstrap skipped: {e}")
         
         # Prepend project memory context if this session has a linked project
         _proj_ctx = getattr(self, "_project_context_injection", None)
@@ -3231,6 +3288,8 @@ Call a tool (editor or terminal) immediately as your first action."""
                     )
             except Exception as e:
                 self._log(f"Warning: Failed to retrieve memory context: {e}")
+
+        self._inject_knowledge_augmentations(task.goal.description)
         
         # Main agent loop
         iteration = 0

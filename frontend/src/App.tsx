@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Session } from './types';
@@ -60,6 +60,8 @@ function NewSessionModal({
   initialWorkingDir?: string;
 }) {
   const [workingDir, setWorkingDir] = useState(initialWorkingDir);
+  /** Default: Auto — server picks best model from configured API keys (same idea as Cursor). */
+  const [modelMode, setModelMode] = useState<'auto' | 'manual'>('auto');
   const [provider, setProvider] = useState('openai');
   const [model, setModel] = useState('gpt-4o-mini');
   const [maxIterations, setMaxIterations] = useState(50);
@@ -74,7 +76,7 @@ function NewSessionModal({
     try {
       const session = await api.createSession({
         working_directory: workingDir,
-        model,
+        model: modelMode === 'auto' ? 'auto' : model,
         max_iterations: maxIterations,
         auto_git_commit: autoGitCommit,
         git_push: gitPush,
@@ -133,18 +135,48 @@ function NewSessionModal({
             <FolderPicker value={workingDir} onChange={setWorkingDir} />
           </div>
 
-          {/* Model */}
+          {/* Model — default Auto; optional manual pick */}
           <div>
             <label className="flex items-center gap-1.5 text-xs font-medium text-[#a3a3a3] mb-2">
               <Cpu size={12} />
               Model
             </label>
-            <ProviderSelector
-              selectedProvider={provider}
-              selectedModel={model}
-              onProviderChange={setProvider}
-              onModelChange={setModel}
-            />
+            <div className="flex rounded-lg border border-[#262626] p-0.5 bg-[#0a0a0a] gap-0.5 mb-2">
+              <button
+                type="button"
+                onClick={() => setModelMode('auto')}
+                className={`flex-1 py-2 px-2 rounded-md text-xs font-semibold transition-colors ${
+                  modelMode === 'auto'
+                    ? 'bg-[#1a1a1a] text-[#3399ff] border border-[#3399ff]/35'
+                    : 'text-[#737373] hover:text-white'
+                }`}
+              >
+                Auto
+              </button>
+              <button
+                type="button"
+                onClick={() => setModelMode('manual')}
+                className={`flex-1 py-2 px-2 rounded-md text-xs font-semibold transition-colors ${
+                  modelMode === 'manual'
+                    ? 'bg-[#1a1a1a] text-white border border-[#404040]'
+                    : 'text-[#737373] hover:text-white'
+                }`}
+              >
+                Choose model…
+              </button>
+            </div>
+            {modelMode === 'auto' ? (
+              <p className="text-[10px] text-[#525252] leading-relaxed">
+                Uses the best available model from your keys (OpenAI first, then Anthropic, Azure, Ollama). No need to pick a provider.
+              </p>
+            ) : (
+              <ProviderSelector
+                selectedProvider={provider}
+                selectedModel={model}
+                onProviderChange={setProvider}
+                onModelChange={setModel}
+              />
+            )}
           </div>
 
           {/* Acceptance Criteria */}
@@ -248,7 +280,48 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   /** Increment after a session is created so SessionList refetches immediately */
   const [sessionListRefresh, setSessionListRefresh] = useState(0);
+  const [quickSessionBusy, setQuickSessionBusy] = useState(false);
+  const quickSessionLock = useRef(false);
   const api = useApi();
+  const toast = useToast();
+
+  const handleQuickNewSession = useCallback(async () => {
+    if (quickSessionLock.current) return;
+    quickSessionLock.current = true;
+    setQuickSessionBusy(true);
+    try {
+      const session = await api.createSession(
+        {
+          working_directory: '',
+          model: 'auto',
+          max_iterations: 50,
+          auto_git_commit: false,
+          git_push: false,
+        },
+        { timeoutMs: 60_000 },
+      );
+      toast.success(
+        'Session ready',
+        'Auto model · fresh workspace. Type a task below to start.',
+      );
+      setSelectedSession(session);
+      localStorage.setItem(LAST_SESSION_KEY, session.session_id);
+      setActiveTab('sessions');
+      setSidebarOpen(false);
+      setSessionListRefresh((n) => n + 1);
+    } catch (e) {
+      console.error('Quick new session failed:', e);
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      const hint =
+        /timed out/i.test(msg)
+          ? ' Is the API running on port 8000? (poetry run uvicorn mini_devin.api.app:app --reload)'
+          : '';
+      toast.error('Could not create session', msg + hint);
+    } finally {
+      quickSessionLock.current = false;
+      setQuickSessionBusy(false);
+    }
+  }, [api, toast]);
 
   // Restore last selected session from localStorage on mount
   useEffect(() => {
@@ -409,7 +482,9 @@ function App() {
                   setSidebarOpen(false);
                 }}
                 selectedSessionId={selectedSession?.session_id}
-                onNewSession={() => setShowNewSession(true)}
+                onQuickNewSession={handleQuickNewSession}
+                onCustomNewSession={() => setShowNewSession(true)}
+                quickCreateBusy={quickSessionBusy}
               />
             </div>
           )}
@@ -511,11 +586,20 @@ function App() {
                       </p>
                     </div>
                     <button
-                      onClick={() => setShowNewSession(true)}
-                      className="px-6 py-3 font-semibold text-sm rounded-xl transition-colors"
+                      type="button"
+                      disabled={quickSessionBusy}
+                      onClick={() => void handleQuickNewSession()}
+                      className="px-6 py-3 font-semibold text-sm rounded-xl transition-colors disabled:opacity-50"
                       style={{ backgroundColor: accentColor, color: '#0f0f0f' }}
                     >
-                      + New Session
+                      {quickSessionBusy ? 'Starting…' : '+ New Session'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowNewSession(true)}
+                      className={`text-xs ${textMuted} hover:text-white underline-offset-2 hover:underline`}
+                    >
+                      Git URL, custom model, or git options…
                     </button>
                   </div>
                 ) : activeTab === 'skills' ? (

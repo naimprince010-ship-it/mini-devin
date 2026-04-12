@@ -81,7 +81,11 @@ def get_engine():
             _engine = create_async_engine(
                 url,
                 echo=echo,
-                connect_args={"check_same_thread": False},
+                connect_args={
+                    "check_same_thread": False,
+                    # Avoid indefinite waits when init_db and create_session overlap (busy handler)
+                    "timeout": float(os.getenv("SQLITE_BUSY_TIMEOUT_SEC", "30")),
+                },
             )
         else:
             extra: dict[str, Any] = {

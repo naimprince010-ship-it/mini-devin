@@ -49,6 +49,27 @@ async function fetchApi<T>(endpoint: string, options: FetchApiOptions = {}): Pro
   return response.json();
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Cold uvicorn / --reload and brief proxy gaps often recover within a few seconds. */
+function isTransientFetchFailure(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const m = e.message.toLowerCase();
+  return (
+    m.includes('timed out') ||
+    m.includes('failed to fetch') ||
+    m.includes('networkerror') ||
+    m.includes('network request failed') ||
+    m.includes('load failed')
+  );
+}
+
+const PROVIDERS_FETCH_TIMEOUT_MS = 45_000;
+const PROVIDERS_LOAD_ATTEMPTS = 3;
+const PROVIDERS_RETRY_GAP_MS = 1_000;
+
 export function useApi() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,15 +77,16 @@ export function useApi() {
   const clearError = useCallback(() => setError(null), []);
 
   // Sessions
-  const createSession = useCallback(async (data: CreateSessionRequest): Promise<Session> => {
+  const createSession = useCallback(
+    async (data: CreateSessionRequest, opts?: { timeoutMs?: number }): Promise<Session> => {
     setLoading(true);
     setError(null);
     try {
       const result = await fetchApi<Session>('/sessions', {
         method: 'POST',
         body: JSON.stringify(data),
-        // New session may git-clone a repo (up to a few minutes on slow networks)
-        timeoutMs: 300_000,
+        // Modal may git-clone (long); quick-create uses opts.timeoutMs (short).
+        timeoutMs: opts?.timeoutMs ?? 300_000,
       });
       return result;
     } catch (e) {
@@ -285,8 +307,21 @@ export function useApi() {
     setLoading(true);
     setError(null);
     try {
-      const result = await fetchApi<{ providers: Provider[] }>('/providers');
-      return result.providers;
+      for (let attempt = 0; attempt < PROVIDERS_LOAD_ATTEMPTS; attempt++) {
+        try {
+          const result = await fetchApi<{ providers: Provider[] }>('/providers', {
+            timeoutMs: PROVIDERS_FETCH_TIMEOUT_MS,
+          });
+          return result.providers;
+        } catch (e) {
+          if (attempt < PROVIDERS_LOAD_ATTEMPTS - 1 && isTransientFetchFailure(e)) {
+            await sleep(PROVIDERS_RETRY_GAP_MS);
+            continue;
+          }
+          throw e;
+        }
+      }
+      throw new Error('Failed to list providers');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to list providers');
       throw e;

@@ -1,12 +1,19 @@
 import { useState, useEffect, useRef } from 'react';
 import { Session, Task } from '../types';
 import { useApi } from '../hooks/useApi';
-import { Plus, Trash2, RefreshCw, Zap, Clock, CheckCircle2, AlertCircle, Search, X } from 'lucide-react';
+import { Plus, Trash2, RefreshCw, Zap, Clock, CheckCircle2, AlertCircle, Search, X, SlidersHorizontal } from 'lucide-react';
 
 interface SessionListProps {
   onSelectSession: (session: Session) => void;
   selectedSessionId?: string;
+  /** One-click new session (defaults: Auto model, fresh workspace). Prefer this over the modal. */
+  onQuickNewSession?: () => void | Promise<void>;
+  /** Open full “New Session” modal (Git URL, manual model, git toggles, …). */
+  onCustomNewSession?: () => void;
+  /** @deprecated Prefer onQuickNewSession + onCustomNewSession. Used if quick path not provided. */
   onNewSession?: () => void;
+  /** Disable quick-create while a request is in flight. */
+  quickCreateBusy?: boolean;
   /** When this number changes, reload sessions from the API (e.g. after creating a session). */
   refreshTrigger?: number;
 }
@@ -29,7 +36,10 @@ function StatusIcon({ status }: { status: string }) {
 export function SessionList({
   onSelectSession,
   selectedSessionId,
+  onQuickNewSession,
+  onCustomNewSession,
   onNewSession,
+  quickCreateBusy = false,
   refreshTrigger = 0,
 }: SessionListProps) {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -136,13 +146,38 @@ export function SessionList({
           >
             <RefreshCw size={12} />
           </button>
-          <button
-            onClick={onNewSession}
-            className="p-1 text-[#525252] hover:text-[#00ff99] rounded transition-colors"
-            title="New Session"
-          >
-            <Plus size={12} />
-          </button>
+          {onQuickNewSession ? (
+            <>
+              <button
+                type="button"
+                onClick={() => void onQuickNewSession()}
+                disabled={quickCreateBusy}
+                className="p-1 text-[#525252] hover:text-[#00ff99] rounded transition-colors disabled:opacity-40"
+                title="New session (quick — Auto model, fresh workspace)"
+              >
+                <Plus size={12} />
+              </button>
+              {onCustomNewSession && (
+                <button
+                  type="button"
+                  onClick={onCustomNewSession}
+                  className="p-1 text-[#525252] hover:text-[#a3a3a3] rounded transition-colors"
+                  title="New session with options (folder, Git URL, model, …)"
+                >
+                  <SlidersHorizontal size={12} />
+                </button>
+              )}
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={onNewSession}
+              className="p-1 text-[#525252] hover:text-[#00ff99] rounded transition-colors"
+              title="New Session"
+            >
+              <Plus size={12} />
+            </button>
+          )}
         </div>
       </div>
 
@@ -173,11 +208,27 @@ export function SessionList({
       <div className="space-y-1">
         {filteredSessions.length === 0 ? (
           sessions.length === 0 ? (
-            <div
-              onClick={onNewSession}
-              className="p-3 rounded-lg border border-dashed border-[#262626] text-[#525252] text-xs text-center cursor-pointer hover:border-[#00ff99]/30 hover:text-[#00ff99]/70 transition-colors"
-            >
-              + New session
+            <div className="p-3 rounded-lg border border-dashed border-[#262626] text-center space-y-2 hover:border-[#00ff99]/30 transition-colors">
+              <button
+                type="button"
+                disabled={quickCreateBusy}
+                onClick={() => {
+                  if (onQuickNewSession) void onQuickNewSession();
+                  else onNewSession?.();
+                }}
+                className="w-full text-[#525252] text-xs hover:text-[#00ff99]/80 disabled:opacity-40"
+              >
+                + New session
+              </button>
+              {onCustomNewSession && (
+                <button
+                  type="button"
+                  onClick={onCustomNewSession}
+                  className="w-full text-[10px] text-[#525252] hover:text-[#a3a3a3] underline"
+                >
+                  Custom options…
+                </button>
+              )}
             </div>
           ) : (
             <div className="p-3 text-[#525252] text-xs text-center">

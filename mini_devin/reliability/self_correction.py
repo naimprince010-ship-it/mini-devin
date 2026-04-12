@@ -14,6 +14,8 @@ class ErrorType(str, Enum):
     """Types of errors that can occur during tool execution."""
     SUCCESS = "success"
     COMMAND_FAILED = "command_failed"
+    # Host mismatch (e.g. Windows drive paths on Linux container) — retrying the same command never helps.
+    ENVIRONMENT_MISMATCH = "environment_mismatch"
     FILE_NOT_FOUND = "file_not_found"
     PERMISSION_DENIED = "permission_denied"
     SYNTAX_ERROR = "syntax_error"
@@ -52,6 +54,13 @@ class SelfCorrectionEngine:
                 return ErrorType.SUCCESS
                 
             out_lower = tool_output.lower()
+
+            if (
+                "windows-style paths" in out_lower
+                or "invalid on this linux environment" in out_lower
+                or "this shell runs on linux" in out_lower
+            ):
+                return ErrorType.ENVIRONMENT_MISMATCH
             
             if "syntaxerror" in out_lower or "indentationerror" in out_lower:
                 return ErrorType.SYNTAX_ERROR
@@ -141,6 +150,13 @@ class SelfCorrectionEngine:
             
         elif error_type == ErrorType.TIMEOUT:
             return "The operation timed out. If it's a server, run it in the background using `&` or as a daemon. Otherwise, try a smaller or optimized command."
+
+        elif error_type == ErrorType.ENVIRONMENT_MISMATCH:
+            return (
+                "This shell does not support Windows drive paths (E:\\\\, C:\\\\, etc.). "
+                "Use the workspace path from Runtime context: `pwd`, `ls`, or relative paths like `./mini-devin`. "
+                "Do not repeat the same `cd` to a drive letter."
+            )
             
         elif error_type == ErrorType.COMMAND_FAILED:
             if "Windows-style paths" in output or "runs on Linux" in output:
@@ -179,6 +195,9 @@ class SelfCorrectionEngine:
         # Certain errors might never be worth retrying immediately without a new plan
         if error_type == ErrorType.PERMISSION_DENIED:
             return current_retry_count < 1  # Only retry once for perms
+
+        if error_type == ErrorType.ENVIRONMENT_MISMATCH:
+            return False
             
         return True
 

@@ -439,7 +439,15 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
                   <span className="text-[#2a2a2a]">·</span>
                   <div className="flex items-center gap-1 text-[10px] text-[#525252]">
                     <Cpu size={9} />
-                    <span>{session.model}</span>
+                    <span
+                      className={
+                        session.model.toLowerCase() === 'auto'
+                          ? 'text-[#3399ff] font-semibold'
+                          : ''
+                      }
+                    >
+                      {session.model.toLowerCase() === 'auto' ? 'Auto' : session.model}
+                    </span>
                   </div>
                 </>
               )}

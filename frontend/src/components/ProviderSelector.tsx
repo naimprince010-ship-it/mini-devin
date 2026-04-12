@@ -20,12 +20,14 @@ export function ProviderSelector({
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const api = useApi();
 
   useEffect(() => {
     let cancelled = false;
     const loadProviders = async () => {
       setLoadError(null);
+      setLoading(true);
       try {
         const data = await api.listProviders();
         if (!cancelled) {
@@ -50,7 +52,9 @@ export function ProviderSelector({
     return () => {
       cancelled = true;
     };
-  }, []);
+    // Re-fetch only when `loadAttempt` changes (Retry). Omitting api/callbacks avoids infinite loops.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadAttempt]);
 
   const currentProvider = providers.find(p => p.id === selectedProvider);
   const availableModels = currentProvider?.models || [];
@@ -83,6 +87,13 @@ export function ProviderSelector({
           <code className="text-[#a3a3a3]">OPENAI_API_KEY</code>, <code className="text-[#a3a3a3]">ANTHROPIC_API_KEY</code>, or{' '}
           <code className="text-[#a3a3a3]">GEMINI_API_KEY</code> for models to appear.
         </p>
+        <button
+          type="button"
+          onClick={() => setLoadAttempt((n) => n + 1)}
+          className="mt-1 px-3 py-1.5 text-xs font-medium rounded bg-gray-600 text-white hover:bg-gray-500 border border-gray-500"
+        >
+          Retry
+        </button>
       </div>
     );
   }

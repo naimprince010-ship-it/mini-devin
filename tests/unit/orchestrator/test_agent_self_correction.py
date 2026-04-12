@@ -34,6 +34,21 @@ class TestSelfCorrectionEngine:
     def test_classify_error_terminal_general_failure(self, engine):
         assert engine.classify_error("terminal", "Something went wrong", 1) == ErrorType.COMMAND_FAILED
 
+    def test_classify_error_terminal_windows_path_on_linux(self, engine):
+        out = (
+            "STDERR:\nThis shell runs on Linux (container/cloud). Windows paths like G:\\ do not exist here.\n"
+            "Exit code: -1"
+        )
+        assert engine.classify_error("terminal", out, -1) == ErrorType.ENVIRONMENT_MISMATCH
+
+    def test_should_retry_environment_mismatch_never(self, engine):
+        assert not engine.should_retry(ErrorType.ENVIRONMENT_MISMATCH, 0)
+        assert not engine.should_retry(ErrorType.ENVIRONMENT_MISMATCH, 2)
+
+    def test_get_retry_hint_environment_mismatch(self, engine):
+        hint = engine.get_retry_hint(ErrorType.ENVIRONMENT_MISMATCH, "terminal", {}, "")
+        assert "drive" in hint.lower() or "workspace" in hint.lower()
+
     def test_classify_error_editor_not_found(self, engine):
         assert engine.classify_error("editor", "Error: File not found", None) == ErrorType.FILE_NOT_FOUND
         

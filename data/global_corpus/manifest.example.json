@@ -1,0 +1,10 @@
+[
+  {
+    "url": "https://github.com/pallets/click",
+    "ref": "HEAD"
+  },
+  {
+    "url": "https://github.com/tiangolo/fastapi",
+    "ref": "HEAD"
+  }
+]

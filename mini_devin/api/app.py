@@ -114,6 +114,39 @@ def _git_clone_url_with_token(url: str) -> str:
     return u
 
 
+async def _await_app_db_startup(request: Request) -> None:
+    """
+    Block create_session until background DB init completes.
+
+    Without this, the first POST /sessions can race init_db() on SQLite and appear to hang
+    while the browser shows a perpetual loading state.
+    """
+    task = getattr(request.app.state, "_db_startup_task", None)
+    if task is None:
+        return
+    if task.done():
+        exc = task.exception()
+        if exc is not None:
+            raise HTTPException(
+                status_code=503,
+                detail="Server startup failed. Check API logs (DATABASE_URL, disk, permissions).",
+            ) from exc
+        return
+    wait_sec = float(os.getenv("CREATE_SESSION_DB_WAIT_SEC", "120"))
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=wait_sec)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail="Database is still starting. Wait a few seconds and retry, or check DATABASE_INIT_TIMEOUT.",
+        ) from None
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Server startup failed: {e}",
+        ) from e
+
+
 def _init_git_workspace(working_dir: str) -> None:
     git_dir = os.path.join(working_dir, ".git")
     if os.path.exists(git_dir):
@@ -738,7 +771,7 @@ async def list_sessions():
 
 class CreateSessionRequest(BaseModel):
     working_directory: str = "."
-    model: str = "gpt-4o"
+    model: str = "auto"
     max_iterations: int = 50
     auto_git_commit: bool = False
     git_push: bool = False
@@ -751,14 +784,16 @@ async def create_session(raw_request: Request):
     if not _check_rate_limit(f"create_session:{client_ip}", max_calls=10, window_seconds=60):
         raise HTTPException(status_code=429, detail="Too many requests. Please wait before creating another session.")
 
-    # Workspace root: outside this repository checkout
+    await _await_app_db_startup(raw_request)
+
+    # Workspace root: outside this repository checkout (per-session dirs under agent-workspace)
     _mini_devin_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     _workspaces_root = os.path.join(os.path.dirname(_mini_devin_root), "agent-workspace")
 
     # Generate session ID early so we can create a per-session directory
     new_session_id = str(uuid.uuid4())[:8]
 
-    model = "gpt-4o"
+    model = "auto"
     max_iterations = 50
     auto_git_commit = False
     git_push = False
@@ -767,7 +802,8 @@ async def create_session(raw_request: Request):
     try:
         body = await raw_request.json()
         requested_dir = body.get("working_directory", "") or ""
-        model = body.get("model", "gpt-4o") or "gpt-4o"
+        raw_model = body.get("model", "auto")
+        model = (str(raw_model).strip() if raw_model is not None else "") or "auto"
         max_iterations = int(body.get("max_iterations", 50) or 50)
         auto_git_commit = bool(body.get("auto_git_commit", False))
         git_push = bool(body.get("git_push", False))
@@ -886,6 +922,7 @@ async def get_session(session_id: str):
         "iteration": s.iteration,
         "total_tasks": s.total_tasks,
         "title": getattr(s, 'title', ''),
+        "model": getattr(s, "model", "auto"),
     }
 
 @app.delete("/api/sessions/{session_id}")

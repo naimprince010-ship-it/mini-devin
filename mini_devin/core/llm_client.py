@@ -507,7 +507,9 @@ def create_llm_client(
     """
     registry = get_model_registry()
 
-    if model is None:
+    if model is None or (
+        isinstance(model, str) and model.strip().lower() in ("auto", "default", "")
+    ):
         model = os.environ.get("LLM_MODEL") or registry.get_default_model()
     
     model_info = registry.get_model(model)

@@ -46,6 +46,7 @@ function CodeBlock({ language, children }: { language: string; children: string 
 
 export function StreamingOutput({ content, isStreaming, title = 'Output' }: StreamingOutputProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [copiedAll, setCopiedAll] = useState(false);
 
   useEffect(() => {
     if (containerRef.current) {
@@ -53,8 +54,39 @@ export function StreamingOutput({ content, isStreaming, title = 'Output' }: Stre
     }
   }, [content]);
 
+  const copyEntireReply = () => {
+    if (!content?.trim()) return;
+    navigator.clipboard.writeText(content).then(() => {
+      setCopiedAll(true);
+      setTimeout(() => setCopiedAll(false), 2000);
+    });
+  };
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
+      {content.trim().length > 0 && (
+        <div className="flex-shrink-0 flex items-center justify-between gap-2 px-2 py-1.5 border-b border-[#1a1a1a] bg-[#080808]">
+          <span className="text-[10px] font-mono text-[#525252] truncate uppercase tracking-wide">{title}</span>
+          <button
+            type="button"
+            onClick={copyEntireReply}
+            className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[#a3a3a3] hover:text-[#00ff99] hover:bg-[#141414] transition-colors text-[10px] font-bold uppercase shrink-0"
+            title="Copy full agent reply (raw markdown / text)"
+          >
+            {copiedAll ? (
+              <>
+                <Check size={12} />
+                Copied
+              </>
+            ) : (
+              <>
+                <Copy size={12} />
+                Copy reply
+              </>
+            )}
+          </button>
+        </div>
+      )}
       <div ref={containerRef} className="flex-1 overflow-y-auto custom-scrollbar text-sm leading-relaxed text-[#d1d1d1] prose prose-invert prose-sm max-w-none">
         {content ? (
           <ReactMarkdown
