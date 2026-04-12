@@ -1,4 +1,4 @@
-"""
+﻿"""
 Agent Orchestrator for Mini-Devin
 
 This module implements the main agent that orchestrates task execution
@@ -1880,7 +1880,33 @@ PREFER str_replace over write_file when editing existing files.""",
     def _log(self, message: str) -> None:
         """Log a message if verbose mode is enabled."""
         if self.verbose:
-            print(f"[Agent] {message}")
+            line = f"[Agent] {message}"
+            try:
+                print(line)
+            except UnicodeEncodeError:
+                # Windows consoles often use cp1252; npx/npm output may contain → etc.
+                safe = line.encode("ascii", "backslashreplace").decode("ascii")
+                print(safe)
+
+    def _synthesize_tool_replies_for_open_assistant_tail(self) -> None:
+        """
+        If the last message is an assistant with tool_calls, ensure each id has a following tool
+        message (OpenAI API requirement). Used after replan / abnormal exits from retry loops.
+        """
+        msgs = self.llm.conversation
+        if not msgs:
+            return
+        last = msgs[-1]
+        if last.role != "assistant" or not last.tool_calls:
+            return
+        for tc in last.tool_calls:
+            if not tc.id:
+                continue
+            self.llm.add_tool_result(
+                tc.id,
+                tc.name,
+                "Error: no tool output was recorded for this call (session replan or internal abort).",
+            )
     
     def _init_artifact_logger(self, task_id: str, task_description: str) -> None:
         """Initialize the artifact logger for a task."""
@@ -3294,6 +3320,12 @@ Call a tool (editor or terminal) immediately as your first action."""
                         content=response.content,
                         tool_calls=response.tool_calls,
                     )
+                    # OpenAI requires every tool_call_id from this assistant message to get a tool
+                    # message next, in order — before any new "user" message. Inline self-correction
+                    # injects user messages between tools, so disable it when the batch has >1 call.
+                    _single_tool_batch = len(response.tool_calls) == 1
+                    # Track all tool_call_ids answered for this assistant turn (replenish on mid-batch break)
+                    _batch_answered_tool_ids: set[str] = set()
                     
                     # Execute each tool
                     for tc in response.tool_calls:
@@ -3304,6 +3336,8 @@ Call a tool (editor or terminal) immediately as your first action."""
                         tool_success = False
                         retry_count = 0
                         final_result = ""
+                        # One OpenAI tool message per tool_call_id (retry path may add early; avoid duplicate at end)
+                        tool_ids_answered: set[str] = set()
                         # Track total tool uses this run (used to gate TASK COMPLETE)
                         self._tools_used_count = getattr(self, '_tools_used_count', 0) + 1
                         self._no_tool_streak = 0  # reset streak on real tool call
@@ -3317,7 +3351,11 @@ Call a tool (editor or terminal) immediately as your first action."""
                             # For tool execution classification
                             exit_code = None
                             
-                            result = await self._execute_tool(tc.name, tc.arguments)
+                            try:
+                                result = await self._execute_tool(tc.name, tc.arguments)
+                            except Exception as _tool_ex:
+                                result = f"Error: tool execution raised an exception: {_tool_ex}"
+                                self._log(f"Tool execution error: {_tool_ex}")
                             duration_ms = (time.time() - start_time) * 1000
                             self._log(f"Tool result: {result[:200]}...")
                             final_result = result
@@ -3374,6 +3412,13 @@ Call a tool (editor or terminal) immediately as your first action."""
                             # Tool failed
                             self._log(f"Tool {tc.name} failed with {error_type.value}")
                             
+                            if not _single_tool_batch:
+                                self._log(
+                                    "Skipping inline self-correction: multiple tool_calls in one turn "
+                                    "(API requires all tool results before new user messages)."
+                                )
+                                break
+                            
                             if not self._correction_engine.should_retry(error_type, retry_count):
                                 self._log("Max retries reached or error not retryable immediately")
                                 break
@@ -3391,6 +3436,8 @@ Call a tool (editor or terminal) immediately as your first action."""
                             
                             # We feed the failed result and hint to LLM to get a corrected tool call
                             self.llm.add_tool_result(tc.id, tc.name, result)
+                            tool_ids_answered.add(tc.id)
+                            _batch_answered_tool_ids.add(tc.id)
                             self.llm.add_user_message(f"Your tool call failed: {hint}\nPlease review the error and provide a corrected tool call.")
                             
                             # Ask LLM again
@@ -3414,8 +3461,11 @@ Call a tool (editor or terminal) immediately as your first action."""
                         if "on_tool_result" in self.callbacks:
                             await self._trigger_callback("on_tool_result", tc.name, tc.arguments, final_result, duration_ms)
                         
-                        # Add final tool result to conversation
-                        self.llm.add_tool_result(tc.id, tc.name, final_result)
+                        # Add final tool result once per tool_call_id (retry already appended failure for same id)
+                        if tc.id not in tool_ids_answered:
+                            self.llm.add_tool_result(tc.id, tc.name, final_result)
+                            tool_ids_answered.add(tc.id)
+                            _batch_answered_tool_ids.add(tc.id)
                         
                         # Track in task state
                         if tc.name == "terminal":
@@ -3442,6 +3492,16 @@ Call a tool (editor or terminal) immediately as your first action."""
                                         await self.replan_from_failure(failed_step_id, final_result)
                                         # Force breakdown of iteration loop to let new plan take over
                                         task.error_count += 1
+                                        # Replan must not leave orphan tool_calls on the last assistant message
+                                        for _ptc in response.tool_calls:
+                                            if _ptc.id not in _batch_answered_tool_ids:
+                                                self.llm.add_tool_result(
+                                                    _ptc.id,
+                                                    _ptc.name,
+                                                    "Error: replan aborted before this tool_call_id received a result.",
+                                                )
+                                                _batch_answered_tool_ids.add(_ptc.id)
+                                        self._synthesize_tool_replies_for_open_assistant_tail()
                                         break
                                 
                 else:
@@ -3510,7 +3570,10 @@ Call a tool (editor or terminal) immediately as your first action."""
                                         tool_calls=forced_response.tool_calls,
                                     )
                                     for tc in forced_response.tool_calls:
-                                        result = await self._execute_tool(tc.name, tc.arguments)
+                                        try:
+                                            result = await self._execute_tool(tc.name, tc.arguments)
+                                        except Exception as _fe:
+                                            result = f"Error: forced tool execution failed: {_fe}"
                                         self._tools_used_count = getattr(self, '_tools_used_count', 0) + 1
                                         self.llm.add_tool_result(tc.id, tc.name, result)
                             else:
@@ -3523,6 +3586,11 @@ Call a tool (editor or terminal) immediately as your first action."""
             except Exception as e:
                 error_msg = f"Error in iteration: {str(e)}"
                 self._log(error_msg)
+                # Repair OpenAI message ordering if we stopped mid tool_calls (e.g. LLM error mid-retry)
+                try:
+                    self._synthesize_tool_replies_for_open_assistant_tail()
+                except Exception:
+                    pass
                 
                 # Report error to UI if callback exists
                 await self._trigger_callback("on_message", f"⚠️ **Error**: {str(e)}", is_token=False)

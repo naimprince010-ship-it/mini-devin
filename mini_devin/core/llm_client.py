@@ -323,8 +323,12 @@ class LLMClient:
                 if getattr(delta, "content", None):
                     chunk_text = delta.content
                     content += chunk_text
-                    # DEBUG LOG: Trace token string duplication issue from upstream
-                    print(f"[TOKEN STREAM CHUNK]: {repr(chunk_text)}")
+                    # DEBUG LOG (Windows cp1252 consoles crash on arrows etc. in npm output)
+                    try:
+                        print(f"[TOKEN STREAM CHUNK]: {repr(chunk_text)}")
+                    except UnicodeEncodeError:
+                        safe = repr(chunk_text).encode("ascii", "backslashreplace").decode("ascii")
+                        print(f"[TOKEN STREAM CHUNK]: {safe}")
                     if on_token:
                         import asyncio
                         if inspect.iscoroutinefunction(on_token):
@@ -354,9 +358,11 @@ class LLMClient:
                 if getattr(choice, "finish_reason", None):
                     finish_reason = choice.finish_reason
                     
-            # Parse streaming tool calls
+            # Parse streaming tool calls (drop incomplete chunks — empty id breaks OpenAI tool ordering)
             tool_calls = []
             for _, tc_data in sorted(tool_calls_dict.items()):
+                if not (tc_data.get("id") or "").strip() or not (tc_data.get("name") or "").strip():
+                    continue
                 try:
                     arguments = json.loads(tc_data["arguments"])
                 except json.JSONDecodeError:
