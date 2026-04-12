@@ -6,7 +6,7 @@ to work within free tier memory constraints.
 """
 
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Dict, Any, List
+from typing import Any, AsyncGenerator, Dict, List
 import uuid
 import json
 from datetime import datetime, timezone
@@ -17,7 +17,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Requ
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from dotenv import load_dotenv
 import time
@@ -1519,8 +1519,19 @@ class CreateProjectRequest(BaseModel):
     name: str
     description: str = ""
     repo_url: Optional[str] = None
-    tech_stack: list = []
+    tech_stack: List[str] = Field(default_factory=list)
     project_id: Optional[str] = None
+
+    @field_validator("tech_stack", mode="before")
+    @classmethod
+    def _coerce_tech_stack(cls, v: Any) -> List[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [s.strip() for s in v.split(",") if s.strip()]
+        if isinstance(v, (list, tuple)):
+            return [str(x).strip() for x in v if str(x).strip()]
+        return []
 
 
 class MemoryEntryRequest(BaseModel):
@@ -1562,15 +1573,31 @@ class IngestRepoRequest(BaseModel):
 @app.post("/api/projects")
 async def create_project(req: CreateProjectRequest):
     from ..integrations.project_memory import get_project_memory
-    pm = get_project_memory()
-    proj = pm.create_project(
-        name=req.name,
-        description=req.description,
-        repo_url=req.repo_url,
-        tech_stack=req.tech_stack,
-        project_id=req.project_id,
-    )
-    return proj.to_dict()
+
+    name = (req.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Project name is required")
+    try:
+        pm = get_project_memory()
+        proj = pm.create_project(
+            name=name,
+            description=(req.description or "").strip(),
+            repo_url=(req.repo_url or "").strip() or None,
+            tech_stack=list(req.tech_stack or []),
+            project_id=(req.project_id or "").strip() or None,
+        )
+        return proj.to_dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+
+        print(f"[API] create_project error: {e}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not create project (storage or validation): {e}",
+        ) from e
 
 
 @app.get("/api/projects")

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -133,6 +134,23 @@ class ProjectMemory:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    @staticmethod
+    def _memory_entry_from_dict(raw: dict[str, Any]) -> Optional[MemoryEntry]:
+        try:
+            e = dict(raw)
+            cat = e.get("category")
+            if isinstance(cat, str):
+                e["category"] = MemoryCategory(cat)
+            return MemoryEntry(**e)
+        except Exception:
+            return None
+
+    def _memory_entry_to_doc(self, e: MemoryEntry) -> dict[str, Any]:
+        d = asdict(e)
+        d["category"] = e.category.value
+        d.pop("embedding", None)
+        return d
+
     def _load_all(self) -> None:
         for p_dir in self._base.iterdir():
             if not p_dir.is_dir():
@@ -150,8 +168,11 @@ class ProjectMemory:
                 try:
                     entries = json.loads(e_file.read_text(encoding="utf-8"))
                     for e in entries:
-                        entry = MemoryEntry(**e)
-                        self._entries[entry.id] = entry
+                        if not isinstance(e, dict):
+                            continue
+                        entry = self._memory_entry_from_dict(e)
+                        if entry is not None:
+                            self._entries[entry.id] = entry
                 except Exception:
                     pass
 
@@ -165,14 +186,8 @@ class ProjectMemory:
 
     def _save_entries(self, project_id: str) -> None:
         d = self._project_dir(project_id)
-        entries = [
-            {**asdict(e)}
-            for e in self._entries.values()
-            if e.project_id == project_id
-        ]
-        (d / "entries.json").write_text(
-            json.dumps(entries, indent=2), encoding="utf-8"
-        )
+        entries = [self._memory_entry_to_doc(e) for e in self._entries.values() if e.project_id == project_id]
+        (d / "entries.json").write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
     # ── Project CRUD ─────────────────────────────────────────────────────────
 
@@ -351,8 +366,14 @@ class ProjectMemory:
 _instance: Optional[ProjectMemory] = None
 
 
-def get_project_memory(memory_dir: str = "project_memory") -> ProjectMemory:
+def default_project_memory_dir() -> str:
+    """Under ``MINI_DEVIN_DATA`` (default ``data``), same family as training logs — avoids cwd surprises."""
+    base = os.environ.get("MINI_DEVIN_DATA", "data")
+    return str(Path(base) / "project_memory")
+
+
+def get_project_memory(memory_dir: str | None = None) -> ProjectMemory:
     global _instance
     if _instance is None:
-        _instance = ProjectMemory(memory_dir)
+        _instance = ProjectMemory(memory_dir or default_project_memory_dir())
     return _instance

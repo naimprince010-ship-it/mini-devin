@@ -61,6 +61,9 @@ runs/
 data/training_logs/*.jsonl
 data/training_exports/*.jsonl
 
+# Project memory (per-project JSON on disk)
+data/project_memory/
+
 # Database
 *.db
 *.sqlite3
