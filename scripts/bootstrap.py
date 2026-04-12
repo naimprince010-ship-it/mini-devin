@@ -17,6 +17,49 @@ from pathlib import Path
 RESTART_FLAG = Path(".restart_flag")
 
 
+def _run_alembic_upgrade_if_applicable() -> None:
+    """Apply DB migrations before uvicorn (Railway/Postgres). Skipped for SQLite or unset URL."""
+    if os.getenv("SKIP_ALEMBIC_UPGRADE", "").strip().lower() in ("1", "true", "yes", "on"):
+        print("[Bootstrap] SKIP_ALEMBIC_UPGRADE set; skipping alembic upgrade head.")
+        return
+    raw = (os.getenv("DATABASE_URL") or "").strip()
+    if not raw:
+        print("[Bootstrap] DATABASE_URL unset; skipping alembic (SQLite / init_db create_all path).")
+        return
+    if "sqlite" in raw.lower():
+        print("[Bootstrap] SQLite DATABASE_URL; skipping alembic upgrade head.")
+        return
+
+    print("[Bootstrap] Running database migrations: alembic upgrade head")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f".{os.pathsep}{env.get('PYTHONPATH', '')}"
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=os.getcwd(),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=float(os.getenv("ALEMBIC_UPGRADE_TIMEOUT", "300")),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            "alembic upgrade head timed out (set ALEMBIC_UPGRADE_TIMEOUT seconds or SKIP_ALEMBIC_UPGRADE=1)."
+        ) from None
+
+    if proc.stdout:
+        print(proc.stdout.rstrip())
+    if proc.stderr:
+        print(proc.stderr.rstrip())
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"alembic upgrade head failed (exit {proc.returncode}). "
+            "Fix migrations or set SKIP_ALEMBIC_UPGRADE=1 to start without migrating (not recommended)."
+        )
+    print("[Bootstrap] alembic upgrade head completed successfully.")
+
+
 def _resolve_listen_port() -> str:
     """Pick a single numeric port from PORT (Railway injects this).
 
@@ -71,6 +114,8 @@ def run_server():
             "[Bootstrap] Railway: Public Networking → domain → Target port must equal this "
             f"listen port ({port}) or the edge returns 502."
         )
+
+    _run_alembic_upgrade_if_applicable()
 
     while True:
         # Start server with uvicorn

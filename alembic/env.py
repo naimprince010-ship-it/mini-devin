@@ -29,8 +29,10 @@ target_metadata = Base.metadata
 # Override sqlalchemy.url from environment variable if set
 database_url = os.getenv("DATABASE_URL")
 if database_url:
-    # Convert async URL to sync for Alembic
+    # Convert async URL to sync for Alembic (matches mini_devin.database.config.get_sync_database_url)
     database_url = database_url.replace("+asyncpg", "")
+    if database_url.startswith("postgres://"):
+        database_url = "postgresql://" + database_url[len("postgres://") :]
     config.set_main_option("sqlalchemy.url", database_url)
 
 # other values from the config, defined by the needs of env.py,
