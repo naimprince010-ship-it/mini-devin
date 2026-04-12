@@ -1540,6 +1540,12 @@ class MemorySearchRequest(BaseModel):
     min_importance: int = 1
 
 
+class IngestRepoRequest(BaseModel):
+    """Absolute path to a cloned repo on the server (must be under agent-workspace or the app checkout)."""
+
+    repo_path: str
+
+
 @app.post("/api/projects")
 async def create_project(req: CreateProjectRequest):
     from ..integrations.project_memory import get_project_memory
@@ -1629,6 +1635,57 @@ async def get_memory_context(project_id: str, task: str = ""):
     pm = get_project_memory()
     ctx = pm.get_context_for_task(project_id, task)
     return {"context": ctx}
+
+
+@app.post("/api/projects/{project_id}/ingest-repo")
+async def ingest_project_repo_snapshot(project_id: str, req: IngestRepoRequest):
+    """
+    Scan a repository on disk and append a high-importance Project Memory entry.
+
+    Later sessions that pass the same ``project_id`` when creating a session receive
+    this context via ``get_context_for_task`` (see create_session).
+    """
+    from pathlib import Path
+
+    from ..integrations.project_memory import MemoryCategory, get_project_memory
+    from ..integrations.repo_ingest import build_repo_digest, is_path_allowed_for_repo_ingest
+
+    pm = get_project_memory()
+    if not pm.get_project(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    root = Path(req.repo_path.strip()).expanduser()
+    try:
+        root = root.resolve()
+    except OSError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid path: {e}") from e
+
+    if not root.is_dir():
+        raise HTTPException(status_code=400, detail="repo_path is not a directory")
+    if not is_path_allowed_for_repo_ingest(root):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "repo_path must be inside the agent workspace, the Mini-Devin checkout, "
+                "or REPO_INGEST_EXTRA_ROOT (see server docs)."
+            ),
+        )
+
+    data = build_repo_digest(root)
+    entry = pm.add_entry(
+        project_id=project_id,
+        category=MemoryCategory.CONTEXT,
+        title=f"Repository ingest: {root.name}",
+        content=data["markdown"],
+        tags=["auto-ingest", "repo-snapshot"],
+        importance=8,
+    )
+    return {
+        "entry": entry.to_dict(),
+        "paths_indexed": data["paths_count"],
+        "manifest_files": data["manifest_files_used"],
+        "warnings": data["warnings"],
+    }
 
 
 @app.delete("/api/memory/{entry_id}")
