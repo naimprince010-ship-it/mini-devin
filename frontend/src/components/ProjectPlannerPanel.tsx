@@ -171,16 +171,16 @@ export default function ProjectPlannerPanel() {
   // ── Actions ───────────────────────────────────────────────────────────────
 
   const createProject = async () => {
-    if (!newProjectName) return showToast('Project name required')
+    if (!newProjectName.trim()) return showToast('Project name required')
     setLoading(true)
     try {
       const res = await fetch(`${API}/projects`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: newProjectName,
-          description: newProjectDesc,
-          tech_stack: newProjectStack ? newProjectStack.split(',').map(s => s.trim()) : [],
+          name: newProjectName.trim(),
+          description: newProjectDesc.trim(),
+          tech_stack: newProjectStack ? newProjectStack.split(',').map(s => s.trim()).filter(Boolean) : [],
         }),
       })
       if (res.ok) {
@@ -189,8 +189,25 @@ export default function ProjectPlannerPanel() {
         setShowCreateProject(false)
         setNewProjectName(''); setNewProjectDesc(''); setNewProjectStack('')
         await fetchProjects()
+      } else {
+        let msg = `Create failed (${res.status})`
+        try {
+          const err = await res.json()
+          msg = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail || err)
+        } catch {
+          msg = res.statusText || msg
+        }
+        showToast(String(msg).slice(0, 240))
       }
-    } finally { setLoading(false) }
+    } catch (e) {
+      showToast(
+        e instanceof Error
+          ? `${e.message} — start API: poetry run uvicorn mini_devin.api.app:app --port 8000`
+          : 'Network error — is the API running on port 8000?',
+      )
+    } finally {
+      setLoading(false)
+    }
   }
 
   const deleteProject = async (id: string) => {
