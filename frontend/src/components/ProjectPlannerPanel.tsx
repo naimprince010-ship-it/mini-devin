@@ -104,6 +104,13 @@ export default function ProjectPlannerPanel() {
   // Repo → project memory (scan / clone on server)
   const [ingestInput, setIngestInput] = useState('')
   const [ingestBusy, setIngestBusy] = useState(false)
+  const [ingestPreview, setIngestPreview] = useState<{
+    preview: string
+    paths_indexed: number
+    content_sha256: string
+    warnings?: string[]
+  } | null>(null)
+  const [ingestAllowDuplicate, setIngestAllowDuplicate] = useState(false)
 
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 3500) }
 
@@ -148,6 +155,11 @@ export default function ProjectPlannerPanel() {
     if (tab === 'plans' && selectedProject) fetchPlans(selectedProject.id)
     if (tab === 'memory' && selectedProject) fetchMemory(selectedProject.id)
   }, [tab, selectedProject, fetchPlans, fetchMemory])
+
+  useEffect(() => {
+    setIngestPreview(null)
+    setIngestAllowDuplicate(false)
+  }, [ingestInput])
 
   // Auto-refresh running plan
   useEffect(() => {
@@ -272,26 +284,81 @@ export default function ProjectPlannerPanel() {
     if (res.ok) setMemSearchResults((await res.json()).results || [])
   }
 
-  const ingestRepoIntoMemory = async () => {
+  const ingestRepoPayload = (raw: string, extra: Record<string, unknown>) => {
+    const isUrl = /^https?:\/\//i.test(raw) || raw.startsWith('git@')
+    return isUrl ? { repo_url: raw, ...extra } : { repo_path: raw, ...extra }
+  }
+
+  const previewRepoIngest = async () => {
     if (!selectedProject || !ingestInput.trim()) return
     const raw = ingestInput.trim()
-    const isUrl = /^https?:\/\//i.test(raw) || raw.startsWith('git@')
     setIngestBusy(true)
     const ac = new AbortController()
     const tid = window.setTimeout(() => ac.abort(), 300_000)
     try {
-      const body = isUrl ? { repo_url: raw } : { repo_path: raw }
       const res = await fetch(`${API}/projects/${selectedProject.id}/ingest-repo`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify(ingestRepoPayload(raw, { dry_run: true })),
         signal: ac.signal,
       })
       if (res.ok) {
         const data = await res.json()
+        if (data.dry_run && typeof data.preview === 'string') {
+          setIngestPreview({
+            preview: data.preview,
+            paths_indexed: Number(data.paths_indexed) || 0,
+            content_sha256: String(data.content_sha256 || ''),
+            warnings: Array.isArray(data.warnings) ? data.warnings : [],
+          })
+          showToast('Preview ready — check below, then Save to memory')
+        }
+      } else {
+        let msg = res.statusText
+        try {
+          const err = await res.json()
+          msg = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail || err)
+        } catch { /* ignore */ }
+        showToast(String(msg).slice(0, 240))
+      }
+    } catch (e: unknown) {
+      const name = e instanceof Error ? e.name : ''
+      showToast(name === 'AbortError' ? 'Timed out — large repos can take several minutes' : 'Preview failed')
+    } finally {
+      window.clearTimeout(tid)
+      setIngestBusy(false)
+    }
+  }
+
+  const confirmRepoIngest = async () => {
+    if (!selectedProject || !ingestInput.trim()) return
+    const raw = ingestInput.trim()
+    setIngestBusy(true)
+    const ac = new AbortController()
+    const tid = window.setTimeout(() => ac.abort(), 300_000)
+    try {
+      const res = await fetch(`${API}/projects/${selectedProject.id}/ingest-repo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          ingestRepoPayload(raw, {
+            dry_run: false,
+            skip_if_duplicate: !ingestAllowDuplicate,
+          }),
+        ),
+        signal: ac.signal,
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.skipped) {
+          showToast(String(data.detail || 'Skipped: same snapshot already in memory').slice(0, 220))
+          return
+        }
         const n = typeof data.paths_indexed === 'number' ? data.paths_indexed : 0
-        showToast(`Repository scanned — ${n} paths indexed into project memory`)
+        showToast(`Saved to project memory — ${n} paths indexed`)
         setIngestInput('')
+        setIngestPreview(null)
+        setIngestAllowDuplicate(false)
         fetchMemory(selectedProject.id)
       } else {
         let msg = res.statusText
@@ -303,7 +370,7 @@ export default function ProjectPlannerPanel() {
       }
     } catch (e: unknown) {
       const name = e instanceof Error ? e.name : ''
-      showToast(name === 'AbortError' ? 'Timed out — large repos can take several minutes' : 'Could not ingest repository')
+      showToast(name === 'AbortError' ? 'Timed out — large repos can take several minutes' : 'Save failed')
     } finally {
       window.clearTimeout(tid)
       setIngestBusy(false)
@@ -547,8 +614,11 @@ export default function ProjectPlannerPanel() {
                     Scan repository → memory
                   </p>
                   <p className="text-[10px] text-gray-500 leading-relaxed">
-                    Paste a <span className="text-gray-400">GitHub HTTPS or git@ URL</span> (server clones shallowly, scans README/manifests + file list, saves one memory entry)
-                    or an <span className="text-gray-400">absolute path on this server</span> (e.g. a session workspace folder from Browse).
+                    <span className="text-[#a3a3a3]">Step 1 — Preview:</span> server scans (clone for Git URL). Nothing is saved yet.
+                    <span className="text-[#a3a3a3] ml-1">Step 2 — Save:</span> writes one memory entry. Same snapshot twice is skipped unless you check “force duplicate”.
+                  </p>
+                  <p className="text-[10px] text-gray-500 leading-relaxed">
+                    Paste a <span className="text-gray-400">GitHub HTTPS or git@ URL</span> or an <span className="text-gray-400">absolute path on this server</span>.
                   </p>
                   <textarea
                     className="w-full bg-[#0a0a0a] border border-[#333] text-xs text-[#f0f0f0] caret-[#00ff99] rounded px-2 py-1.5 h-16 resize-none placeholder-[#525252] outline-none"
@@ -557,16 +627,57 @@ export default function ProjectPlannerPanel() {
                     onChange={e => setIngestInput(e.target.value)}
                     disabled={ingestBusy}
                   />
-                  <div className="flex justify-end">
-                    <button
-                      type="button"
-                      onClick={ingestRepoIntoMemory}
-                      disabled={ingestBusy || !ingestInput.trim()}
-                      className="text-xs px-3 py-1.5 rounded font-semibold bg-[#00ff99]/15 text-[#00ff99] border border-[#00ff99]/40 hover:bg-[#00ff99]/25 disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      {ingestBusy ? 'Scanning…' : 'Scan & save to memory'}
-                    </button>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="flex items-center gap-1.5 text-[10px] text-gray-400 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={ingestAllowDuplicate}
+                        onChange={e => setIngestAllowDuplicate(e.target.checked)}
+                        className="accent-[#00ff99] rounded"
+                      />
+                      Force save even if unchanged (duplicate OK)
+                    </label>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={previewRepoIngest}
+                        disabled={ingestBusy || !ingestInput.trim()}
+                        className="text-xs px-3 py-1.5 rounded font-semibold bg-[#1e1e1e] text-gray-200 border border-[#444] hover:bg-[#2a2a2a] disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {ingestBusy && !ingestPreview ? 'Scanning…' : 'Preview scan'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={confirmRepoIngest}
+                        disabled={ingestBusy || !ingestInput.trim() || !ingestPreview}
+                        className="text-xs px-3 py-1.5 rounded font-semibold bg-[#00ff99]/15 text-[#00ff99] border border-[#00ff99]/40 hover:bg-[#00ff99]/25 disabled:opacity-40 disabled:cursor-not-allowed"
+                        title="Run Preview scan first"
+                      >
+                        {ingestBusy && ingestPreview ? 'Saving…' : 'Save to memory'}
+                      </button>
+                    </div>
                   </div>
+                  {ingestPreview && (
+                    <div className="mt-2 space-y-1">
+                      <p className="text-[10px] text-gray-500">
+                        Preview · {ingestPreview.paths_indexed} paths · hash{' '}
+                        <span className="font-mono text-gray-400">{ingestPreview.content_sha256.slice(0, 12)}…</span>
+                      </p>
+                      {ingestPreview.warnings && ingestPreview.warnings.length > 0 && (
+                        <p className="text-[10px] text-amber-500/90">{ingestPreview.warnings.join(', ')}</p>
+                      )}
+                      <pre className="max-h-48 overflow-y-auto rounded border border-[#262626] bg-[#050505] p-2 text-[10px] text-[#c4c4c4] whitespace-pre-wrap break-words">
+                        {ingestPreview.preview}
+                      </pre>
+                      <button
+                        type="button"
+                        onClick={() => { setIngestPreview(null); setIngestAllowDuplicate(false) }}
+                        className="text-[10px] text-gray-500 hover:text-gray-300"
+                      >
+                        Clear preview
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Semantic search */}
