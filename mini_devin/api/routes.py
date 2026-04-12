@@ -1,5 +1,5 @@
 """
-API Routes for Mini-Devin
+API Routes for Plodder
 
 This module provides REST API endpoints for:
 - Session management (create, list, get, delete)
@@ -798,7 +798,7 @@ async def get_skill_execution(execution_id: str):
 
 # Helper functions for custom skills storage
 
-_CUSTOM_SKILLS_FILE = Path.home() / ".mini-devin" / "custom_skills.json"
+_CUSTOM_SKILLS_FILE = Path.home() / ".plodder" / "custom_skills.json"
 _EXECUTIONS: dict = {}
 
 

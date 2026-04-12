@@ -1,5 +1,5 @@
-﻿"""
-Agent Orchestrator for Mini-Devin
+"""
+Agent Orchestrator for Plodder
 
 This module implements the main agent that orchestrates task execution
 using a state machine approach with planning, execution, and verification phases.
@@ -2105,7 +2105,7 @@ PREFER str_replace over write_file when editing existing files.""",
         if self._vector_store is None:
             persist_path = None
             if self.working_directory:
-                persist_path = f"{self.working_directory}/.mini-devin/vector_store.json"
+                persist_path = f"{self.working_directory}/.plodder/vector_store.json"
             self._vector_store = create_vector_store(persist_path=persist_path)
         return self._vector_store
     
@@ -2125,7 +2125,7 @@ PREFER str_replace over write_file when editing existing files.""",
         if self._working_memory is None:
             persist_path = None
             if self.working_directory:
-                persist_path = f"{self.working_directory}/.mini-devin/working_memory.json"
+                persist_path = f"{self.working_directory}/.plodder/working_memory.json"
             self._working_memory = create_working_memory(
                 max_tokens=8000,
                 persist_path=persist_path,
@@ -2254,7 +2254,7 @@ PREFER str_replace over write_file when editing existing files.""",
         """
         if self._conversation_memory is None:
             from pathlib import Path
-            storage_path = Path.home() / ".mini-devin" / "conversation_memory.json"
+            storage_path = Path.home() / ".plodder" / "conversation_memory.json"
             self._conversation_memory = create_conversation_memory(
                 storage_path=str(storage_path),
                 max_entries=1000,

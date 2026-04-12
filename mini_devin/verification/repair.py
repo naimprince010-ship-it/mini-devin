@@ -1,5 +1,5 @@
 """
-Repair Loop for Mini-Devin
+Repair Loop for Plodder
 
 This module implements bounded repair loops that automatically attempt
 to fix issues found during verification, with a maximum number of

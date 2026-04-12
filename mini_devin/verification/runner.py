@@ -1,5 +1,5 @@
 """
-Verification Runner for Mini-Devin
+Verification Runner for Plodder
 
 This module implements the verification runner that executes checks
 like lint, typecheck, and tests after agent changes.

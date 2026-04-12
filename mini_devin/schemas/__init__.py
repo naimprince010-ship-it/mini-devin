@@ -1,7 +1,7 @@
 """
-Mini-Devin Schemas
+Plodder Schemas
 
-This package contains all Pydantic schemas for the Mini-Devin agent:
+This package contains all Pydantic schemas for the Plodder agent:
 - tools: Tool input/output schemas (Terminal, Editor, Browser)
 - state: Agent and task state schemas
 - verification: Verification and done signal schemas

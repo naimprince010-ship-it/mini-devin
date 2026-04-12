@@ -233,7 +233,7 @@ function NewSessionModal({
   );
 }
 
-const LAST_SESSION_KEY = 'mini-devin:last-session-id';
+const LAST_SESSION_KEY = 'plodder:last-session-id';
 
 function App() {
   const { user, loading } = useAuth();
@@ -252,11 +252,15 @@ function App() {
 
   // Restore last selected session from localStorage on mount
   useEffect(() => {
-    const savedId = localStorage.getItem(LAST_SESSION_KEY);
+    const savedId =
+      localStorage.getItem(LAST_SESSION_KEY) ?? localStorage.getItem('mini-devin:last-session-id');
     if (savedId && !selectedSession) {
       api.getSession(savedId)
         .then(s => { if (s) setSelectedSession(s); })
-        .catch(() => localStorage.removeItem(LAST_SESSION_KEY));
+        .catch(() => {
+          localStorage.removeItem(LAST_SESSION_KEY);
+          localStorage.removeItem('mini-devin:last-session-id');
+        });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -357,7 +361,7 @@ function App() {
               <div className="w-7 h-7 rounded-lg bg-[#00ff99]/10 border border-[#00ff99]/20 flex items-center justify-center">
                 <Bot style={{ color: accentColor }} size={16} />
               </div>
-              <h1 className={`font-bold text-sm tracking-tight ${textPrimary}`}>Mini-Devin</h1>
+              <h1 className={`font-bold text-sm tracking-tight ${textPrimary}`}>Plodder</h1>
             </button>
             <button
               className={`md:hidden p-1 rounded-lg ${textMuted} ${bgHover} transition-colors`}
@@ -464,7 +468,7 @@ function App() {
             </button>
             <div className="flex items-center gap-2">
               <Bot style={{ color: accentColor }} size={16} />
-              <span className={`font-bold text-sm ${textPrimary}`}>Mini-Devin</span>
+              <span className={`font-bold text-sm ${textPrimary}`}>Plodder</span>
             </div>
             {selectedSession && (
               <span className={`ml-auto text-xs ${textMuted} truncate max-w-[140px]`}>
@@ -501,7 +505,7 @@ function App() {
                       <Bot size={32} style={{ color: accentColor, opacity: 0.4 }} />
                     </div>
                     <div className="space-y-2">
-                      <h2 className={`text-xl font-bold tracking-tight ${textPrimary}`}>Welcome to Mini-Devin</h2>
+                      <h2 className={`text-xl font-bold tracking-tight ${textPrimary}`}>Welcome to Plodder</h2>
                       <p className={`${textMuted} text-sm leading-relaxed max-w-xs`}>
                         Start a new session to work with your AI agent, or select an existing one from the sidebar.
                       </p>

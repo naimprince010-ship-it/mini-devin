@@ -1,8 +1,8 @@
-# Mini-Devin 🤖
+# Plodder 🤖
 
 **An autonomous AI software engineer** — give it a task in plain English, it writes code, runs tests, fixes errors, and commits to Git — all automatically.
 
-![Mini-Devin UI](docs/screenshot.png)
+![Plodder UI](docs/screenshot.png)
 
 ---
 
@@ -29,13 +29,14 @@
 
 ### 1. Clone and configure
 ```bash
-git clone https://github.com/yourname/mini-devin.git
-cd mini-devin
+git clone https://github.com/yourorg/plodder.git
+cd plodder
 cp .env.example .env
 # Edit .env and add your OPENAI_API_KEY
 ```
 
 ### 2. Install dependencies
+The Poetry project is named **plodder** (Python packages remain ``mini_devin`` + ``plodder``).
 ```bash
 poetry install
 cd frontend && npm install && cd ..
@@ -129,7 +130,7 @@ Create a REST API with CRUD operations for a todo list using FastAPI + SQLite
 ## Architecture
 
 ```
-mini-devin/
+plodder/
 ├── mini_devin/
 │   ├── api/              # FastAPI backend (WebSocket + REST)
 │   ├── orchestrator/     # Agent loop, planning, LLM calls

@@ -1,5 +1,5 @@
 """
-Mini-Devin API Server v5.6
+Plodder API Server v5.6
 Phase 34: Better Error Handling
 Phase 35: Task History & Export
 Phase 36: Multi-Model Support (OpenAI, Anthropic, Ollama)
@@ -435,10 +435,18 @@ security = HTTPBearer(auto_error=False)
 # Rate limiting storage (in-memory, use Redis for production scaling)
 rate_limit_storage: Dict[str, List[float]] = defaultdict(list)
 
-DB_PATH = os.environ.get("MINI_DEVIN_DB_PATH", "/root/mini-devin/mini_devin.db")
-WORKSPACE_DIR = os.environ.get("MINI_DEVIN_WORKSPACE", "/root/mini-devin/workspace")
-UPLOADS_DIR = os.environ.get("MINI_DEVIN_UPLOADS", "/root/mini-devin/uploads")
-MEMORY_DIR = os.environ.get("MINI_DEVIN_MEMORY", "/root/mini-devin/memory")
+DB_PATH = os.environ.get("PLODDER_DB_PATH") or os.environ.get(
+    "MINI_DEVIN_DB_PATH", "/root/plodder/plodder.db"
+)
+WORKSPACE_DIR = os.environ.get("PLODDER_WORKSPACE") or os.environ.get(
+    "MINI_DEVIN_WORKSPACE", "/root/plodder/workspace"
+)
+UPLOADS_DIR = os.environ.get("PLODDER_UPLOADS") or os.environ.get(
+    "MINI_DEVIN_UPLOADS", "/root/plodder/uploads"
+)
+MEMORY_DIR = os.environ.get("PLODDER_MEMORY") or os.environ.get(
+    "MINI_DEVIN_MEMORY", "/root/plodder/memory"
+)
 
 # ============================================================================
 # Phase 43: Database Connection Pooling Configuration
@@ -1278,7 +1286,7 @@ class CreateGitHubRepoRequest(BaseModel):
     github_token: str = Field(..., description="GitHub Personal Access Token with repo creation permissions")
     auto_init: bool = Field(default=True, description="Initialize with README")
 
-REPOS_DIR = os.environ.get("MINI_DEVIN_REPOS", "/root/mini-devin/repos")
+REPOS_DIR = os.environ.get("PLODDER_REPOS") or os.environ.get("MINI_DEVIN_REPOS", "/root/plodder/repos")
 
 DANGEROUS_COMMANDS = [
     "rm -rf /", "rm -rf /*", "mkfs", "dd if=", ":(){", "fork bomb",
@@ -2552,7 +2560,7 @@ def post_github_review(owner: str, repo: str, pr_number: int, token: str, review
     
     # Build review body
     review_body = f"## Code Review Summary\n\n{review_result.summary}\n\n"
-    review_body += f"*Analyzed by Mini-Devin using {review_result.model_used}*"
+    review_body += f"*Analyzed by Plodder using {review_result.model_used}*"
     
     # Create the review
     data = {
@@ -2755,7 +2763,7 @@ def get_session_memory(session_id: str) -> str:
     except:
         return ""
 
-SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer. You MUST use tools to accomplish tasks - do not just describe what you would do.
+SYSTEM_PROMPT = """You are Plodder, an autonomous AI software engineer. You MUST use tools to accomplish tasks - do not just describe what you would do.
 
 ## CRITICAL RULES
 
@@ -4160,7 +4168,7 @@ async def execute_agent_task(session_id: str, task_id: str, description: str, mo
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Phase 45: Use structured logging for startup
-    logger.info("Starting Mini-Devin API v5.4", extra={"version": "5.4.0"})
+    logger.info("Starting Plodder API v5.4", extra={"version": "5.4.0"})
     logger.info("Features: Tool Execution, SQLite Storage, WebSocket, Multi-Model, File Upload, Agent Memory, Export, Background Task Queue, Monitoring")
     
     init_db()
@@ -4214,9 +4222,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Phase 44: Stop background task queue gracefully
     logger.info("Stopping background task queue...")
     await queue.stop()
-    logger.info("Shutting down Mini-Devin API...")
+    logger.info("Shutting down Plodder API...")
 
-app = FastAPI(title="Mini-Devin API", version="5.4.0", description="Autonomous AI Software Engineer with Multi-Model Support, File Upload, Agent Memory, Export, and Monitoring", lifespan=lifespan)
+app = FastAPI(title="Plodder API", version="5.4.0", description="Autonomous AI Software Engineer with Multi-Model Support, File Upload, Agent Memory, Export, and Monitoring", lifespan=lifespan)
 
 # Phase 45: Add request logging middleware (before CORS)
 app.add_middleware(RequestLoggingMiddleware)
@@ -4236,7 +4244,7 @@ def get_configured_providers():
 async def root():
     providers = get_configured_providers()
     return {
-        "name": "Mini-Devin API",
+        "name": "Plodder API",
         "version": "5.0.0",
         "status": "running",
         "mode": "full-agent" if providers else "limited",
@@ -10582,7 +10590,7 @@ async def api_github_security_alerts(repo_id: int):
 # ============================================================================
 
 # Enhanced System Prompt with Planning and PR Workflow
-ENHANCED_SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer. You MUST use tools to accomplish tasks - do not just describe what you would do.
+ENHANCED_SYSTEM_PROMPT = """You are Plodder, an autonomous AI software engineer. You MUST use tools to accomplish tasks - do not just describe what you would do.
 
 ## CRITICAL RULES
 

@@ -1,5 +1,5 @@
 """
-Minimal Reproduction Module for Mini-Devin
+Minimal Reproduction Module for Plodder
 
 This module extracts exact failing test/error information to focus fixes:
 - Parse test output to find failing test names and line numbers

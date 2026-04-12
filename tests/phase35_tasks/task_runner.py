@@ -1,7 +1,7 @@
 """
 Phase 3.6 Task Runner
 
-This module runs 10 real-world tasks to validate Mini-Devin's reliability.
+This module runs 10 real-world tasks to validate Plodder's reliability.
 It generates a success/failure report for each task.
 
 Phase 3.6 improvements:

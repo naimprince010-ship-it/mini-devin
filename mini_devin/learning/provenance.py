@@ -50,7 +50,7 @@ def default_teacher_review_provenance() -> dict[str, Any]:
         rights_basis=basis,
         commercial_model_training_ok=ok,
         notes=(
-            "Derived from Mini-Devin runs. Ensure end-user / customer agreements allow "
+            "Derived from Plodder runs. Ensure end-user / customer agreements allow "
             "model training before using exports commercially or redistributing datasets."
         ),
     ).to_dict()

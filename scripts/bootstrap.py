@@ -1,8 +1,8 @@
 """
-Bootstrap Script for Mini-Devin
+Bootstrap Script for Plodder
 
 This script acts as a watchdog for recursive self-development.
-It launches the Mini-Devin API and monitors for a restart signal.
+It launches the Plodder API and monitors for a restart signal.
 If the agent modifies core logic and wants to apply changes, it can 
 touch a `.restart_flag` file to trigger a restart.
 """
@@ -43,8 +43,8 @@ def _resolve_listen_port() -> str:
 
 
 def run_server():
-    """Run the Mini-Devin server and restart if flag is detected."""
-    print(f"[Bootstrap] Initializing Mini-Devin Watchdog at {datetime.now().isoformat()}...")
+    """Run the Plodder server and restart if flag is detected."""
+    print(f"[Bootstrap] Initializing Plodder Watchdog at {datetime.now().isoformat()}...")
     print(f"[Bootstrap] Working Directory: {os.getcwd()}")
     print(f"[Bootstrap] Python Executable: {sys.executable}")
     
@@ -95,7 +95,7 @@ def run_server():
                 stderr=None
             )
         
-        print(f"[Bootstrap] Mini-Devin process started with PID: {process.pid}")
+        print(f"[Bootstrap] Plodder process started with PID: {process.pid}")
         
         last_ping = time.time()
         while process.poll() is None:
@@ -123,7 +123,7 @@ def run_server():
         # If process exited naturally
         ret_code = process.poll()
         if ret_code is not None and not RESTART_FLAG.exists():
-            print(f"[Bootstrap] Mini-Devin exited with code {ret_code}")
+            print(f"[Bootstrap] Plodder exited with code {ret_code}")
             if ret_code != 0:
                 wait_time = 5
                 print(f"[Bootstrap] Unexpected exit. Retrying in {wait_time} seconds...")

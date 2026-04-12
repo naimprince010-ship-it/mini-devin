@@ -1,7 +1,7 @@
 """
-Acceptance Test Suite for Mini-Devin
+Acceptance Test Suite for Plodder
 
-This module provides acceptance tests that verify Mini-Devin works
+This module provides acceptance tests that verify Plodder works
 reliably on real-world repositories:
 - Python repos
 - Node.js repos

@@ -102,7 +102,7 @@ export function MonacoEditorPanel({
         if (!editor || !monaco || !model) return;
         const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
         if (!['py', 'ts', 'tsx', 'js', 'jsx'].includes(ext)) {
-            monaco.editor.setModelMarkers(model, 'mini-devin-lsp', []);
+            monaco.editor.setModelMarkers(model, 'plodder-lsp', []);
             return;
         }
         try {
@@ -130,7 +130,7 @@ export function MonacoEditorPanel({
                 message: d.message,
                 severity: markerSeverity(monaco, d.severity),
             }));
-            monaco.editor.setModelMarkers(model, 'mini-devin-lsp', markers);
+            monaco.editor.setModelMarkers(model, 'plodder-lsp', markers);
         } catch {
             /* ignore */
         }

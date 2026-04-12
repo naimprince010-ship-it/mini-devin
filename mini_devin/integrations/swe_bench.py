@@ -1,5 +1,5 @@
 """
-SWE-bench Integration for Mini-Devin
+SWE-bench Integration for Plodder
 =====================================
 Standardized benchmarking: given a real GitHub issue,
 can the agent produce a patch that makes the tests pass?
@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 # ── Persistence ────────────────────────────────────────────────────────────────
-_DATA_DIR = Path(os.environ.get("MINI_DEVIN_DATA", "data")) / "swe_bench"
+_DATA_DIR = Path(os.environ.get("PLODDER_DATA") or os.environ.get("MINI_DEVIN_DATA", "data")) / "swe_bench"
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 _RUNS_FILE = _DATA_DIR / "runs.json"

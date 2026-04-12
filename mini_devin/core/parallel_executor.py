@@ -1,5 +1,5 @@
 """
-Parallel Tool Executor for Mini-Devin
+Parallel Tool Executor for Plodder
 
 This module provides parallel execution of independent tool calls,
 analyzing dependencies and executing non-dependent calls concurrently.

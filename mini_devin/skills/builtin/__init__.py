@@ -1,5 +1,5 @@
 """
-Built-in Skills for Mini-Devin
+Built-in Skills for Plodder
 
 This module provides a collection of pre-built skills for common
 development tasks.

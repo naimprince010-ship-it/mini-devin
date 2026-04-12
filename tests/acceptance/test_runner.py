@@ -1,8 +1,8 @@
 """
-Acceptance Test Runner for Mini-Devin
+Acceptance Test Runner for Plodder
 
 This module runs acceptance tests against real repositories to verify
-Mini-Devin works reliably in real-world scenarios.
+Plodder works reliably in real-world scenarios.
 """
 
 import json
@@ -83,7 +83,7 @@ class AcceptanceTestRunner:
     """
     Runner for acceptance tests.
     
-    Runs Mini-Devin against real repositories to verify it works
+    Runs Plodder against real repositories to verify it works
     reliably in real-world scenarios.
     """
     
@@ -182,7 +182,7 @@ class AcceptanceTestRunner:
         start_time = time.time()
         
         # Create temporary working directory
-        work_dir = tempfile.mkdtemp(prefix=f"mini-devin-{scenario.scenario_id}-")
+        work_dir = tempfile.mkdtemp(prefix=f"plodder-{scenario.scenario_id}-")
         
         try:
             # Setup the scenario

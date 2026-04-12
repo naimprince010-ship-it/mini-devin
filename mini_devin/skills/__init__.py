@@ -1,5 +1,5 @@
 """
-Skills Library for Mini-Devin
+Skills Library for Plodder
 
 This module provides reusable procedures (skills) that the agent can invoke
 to perform common development tasks consistently and reliably.

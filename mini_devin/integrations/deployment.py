@@ -1,5 +1,5 @@
 """
-Deployment Integration for Mini-Devin
+Deployment Integration for Plodder
 Supports Vercel, Railway, and other deployment platforms
 """
 

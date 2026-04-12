@@ -1,5 +1,5 @@
 """
-Docker Sandbox for Mini-Devin
+Docker Sandbox for Plodder
 
 This module implements Docker-based sandboxing for safe code execution:
 - Isolated container environment
@@ -40,7 +40,7 @@ class SecurityLevel(str, Enum):
 class SandboxConfig:
     """Configuration for the Docker sandbox."""
     # Image settings — built from Dockerfile.sandbox
-    image: str = "mini-devin-sandbox:latest"
+    image: str = "plodder-sandbox:latest"
     
     # Resource limits
     memory_limit: str = "2g"
@@ -208,7 +208,7 @@ class DockerSandbox:
             # Build docker run command
             cmd_parts = [
                 "docker", "run", "-d",
-                "--name", f"mini-devin-{self.sandbox_id}",
+                "--name", f"plodder-{self.sandbox_id}",
                 "-w", self.config.workspace_path,
                 "--memory", self.config.memory_limit,
                 "--cpus", str(self.config.cpu_limit),
@@ -430,7 +430,7 @@ class DockerSandbox:
     
     async def write_file(self, path: str, content: str) -> bool:
         """Write a file in the sandbox."""
-        result = await self.execute(f"cat > {path} << 'MINI_DEVIN_EOF'\n{content}\nMINI_DEVIN_EOF")
+        result = await self.execute(f"cat > {path} << 'PLODDER_EOF'\n{content}\nPLODDER_EOF")
         return result.exit_code == 0
     
     async def file_exists(self, path: str) -> bool:
@@ -471,7 +471,7 @@ class DockerSandbox:
 
 
 # Dockerfile content for the sandbox image with security hardening
-DOCKERFILE_CONTENT = '''# Mini-Devin Sandbox Image (Hardened)
+DOCKERFILE_CONTENT = '''# Plodder Sandbox Image (Hardened)
 FROM ubuntu:22.04
 
 # Avoid prompts during package installation
@@ -527,15 +527,15 @@ RUN groupadd -g ${GROUP_ID} sandbox && \\
 RUN mkdir -p /workspace && chown sandbox:sandbox /workspace
 
 # Set up git config for both root and sandbox user
-RUN git config --global user.email "mini-devin@example.com" && \\
-    git config --global user.name "Mini-Devin" && \\
+RUN git config --global user.email "plodder@example.com" && \\
+    git config --global user.name "Plodder" && \\
     git config --global init.defaultBranch main && \\
     git config --global --add safe.directory /workspace
 
 # Set up git config for sandbox user
 USER sandbox
-RUN git config --global user.email "mini-devin@example.com" && \\
-    git config --global user.name "Mini-Devin" && \\
+RUN git config --global user.email "plodder@example.com" && \\
+    git config --global user.name "Plodder" && \\
     git config --global init.defaultBranch main && \\
     git config --global --add safe.directory /workspace
 USER root
@@ -619,7 +619,7 @@ def generate_dockerfile(output_path: str = "Dockerfile") -> str:
 
 async def build_sandbox_image(
     dockerfile_path: str = "Dockerfile.sandbox",
-    image_name: str = "mini-devin-sandbox:latest",
+    image_name: str = "plodder-sandbox:latest",
     build_context: str = ".",
 ) -> bool:
     """Build the sandbox Docker image from Dockerfile.sandbox."""
@@ -673,7 +673,7 @@ async def build_sandbox_from_repo(repo_root: str | None = None) -> bool:
     dockerfile = str(pathlib.Path(repo_root) / "Dockerfile.sandbox")
     return await build_sandbox_image(
         dockerfile_path=dockerfile,
-        image_name="mini-devin-sandbox:latest",
+        image_name="plodder-sandbox:latest",
         build_context=repo_root,
     )
 

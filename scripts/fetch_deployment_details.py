@@ -5,6 +5,8 @@ import os
 
 TOKEN = os.getenv("DIGITALOCEAN_TOKEN")
 APP_ID = os.getenv("DIGITALOCEAN_APP_ID", "50952664-2dc5-42d1-b4b1-4b967782a432")
+# DO App Platform component slug (rename in DO when you rename the service)
+DO_COMPONENT = os.getenv("DIGITALOCEAN_COMPONENT_SLUG", "plodder")
 
 headers = {
     "Authorization": f"Bearer {TOKEN}",
@@ -26,7 +28,7 @@ def get_deployment_details(dep_id):
     
     # 2. Get build logs
     print("\n--- Build Logs ---")
-    url = f"https://api.digitalocean.com/v2/apps/{APP_ID}/deployments/{dep_id}/components/mini-devin/logs?type=BUILD"
+    url = f"https://api.digitalocean.com/v2/apps/{APP_ID}/deployments/{dep_id}/components/{DO_COMPONENT}/logs?type=BUILD"
     r = requests.get(url, headers=headers)
     if r.status_code == 200:
         print(r.json().get("live_url", "No live URL found"))
@@ -35,7 +37,7 @@ def get_deployment_details(dep_id):
 
     # 3. Get runtime logs
     print("\n--- Runtime Logs ---")
-    url = f"https://api.digitalocean.com/v2/apps/{APP_ID}/deployments/{dep_id}/components/mini-devin/logs?type=RUN"
+    url = f"https://api.digitalocean.com/v2/apps/{APP_ID}/deployments/{dep_id}/components/{DO_COMPONENT}/logs?type=RUN"
     r = requests.get(url, headers=headers)
     if r.status_code == 200:
         print(r.json().get("live_url", "No live URL found"))

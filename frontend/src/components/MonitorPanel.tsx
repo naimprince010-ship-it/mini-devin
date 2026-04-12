@@ -197,13 +197,13 @@ export default function MonitorPanel() {
           <div className="grid grid-cols-2 gap-2">
             <input
               className="col-span-2 bg-[#0a0a0a] border border-[#333] text-xs text-white rounded px-2 py-1"
-              placeholder="App name (e.g. mini-devin-prod)"
+              placeholder="App name (e.g. plodder-prod)"
               value={form.name}
               onChange={e => setForm({ ...form, name: e.target.value })}
             />
             <input
               className="col-span-2 bg-[#0a0a0a] border border-[#333] text-xs text-white rounded px-2 py-1"
-              placeholder="Health URL (e.g. https://mini-devin.app/api/health)"
+              placeholder="Health URL (e.g. https://your-plodder-host/app/api/health)"
               value={form.health_url}
               onChange={e => setForm({ ...form, health_url: e.target.value })}
             />

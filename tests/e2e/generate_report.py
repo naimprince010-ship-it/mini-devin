@@ -1,5 +1,5 @@
 """
-Test Report Generator for Mini-Devin E2E Tests (Phase 10).
+Test Report Generator for Plodder E2E Tests (Phase 10).
 
 This script runs all E2E tests and generates a comprehensive report.
 """
@@ -71,7 +71,7 @@ def generate_markdown_report(results: dict, output_path: str) -> str:
     tests = results.get("tests", [])
     
     lines = [
-        "# Mini-Devin End-to-End Test Report",
+        "# Plodder End-to-End Test Report",
         "",
         f"**Generated:** {datetime.utcnow().isoformat()}",
         "",
@@ -147,7 +147,7 @@ def generate_markdown_report(results: dict, output_path: str) -> str:
 
 def main():
     """Run E2E tests and generate report."""
-    print("Running Mini-Devin E2E Tests...")
+    print("Running Plodder E2E Tests...")
     print("=" * 50)
     
     test_dir = Path(__file__).parent

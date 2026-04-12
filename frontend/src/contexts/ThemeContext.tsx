@@ -16,14 +16,15 @@ const ThemeContext = createContext<ThemeContextValue>({
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<Theme>(() => {
-    const saved = localStorage.getItem('mini-devin:theme');
+    const saved =
+      localStorage.getItem('plodder:theme') || localStorage.getItem('mini-devin:theme');
     if (saved === 'light' || saved === 'dark') return saved;
     return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   });
 
   useEffect(() => {
     const root = document.documentElement;
-    localStorage.setItem('mini-devin:theme', theme);
+    localStorage.setItem('plodder:theme', theme);
     if (theme === 'light') {
       root.classList.add('light-mode');
     } else {

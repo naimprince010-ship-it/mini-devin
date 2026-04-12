@@ -1,5 +1,5 @@
 """
-Browser Search Tool for Mini-Devin
+Browser Search Tool for Plodder
 
 This module implements API-based web search using various providers:
 - Tavily API (primary)

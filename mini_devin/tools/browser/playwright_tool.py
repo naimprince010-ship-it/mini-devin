@@ -1,5 +1,5 @@
 """
-Playwright Browser Automation Tool for Mini-Devin
+Playwright Browser Automation Tool for Plodder
 
 This module replaces Selenium with Microsoft Playwright for visual browser automation:
 - Navigate pages and capture full-page screenshots

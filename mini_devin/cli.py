@@ -1,7 +1,7 @@
 """
-CLI for Mini-Devin
+CLI for Plodder
 
-This module provides a command-line interface to run the Mini-Devin agent.
+This module provides a command-line interface to run the Plodder agent.
 """
 
 import argparse
@@ -19,10 +19,10 @@ console = Console()
 
 
 def print_banner():
-    """Print the Mini-Devin banner."""
+    """Print the Plodder banner."""
     banner = """
     ╔══════════════════════════════════════════╗
-    ║           Mini-Devin                     ║
+    ║           Plodder                     ║
     ║   Autonomous AI Software Engineer        ║
     ╚══════════════════════════════════════════╝
     """
@@ -30,7 +30,7 @@ def print_banner():
 
 
 def run_command(args):
-    """Run Mini-Devin on a task."""
+    """Run Plodder on a task."""
     print_banner()
     
     # Resolve working directory
@@ -94,7 +94,7 @@ def run_command(args):
 
 
 def interactive_command(args):
-    """Start an interactive session with Mini-Devin."""
+    """Start an interactive session with Plodder."""
     print_banner()
     
     work_dir = args.dir or os.getcwd()
@@ -155,21 +155,21 @@ def interactive_command(args):
 
 
 def version_command(args):
-    """Show the Mini-Devin version."""
+    """Show the Plodder version."""
     from . import __version__
-    console.print(f"Mini-Devin version {__version__}")
+    console.print(f"Plodder version {__version__}")
 
 
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        prog="mini-devin",
-        description="Mini-Devin: An autonomous AI software engineer agent",
+        prog="plodder",
+        description="Plodder: An autonomous AI software engineer agent",
     )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
     
     # Run command
-    run_parser = subparsers.add_parser("run", help="Run Mini-Devin on a task")
+    run_parser = subparsers.add_parser("run", help="Run Plodder on a task")
     run_parser.add_argument("task", help="The task description")
     run_parser.add_argument("-d", "--dir", help="Working directory for the agent")
     run_parser.add_argument("-m", "--model", default="gpt-4o", help="LLM model to use")

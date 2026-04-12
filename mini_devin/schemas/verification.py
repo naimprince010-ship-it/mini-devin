@@ -1,5 +1,5 @@
 """
-Verification Schemas for Mini-Devin
+Verification Schemas for Plodder
 
 This module defines the Pydantic schemas for verification and "done" signals:
 - VerificationCheck: Individual checks that must pass

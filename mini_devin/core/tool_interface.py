@@ -1,5 +1,5 @@
 """
-Tool Interface for Mini-Devin
+Tool Interface for Plodder
 
 This module defines the base interface for all tools and the tool registry.
 Tools are the primary way the agent interacts with the environment.

@@ -1,5 +1,5 @@
 """
-Tool Schemas for Mini-Devin
+Tool Schemas for Plodder
 
 This module defines the Pydantic schemas for all tools available to the agent:
 - Terminal Tool: Execute shell commands

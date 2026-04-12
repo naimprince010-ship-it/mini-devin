@@ -1,5 +1,5 @@
 """
-Browser Tools for Mini-Devin
+Browser Tools for Plodder
 
 This module provides browser capabilities:
 - Search: API-based web search (Tavily/SerpAPI)

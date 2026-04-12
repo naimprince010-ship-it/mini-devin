@@ -1,5 +1,5 @@
 """
-Verification Defaults Module for Mini-Devin
+Verification Defaults Module for Plodder
 
 This module auto-detects project types and provides appropriate verification commands:
 - Detect project type from files (Python, Node, mixed, etc.)

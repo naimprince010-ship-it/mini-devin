@@ -1,5 +1,5 @@
 """
-Sandbox Module for Mini-Devin
+Sandbox Module for Plodder
 
 This module provides Docker-based sandboxing for safe code execution:
 - Isolated container environment

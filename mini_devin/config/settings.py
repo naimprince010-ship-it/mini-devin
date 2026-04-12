@@ -1,5 +1,5 @@
 """
-Settings Configuration for Mini-Devin
+Settings Configuration for Plodder
 
 This module provides centralized settings management with:
 - Environment variable loading
@@ -142,7 +142,7 @@ class E2ESettings:
 @dataclass
 class Settings:
     """
-    Centralized settings for Mini-Devin.
+    Centralized settings for Plodder.
     
     Combines all setting categories and provides validation.
     """

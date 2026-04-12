@@ -1,10 +1,10 @@
-# Mini-Devin Architecture
+# Plodder Architecture
 
-This document provides a detailed overview of Mini-Devin's system architecture, component interactions, and design decisions.
+This document provides a detailed overview of Plodder's system architecture, component interactions, and design decisions.
 
 ## System Overview
 
-Mini-Devin is an autonomous AI software engineer agent that uses Large Language Models (LLMs) to understand tasks and execute them using a set of tools. The system is designed with safety, reliability, and extensibility as core principles.
+Plodder is an autonomous AI software engineer agent that uses Large Language Models (LLMs) to understand tasks and execute them using a set of tools. The system is designed with safety, reliability, and extensibility as core principles.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -74,7 +74,7 @@ Mini-Devin is an autonomous AI software engineer agent that uses Large Language 
 
 ### 1. Agent Runtime
 
-The Agent Runtime is the heart of Mini-Devin, responsible for orchestrating task execution.
+The Agent Runtime is the heart of Plodder, responsible for orchestrating task execution.
 
 #### Agent Loop (`mini_devin/orchestrator/agent.py`)
 

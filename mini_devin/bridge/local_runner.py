@@ -1,5 +1,5 @@
 """
-Run on your laptop: connects to the cloud Mini-Devin session WebSocket and executes
+Run on your laptop: connects to the cloud Plodder session WebSocket and executes
 terminal commands locally (see .env.example: BRIDGE_ISSUE_SECRET).
 
     poetry run python -m mini_devin.bridge.local_runner --api-base https://host/app/api --session-id <uuid>
@@ -35,7 +35,7 @@ def _issue_token(api_base: str, session_id: str, secret: str) -> str:
     req = urllib.request.Request(
         url,
         method="POST",
-        headers={"X-MiniDevin-Bridge-Secret": secret},
+        headers={"X-Plodder-Bridge-Secret": secret},
     )
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
@@ -128,16 +128,18 @@ async def _run_bridge(ws_url: str, workspace: Path) -> None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Mini-Devin local terminal bridge (run commands on this machine).")
+    p = argparse.ArgumentParser(description="Plodder local terminal bridge (run commands on this machine).")
     p.add_argument(
         "--api-base",
         help="HTTP API base, e.g. https://your-app.ondigitalocean.app/app/api",
     )
-    p.add_argument("--session-id", help="Mini-Devin session UUID from the dashboard")
+    p.add_argument("--session-id", help="Plodder session UUID from the dashboard")
     p.add_argument(
         "--secret",
-        default=os.getenv("MINIDEVIN_BRIDGE_SECRET") or os.getenv("BRIDGE_ISSUE_SECRET"),
-        help="Same value as server BRIDGE_ISSUE_SECRET (or set MINIDEVIN_BRIDGE_SECRET)",
+        default=os.getenv("PLODDER_BRIDGE_SECRET")
+        or os.getenv("MINIDEVIN_BRIDGE_SECRET")
+        or os.getenv("BRIDGE_ISSUE_SECRET"),
+        help="Same value as server BRIDGE_ISSUE_SECRET (or set PLODDER_BRIDGE_SECRET / MINIDEVIN_BRIDGE_SECRET)",
     )
     p.add_argument(
         "--token",

@@ -1,7 +1,7 @@
 """
-End-to-End Test Harness for Mini-Devin (Phase 10).
+End-to-End Test Harness for Plodder (Phase 10).
 
-This module provides a test harness for running real tasks through Mini-Devin
+This module provides a test harness for running real tasks through Plodder
 and validating that all components work together correctly.
 """
 
@@ -171,7 +171,7 @@ class TestSuiteResult:
 
 class E2ETestHarness:
     """
-    End-to-End Test Harness for Mini-Devin.
+    End-to-End Test Harness for Plodder.
     
     Runs real tasks through the agent and validates results.
     """

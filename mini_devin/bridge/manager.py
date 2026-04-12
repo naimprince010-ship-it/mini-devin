@@ -16,7 +16,7 @@ from fastapi import WebSocket
 
 
 class BridgeManager:
-    """Maps Mini-Devin session_id ↔ active local bridge WebSocket."""
+    """Maps Plodder session_id ↔ active local bridge WebSocket."""
 
     def __init__(self) -> None:
         self._lock = asyncio.Lock()

@@ -1,5 +1,5 @@
 """
-Lightweight Mini-Devin API for production deployment.
+Lightweight Plodder API for production deployment.
 
 This is a minimal version that doesn't load heavy dependencies
 to work within free tier memory constraints.
@@ -26,8 +26,48 @@ import shutil
 import subprocess
 import hashlib
 
-# Load environment variables
-load_dotenv()
+
+def _legacy_openai_toggle_env_set() -> bool:
+    """Some deployments used ``Plodder`` / ``MiniDevin`` env vars alongside API keys."""
+    return bool(
+        (os.getenv("Plodder") or "").strip()
+        or (os.getenv("MiniDevin") or "").strip()
+    )
+
+
+def _discover_repo_root() -> str:
+    """Find project root (folder with pyproject.toml + mini_devin/). Works for editable installs,
+    non-editable installs under ``<repo>/.venv/.../site-packages``, and odd cwd."""
+    env_root = (os.environ.get("PLODDER_REPO_ROOT") or os.environ.get("MINI_DEVIN_REPO_ROOT") or "").strip()
+    if env_root:
+        abs_env = os.path.abspath(env_root)
+        if os.path.isfile(os.path.join(abs_env, "pyproject.toml")) and os.path.isdir(
+            os.path.join(abs_env, "mini_devin")
+        ):
+            return abs_env
+
+    cwd = os.path.abspath(os.getcwd())
+    if os.path.isfile(os.path.join(cwd, "pyproject.toml")) and os.path.isdir(os.path.join(cwd, "mini_devin")):
+        return cwd
+
+    here = os.path.abspath(os.path.dirname(__file__))
+    p = here
+    for _ in range(16):
+        if os.path.isfile(os.path.join(p, "pyproject.toml")) and os.path.isdir(os.path.join(p, "mini_devin")):
+            return p
+        parent = os.path.dirname(p)
+        if parent == p:
+            break
+        p = parent
+
+    return os.path.abspath(os.path.join(here, "..", ".."))
+
+
+# Load .env from repo root so OPENAI_API_KEY works when the package lives in .venv/site-packages
+_REPO_ROOT = _discover_repo_root()
+# override=True: a blank OPENAI_API_KEY in the shell must not block values from `.env`
+load_dotenv(os.path.join(_REPO_ROOT, ".env"), override=True)
+load_dotenv(override=True)  # optional: cwd `.env` wins for local overrides
 
 from .websocket import ConnectionManager, WebSocketMessage, MessageType
 from ..bridge.manager import get_bridge_manager
@@ -80,13 +120,13 @@ def _init_git_workspace(working_dir: str) -> None:
         return
     subprocess.run(["git", "init"], cwd=working_dir, capture_output=True, check=False)
     subprocess.run(
-        ["git", "config", "user.email", "agent@mini-devin.local"],
+        ["git", "config", "user.email", "agent@plodder.local"],
         cwd=working_dir,
         capture_output=True,
         check=False,
     )
     subprocess.run(
-        ["git", "config", "user.name", "Mini-Devin Agent"],
+        ["git", "config", "user.name", "Plodder Agent"],
         cwd=working_dir,
         capture_output=True,
         check=False,
@@ -180,7 +220,7 @@ def _log_task_result(task: asyncio.Task) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager."""
-    print(f"[API] Starting Mini-Devin API at {datetime.now(timezone.utc).isoformat()}")
+    print(f"[API] Starting Plodder API at {datetime.now(timezone.utc).isoformat()}")
     print(
         f"[API] Environment: PORT={os.getenv('PORT')}, "
         f"DATABASE_URL={'Set' if os.getenv('DATABASE_URL') else 'Default SLite'}"
@@ -192,7 +232,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     yield
 
-    print(f"[API] Shutting down Mini-Devin API at {datetime.now(timezone.utc).isoformat()}")
+    print(f"[API] Shutting down Plodder API at {datetime.now(timezone.utc).isoformat()}")
     startup_task.cancel()
     try:
         await startup_task
@@ -207,7 +247,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(
-    title="Mini-Devin API",
+    title="Plodder API",
     version="1.0.0",
     description="Autonomous AI Software Engineer Agent API (Lightweight Mode)",
     lifespan=lifespan,
@@ -255,7 +295,7 @@ app.add_middleware(AppApiPrefixMiddleware)
 @app.get("/")
 async def root():
     return {
-        "name": "Mini-Devin API",
+        "name": "Plodder API",
         "version": "1.0.0",
         "status": "running",
         "mode": "lightweight",
@@ -270,7 +310,14 @@ async def health():
 
 @app.get("/api/health")
 async def api_health():
-    return {"status": "healthy", "mode": "lightweight"}
+    """Cheap probe for uptime + whether `.env` / shell exposed an OpenAI key (never returns the key)."""
+    oa = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    return {
+        "status": "healthy",
+        "mode": "lightweight",
+        "repo_root": _REPO_ROOT,
+        "openai_key_loaded": bool(oa),
+    }
 
 
 # ── Repo management endpoints ─────────────────────────────────────────────────
@@ -397,8 +444,8 @@ async def _clone_repo_bg(repo_id: str, clone_url: str, local_path: str, branch: 
             os.makedirs(local_path, exist_ok=True)
             await _run_git("init", cwd=local_path)
             await _run_git("remote", "add", "origin", clone_url, cwd=local_path)
-            await _run_git("config", "user.email", "agent@mini-devin.local", cwd=local_path)
-            await _run_git("config", "user.name", "Mini-Devin Agent", cwd=local_path)
+            await _run_git("config", "user.email", "agent@plodder.local", cwd=local_path)
+            await _run_git("config", "user.name", "Plodder Agent", cwd=local_path)
             if repo_id in _repos:
                 _repos[repo_id]["status"] = "cloned"
                 _repos[repo_id]["local_path"] = local_path
@@ -567,8 +614,8 @@ async def create_pull_request(repo_id: str, request: Request):
     body = await request.json()
     owner, name = repo["owner"], repo["repo_name"]
     result = await _gh_post(f"https://api.github.com/repos/{owner}/{name}/pulls", token, {
-        "title": body.get("title", "Automated PR by Mini-Devin"),
-        "body": body.get("body", "Created by Mini-Devin AI agent."),
+        "title": body.get("title", "Automated PR by Plodder"),
+        "body": body.get("body", "Created by Plodder AI agent."),
         "head": body.get("head"),
         "base": body.get("base", repo["default_branch"]),
     })
@@ -612,7 +659,7 @@ async def create_github_repo(request: Request):
         raise HTTPException(status_code=400, detail="GitHub token required")
     result = await _gh_post("https://api.github.com/user/repos", token, {
         "name": body.get("name", ""),
-        "description": body.get("description", "Created by Mini-Devin"),
+        "description": body.get("description", "Created by Plodder"),
         "private": body.get("private", False),
         "auto_init": body.get("auto_init", True),
     })
@@ -704,7 +751,7 @@ async def create_session(raw_request: Request):
     if not _check_rate_limit(f"create_session:{client_ip}", max_calls=10, window_seconds=60):
         raise HTTPException(status_code=429, detail="Too many requests. Please wait before creating another session.")
 
-    # Workspace root: outside mini-devin source code
+    # Workspace root: outside this repository checkout
     _mini_devin_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     _workspaces_root = os.path.join(os.path.dirname(_mini_devin_root), "agent-workspace")
 
@@ -868,7 +915,7 @@ async def answer_clarification(session_id: str, request: Request):
 async def issue_bridge_token(session_id: str, request: Request):
     """
     Mint a one-time WebSocket token so scripts/local_bridge.py can attach to this session.
-    Requires header X-MiniDevin-Bridge-Secret matching env BRIDGE_ISSUE_SECRET.
+    Requires header ``X-Plodder-Bridge-Secret`` (or legacy ``X-MiniDevin-Bridge-Secret``) matching env BRIDGE_ISSUE_SECRET.
     """
     secret = (os.getenv("BRIDGE_ISSUE_SECRET") or "").strip()
     if not secret:
@@ -876,9 +923,15 @@ async def issue_bridge_token(session_id: str, request: Request):
             status_code=503,
             detail="BRIDGE_ISSUE_SECRET is not set — cannot issue local bridge tokens.",
         )
-    hdr = (request.headers.get("x-minidevin-bridge-secret") or "").strip()
+    hdr = (
+        (request.headers.get("x-plodder-bridge-secret") or "").strip()
+        or (request.headers.get("x-minidevin-bridge-secret") or "").strip()
+    )
     if hdr != secret:
-        raise HTTPException(status_code=401, detail="Invalid or missing X-MiniDevin-Bridge-Secret header")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing X-Plodder-Bridge-Secret header (legacy: X-MiniDevin-Bridge-Secret)",
+        )
     s = await session_manager.get_session(session_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -936,7 +989,7 @@ async def stop_sandbox(session_id: str):
 
 @app.post("/api/sandbox/build")
 async def build_sandbox_image_endpoint():
-    """Trigger a build of the mini-devin-sandbox Docker image (runs in background)."""
+    """Trigger a build of the plodder-sandbox Docker image (runs in background)."""
     async def _do_build():
         try:
             from ..sandbox.docker_sandbox import build_sandbox_from_repo
@@ -948,7 +1001,7 @@ async def build_sandbox_image_endpoint():
     asyncio.create_task(_do_build())
     return {
         "status": "building",
-        "image": "mini-devin-sandbox:latest",
+        "image": "plodder-sandbox:latest",
         "message": "Build started in background. Check server logs for progress.",
     }
 
@@ -1224,7 +1277,7 @@ async def list_artifacts(session_id: str, task_id: str):
 async def list_providers():
     """List available LLM providers."""
     providers = []
-    if os.getenv("OPENAI_API_KEY") or os.getenv("MiniDevin"):
+    if os.getenv("OPENAI_API_KEY") or _legacy_openai_toggle_env_set():
         providers.append({
             "id": "openai", "name": "OpenAI", "configured": True, "enabled": True,
             "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
@@ -1246,7 +1299,7 @@ async def list_providers():
 async def list_models():
     """List available LLM models based on configured API keys."""
     models = []
-    if os.getenv("OPENAI_API_KEY") or os.getenv("MiniDevin"):
+    if os.getenv("OPENAI_API_KEY") or _legacy_openai_toggle_env_set():
         models.extend([
             {"id": "gpt-4o", "name": "GPT-4o", "provider": "openai",
              "context_window": 128000, "supports_tools": True, "supports_vision": True,
@@ -1303,7 +1356,9 @@ async def get_system_status():
         "active_sessions": await session_manager.get_active_session_count(),
         "total_tasks_completed": await session_manager.get_total_tasks_completed(),
         "uptime_seconds": session_manager.get_uptime_seconds(),
-        "llm_configured": bool(os.getenv("OPENAI_API_KEY") or os.getenv("MiniDevin") or os.getenv("ANTHROPIC_API_KEY")),
+        "llm_configured": bool(
+            os.getenv("OPENAI_API_KEY") or _legacy_openai_toggle_env_set() or os.getenv("ANTHROPIC_API_KEY")
+        ),
         "browser_mode": browser_mode,
     }
 
@@ -1753,7 +1808,7 @@ async def ingest_project_repo_snapshot(project_id: str, req: IngestRepoRequest):
                 raise HTTPException(
                     status_code=403,
                     detail=(
-                        "repo_path must be inside the agent workspace, the Mini-Devin checkout, "
+                        "repo_path must be inside the agent workspace, the Plodder checkout, "
                         "or REPO_INGEST_EXTRA_ROOT (see server docs)."
                     ),
                 )
@@ -1851,7 +1906,7 @@ async def delete_memory_entry(entry_id: str):
 class CreatePlanRequest(BaseModel):
     project_id: str
     goal: str
-    milestones: Optional[list] = None
+    milestones: Optional[List[Any]] = None
     working_dir: str = "."
 
 
@@ -1864,21 +1919,33 @@ async def create_plan(req: CreatePlanRequest):
     """Decompose a project goal into milestones using LLM."""
     from ..integrations.hierarchical_planner import get_planner
     from ..integrations.project_memory import get_project_memory
+
     planner = get_planner()
-    # Fetch project context for better decomposition
     try:
         pm = get_project_memory()
         ctx = pm.get_context_for_task(req.project_id, req.goal, max_tokens=400) if pm.get_project(req.project_id) else ""
     except Exception:
         ctx = ""
-    plan = await planner.create_plan(
-        project_id=req.project_id,
-        goal=req.goal,
-        milestones=req.milestones,
-        working_dir=req.working_dir,
-        project_context=ctx,
-    )
-    return plan.to_dict()
+    try:
+        plan = await planner.create_plan(
+            project_id=req.project_id,
+            goal=req.goal,
+            milestones=req.milestones,
+            working_dir=req.working_dir,
+            project_context=ctx,
+        )
+        return plan.to_dict()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/project-plans")

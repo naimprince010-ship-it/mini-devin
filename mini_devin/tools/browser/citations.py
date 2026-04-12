@@ -1,5 +1,5 @@
 """
-Citation Storage for Mini-Devin
+Citation Storage for Plodder
 
 This module provides citation management for fetched web pages:
 - Store citations with metadata

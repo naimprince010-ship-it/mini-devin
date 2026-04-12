@@ -1,5 +1,5 @@
 """
-Stop Conditions for Mini-Devin
+Stop Conditions for Plodder
 
 This module defines strong STOP and BLOCKED conditions that halt agent execution.
 These conditions ensure safe operation and prevent runaway behavior.

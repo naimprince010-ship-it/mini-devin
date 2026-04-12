@@ -1,5 +1,5 @@
 """
-API Module for Mini-Devin
+API Module for Plodder
 
 This module provides the FastAPI backend for the web UI with:
 - Streaming tokens and live tool logs

@@ -1,4 +1,4 @@
-# Mini-Devin local stack: API (8000) + Vite (5173) + browser.
+# Plodder local stack: API (8000) + Vite (5173) + browser.
 # Requires: Poetry deps installed, frontend `npm install` once, `.env` with OPENAI_API_KEY.
 $ErrorActionPreference = "Stop"
 # scripts/ -> mini-devin repo root
@@ -27,5 +27,8 @@ $uiCmd = "Set-Location '$fe'; npm run dev"
 Start-Process powershell -WindowStyle Minimized -ArgumentList @("-NoExit", "-Command", $uiCmd)
 
 Start-Sleep -Seconds 6
-Start-Process "http://localhost:5173/" | Out-Null
-Write-Host "[start_local_dev] Opened http://localhost:5173/ — API should be http://127.0.0.1:8000" -ForegroundColor Green
+# Prefer IPv4 — on some Windows setups "localhost" resolves to ::1 first and the tab shows ERR_CONNECTION_REFUSED.
+Start-Process "http://127.0.0.1:5173/app" | Out-Null
+Write-Host "[start_local_dev] Opened http://127.0.0.1:5173/app" -ForegroundColor Green
+Write-Host "  If the tab is blank or spins forever: wait ~10s, then ensure API is up at http://127.0.0.1:8000 (check the minimized API window)." -ForegroundColor Yellow
+Write-Host "  Dashboard: http://127.0.0.1:5173/app  |  Landing: http://127.0.0.1:5173/" -ForegroundColor Gray

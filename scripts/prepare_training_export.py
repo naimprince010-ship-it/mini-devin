@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Export Mini-Devin teacher reviews JSONL → SFT chat JSONL (messages + provenance).
+Export Plodder teacher reviews JSONL → SFT chat JSONL (messages + provenance).
 
 Commercial use: set TRAINING_RIGHTS_BASIS and TRAINING_COMMERCIAL_OK in .env; verify ToS.
 
-Usage (from mini-devin repo root):
+Usage (from Plodder repo root):
   python scripts/prepare_training_export.py \\
     --input data/training_logs/reviews.jsonl \\
     --output data/training_exports/sft_teacher_critique.jsonl

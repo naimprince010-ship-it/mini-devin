@@ -1,1 +1,1 @@
-"""Integration tests for Mini-Devin real-world validation."""
+"""Integration tests for Plodder real-world validation."""

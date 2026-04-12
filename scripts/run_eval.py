@@ -13,7 +13,7 @@ SCENARIOS = ROOT / "tests" / "eval" / "scenarios.json"
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Run Mini-Devin eval pytest suite")
+    p = argparse.ArgumentParser(description="Run Plodder eval pytest suite")
     p.add_argument(
         "--list",
         action="store_true",

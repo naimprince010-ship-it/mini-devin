@@ -1,5 +1,5 @@
 """
-Database-backed Session Manager for Mini-Devin
+Database-backed Session Manager for Plodder
 
 This module provides persistent session management using PostgreSQL.
 It wraps the existing SessionManager functionality while adding database persistence.

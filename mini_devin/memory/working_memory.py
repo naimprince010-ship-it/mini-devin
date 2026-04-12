@@ -1,5 +1,5 @@
 """
-Working Memory for Mini-Devin Agent
+Working Memory for Plodder Agent
 
 This module provides working memory management for the agent's current task context.
 It maintains a structured view of:

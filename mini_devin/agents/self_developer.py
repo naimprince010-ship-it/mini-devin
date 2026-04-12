@@ -1,9 +1,9 @@
 """
-Self-Developer Agent for Mini-Devin
+Self-Developer Agent for Plodder
 
 This module implements a specialized agent that is aware of its own codebase
 and is optimized for autonomous self-improvement, bug fixing, and feature
-development on the Mini-Devin repository itself.
+development on the Plodder repository itself.
 """
 
 from typing import Any, Optional
@@ -11,10 +11,10 @@ from ..orchestrator.agent import Agent, SYSTEM_PROMPT as BASE_SYSTEM_PROMPT
 from ..core.llm_client import LLMClient
 from ..core.tool_interface import ToolRegistry
 
-SELF_DEVELOPER_SYSTEM_PROMPT = """You are the Self-Developer mode of Mini-Devin. You are an autonomous AI software engineer whose primary mission is to improve yourself.
+SELF_DEVELOPER_SYSTEM_PROMPT = """You are the Self-Developer mode of Plodder. You are an autonomous AI software engineer whose primary mission is to improve yourself.
 
 ## Your Context
-You are currently running as a process within the Mini-Devin repository. The files you see in the workspace ARE your own source code. 
+You are currently running as a process within the Plodder repository. The files you see in the workspace ARE your own source code. 
 
 ## Your Mission
 1. Identify bugs in your own implementation and fix them.
@@ -35,7 +35,7 @@ You are currently running as a process within the Mini-Devin repository. The fil
 4. VERIFY: Run tests and linting to ensure everything still works.
 5. DEPLOY: (Simulated) Your changes will be active on the next restart.
 
-You have access to all standard Mini-Devin tools (terminal, editor, browser). Use them wisely to evolve."""
+You have access to all standard Plodder tools (terminal, editor, browser). Use them wisely to evolve."""
 
 class SelfDeveloperAgent(Agent):
     """

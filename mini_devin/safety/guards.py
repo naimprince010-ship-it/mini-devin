@@ -1,5 +1,5 @@
 """
-Safety Guards for Mini-Devin
+Safety Guards for Plodder
 
 This module implements safety guards that prevent dangerous operations:
 - Deleting more than 1 file in one operation

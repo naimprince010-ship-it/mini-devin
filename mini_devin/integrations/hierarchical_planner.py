@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -62,7 +63,9 @@ class MilestoneResult:
     error: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        d["status"] = self.status.value if isinstance(self.status, MilestoneStatus) else str(self.status)
+        return d
 
 
 @dataclass
@@ -96,10 +99,18 @@ class ProjectPlan:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ProjectPlan":
         milestones = [MilestoneSpec(**m) for m in data.get("milestones", [])]
-        results = {
-            k: MilestoneResult(**v)
-            for k, v in data.get("results", {}).items()
-        }
+        results: Dict[str, MilestoneResult] = {}
+        for k, v in data.get("results", {}).items():
+            if not isinstance(v, dict):
+                continue
+            vr = dict(v)
+            st = vr.get("status")
+            if isinstance(st, str):
+                try:
+                    vr["status"] = MilestoneStatus(st)
+                except ValueError:
+                    vr["status"] = MilestoneStatus.PENDING
+            results[k] = MilestoneResult(**vr)
         return cls(
             id=data["id"],
             project_id=data["project_id"],
@@ -193,27 +204,29 @@ async def generate_plan_with_llm(
     llm_client: Any = None,
 ) -> List[Dict[str, Any]]:
     """Use LLM to generate milestone specs for a project goal."""
-    if llm_client is None:
-        from ..core.llm_client import create_llm_client
-        llm_client = create_llm_client()
-
-    prompt = f"Project goal: {goal}"
-    if project_context:
-        prompt += f"\n\nProject context:\n{project_context}"
-
-    llm_client.set_system_prompt(PLANNER_PROMPT)
-    response = await llm_client.chat(prompt)
-
-    # Extract JSON
     import re
-    match = re.search(r"\{[\s\S]*\}", response)
-    if not match:
-        return []
+
     try:
+        if llm_client is None:
+            from ..core.llm_client import create_llm_client
+
+            llm_client = create_llm_client()
+
+        prompt = f"Project goal: {goal}"
+        if project_context:
+            prompt += f"\n\nProject context:\n{project_context}"
+
+        llm_client.set_system_prompt(PLANNER_PROMPT)
+        response = await llm_client.chat(prompt)
+
+        match = re.search(r"\{[\s\S]*\}", response or "")
+        if not match:
+            return []
         data = json.loads(match.group(0))
-        return data.get("milestones", [])
-    except Exception:
-        return []
+        return data.get("milestones", []) or []
+    except Exception as e:
+        print(f"[planner] generate_plan_with_llm failed: {e}")
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -310,6 +323,13 @@ class HierarchicalPlanner:
             raw = await generate_plan_with_llm(goal, project_context, llm_client)
         else:
             raw = milestones
+
+        if not raw:
+            raise ValueError(
+                "No milestones returned. Usually: missing/invalid LLM API key, model error, or the "
+                "model did not return valid JSON with a 'milestones' array. Check .env OPENAI_API_KEY "
+                "and try again with a shorter goal."
+            )
 
         specs: List[MilestoneSpec] = []
         id_map: Dict[int, str] = {}
@@ -502,8 +522,13 @@ class HierarchicalPlanner:
 _planner: Optional[HierarchicalPlanner] = None
 
 
-def get_planner(plans_dir: str = "project_plans") -> HierarchicalPlanner:
+def default_plans_dir() -> str:
+    base = os.environ.get("MINI_DEVIN_DATA", "data")
+    return str(Path(base) / "project_plans")
+
+
+def get_planner(plans_dir: str | None = None) -> HierarchicalPlanner:
     global _planner
     if _planner is None:
-        _planner = HierarchicalPlanner(plans_dir)
+        _planner = HierarchicalPlanner(plans_dir or default_plans_dir())
     return _planner

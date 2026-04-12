@@ -2,11 +2,11 @@
 chcp 65001 >nul
 setlocal EnableDelayedExpansion
 set PYTHONIOENCODING=utf-8
-title Mini-Devin — Starting...
+title Plodder — Starting...
 
 echo.
 echo  =====================================================
-echo    Mini-Devin  ^|  AI Software Engineer
+echo    Plodder  ^|  AI Software Engineer
 echo  =====================================================
 echo.
 
@@ -63,7 +63,7 @@ if exist .env (
 
 REM ── Step 4: Start server ─────────────────────────────────
 echo.
-echo  [4/4] Starting Mini-Devin server...
+echo  [4/4] Starting Plodder server...
 echo.
 echo  =====================================================
 echo    Opening in your browser at: http://localhost:8000
@@ -89,7 +89,7 @@ if "!USE_POETRY!"=="1" (
 REM If server crashes, pause so user can see error
 if errorlevel 1 (
     echo.
-    echo  [ERROR] Mini-Devin stopped unexpectedly.
+    echo  [ERROR] Plodder stopped unexpectedly.
     echo  Please check the error message above.
     pause
 )

@@ -1,7 +1,7 @@
 """
-Self-Audit Skill for Mini-Devin
+Self-Audit Skill for Plodder
 
-This skill scans the Mini-Devin repository to identify:
+This skill scans the Plodder repository to identify:
 1. Technical debt (TODOs, complex functions, missing docs)
 2. Missing features or enhancement opportunities
 3. Potential bugs or edge cases
@@ -16,7 +16,7 @@ from ..base import Skill, SkillContext, SkillResult, SkillParameter, SkillStatus
 
 class SelfAuditSkill(Skill):
     """
-    Skill for proactive self-auditing of the Mini-Devin codebase.
+    Skill for proactive self-auditing of the Plodder codebase.
     """
     
     name = "self_audit"

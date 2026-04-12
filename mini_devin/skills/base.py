@@ -1,7 +1,7 @@
 """
 Skill Base Classes
 
-This module defines the base classes for skills in Mini-Devin.
+This module defines the base classes for skills in Plodder.
 Skills are reusable, composable procedures that combine multiple
 tool calls into coherent workflows.
 """

@@ -1,4 +1,4 @@
-# Mini-Devin on Railway — Docker image (Python + Node build inside Dockerfile).
+# Plodder on Railway — Docker image (Python + Node build inside Dockerfile).
 # Service → Variables: see .env.example section "Railway (Variables tab)".
 # SQLite is ephemeral unless you add Postgres and set DATABASE_URL.
 #

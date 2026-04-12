@@ -1,5 +1,5 @@
 """
-Full-featured Mini-Devin API for production deployment.
+Full-featured Plodder API for production deployment.
 
 This version provides full API functionality with LLM integration
 while optimizing memory usage for cloud deployment.
@@ -52,21 +52,21 @@ class CreateTaskRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager."""
-    print("Starting Mini-Devin API (Full Mode)...")
+    print("Starting Plodder API (Full Mode)...")
     
     # Check for OpenAI API key
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("MiniDevin")
+    api_key = os.environ.get("OPENAI_API_KEY") or (os.getenv("Plodder") or os.getenv("MiniDevin"))
     if api_key:
         print(f"OpenAI API key configured (length: {len(api_key)} chars)")
     else:
         print("Warning: No OpenAI API key found - LLM features will be limited")
     
     yield
-    print("Shutting down Mini-Devin API...")
+    print("Shutting down Plodder API...")
 
 
 app = FastAPI(
-    title="Mini-Devin API",
+    title="Plodder API",
     version="1.0.0",
     description="Autonomous AI Software Engineer Agent API (Full Mode)",
     lifespan=lifespan,
@@ -84,9 +84,9 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("MiniDevin")
+    api_key = os.environ.get("OPENAI_API_KEY") or (os.getenv("Plodder") or os.getenv("MiniDevin"))
     return {
-        "name": "Mini-Devin API",
+        "name": "Plodder API",
         "version": "1.0.0",
         "status": "running",
         "mode": "full" if api_key else "limited",
@@ -103,7 +103,7 @@ async def health():
 
 @app.get("/api/health")
 async def api_health():
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("MiniDevin")
+    api_key = os.environ.get("OPENAI_API_KEY") or (os.getenv("Plodder") or os.getenv("MiniDevin"))
     return {
         "status": "healthy",
         "mode": "full" if api_key else "limited",
@@ -115,7 +115,7 @@ async def api_health():
 @app.get("/api/status")
 @app.get("/status")
 async def get_status():
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("MiniDevin")
+    api_key = os.environ.get("OPENAI_API_KEY") or (os.getenv("Plodder") or os.getenv("MiniDevin"))
     return {
         "status": "running",
         "mode": "full" if api_key else "limited",
@@ -169,7 +169,7 @@ async def list_providers():
 @app.post("/api/sessions")
 @app.post("/sessions")
 async def create_session(request: CreateSessionRequest):
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("MiniDevin")
+    api_key = os.environ.get("OPENAI_API_KEY") or (os.getenv("Plodder") or os.getenv("MiniDevin"))
     
     session_id = str(uuid.uuid4())[:8]
     session = {
@@ -210,7 +210,7 @@ async def create_task(session_id: str, request: CreateTaskRequest):
     if session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("MiniDevin")
+    api_key = os.environ.get("OPENAI_API_KEY") or (os.getenv("Plodder") or os.getenv("MiniDevin"))
     
     task_id = str(uuid.uuid4())[:8]
     task = {

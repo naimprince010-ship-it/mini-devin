@@ -173,10 +173,11 @@ class TestOllamaConfig:
         assert config.is_configured() is True
 
     def test_ollama_config_default_api_base(self):
-        """Test OllamaConfig default API base."""
+        """Test OllamaConfig default API base and Ollama off unless explicitly enabled."""
         with patch.dict(os.environ, {}, clear=True):
             config = OllamaConfig.from_env()
             assert config.api_base == "http://localhost:11434"
+            assert config.enabled is False
 
 
 class TestAzureConfig:

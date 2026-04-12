@@ -1,5 +1,5 @@
 """
-Mini-Devin Orchestrator
+Plodder Orchestrator
 
 This package contains the agent orchestration logic:
 - agent: Main agent that orchestrates task execution

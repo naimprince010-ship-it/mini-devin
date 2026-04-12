@@ -1,5 +1,5 @@
 """
-State Schemas for Mini-Devin
+State Schemas for Plodder
 
 This module defines the Pydantic schemas for managing agent and task state:
 - TaskState: The current state of a task being worked on

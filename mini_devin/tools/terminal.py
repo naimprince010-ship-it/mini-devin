@@ -1,5 +1,5 @@
 """
-Terminal Tool for Mini-Devin
+Terminal Tool for Plodder
 
 This module implements the terminal tool that allows the agent to execute
 shell commands in a controlled environment with proper output capture,

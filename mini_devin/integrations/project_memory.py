@@ -367,8 +367,8 @@ _instance: Optional[ProjectMemory] = None
 
 
 def default_project_memory_dir() -> str:
-    """Under ``MINI_DEVIN_DATA`` (default ``data``), same family as training logs — avoids cwd surprises."""
-    base = os.environ.get("MINI_DEVIN_DATA", "data")
+    """Under ``PLODDER_DATA`` (default ``data``), same family as training logs — avoids cwd surprises."""
+    base = os.environ.get("PLODDER_DATA") or os.environ.get("MINI_DEVIN_DATA", "data")
     return str(Path(base) / "project_memory")
 
 

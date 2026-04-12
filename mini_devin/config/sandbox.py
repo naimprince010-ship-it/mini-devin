@@ -1,5 +1,5 @@
 """
-Sandbox Security Configuration for Mini-Devin (Phase 6D).
+Sandbox Security Configuration for Plodder (Phase 6D).
 
 This module provides security settings for the Docker sandbox environment,
 including non-root user configuration, resource limits, and network isolation.
@@ -22,7 +22,7 @@ class SandboxSecuritySettings:
     run_as_non_root: bool = True
     user_id: int = 1000
     group_id: int = 1000
-    username: str = "minidevin"
+    username: str = "plodder"
     
     read_only_root: bool = False
     
@@ -57,7 +57,7 @@ class SandboxSecuritySettings:
             run_as_non_root=os.environ.get("RUN_AS_NON_ROOT", "true").lower() == "true",
             user_id=int(os.environ.get("USER_ID", "1000")),
             group_id=int(os.environ.get("GROUP_ID", "1000")),
-            username=os.environ.get("SANDBOX_USER", "minidevin"),
+            username=os.environ.get("SANDBOX_USER", "plodder"),
             read_only_root=os.environ.get("READ_ONLY_ROOT", "false").lower() == "true",
             cpu_limit=float(os.environ.get("CPU_LIMIT", "2.0")),
             memory_limit=os.environ.get("MEMORY_LIMIT", "4G"),

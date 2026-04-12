@@ -1,5 +1,5 @@
 """
-Editor Tool for Mini-Devin
+Editor Tool for Plodder
 
 This module implements the code editor tool that allows the agent to
 read, write, search, and modify files in the codebase.

@@ -1,5 +1,5 @@
 """
-Multi-Model Provider Support for Mini-Devin (Phase 12).
+Multi-Model Provider Support for Plodder (Phase 12).
 
 This module provides support for multiple LLM providers:
 - OpenAI (GPT-4, GPT-4o, GPT-3.5)
@@ -91,7 +91,9 @@ class OllamaConfig(ProviderConfig):
         """Load configuration from environment variables."""
         return cls(
             api_base=os.environ.get("OLLAMA_API_BASE", "http://localhost:11434"),
-            enabled=os.environ.get("OLLAMA_ENABLED", "true").lower() == "true",
+            # Default off: without this, machines without OPENAI_API_KEY would pick Ollama and
+            # fail on localhost:11434 when Ollama is not installed/running.
+            enabled=os.environ.get("OLLAMA_ENABLED", "false").lower() == "true",
         )
     
     def is_configured(self) -> bool:

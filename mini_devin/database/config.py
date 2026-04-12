@@ -29,7 +29,7 @@ def get_database_url() -> str:
     """Get the database URL from environment variables."""
     raw = os.getenv("DATABASE_URL")
     if not raw:
-        return "sqlite+aiosqlite:///minidevin.db"
+        return "sqlite+aiosqlite:///plodder.db"
     return _normalize_async_database_url(raw.strip())
 
 

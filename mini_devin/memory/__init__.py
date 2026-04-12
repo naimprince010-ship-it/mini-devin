@@ -1,5 +1,5 @@
 """
-Memory & Indexing Module for Mini-Devin
+Memory & Indexing Module for Plodder
 
 This module provides memory and context management for Phase 4:
 - Code symbol index with tree-sitter for structural indexing

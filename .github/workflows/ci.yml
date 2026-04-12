@@ -142,7 +142,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: minidevin_test
+          POSTGRES_DB: plodder_test
         ports:
           - 5432:5432
         options: >-
@@ -183,7 +183,7 @@ jobs:
 
       - name: Run tests
         env:
-          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/minidevin_test
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/plodder_test
         run: poetry run pytest tests/ -v --tb=short || true
         continue-on-error: true
 
@@ -270,7 +270,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: minidevin_test
+          POSTGRES_DB: plodder_test
         ports:
           - 5432:5432
         options: >-
@@ -312,7 +312,7 @@ jobs:
       - name: Run E2E tests
         id: e2e_tests
         env:
-          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/minidevin_test
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/plodder_test
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           poetry run python tests/e2e/generate_report.py

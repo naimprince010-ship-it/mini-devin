@@ -1,5 +1,5 @@
 """
-Git Manager for Mini-Devin
+Git Manager for Plodder
 
 This module provides git operations for diff inspection, checkpoint creation,
 and rollback capabilities to support safe agent operations.

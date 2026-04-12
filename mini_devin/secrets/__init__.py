@@ -1,5 +1,5 @@
 """
-Secrets Module for Mini-Devin
+Secrets Module for Plodder
 
 This module provides secure credential management for:
 - API keys and tokens

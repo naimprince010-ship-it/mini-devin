@@ -1,12 +1,13 @@
 [tool.poetry]
-name = "mini-devin"
+name = "plodder"
 version = "0.1.0"
-description = "An autonomous AI software engineer agent with access to Terminal, Code Editor, and Web Browser"
-authors = ["Mini-Devin Team"]
+description = "Plodder — autonomous AI software engineer (terminal, editor, browser, Plodder core libraries)"
+authors = ["Plodder"]
 readme = "README.md"
-packages = [{include = "mini_devin"}]
+packages = [{include = "mini_devin"}, {include = "plodder"}]
 
 [tool.poetry.scripts]
+plodder = "mini_devin.cli:main"
 mini-devin = "mini_devin.cli:main"
 
 [tool.poetry.dependencies]
@@ -40,6 +41,8 @@ aiosqlite = "^0.22.1"
 PyGithub = "^2.3.0"
 GitPython = "^3.1.40"
 slowapi = "^0.1.9"
+lancedb = ">=0.29.0"
+watchdog = ">=4.0.0"
 e2b = {version = "^2.9.0", optional = true}
 basedpyright = {version = "^1.28.0", optional = true}
 

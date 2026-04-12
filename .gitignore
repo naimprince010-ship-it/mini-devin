@@ -64,6 +64,15 @@ data/training_exports/*.jsonl
 # Project memory (per-project JSON on disk)
 data/project_memory/
 
+# Generated project plans (LLM output)
+data/project_plans/
+
+# Plodder local vector store (LanceDB)
+data/plodder_lance/
+
+# Local scratch / duplicate app tree (not part of main repo)
+plloder-work/
+
 # Database
 *.db
 *.sqlite3

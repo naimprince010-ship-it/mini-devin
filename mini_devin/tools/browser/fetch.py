@@ -1,5 +1,5 @@
 """
-Browser Fetch Tool for Mini-Devin
+Browser Fetch Tool for Plodder
 
 This module implements headless HTTP fetch with content extraction:
 - Fetch web pages via HTTP
@@ -253,7 +253,7 @@ class BrowserFetchTool(BaseBrowserTool):
         self.max_content_length = max_content_length
         self.cache_enabled = cache_enabled
         self.user_agent = user_agent or (
-            "Mozilla/5.0 (compatible; MiniDevin/1.0; +https://github.com/mini-devin)"
+            "Mozilla/5.0 (compatible; Plodder/1.0; +https://plodder.dev)"
         )
         
         self._client = httpx.AsyncClient(

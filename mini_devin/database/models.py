@@ -1,4 +1,4 @@
-"""SQLAlchemy models for Mini-Devin persistence."""
+"""SQLAlchemy models for Plodder persistence."""
 
 from datetime import datetime, timezone
 from enum import Enum as PyEnum

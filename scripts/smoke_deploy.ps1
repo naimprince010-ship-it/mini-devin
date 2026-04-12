@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Post-deploy smoke test for Mini-Devin (production or staging).
+  Post-deploy smoke test for Plodder (production or staging).
 
 .DESCRIPTION
   Verifies API health, providers JSON, SPA shell, session create, and static assets.
@@ -17,7 +17,7 @@
   After changing secrets: redeploy or restart the backend component.
 #>
 param(
-  [string]$BaseUrl = $(if ($env:SMOKE_BASE_URL) { $env:SMOKE_BASE_URL } else { "https://mini-devin-pcgvw.ondigitalocean.app" })
+  [string]$BaseUrl = $(if ($env:SMOKE_BASE_URL) { $env:SMOKE_BASE_URL } else { "http://127.0.0.1:8000" })
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,7 +44,7 @@ function Test-Url {
   }
 }
 
-Write-Host "`n=== Mini-Devin smoke: $u ===`n" -ForegroundColor Cyan
+Write-Host "`n=== Plodder smoke: $u ===`n" -ForegroundColor Cyan
 
 Write-Host "[1] GET /api/health"
 $r1 = Test-Url GET "/api/health"

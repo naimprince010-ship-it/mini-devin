@@ -167,7 +167,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
                                     </>
                                 ) : (
                                     <span className="text-[10px] text-[#3a3a3a] font-mono">
-                                        ubuntu@mini-devin:~$
+                                        ubuntu@plodder:~$
                                     </span>
                                 )}
                             </div>

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Run integration tests for Mini-Devin.
+Run integration tests for Plodder.
 
 This script runs all integration tests and generates a report.
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 def run_tests():
     """Run integration tests and return results."""
     print("=" * 60)
-    print("Mini-Devin Integration Test Suite")
+    print("Plodder Integration Test Suite")
     print(f"Started at: {datetime.now().isoformat()}")
     print("=" * 60)
     print()

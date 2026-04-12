@@ -43,6 +43,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const response = await fetch(`${getApiBase()}${endpoint}`, {
       ...options,
       headers,
+      signal: options.signal,
     });
 
     if (!response.ok) {
@@ -60,8 +61,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     try {
-      const userData = await fetchWithAuth<User>('/auth/me');
-      setUser(userData);
+      const ctrl = new AbortController();
+      const t = window.setTimeout(() => ctrl.abort(), 12_000);
+      try {
+        const userData = await fetchWithAuth<User>('/auth/me', { signal: ctrl.signal });
+        setUser(userData);
+      } finally {
+        window.clearTimeout(t);
+      }
     } catch {
       localStorage.removeItem(TOKEN_KEY);
       setToken(null);

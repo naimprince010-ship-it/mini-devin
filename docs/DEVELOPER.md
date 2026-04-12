@@ -1,6 +1,6 @@
-# Mini-Devin Developer Guide
+# Plodder Developer Guide
 
-This guide covers how to contribute to Mini-Devin, extend its functionality, and understand its internal architecture.
+This guide covers how to contribute to Plodder, extend its functionality, and understand its internal architecture.
 
 ## Development Setup
 
@@ -16,8 +16,8 @@ This guide covers how to contribute to Mini-Devin, extend its functionality, and
 
 ```bash
 # Clone the repository
-git clone https://github.com/naimprince010-ship-it/mini-devin.git
-cd mini-devin
+git clone https://github.com/your-org/plodder.git
+cd plodder
 
 # Install Python dependencies
 poetry install
@@ -124,7 +124,7 @@ mini_devin/
 
 ## Adding New Tools
 
-Tools are the primary way Mini-Devin interacts with the environment. Here's how to create a new tool:
+Tools are the primary way Plodder interacts with the environment. Here's how to create a new tool:
 
 ### 1. Define the Schema
 
@@ -480,7 +480,7 @@ async def _execute_iteration(self):
 Use the `--dry-run` flag to see what the agent would do:
 
 ```bash
-poetry run mini-devin run "task" --dry-run
+poetry run plodder run "task" --dry-run
 ```
 
 ### Viewing Artifacts
@@ -495,7 +495,7 @@ Check the `runs/<task_id>/` directory for:
 
 ### VPS Deployment (DigitalOcean)
 
-Mini-Devin is deployed on a DigitalOcean VPS with the following configuration:
+Plodder is deployed on a DigitalOcean VPS with the following configuration:
 
 **URLs:**
 - Frontend: https://jomiye.com
@@ -510,7 +510,7 @@ Mini-Devin is deployed on a DigitalOcean VPS with the following configuration:
 
 **Directory Structure on VPS:**
 ```
-/root/mini-devin/          # Backend application
+/root/plodder/          # Backend application
 /var/www/jomiye.com/       # Frontend static files
 /etc/caddy/Caddyfile       # Caddy configuration
 ```
@@ -533,7 +533,7 @@ www.jomiye.com {
 ```
 
 **Systemd Service:**
-The backend runs as a systemd service (`mini-devin.service`) that starts automatically on boot.
+The backend runs as a systemd service (`plodder.service`) that starts automatically on boot.
 
 ### Deploying Updates
 
@@ -543,14 +543,14 @@ The backend runs as a systemd service (`mini-devin.service`) that starts automat
 ssh root@165.22.223.43
 
 # Pull latest code
-cd /root/mini-devin
+cd /root/plodder
 git pull origin main
 
 # Install dependencies
 poetry install
 
 # Restart service
-systemctl restart mini-devin
+systemctl restart plodder
 ```
 
 **Frontend Updates:**
@@ -577,7 +577,7 @@ Configure these DNS records in your domain registrar (GoDaddy):
 
 ### Environment Variables
 
-Set these on the VPS in `/root/mini-devin/.env`:
+Set these on the VPS in `/root/plodder/.env`:
 - `OPENAI_API_KEY` - OpenAI API key for LLM
 - `DATABASE_URL` - PostgreSQL connection string (optional)
 - `SECRET_KEY` - JWT secret key

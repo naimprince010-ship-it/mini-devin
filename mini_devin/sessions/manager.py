@@ -1,5 +1,5 @@
 """
-Session Manager for Mini-Devin
+Session Manager for Plodder
 
 This module provides multi-session support for:
 - Creating and managing agent sessions

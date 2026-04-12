@@ -1,5 +1,5 @@
 """
-Mini-Devin Tools
+Plodder Tools
 
 This package contains tool implementations:
 - terminal: Execute shell commands

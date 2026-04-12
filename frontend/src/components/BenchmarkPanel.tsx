@@ -320,7 +320,7 @@ export const BenchmarkPanel: React.FC = () => {
                 stats.overall_resolve_rate >= 50 ? 'text-green-400' :
                 stats.overall_resolve_rate >= 30 ? 'text-yellow-400' : 'text-red-400'
               }`}>
-                Mini-Devin: {stats.overall_resolve_rate}%
+                Plodder: {stats.overall_resolve_rate}%
               </span>
             )}
           </div>
@@ -382,7 +382,7 @@ export const BenchmarkPanel: React.FC = () => {
               onChange={e => setFormUseAgent(e.target.checked)}
               className="accent-[#00ff99]"
             />
-            <span className="text-xs text-[#a3a3a3]">Run Mini-Devin agent on each task</span>
+            <span className="text-xs text-[#a3a3a3]">Run Plodder agent on each task</span>
           </label>
           <div className="flex gap-2">
             <button
@@ -430,7 +430,7 @@ export const BenchmarkPanel: React.FC = () => {
                 <FlaskConical size={40} className="text-[#2a2a2a]" />
                 <p className="text-[#525252] text-sm font-medium">No benchmark runs yet</p>
                 <p className="text-[#3a3a3a] text-xs max-w-xs">
-                  Click <span className="text-white font-semibold">New Run</span> to evaluate Mini-Devin on
+                  Click <span className="text-white font-semibold">New Run</span> to evaluate Plodder on
                   real GitHub issues from the SWE-bench dataset.
                 </p>
                 <button
@@ -643,7 +643,7 @@ export const BenchmarkPanel: React.FC = () => {
           <div className="p-6 space-y-6">
             {/* Overall gauge */}
             <div className="text-center space-y-1">
-              <p className="text-[10px] uppercase tracking-widest text-[#525252] font-bold">Mini-Devin Score</p>
+              <p className="text-[10px] uppercase tracking-widest text-[#525252] font-bold">Plodder Score</p>
               <p className="text-5xl font-black text-white">
                 {stats?.overall_resolve_rate ?? 0}
                 <span className="text-2xl text-[#525252]">%</span>
@@ -666,7 +666,7 @@ export const BenchmarkPanel: React.FC = () => {
                   { rank: 2, name: 'Claude Sonnet',      org: 'Anthropic',      pct: 49.0, isUs: false },
                   { rank: 3, name: 'OpenHands',          org: 'AllHands AI',    pct: 38.0, isUs: false },
                   { rank: 4, name: 'GPT-4o (SWE-agent)', org: 'OpenAI',         pct: 23.7, isUs: false },
-                  { rank: 5, name: 'Mini-Devin',         org: 'You',            pct: stats?.overall_resolve_rate ?? 0, isUs: true },
+                  { rank: 5, name: 'Plodder',         org: 'You',            pct: stats?.overall_resolve_rate ?? 0, isUs: true },
                 ]
                   .sort((a, b) => b.pct - a.pct)
                   .map((entry, i) => (

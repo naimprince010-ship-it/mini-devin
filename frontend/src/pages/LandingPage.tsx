@@ -124,7 +124,7 @@ export default function LandingPage() {
             <div className="w-8 h-8 rounded-xl bg-[#00ff99]/10 border border-[#00ff99]/20 flex items-center justify-center">
               <Bot className="text-[#00ff99]" size={18} />
             </div>
-            <span className="font-bold text-base">Mini-Devin</span>
+            <span className="font-bold text-base">Plodder</span>
             <span className="hidden sm:block text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 bg-[#00ff99]/10 text-[#00ff99] rounded-full border border-[#00ff99]/20">
               Beta
             </span>
@@ -138,7 +138,7 @@ export default function LandingPage() {
               {isDark ? <Sun size={16} /> : <Moon size={16} />}
             </button>
             <a
-              href="https://github.com/naimprince010-ship-it/mini-devin"
+              href="https://github.com/your-org/plodder"
               target="_blank"
               className={`hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm ${textMuted} hover:text-white transition-colors`}
             >
@@ -174,7 +174,7 @@ export default function LandingPage() {
           </h1>
 
           <p className={`text-lg sm:text-xl ${textMuted} max-w-2xl mx-auto leading-relaxed mb-10`}>
-            Mini-Devin is an autonomous software engineer agent that plans, writes code, runs tests,
+            Plodder is an autonomous software engineer agent that plans, writes code, runs tests,
             fixes bugs, and commits to GitHub — all on its own.
           </p>
 
@@ -196,7 +196,7 @@ export default function LandingPage() {
               Start Building Free
             </button>
             <a
-              href="https://github.com/naimprince010-ship-it/mini-devin"
+              href="https://github.com/your-org/plodder"
               target="_blank"
               className={`w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3.5 rounded-2xl border ${isDark ? 'border-[#262626] hover:border-[#363636] text-[#a3a3a3] hover:text-white' : 'border-[#d4d4d4] hover:border-[#a3a3a3] text-[#525252] hover:text-[#0f0f0f]'} font-semibold text-base transition-all`}
             >
@@ -216,7 +216,7 @@ export default function LandingPage() {
               <div className="w-3 h-3 rounded-full bg-red-500/60" />
               <div className="w-3 h-3 rounded-full bg-yellow-500/60" />
               <div className="w-3 h-3 rounded-full bg-green-500/60" />
-              <span className={`ml-2 text-xs ${textMuted} font-mono`}>mini-devin — session</span>
+              <span className={`ml-2 text-xs ${textMuted} font-mono`}>plodder — session</span>
               <div className="ml-auto flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#00ff99] animate-pulse" />
                 <span className="text-[10px] text-[#00ff99] font-bold uppercase tracking-wider">Live</span>
@@ -319,7 +319,7 @@ export default function LandingPage() {
           <div className="space-y-6">
             {[
               { step: '01', title: 'Describe your task', desc: 'Type what you want built, fixed, or automated — in plain English.', icon: <Code2 size={20} /> },
-              { step: '02', title: 'Agent plans & executes', desc: 'Mini-Devin breaks the task into steps, writes code, runs tests, and fixes errors autonomously.', icon: <Bot size={20} /> },
+              { step: '02', title: 'Agent plans & executes', desc: 'Plodder breaks the task into steps, writes code, runs tests, and fixes errors autonomously.', icon: <Bot size={20} /> },
               { step: '03', title: 'Review & ship', desc: 'See every action in real time. Approve the result and let the agent commit to GitHub.', icon: <GitBranch size={20} /> },
             ].map((item, i) => (
               <div key={i} className={`flex items-start gap-6 p-6 rounded-2xl border ${cardBg}`}>
@@ -353,7 +353,7 @@ export default function LandingPage() {
             </div>
             <pre className={`p-6 text-sm font-mono overflow-x-auto ${isDark ? 'bg-[#0a0a0a] text-[#c0c0c0]' : 'bg-[#fafafa] text-[#333]'}`}>
 {`# Clone the repo
-git clone https://github.com/naimprince010-ship-it/mini-devin
+git clone https://github.com/your-org/plodder
 cd mini-devin
 
 # Set your API key
@@ -379,14 +379,14 @@ python -m mini_devin.api.app`}
             Ready to ship faster?
           </h2>
           <p className={`text-lg ${textMuted} mb-10 max-w-lg mx-auto`}>
-            Join developers using Mini-Devin to automate repetitive engineering work.
+            Join developers using Plodder to automate repetitive engineering work.
           </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             <button
               onClick={() => navigate('/app')}
               className="w-full sm:w-auto flex items-center justify-center gap-2 px-10 py-4 bg-[#00ff99] text-[#0f0f0f] font-black text-lg rounded-2xl hover:bg-[#00e589] hover:scale-105 transition-all shadow-2xl shadow-[#00ff99]/20"
             >
-              Launch Mini-Devin
+              Launch Plodder
               <Zap size={20} fill="currentColor" />
             </button>
           </div>
@@ -406,13 +406,13 @@ python -m mini_devin.api.app`}
         <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <Bot size={16} className="text-[#00ff99]" />
-            <span className="font-bold text-sm">Mini-Devin</span>
+            <span className="font-bold text-sm">Plodder</span>
             <span className={`text-xs ${textMuted}`}>— Autonomous AI Software Engineer</span>
           </div>
           <div className="flex items-center gap-6">
             <a href="/docs" className={`text-xs ${textMuted} hover:text-[#00ff99] transition-colors`}>API Docs</a>
             <a
-              href="https://github.com/naimprince010-ship-it/mini-devin"
+              href="https://github.com/your-org/plodder"
               target="_blank"
               className={`flex items-center gap-1.5 text-xs ${textMuted} hover:text-[#00ff99] transition-colors`}
             >

@@ -1,5 +1,5 @@
 """
-Multi-Agent Module for Mini-Devin
+Multi-Agent Module for Plodder
 
 This module provides specialized agents that work together:
 - ReviewerAgent: Critiques diffs and proposes improvements

@@ -1,5 +1,5 @@
 """
-Secrets Manager for Mini-Devin
+Secrets Manager for Plodder
 
 This module provides secure credential management with:
 - Fernet encryption (AES-128-CBC with HMAC)

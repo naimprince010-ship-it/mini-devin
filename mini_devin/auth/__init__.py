@@ -1,4 +1,4 @@
-"""Authentication module for Mini-Devin."""
+"""Authentication module for Plodder."""
 
 from .service import AuthService
 from .dependencies import get_current_user, get_current_user_optional, get_api_key_user

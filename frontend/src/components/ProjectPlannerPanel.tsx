@@ -218,13 +218,16 @@ export default function ProjectPlannerPanel() {
   }
 
   const createPlan = async () => {
-    if (!selectedProject || !planGoal) return showToast('Select a project and enter a goal')
+    if (!selectedProject) return showToast('Select a project first (open the Projects tab and click a project).')
+    if (!planGoal.trim()) {
+      return showToast('Click the goal box and type your text — the gray line is only a hint, not your goal.')
+    }
     setLoading(true)
     try {
       const res = await fetch(`${API}/project-plans`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project_id: selectedProject.id, goal: planGoal }),
+        body: JSON.stringify({ project_id: selectedProject.id, goal: planGoal.trim() }),
       })
       if (res.ok) {
         const plan = await res.json()
@@ -234,9 +237,24 @@ export default function ProjectPlannerPanel() {
         setSelectedPlan(plan)
         fetchPlans(selectedProject.id)
       } else {
-        showToast('Failed to create plan: ' + res.statusText)
+        let msg = `Failed to create plan (${res.status})`
+        try {
+          const err = await res.json()
+          msg = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail || err)
+        } catch {
+          msg = res.statusText || msg
+        }
+        showToast(String(msg).slice(0, 240))
       }
-    } finally { setLoading(false) }
+    } catch (e) {
+      showToast(
+        e instanceof Error
+          ? `${e.message} — start API: poetry run uvicorn mini_devin.api.app:app --port 8000`
+          : 'Network error — is the API running on port 8000?',
+      )
+    } finally {
+      setLoading(false)
+    }
   }
 
   const executePlan = async (planId: string) => {
@@ -499,7 +517,7 @@ export default function ProjectPlannerPanel() {
                     <p className="text-[10px] text-gray-500">Describe the project goal. The AI will break it into milestones.</p>
                     <textarea
                       className="w-full bg-[#0a0a0a] border border-[#333] text-xs text-white rounded px-2 py-1.5 h-20 resize-none"
-                      placeholder="Build a SaaS platform with auth, dashboard, billing, and admin panel"
+                      placeholder="Click here and type your goal (e.g. add OAuth2 login and a billing page)…"
                       value={planGoal} onChange={e => setPlanGoal(e.target.value)} />
                     <div className="flex justify-end gap-2">
                       <button onClick={() => setShowCreatePlan(false)} className="text-xs text-gray-500 hover:text-gray-300">Cancel</button>

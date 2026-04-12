@@ -1,5 +1,5 @@
 """
-Browser Interactive Tool for Mini-Devin
+Browser Interactive Tool for Plodder
 
 This module implements interactive browser automation using Selenium:
 - Navigate to pages

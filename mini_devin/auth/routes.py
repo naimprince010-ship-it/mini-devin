@@ -1,4 +1,4 @@
-"""Authentication routes for Mini-Devin."""
+"""Authentication routes for Plodder."""
 
 from datetime import timedelta
 

@@ -1,4 +1,4 @@
-"""Database module for Mini-Devin persistence layer."""
+"""Database module for Plodder persistence layer."""
 
 from .config import get_database_url, get_engine, get_session, init_db
 from .models import (

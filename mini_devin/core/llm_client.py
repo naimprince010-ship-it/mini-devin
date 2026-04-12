@@ -1,5 +1,5 @@
 """
-LLM Client for Mini-Devin
+LLM Client for Plodder
 
 This module provides a wrapper around LiteLLM for interacting with various
 LLM providers (OpenAI, Anthropic, etc.) with support for tool calling.
@@ -111,7 +111,10 @@ class LLMClient:
     
     def __init__(self, config: LLMConfig | None = None):
         if not LITELLM_AVAILABLE:
-            raise ImportError("litellm is required. Install with: pip install litellm")
+            raise ImportError(
+                "litellm is required. From the project root run: poetry install "
+                "(recommended), or: pip install litellm — then restart the API."
+            )
         
         self.config = config or LLMConfig()
         self.conversation: list[LLMMessage] = []
@@ -173,7 +176,8 @@ class LLMClient:
                 import httpx
                 from openai import AsyncOpenAI
                 from dotenv import load_dotenv
-                load_dotenv()
+
+                load_dotenv(override=True)
                 self._custom_client = AsyncOpenAI(
                     api_key=self.config.api_key or os.environ.get("OPENAI_API_KEY"),
                     organization=None,
@@ -502,9 +506,9 @@ def create_llm_client(
         Configured LLMClient instance
     """
     registry = get_model_registry()
-    
+
     if model is None:
-        model = registry.get_default_model()
+        model = os.environ.get("LLM_MODEL") or registry.get_default_model()
     
     model_info = registry.get_model(model)
     provider = model_info.provider if model_info else None
@@ -521,7 +525,16 @@ def create_llm_client(
     
     if api_key is None:
         api_key = os.environ.get("OPENAI_API_KEY")
-    
+
+    if isinstance(api_key, str):
+        api_key = api_key.strip() or None
+
+    if not api_key:
+        raise ValueError(
+            "No LLM API key is set. For OpenAI models, add OPENAI_API_KEY=sk-... to the "
+            ".env file in the project root (next to pyproject.toml), save, and restart the API."
+        )
+
     config = LLMConfig(
         model=model,
         api_key=api_key,

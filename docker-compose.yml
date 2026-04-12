@@ -6,15 +6,15 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile.frontend
-    container_name: mini-devin-frontend
+    container_name: plodder-frontend
     environment:
       - VITE_API_URL=http://localhost:8000
     ports:
       - "3000:80"
     depends_on:
-      - mini-devin
+      - plodder
     networks:
-      - mini-devin-network
+      - plodder-network
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:80"]
       interval: 30s
@@ -24,17 +24,17 @@ services:
   # PostgreSQL Database
   postgres:
     image: postgres:16-alpine
-    container_name: mini-devin-db
+    container_name: plodder-db
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-      - POSTGRES_DB=${POSTGRES_DB:-minidevin}
+      - POSTGRES_DB=${POSTGRES_DB:-plodder}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     networks:
-      - mini-devin-network
+      - plodder-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -42,21 +42,21 @@ services:
       retries: 5
       start_period: 10s
 
-  mini-devin:
+  plodder:
     build:
       context: .
       dockerfile: Dockerfile
       args:
         USER_ID: ${USER_ID:-1000}
         GROUP_ID: ${GROUP_ID:-1000}
-        USERNAME: ${SANDBOX_USER:-minidevin}
-    container_name: mini-devin-agent
+        USERNAME: ${SANDBOX_USER:-plodder}
+    container_name: plodder-agent
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       # Database Configuration
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-minidevin}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-plodder}
       
       # LLM Configuration
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
@@ -135,7 +135,7 @@ services:
         hard: 512
     # Network configuration
     networks:
-      - mini-devin-network
+      - plodder-network
     # Health check
     healthcheck:
       test: ["CMD", "python3", "-c", "print('healthy')"]
@@ -147,7 +147,7 @@ services:
   # Optional: Selenium Grid for interactive browser mode
   selenium:
     image: selenium/standalone-chrome:latest
-    container_name: mini-devin-selenium
+    container_name: plodder-selenium
     environment:
       - SE_NODE_MAX_SESSIONS=2
       - SE_NODE_SESSION_TIMEOUT=300
@@ -156,12 +156,12 @@ services:
       - "7900:7900"  # VNC viewer
     shm_size: 2gb
     networks:
-      - mini-devin-network
+      - plodder-network
     profiles:
       - interactive  # Only start with --profile interactive
 
 networks:
-  mini-devin-network:
+  plodder-network:
     driver: bridge
 
 volumes:

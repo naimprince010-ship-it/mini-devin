@@ -1,5 +1,5 @@
 """
-Integrations package for Mini-Devin
+Integrations package for Plodder
 Provides integration with external services like GitHub, Vercel, Railway, etc.
 """
 

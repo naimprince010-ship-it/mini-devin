@@ -1,5 +1,5 @@
 """
-GitHub Tool for Mini-Devin
+GitHub Tool for Plodder
 
 This tool provides access to GitHub integration features like branch creation,
 commits, and pull requests.

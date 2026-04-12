@@ -1,5 +1,5 @@
 """
-Self-Correction Engine for Mini-Devin
+Self-Correction Engine for Plodder
 
 This module provides the core logic for detecting tool failures, classifying
 errors, and generating retry strategies (self-correction) before falling back

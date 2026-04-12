@@ -328,7 +328,7 @@ export function RepoManager({ apiBaseUrl = getApiBase(), sessionId, onRepoLinked
           <div className="text-center py-8 space-y-2">
             <GitFork size={32} className="mx-auto text-gray-600" />
             <p className="text-gray-400 text-sm">No repositories connected. Click + to add one.</p>
-            <p className="text-gray-500 text-xs">You can clone any GitHub repo and Mini-Devin will work inside it.</p>
+            <p className="text-gray-500 text-xs">You can clone any GitHub repo and Plodder will work inside it.</p>
           </div>
         ) : (
           repos.map(repo => (

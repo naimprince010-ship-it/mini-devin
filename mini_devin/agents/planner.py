@@ -1,5 +1,5 @@
 """
-Planner Agent for Mini-Devin
+Planner Agent for Plodder
 
 This module implements a specialized planning agent that creates detailed
 execution plans before the main agent starts working. It decomposes complex
@@ -137,7 +137,7 @@ class PlanningResult:
         }
 
 
-PLANNER_SYSTEM_PROMPT = """You are a planning agent for Mini-Devin, an autonomous AI software engineer. Your job is to analyze tasks and create detailed, actionable execution plans.
+PLANNER_SYSTEM_PROMPT = """You are a planning agent for Plodder, an autonomous AI software engineer. Your job is to analyze tasks and create detailed, actionable execution plans.
 
 ## Your Responsibilities
 1. Analyze the task to understand what needs to be done

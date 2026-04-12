@@ -256,8 +256,8 @@ def ingest_allowlist_roots() -> list[Path]:
     """
     Directories under which ``repo_path`` is accepted for ingest (server-side safety).
 
-    - ``../agent-workspace`` next to the Mini-Devin repo (session clones live here).
-    - The Mini-Devin checkout itself (for self-host / dev).
+    - ``../agent-workspace`` next to the Plodder repo (session clones live here).
+    - The Plodder checkout itself (for self-host / dev).
     - Optional ``REPO_INGEST_EXTRA_ROOT`` absolute path for custom layouts.
     """
     here = Path(__file__).resolve()

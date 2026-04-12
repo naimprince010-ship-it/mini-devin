@@ -1,5 +1,5 @@
 """
-Fixed regression checks for Mini-Devin platform contracts.
+Fixed regression checks for Plodder platform contracts.
 Run on every PR via CI job `eval` — see scenarios.json for the manifest.
 """
 

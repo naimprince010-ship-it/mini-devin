@@ -1,5 +1,5 @@
 """
-WebSocket Manager for Mini-Devin
+WebSocket Manager for Plodder
 
 This module provides WebSocket support for:
 - Real-time token streaming
@@ -154,7 +154,7 @@ class ConnectionManager:
             websocket,
             WebSocketMessage(
                 type=MessageType.CONNECTED,
-                data={"message": "Connected to Mini-Devin"},
+                data={"message": "Connected to Plodder"},
                 session_id=session_id,
             ),
         )

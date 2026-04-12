@@ -1,5 +1,5 @@
 """
-Test-Fix-Rerun Loop for Mini-Devin
+Test-Fix-Rerun Loop for Plodder
 Automatic testing, bug detection, and fixing cycle
 """
 

@@ -1,5 +1,5 @@
 """
-Mini-Devin: An autonomous AI software engineer agent (terminal, editor, browser tools).
+Plodder: An autonomous AI software engineer agent (terminal, editor, browser tools).
 
 This package root stays **minimal on import**: loading `schemas` + `core` (LiteLLM, etc.)
 on every `import mini_devin.*` used to delay or OOM API cold starts (Railway 502).
