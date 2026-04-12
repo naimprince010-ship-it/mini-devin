@@ -57,6 +57,10 @@ htmlcov/
 runs/
 /artifacts/
 
+# Training exports (may contain session content; keep only .gitkeep in repo)
+data/training_logs/*.jsonl
+data/training_exports/*.jsonl
+
 # Database
 *.db
 *.sqlite3

@@ -18,6 +18,7 @@ from typing import Any
 
 from ..core.llm_client import LLMClient, LLMConfig, LLMMessage
 from ..schemas.state import TaskState
+from .provenance import default_teacher_review_provenance
 
 
 TEACHER_SYSTEM_PROMPT = """You are a strict senior engineer reviewing another agent's work.
@@ -258,7 +259,7 @@ Last error (if any): {task.last_error or "(none)"}
         raw_teacher = ""
 
     record: dict[str, Any] = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "id": record_id,
         "timestamp": ts,
         "task_id": task.task_id,
@@ -268,6 +269,7 @@ Last error (if any): {task.last_error or "(none)"}
         "task_status": task.status.value,
         "teacher_review": teacher_obj,
         "raw_teacher_response": raw_teacher[:16000] if raw_teacher else "",
+        "provenance": default_teacher_review_provenance(),
         "fine_tune_exports": {
             "sft_teacher_critique_messages": _sft_messages_stub(
                 task.goal.description, summary, teacher_obj

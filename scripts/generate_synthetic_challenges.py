@@ -117,6 +117,13 @@ async def main_async(args: argparse.Namespace) -> None:
             raw_path.write_text(json.dumps({"error": str(e)}), encoding="utf-8")
             print(f"[{i}] error -> {raw_path}", file=sys.stderr)
             continue
+        try:
+            from mini_devin.learning.provenance import default_synthetic_provenance
+
+            if isinstance(obj, dict) and "error" not in obj:
+                obj["provenance"] = default_synthetic_provenance()
+        except Exception:
+            pass
         raw_path.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
         test_path = out_dir / f"challenge_{i:03d}_tests.py"
         tests = obj.get("test_file_content", "")
