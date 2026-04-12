@@ -3,11 +3,12 @@ GitHub Integration for Plodder
 Handles PR creation, branch management, and commits
 """
 
-import os
 import asyncio
-from typing import Optional, List, Dict, Any
-from pathlib import Path
 import logging
+import os
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 try:
     from github import Github, GithubException
@@ -27,6 +28,15 @@ except Exception:
     InvalidGitRepositoryError = Exception
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_branch_fragment(text: str, max_len: int = 48) -> str:
+    """Make a string safe for use inside a git branch name segment."""
+    s = text.lower().strip().replace(" ", "-")
+    s = re.sub(r"[^a-z0-9._-]+", "-", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    return (s[:max_len] or "task").strip("-") or "task"
+
 
 class GitHubIntegration:
     """GitHub integration for autonomous development workflow"""
@@ -69,22 +79,39 @@ class GitHubIntegration:
             logger.error(f"Failed to initialize GitHub integration: {e}")
             return False
     
-    async def create_feature_branch(self, branch_name: str, base_branch: str = "main") -> bool:
-        """Create a new feature branch"""
+    async def create_feature_branch(self, branch_name: str, base_branch: str | None = None) -> bool:
+        """Create a new feature branch from the repo default branch (or ``base_branch`` when set)."""
+        stashed = False
         try:
+            base = (base_branch or "").strip() if base_branch else ""
+            if not base or base.lower() == "default":
+                base = self.repo.default_branch if self.repo else "main"
+            if self.local_repo.is_dirty(untracked_files=True):
+                self.local_repo.git.stash("push", "-u", "-m", "plodder: auto-stash before create_feature_branch")
+                stashed = True
             # Checkout base branch and pull latest
-            self.local_repo.git.checkout(base_branch)
-            self.local_repo.remotes.origin.pull(base_branch)
+            self.local_repo.git.checkout(base)
+            self.local_repo.remotes.origin.pull(base)
             
             # Create and checkout new branch
-            self.local_repo.git.checkout('-b', branch_name)
-            
+            self.local_repo.git.checkout("-b", branch_name)
+
             # Push branch to remote
-            self.local_repo.git.push('-u', 'origin', branch_name)
-            
+            self.local_repo.git.push("-u", "origin", branch_name)
+
+            if stashed:
+                try:
+                    self.local_repo.git.stash("pop")
+                except Exception as pop_e:
+                    logger.warning(
+                        "Stash pop failed after creating branch %s — apply stash manually: %s",
+                        branch_name,
+                        pop_e,
+                    )
+
             logger.info(f"Created and pushed branch: {branch_name}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to create branch {branch_name}: {e}")
             return False
@@ -120,38 +147,66 @@ class GitHubIntegration:
             return False
     
     async def create_pull_request(
-        self, 
-        title: str, 
-        description: str, 
-        head_branch: str, 
-        base_branch: str = "main",
+        self,
+        title: str,
+        description: str,
+        head_branch: str,
+        base_branch: str | None = None,
         labels: Optional[List[str]] = None,
-        reviewers: Optional[List[str]] = None
+        reviewers: Optional[List[str]] = None,
+        draft: bool = False,
+        assignees: Optional[List[str]] = None,
     ) -> Optional[PullRequest]:
-        """Create a pull request"""
+        """Create a pull request (``base_branch`` defaults to the GitHub repo default branch)."""
         try:
-            # Check if PR already exists
-            pulls = self.repo.get_pulls(state='open', head=head_branch)
+            base = (base_branch or "").strip() if base_branch else ""
+            if not base or base.lower() == "default":
+                base = self.repo.default_branch if self.repo else "main"
+            # GitHub API expects ``owner:branch`` when filtering pulls by head (same-repo).
+            head_label = head_branch if ":" in head_branch else f"{self.repo.owner.login}:{head_branch}"
+            pulls = self.repo.get_pulls(state="open", head=head_label)
             if pulls.totalCount > 0:
                 logger.info(f"PR already exists for branch {head_branch}")
                 return pulls[0]
-            
-            # Create new PR
-            pr = self.repo.create_pull(
-                title=title,
-                body=description,
-                head=head_branch,
-                base=base_branch
-            )
-            
-            # Add labels if provided
+
+            # Create new PR (draft / assignees depend on PyGithub + token scopes)
+            if draft:
+                try:
+                    pr = self.repo.create_pull(
+                        title=title,
+                        body=description,
+                        head=head_branch,
+                        base=base,
+                        draft=True,
+                    )
+                except TypeError:
+                    logger.warning("PyGithub create_pull(draft=...) not supported; opening non-draft PR")
+                    pr = self.repo.create_pull(
+                        title=title,
+                        body=description,
+                        head=head_branch,
+                        base=base,
+                    )
+            else:
+                pr = self.repo.create_pull(
+                    title=title,
+                    body=description,
+                    head=head_branch,
+                    base=base,
+                )
+
             if labels:
                 pr.add_to_labels(*labels)
-            
-            # Request reviewers if provided
+
             if reviewers:
                 pr.create_review_request(reviewers)
-            
+
+            if assignees:
+                try:
+                    pr.add_to_assignees(*assignees)
+                except GithubException as ae:
+                    logger.warning("Could not set assignees: %s", ae)
+
             logger.info(f"Created PR #{pr.number}: {title}")
             return pr
             
@@ -163,14 +218,17 @@ class GitHubIntegration:
         """Merge a pull request"""
         try:
             pr = self.repo.get_pull(pr_number)
-            
-            if pr.mergeable:
-                pr.merge(merge_method=merge_method)
-                logger.info(f"Merged PR #{pr_number}")
-                return True
-            else:
-                logger.warning(f"PR #{pr_number} is not mergeable")
+
+            if pr.mergeable is None:
+                logger.warning(f"PR #{pr_number}: mergeability not computed yet — retry shortly")
                 return False
+            if pr.mergeable is False:
+                logger.warning(f"PR #{pr_number} is not mergeable (conflicts or checks)")
+                return False
+
+            pr.merge(merge_method=merge_method)
+            logger.info(f"Merged PR #{pr_number}")
+            return True
                 
         except GithubException as e:
             logger.error(f"Failed to merge PR #{pr_number}: {e}")
@@ -180,13 +238,12 @@ class GitHubIntegration:
         """Get PR status and check results"""
         try:
             pr = self.repo.get_pull(pr_number)
-            
-            # Get commit status
-            commits = pr.get_commits()
-            latest_commit = commits[0] if commits.totalCount > 0 else None
-            
+
+            head_commit_obj = self.repo.get_commit(pr.head.sha)
+
             status = {
                 "pr_number": pr_number,
+                "html_url": pr.html_url,
                 "state": pr.state,
                 "mergeable": pr.mergeable,
                 "mergeable_state": pr.mergeable_state,
@@ -195,23 +252,39 @@ class GitHubIntegration:
                 "head_branch": pr.head.ref,
                 "base_branch": pr.base.ref,
                 "review_status": self._get_review_status(pr),
-                "ci_status": None
+                "ci_status": None,
             }
-            
-            if latest_commit:
-                combined_status = latest_commit.get_combined_status()
-                status["ci_status"] = {
-                    "state": combined_status.state,
-                    "total_count": combined_status.total_count,
-                    "statuses": [
+
+            combined_status = head_commit_obj.get_combined_status()
+            status["ci_status"] = {
+                "state": combined_status.state,
+                "total_count": combined_status.total_count,
+                "statuses": [
+                    {
+                        "context": s.context,
+                        "state": s.state,
+                        "description": s.description,
+                    }
+                    for s in combined_status.statuses
+                ],
+            }
+
+            check_runs: list[dict[str, Any]] = []
+            try:
+                crs = head_commit_obj.get_check_runs()
+                for cr in crs[:40]:
+                    check_runs.append(
                         {
-                            "context": s.context,
-                            "state": s.state,
-                            "description": s.description
-                        } for s in combined_status.statuses
-                    ]
-                }
-            
+                            "name": cr.name,
+                            "status": cr.status,
+                            "conclusion": cr.conclusion,
+                            "html_url": cr.html_url,
+                        }
+                    )
+            except Exception as cre:
+                logger.debug("check runs unavailable: %s", cre)
+            status["check_runs"] = check_runs
+
             return status
             
         except GithubException as e:
@@ -274,29 +347,26 @@ class GitHubIntegration:
 
 # Example usage and helper functions
 async def create_automated_pr_workflow(
-    github_integration: GitHubIntegration,
+    hosting: Any,
     task_description: str,
     changes_made: List[str],
-    branch_name: Optional[str] = None
-) -> Optional[PullRequest]:
-    """Complete automated PR creation workflow"""
-    
+    branch_name: Optional[str] = None,
+) -> Any:
+    """Complete automated PR/MR creation workflow (GitHub or GitLab hosting backend)."""
+
     if not branch_name:
-        # Generate branch name from task description
-        branch_name = f"feature/{task_description.lower().replace(' ', '-').replace('.', '')[:50]}"
-    
-    # Create feature branch
-    success = await github_integration.create_feature_branch(branch_name)
+        slug = _sanitize_branch_fragment(task_description, max_len=40)
+        branch_name = f"plodder/{slug}"
+
+    success = await hosting.create_feature_branch(branch_name)
     if not success:
         return None
-    
-    # Commit changes
+
     commit_message = f"feat: {task_description}"
-    success = await github_integration.commit_changes(commit_message, changes_made)
+    success = await hosting.commit_changes(commit_message, changes_made)
     if not success:
         return None
-    
-    # Create PR
+
     pr_title = f"Automated: {task_description}"
     pr_description = f"""
 ## Automated Pull Request
@@ -311,12 +381,16 @@ async def create_automated_pr_workflow(
 ---
 *This PR was created automatically by Plodder. Please review the changes before merging.*
 """
-    
-    pr = await github_integration.create_pull_request(
+
+    labels_kw: dict[str, Any] = {}
+    if hasattr(hosting, "repo") and getattr(hosting, "repo", None) is not None:
+        labels_kw["labels"] = ["automated", "plodder"]
+
+    pr = await hosting.create_pull_request(
         title=pr_title,
         description=pr_description,
         head_branch=branch_name,
-        labels=["automated", "plodder"]
+        **labels_kw,
     )
-    
+
     return pr

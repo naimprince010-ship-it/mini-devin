@@ -71,6 +71,7 @@ export function RepoManager({ apiBaseUrl = getApiBase(), sessionId, onRepoLinked
   const [branchForm, setBranchForm] = useState({ name: '', from: '' });
   const [newRepoForm, setNewRepoForm] = useState({ name: '', description: '', private: false, token: '' });
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [oauthBusy, setOauthBusy] = useState(false);
 
   const loadGitHubStatus = useCallback(async () => {
     try {
@@ -97,6 +98,80 @@ export function RepoManager({ apiBaseUrl = getApiBase(), sessionId, onRepoLinked
       setRepos([]);
     } finally { setLoading(false); }
   }, [apiBaseUrl]);
+
+  const applyOAuthTokenToRepos = useCallback(
+    async (accessToken: string) => {
+      const targets = repos.filter(r => !r.has_token);
+      for (const r of targets) {
+        try {
+          const res = await fetch(`${apiBaseUrl}/repos/${r.repo_id}/token`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: accessToken }),
+          });
+          if (!res.ok) continue;
+        } catch {
+          continue;
+        }
+      }
+      await loadRepos();
+    },
+    [apiBaseUrl, repos, loadRepos],
+  );
+
+  const handleGitHubOAuthConnect = useCallback(async () => {
+    setOauthBusy(true);
+    setError(null);
+    try {
+      const start = await fetch(`${apiBaseUrl}/github/oauth/start`);
+      const { json: startJson, text } = await readJsonResponse<{ authorize_url?: string; state?: string }>(start);
+      if (!start.ok) {
+        throw new Error(detailFromJsonBody(startJson) || text || `OAuth start failed (${start.status})`);
+      }
+      const authorizeUrl = startJson?.authorize_url;
+      const state = startJson?.state;
+      if (!authorizeUrl || !state) throw new Error('Invalid OAuth start response');
+
+      // Do not use noopener: the callback page postsMessage to window.opener.
+      const popup = window.open(authorizeUrl, 'github_oauth', 'width=560,height=720');
+      if (!popup) throw new Error('Popup blocked — allow popups for this site');
+
+      const finalize = async (st: string) => {
+        const res = await fetch(`${apiBaseUrl}/github/oauth/result?state=${encodeURIComponent(st)}`);
+        const { json, text: rt } = await readJsonResponse<{ access_token?: string }>(res);
+        if (!res.ok || !json?.access_token) {
+          throw new Error(detailFromJsonBody(json) || rt || 'Could not read OAuth token');
+        }
+        setNewRepoToken(json.access_token);
+        await applyOAuthTokenToRepos(json.access_token);
+        await loadGitHubStatus();
+        try { popup.close(); } catch { /* ignore */ }
+      };
+
+      await new Promise<void>((resolve, reject) => {
+        const timer = window.setTimeout(() => {
+          window.removeEventListener('message', onMsg);
+          reject(new Error('GitHub authorization timed out — try again'));
+        }, 120_000);
+
+        const onMsg = (ev: MessageEvent) => {
+          const d = ev.data;
+          if (!d || typeof d !== 'object') return;
+          if (d.type !== 'github_oauth_done' || d.state !== state) return;
+          window.removeEventListener('message', onMsg);
+          window.clearTimeout(timer);
+          void finalize(String(d.state))
+            .then(() => resolve())
+            .catch(reject);
+        };
+        window.addEventListener('message', onMsg);
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'GitHub OAuth failed');
+    } finally {
+      setOauthBusy(false);
+    }
+  }, [apiBaseUrl, applyOAuthTokenToRepos, loadGitHubStatus]);
 
   useEffect(() => { loadRepos(); }, [loadRepos]);
 
@@ -280,6 +355,23 @@ export function RepoManager({ apiBaseUrl = getApiBase(), sessionId, onRepoLinked
         <div className="p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-200 text-sm flex justify-between">
           <span>{error}</span>
           <button onClick={() => setError(null)}><X size={14} /></button>
+        </div>
+      )}
+
+      {githubStatus?.github_configured && !githubStatus.connected && (
+        <div className="p-3 bg-gray-800/80 border border-gray-600 rounded-lg flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs text-gray-300">
+            Sign in with GitHub to obtain a token. It will be saved on each repo that does not have a token yet (same as manual key entry).
+          </p>
+          <button
+            type="button"
+            onClick={() => void handleGitHubOAuthConnect()}
+            disabled={oauthBusy}
+            className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 text-white rounded-lg disabled:opacity-50"
+          >
+            {oauthBusy ? <Loader2 size={14} className="animate-spin" /> : <Github size={14} />}
+            Connect GitHub
+          </button>
         </div>
       )}
 

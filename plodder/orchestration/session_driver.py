@@ -90,7 +90,16 @@ class UnifiedSessionResult:
 
 
 _BASE_ALLOWED_TOOLS = frozenset(
-    {"fs_list", "fs_read", "fs_write", "fs_delete", "sandbox_run", "sandbox_shell"}
+    {
+        "fs_list",
+        "fs_read",
+        "fs_write",
+        "fs_delete",
+        "sandbox_run",
+        "sandbox_shell",
+        "github",
+        "gitleaks",
+    }
 )
 
 
@@ -295,6 +304,12 @@ class UnifiedSessionDriver:
                 return await self._tool_sandbox_run_async(args)
             if name == "sandbox_shell":
                 return await self._tool_sandbox_shell_async(args)
+            if name == "github":
+                from plodder.orchestration.github_tool_dispatch import run_github_tool_for_workspace
+
+                return await run_github_tool_for_workspace(str(self._ws.root), args)
+            if name == "gitleaks":
+                return await self._tool_gitleaks_async(args)
         except Exception as e:  # noqa: BLE001 — surface to model
             return {"tool": name, "ok": False, "error": str(e), "args": args}
         return {"tool": name, "ok": False, "error": "unreachable"}
@@ -338,6 +353,38 @@ class UnifiedSessionDriver:
             network=network,
         )
         return self._sandbox_result_dict("sandbox_run", result)
+
+    async def _tool_gitleaks_async(self, args: dict[str, Any]) -> dict[str, Any]:
+        import shutil
+
+        root = str(self._ws.root)
+        exe = shutil.which("gitleaks")
+        if not exe:
+            return {
+                "tool": "gitleaks",
+                "ok": False,
+                "error": "gitleaks not on PATH — install from https://github.com/gitleaks/gitleaks/releases",
+            }
+        extra: list[str] = []
+        if isinstance(args.get("extra_args"), list):
+            extra = [str(x) for x in args["extra_args"] if str(x).strip()]
+        cmd = [exe, "detect", "--source", root, "--redact", *extra]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=root,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out_b, err_b = await proc.communicate()
+        stdout = (out_b or b"").decode("utf-8", errors="replace")
+        stderr = (err_b or b"").decode("utf-8", errors="replace")
+        return {
+            "tool": "gitleaks",
+            "ok": proc.returncode == 0,
+            "exit_code": proc.returncode,
+            "stdout": _truncate(stdout, 8000),
+            "stderr": _truncate(stderr, 4000),
+        }
 
     async def _tool_sandbox_shell_async(self, args: dict[str, Any]) -> dict[str, Any]:
         if self._sandbox is None:

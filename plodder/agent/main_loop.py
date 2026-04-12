@@ -33,8 +33,10 @@ _TREE_IGNORE = frozenset(
 _AGENT_WORKFLOW_HINT = """## Suggested multi-step workflow (complex tasks)
 1. **`docs_retrieve`** — pull indexed best practices (set `language_key` when aligned with the stack, e.g. `go`).
 2. **`container_verify`** — confirm the resolved Docker **image** for your `entry` + optional `language_key` before heavy edits.
-3. **`fs_list` / `fs_write`** — shape the project tree; keep paths consistent with the tree below.
-4. **`sandbox_run`** — verify; on errors use **`fs_read`** then minimal **`fs_write`**, then re-run (self-heal)."""
+3. **`github`** — GitHub (`GITHUB_TOKEN`) or GitLab (`GITLAB_TOKEN` + matching remote / `GITLAB_API_URL`): **`create_branch`** → **`fs_*`** / **`sandbox_*`** → **`commit`** → **`create_pr`** (use `base_branch` `"default"`); **`get_pr_status`** before merge; **`merge_pr`** only if policy allows.
+4. **`gitleaks`** — optional secret scan on the workspace if the binary is installed on the host.
+5. **`fs_list` / `fs_write`** — shape the project tree; keep paths consistent with the tree below.
+6. **`sandbox_run`** — verify; on errors use **`fs_read`** then minimal **`fs_write`**, then re-run (self-heal)."""
 
 
 _AGENT_EXTENSION_TOOLS_MD = """## Additional tools (autonomous loop)

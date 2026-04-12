@@ -90,6 +90,7 @@ class ExecutionSandbox:
         workdir: str = "/workspace",
         timeout_sec: int | None = None,
         network_mode: str = "none",
+        environment: dict[str, str] | None = None,
     ) -> SandboxResult:
         timeout = timeout_sec if timeout_sec is not None else self.default_timeout_sec
         cid = None

@@ -536,13 +536,52 @@ async def delete_repo(repo_id: str):
 @app.get("/api/github/oauth/status")
 async def github_oauth_status():
     return {
-        "connected": False,
+        "connected": bool(os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")),
         "github_configured": bool(os.getenv("GITHUB_CLIENT_ID")),
     }
 
+
 @app.get("/api/github/oauth/start")
-async def github_oauth_start():
-    raise HTTPException(status_code=501, detail="GitHub OAuth not configured. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET.")
+async def github_oauth_start(request: Request):
+    from mini_devin.api.github_oauth_flow import oauth_start_payload
+
+    try:
+        base = str(request.base_url)
+        return oauth_start_payload(base)
+    except RuntimeError as e:
+        raise HTTPException(status_code=501, detail=str(e)) from e
+
+
+@app.get("/api/github/oauth/callback")
+async def github_oauth_callback(request: Request, code: str = "", state: str = ""):
+    from fastapi.responses import HTMLResponse
+
+    from mini_devin.api.github_oauth_flow import oauth_exchange_callback
+
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="code and state are required")
+    try:
+        oauth_exchange_callback(code, state)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    _pm = json.dumps({"type": "github_oauth_done", "state": state})
+    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>GitHub connected</title></head>
+<body><p>GitHub authorization succeeded. You can close this tab and return to Plodder.</p>
+<script>try{{window.opener&&window.opener.postMessage({_pm},'*');}}catch(e){{}}</script>
+</body></html>"""
+    return HTMLResponse(html)
+
+
+@app.get("/api/github/oauth/result")
+async def github_oauth_result(state: str = ""):
+    from mini_devin.api.github_oauth_flow import oauth_consume_result
+
+    if not state:
+        raise HTTPException(status_code=400, detail="state is required")
+    tok = oauth_consume_result(state)
+    if not tok:
+        raise HTTPException(status_code=404, detail="token not ready or already consumed")
+    return {"access_token": tok, "token_type": "bearer"}
 
 # ── GitHub API (token-based) ──────────────────────────────────────────────────
 # All GitHub operations using a Personal Access Token stored per-repo.

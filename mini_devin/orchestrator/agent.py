@@ -92,7 +92,20 @@ def _make_system_prompt() -> str:
             "- Use standard Linux commands (`python3`, `pip3`, etc.).\n"
             "- Never use Windows drive paths (`C:\\\\`, `G:\\\\`)."
         )
-    return _SYSTEM_PROMPT_TEMPLATE.format(os_env_note=os_note)
+    github_note = ""
+    if os.environ.get("GITHUB_TOKEN", "").strip():
+        github_note = (
+            "\n## GitHub (``GITHUB_TOKEN`` is set — use a PR-based workflow)\n"
+            "- On a cloned GitHub repo, **avoid committing large features directly to the default branch** when a review is expected.\n"
+            "- Preferred sequence: ``github`` **create_branch** (e.g. ``plodder/add-health-endpoint``) → implement with ``editor``/``terminal`` → "
+            "**commit** (conventional message, e.g. ``feat: add /health``) → **create_pr** (clear title/body). "
+            'For ``base_branch``, omit it or set ``\"default\"`` so the **GitHub repo default** (``main`` or ``master``) is used.\n'
+            "- Use **get_pr_status** with ``pr_number`` to inspect **mergeable**, **mergeable_state**, and **CI combined status** before asking a human to merge.\n"
+            "- Use **merge_pr** only when your instructions explicitly allow merging; many teams require human approval on GitHub.\n"
+            "- Pass ``repo_path`` as the workspace root (the UI working directory; use ``.`` only if that is the repo root).\n"
+            "- **Auto git push**: if ``auto_git_commit`` + push is enabled, Plodder **skips ``git push`` on the remote default branch** unless you set ``PLODDER_GIT_PUSH_DEFAULT_BRANCH=1`` (local commits still run).\n"
+        )
+    return _SYSTEM_PROMPT_TEMPLATE.format(os_env_note=os_note, github_note=github_note)
 
 
 def _runtime_context_block(working_directory: str | None) -> str:
@@ -143,10 +156,10 @@ _SYSTEM_PROMPT_TEMPLATE = """
 - `browser_fetch` — Fetch a web page (HTTP; no JS console)
 - `browser_playwright` — **Preferred for UI bugs**: real Chromium, DOM outline, console + network + page errors, screenshots
 - `browser_interactive` — Legacy Selenium (use Playwright when available)
-- `github` — GitHub workflows
+- `github` — GitHub: branches, commits, PRs, PR status (CI), merge (see GitHub section below when token is set)
 - `monitor` — Check app health, fetch cloud/docker logs, register for continuous monitoring
 - `env_parity` — Generate Dockerfile/.env.example/docker-compose; diff local vs production env
-
+{github_note}
 ## Important Rules
 - Read a file before editing it (to avoid overwriting changes)
 - Always write COMPLETE file content when using `write_file`
@@ -161,6 +174,59 @@ _SYSTEM_PROMPT_TEMPLATE = """
 - When `terminal` commands fail, fix the command and retry — do NOT give up after one attempt."""
 
 SYSTEM_PROMPT = _make_system_prompt()
+
+
+async def _git_current_branch(cwd: str) -> str | None:
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        "rev-parse",
+        "--abbrev-ref",
+        "HEAD",
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return None
+    name = (out or b"").decode(errors="replace").strip()
+    return name or None
+
+
+async def _git_origin_default_branch(cwd: str) -> str | None:
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        "symbolic-ref",
+        "--quiet",
+        "--short",
+        "refs/remotes/origin/HEAD",
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await proc.communicate()
+    if proc.returncode == 0 and out:
+        full = out.decode(errors="replace").strip()
+        if "/" in full:
+            return full.rsplit("/", 1)[-1]
+        return full or None
+    proc2 = await asyncio.create_subprocess_exec(
+        "git",
+        "remote",
+        "show",
+        "origin",
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    out2, _ = await proc2.communicate()
+    if proc2.returncode != 0 or not out2:
+        return None
+    for line in out2.decode(errors="replace").splitlines():
+        line = line.strip()
+        if line.startswith("HEAD branch:"):
+            return line.split(":", 1)[1].strip() or None
+    return None
 
 
 class Agent:
@@ -885,7 +951,14 @@ PREFER str_replace over write_file when editing existing files.""",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["create_branch", "commit", "create_pr", "automated_workflow"],
+                        "enum": [
+                            "create_branch",
+                            "commit",
+                            "create_pr",
+                            "automated_workflow",
+                            "get_pr_status",
+                            "merge_pr",
+                        ],
                         "description": "The GitHub action to perform",
                     },
                     "branch_name": {
@@ -894,7 +967,7 @@ PREFER str_replace over write_file when editing existing files.""",
                     },
                     "base_branch": {
                         "type": "string",
-                        "description": "Base branch name (default: main)",
+                        "description": 'Base branch for PR / branch-off; omit or use "default" for the GitHub repo default (main/master)',
                     },
                     "commit_message": {
                         "type": "string",
@@ -920,6 +993,29 @@ PREFER str_replace over write_file when editing existing files.""",
                     "repo_path": {
                         "type": "string",
                         "description": "Local repository path (default: .)",
+                    },
+                    "pr_number": {
+                        "type": "integer",
+                        "description": "Pull request number (get_pr_status, merge_pr)",
+                    },
+                    "merge_method": {
+                        "type": "string",
+                        "enum": ["squash", "merge", "rebase"],
+                        "description": "For merge_pr (default: squash)",
+                    },
+                    "draft": {
+                        "type": "boolean",
+                        "description": "For create_pr: open as draft (requires GitHub + token scopes)",
+                    },
+                    "assignees": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "GitHub usernames to assign after create_pr",
+                    },
+                    "linked_issues": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Issue numbers; appends Closes #n to PR body",
                     },
                 },
                 "required": ["action"],
@@ -1430,16 +1526,41 @@ PREFER str_replace over write_file when editing existing files.""",
                 action = arguments.get("action", "")
                 
                 from ..tools.github import GitHubToolInput, GitHubAction
+                _pn = arguments.get("pr_number")
+                pr_num: int | None
+                try:
+                    pr_num = int(_pn) if _pn is not None else None
+                except (TypeError, ValueError):
+                    pr_num = None
+                _assign = arguments.get("assignees")
+                if _assign is not None and not isinstance(_assign, list):
+                    _assign = None
+                _linked = arguments.get("linked_issues")
+                _linked_nums: list[int] | None = None
+                if isinstance(_linked, list):
+                    tmp: list[int] = []
+                    for x in _linked:
+                        try:
+                            tmp.append(int(x))
+                        except (TypeError, ValueError):
+                            pass
+                    if tmp:
+                        _linked_nums = tmp
                 input_data = GitHubToolInput(
                     action=GitHubAction(action),
                     branch_name=arguments.get("branch_name"),
-                    base_branch=arguments.get("base_branch", "main"),
+                    base_branch=arguments.get("base_branch"),
                     commit_message=arguments.get("commit_message"),
                     files=arguments.get("files"),
                     pr_title=arguments.get("pr_title"),
                     pr_description=arguments.get("pr_description"),
                     task_description=arguments.get("task_description"),
-                    repo_path=arguments.get("repo_path", self.working_directory or ".")
+                    pr_number=pr_num,
+                    merge_method=arguments.get("merge_method") or "squash",
+                    draft=bool(arguments.get("draft", False)),
+                    assignees=[str(x) for x in _assign] if _assign else None,
+                    linked_issues=_linked_nums,
+                    repo_path=arguments.get("repo_path", self.working_directory or "."),
                 )
                 
                 result = await tool.execute(input_data)
@@ -3799,7 +3920,6 @@ Call a tool (editor or terminal) immediately as your first action."""
 
     async def _auto_commit_changes(self, task: TaskState) -> None:
         """Automatically commit and optionally push changes after task completion."""
-        import os
         from pathlib import Path
         cwd = self.working_directory
         git_dir = Path(cwd) / ".git"
@@ -3823,16 +3943,38 @@ Call a tool (editor or terminal) immediately as your first action."""
                 )
                 await proc.communicate()
 
-            # Build commit message from task description
+            # Build commit message from task description (use -F file so quotes/newlines cannot break git)
+            import tempfile
+
             short_desc = (task.goal.description[:72] if task.goal.description else "task")
             commit_msg = f"feat: {short_desc}"
-            proc = await asyncio.create_subprocess_shell(
-                f'git commit -m "{commit_msg}"',
-                cwd=cwd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
+            msg_path: str | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    "w",
+                    encoding="utf-8",
+                    suffix=".gitmsg",
+                    delete=False,
+                    newline="\n",
+                ) as tf:
+                    tf.write(commit_msg)
+                    msg_path = tf.name
+                proc = await asyncio.create_subprocess_exec(
+                    "git",
+                    "commit",
+                    "-F",
+                    msg_path,
+                    cwd=cwd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await proc.communicate()
+            finally:
+                if msg_path:
+                    try:
+                        os.unlink(msg_path)
+                    except OSError:
+                        pass
             if proc.returncode == 0:
                 self._log(f"Auto-committed changes: {commit_msg}")
                 await self._trigger_callback("on_message", f"✅ **Git**: Committed — `{commit_msg}`", is_token=False)
@@ -3843,21 +3985,46 @@ Call a tool (editor or terminal) immediately as your first action."""
                 else:
                     self._log(f"Auto-commit warning: {out[:200]}")
 
-            # Push if enabled and remote exists
+            # Push if enabled (skip pushing default branch unless opted in — PR-first GitHub flow)
             if self.git_push:
-                proc = await asyncio.create_subprocess_shell(
-                    "git push",
-                    cwd=cwd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, stderr = await proc.communicate()
-                if proc.returncode == 0:
-                    self._log("Auto-pushed to remote")
-                    await self._trigger_callback("on_message", "✅ **Git**: Pushed to remote", is_token=False)
+                allow_default_push = os.environ.get(
+                    "PLODDER_GIT_PUSH_DEFAULT_BRANCH", ""
+                ).strip().lower() in ("1", "true", "yes", "on")
+                cur = await _git_current_branch(cwd)
+                origin_def = await _git_origin_default_branch(cwd)
+                if (
+                    not allow_default_push
+                    and cur
+                    and origin_def
+                    and cur == origin_def
+                ):
+                    hint = (
+                        "Auto-push skipped: you are on the remote default branch. "
+                        "Use the `github` tool (create_branch → commit → create_pr), "
+                        "or set env `PLODDER_GIT_PUSH_DEFAULT_BRANCH=1` to allow push here."
+                    )
+                    self._log(hint)
+                    await self._trigger_callback(
+                        "on_message",
+                        f"⚠️ **Git**: {hint}",
+                        is_token=False,
+                    )
                 else:
-                    err = (stderr or b"").decode()
-                    self._log(f"Auto-push failed: {err[:200]}")
+                    proc = await asyncio.create_subprocess_shell(
+                        "git push",
+                        cwd=cwd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    stdout, stderr = await proc.communicate()
+                    if proc.returncode == 0:
+                        self._log("Auto-pushed to remote")
+                        await self._trigger_callback(
+                            "on_message", "✅ **Git**: Pushed to remote", is_token=False
+                        )
+                    else:
+                        err = (stderr or b"").decode()
+                        self._log(f"Auto-push failed: {err[:200]}")
         except Exception as e:
             self._log(f"Auto-commit failed: {e}")
     
