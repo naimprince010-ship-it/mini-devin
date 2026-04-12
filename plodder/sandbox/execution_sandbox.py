@@ -43,6 +43,9 @@ class ExecutionSandbox:
         alpine_image: str = "alpine:3.19",
         cpp_image: str = "gcc:12-bookworm",
         typescript_image: str = "node:22-alpine",
+        java_image: str = "eclipse-temurin:21-jdk-alpine",
+        php_image: str = "php:8.3-cli-alpine",
+        dotnet_image: str = "mcr.microsoft.com/dotnet/sdk:8.0-alpine",
         default_timeout_sec: int = 60,
     ) -> None:
         self.python_image = python_image
@@ -52,6 +55,9 @@ class ExecutionSandbox:
         self.alpine_image = alpine_image
         self.cpp_image = cpp_image
         self.typescript_image = typescript_image
+        self.java_image = java_image
+        self.php_image = php_image
+        self.dotnet_image = dotnet_image
         self.default_timeout_sec = default_timeout_sec
         try:
             import docker  # type: ignore
@@ -190,9 +196,13 @@ class ExecutionSandbox:
             alpine_image=self.alpine_image,
             cpp_image=self.cpp_image,
             typescript_image=self.typescript_image,
+            java_image=self.java_image,
+            php_image=self.php_image,
+            dotnet_image=self.dotnet_image,
             docker_client=self._docker,
             prefer_generic_if_image_missing=True,
             auto_pull_missing=auto_pull,
+            workspace_files=files,
         )
         result = self._run_container(
             image=planned.image,
@@ -233,6 +243,9 @@ class ExecutionSandbox:
             python_image=self.python_image,
             node_image=self.node_image,
             alpine_image=self.alpine_image,
+            java_image=self.java_image,
+            php_image=self.php_image,
+            dotnet_image=self.dotnet_image,
         )
         return self._run_container(
             image=image,

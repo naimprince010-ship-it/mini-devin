@@ -68,6 +68,8 @@ LANGUAGE_KEY_HINTS: dict[str, str] = {
     "cplusplus": "cpp",
     "sh": "shell",
     "bash": "shell",
+    "cs": "csharp",
+    "fs": "fsharp",
 }
 
 # Slugs that align with ``ToolchainSpec.language_id`` / ``infer`` hints (image override allowed)
@@ -81,6 +83,10 @@ _TOOLCHAIN_SLUGS: frozenset[str] = frozenset(
         "shell",
         "c",
         "cpp",
+        "java",
+        "php",
+        "csharp",
+        "fsharp",
     }
 )
 
@@ -118,6 +124,8 @@ def _slug_matches_toolchain(slug: str, language_id: str) -> bool:
         "bash": "shell",
         "sh": "shell",
         "cplusplus": "cpp",
+        "cs": "csharp",
+        "fs": "fsharp",
     }
     return alias.get(slug) == language_id
 
@@ -164,10 +172,14 @@ def plan_container_run(
     alpine_image: str,
     cpp_image: str,
     typescript_image: str = "node:22-alpine",
+    java_image: str = "eclipse-temurin:21-jdk-alpine",
+    php_image: str = "php:8.3-cli-alpine",
+    dotnet_image: str = "mcr.microsoft.com/dotnet/sdk:8.0-alpine",
     docker_client: Any | None = None,
     prefer_generic_if_image_missing: bool = True,
     auto_pull_missing: bool = False,
     pull_fn: Callable[[str], None] | None = None,
+    workspace_files: dict[str, str] | None = None,
 ) -> PlannedContainer:
     from plodder.sandbox.toolchain_detect import build_toolchain_spec
 
@@ -187,7 +199,19 @@ def plan_container_run(
         alpine_image=alpine_image,
         cpp_image=cpp_image,
         typescript_image=typescript_image,
+        java_image=java_image,
+        php_image=php_image,
+        dotnet_image=dotnet_image,
+        workspace_files=workspace_files,
     )
+    if spec.language_id == "rust" and workspace_files and any(
+        k.replace("\\", "/").endswith("Cargo.toml") for k in workspace_files
+    ):
+        notes.append("Rust: using `cargo run` (set network:true if crates.io fetch fails).")
+    if spec.language_id in ("csharp", "fsharp"):
+        notes.append(
+            "C#/F# uses `dotnet new` + `dotnet run` (NuGet). If restore fails, use sandbox_run with network:true."
+        )
     slug = _slug(str(language_key)) if language_key else ""
     mapped = image_for_language_key(language_key)
     image = spec.image

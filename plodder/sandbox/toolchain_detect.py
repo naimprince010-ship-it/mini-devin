@@ -23,6 +23,36 @@ def _posix(rel: str) -> str:
     return rel.replace("\\", "/")
 
 
+def _rust_cargo_argv(rel: str, workspace_files: dict[str, str] | None) -> list[str] | None:
+    """If a Cargo workspace exists, run ``cargo run`` from that crate root; else None."""
+    if not workspace_files:
+        return None
+    reln = _posix(rel).lstrip("/")
+    manifests: list[str] = []
+    for k in workspace_files:
+        kn = _posix(k).lstrip("/")
+        if kn == "Cargo.toml" or kn.endswith("/Cargo.toml"):
+            manifests.append(kn)
+    if not manifests:
+        return None
+
+    def _parent_len(m: str) -> int:
+        p = str(PurePosixPath(m).parent)
+        return 0 if p in (".", "") else len(p)
+
+    matches: list[str] = []
+    for m in manifests:
+        parent = str(PurePosixPath(m).parent)
+        prefix = "" if parent in (".", "") else parent.replace("\\", "/")
+        if not prefix or reln == prefix or reln.startswith(prefix + "/"):
+            matches.append(m)
+    chosen = max(matches, key=_parent_len) if matches else manifests[0]
+
+    crate_dir = str(PurePosixPath(chosen).parent)
+    cwd = "/workspace" if crate_dir in (".", "") else f"/workspace/{crate_dir}"
+    return ["sh", "-c", f"cd {cwd} && cargo run --quiet"]
+
+
 def infer_language_from_entry(entry: str, *, hint: str | None) -> str:
     if hint and hint.strip().lower() not in ("", "auto"):
         return hint.strip().lower()
@@ -43,6 +73,14 @@ def infer_language_from_entry(entry: str, *, hint: str | None) -> str:
         return "cpp"
     if suf == ".sh":
         return "shell"
+    if suf == ".java":
+        return "java"
+    if suf == ".php":
+        return "php"
+    if suf == ".cs":
+        return "csharp"
+    if suf == ".fs":
+        return "fsharp"
     return "python"
 
 
@@ -57,6 +95,10 @@ def build_toolchain_spec(
     alpine_image: str = "alpine:3.19",
     cpp_image: str = "gcc:12-bookworm",
     typescript_image: str = "node:22-alpine",
+    java_image: str = "eclipse-temurin:21-jdk-alpine",
+    php_image: str = "php:8.3-cli-alpine",
+    dotnet_image: str = "mcr.microsoft.com/dotnet/sdk:8.0-alpine",
+    workspace_files: dict[str, str] | None = None,
 ) -> ToolchainSpec:
     rel = _posix(entry).lstrip("/")
     lang = infer_language_from_entry(rel, hint=language_hint)
@@ -75,7 +117,9 @@ def build_toolchain_spec(
     if lang == "go":
         return ToolchainSpec("go", go_image, ["go", "run", w])
     if lang == "rust":
-        # Single-crate file: compile+run in one shot.
+        cargo_argv = _rust_cargo_argv(rel, workspace_files)
+        if cargo_argv is not None:
+            return ToolchainSpec("rust", rust_image, cargo_argv)
         return ToolchainSpec(
             "rust",
             rust_image,
@@ -95,6 +139,43 @@ def build_toolchain_spec(
             cpp_image,
             ["sh", "-c", f"g++ -std=c++17 -O2 -Wall -o /tmp/a.out {w} && /tmp/a.out"],
         )
+    if lang == "java":
+        p = PurePosixPath(rel)
+        stem = p.stem
+        parent = p.parent
+        wdir = f"/workspace/{parent}".rstrip("/") if str(parent) not in (".", "") else "/workspace"
+        return ToolchainSpec(
+            "java",
+            java_image,
+            ["sh", "-c", f"javac {w} && java -cp {wdir} {stem}"],
+        )
+    if lang == "php":
+        return ToolchainSpec("php", php_image, ["php", w])
+    if lang == "csharp":
+        # First run hits NuGet — use sandbox_run with network:true when needed.
+        return ToolchainSpec(
+            "csharp",
+            dotnet_image,
+            [
+                "sh",
+                "-c",
+                "rm -rf /tmp/plcsharp && mkdir -p /tmp/plcsharp && "
+                "dotnet new console -o /tmp/plcsharp -n app --force && "
+                f"cp {w} /tmp/plcsharp/Program.cs && dotnet run --project /tmp/plcsharp",
+            ],
+        )
+    if lang == "fsharp":
+        return ToolchainSpec(
+            "fsharp",
+            dotnet_image,
+            [
+                "sh",
+                "-c",
+                "rm -rf /tmp/plfsharp && mkdir -p /tmp/plfsharp && "
+                "dotnet new console -lang F# -o /tmp/plfsharp -n app --force && "
+                f"cp {w} /tmp/plfsharp/Program.fs && dotnet run --project /tmp/plfsharp",
+            ],
+        )
     # default
     return ToolchainSpec("python", python_image, ["python", w])
 
@@ -104,23 +185,66 @@ def pick_default_entry(files: dict[str, str]) -> str | None:
     if not files:
         return None
     keys = sorted(files.keys(), key=lambda k: (k.count("/"), k))
-    for prefer in ("main.py", "app.py", "index.js", "index.mjs", "main.ts", "src/main.py"):
+    for prefer in (
+        "main.py",
+        "app.py",
+        "index.js",
+        "index.mjs",
+        "main.ts",
+        "src/main.py",
+        "Program.cs",
+        "Program.fs",
+        "main.java",
+        "index.php",
+    ):
         for k in keys:
             if k.replace("\\", "/").endswith(prefer):
                 return k.replace("\\", "/")
     # first python or js
     for k in keys:
         low = k.lower()
-        if low.endswith((".py", ".js", ".mjs", ".ts", ".go", ".rs", ".sh", ".c", ".cpp", ".cc")):
+        if low.endswith(
+            (
+                ".py",
+                ".js",
+                ".mjs",
+                ".ts",
+                ".go",
+                ".rs",
+                ".sh",
+                ".c",
+                ".cpp",
+                ".cc",
+                ".java",
+                ".php",
+                ".cs",
+                ".fs",
+            )
+        ):
             return k.replace("\\", "/")
     return keys[0].replace("\\", "/")
 
 
-def image_for_shell_language(language: str | None, *, python_image: str, node_image: str, alpine_image: str) -> str:
+def image_for_shell_language(
+    language: str | None,
+    *,
+    python_image: str,
+    node_image: str,
+    alpine_image: str,
+    java_image: str = "eclipse-temurin:21-jdk-alpine",
+    php_image: str = "php:8.3-cli-alpine",
+    dotnet_image: str = "mcr.microsoft.com/dotnet/sdk:8.0-alpine",
+) -> str:
     """Pick a base image that likely contains toolchain binaries (npm, pip, sh)."""
     L = (language or "auto").lower()
     if L in ("javascript", "typescript", "node", "js", "ts"):
         return node_image
     if L in ("python", "py", "pip"):
         return python_image
+    if L in ("java",):
+        return java_image
+    if L in ("php",):
+        return php_image
+    if L in ("csharp", "cs", "dotnet", "fsharp", "fs"):
+        return dotnet_image
     return alpine_image

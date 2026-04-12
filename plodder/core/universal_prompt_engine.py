@@ -282,7 +282,7 @@ class UniversalPromptEngine:
 | `fs_read` | `path` | Read a UTF-8 text file. |
 | `fs_write` | `path`, `content` | Create/overwrite a file (creates parent dirs). |
 | `fs_delete` | `path` | Delete a file or empty/non-empty directory tree. |
-| `sandbox_run` | `entry` (required), `language` (optional: `auto`/`python`/`javascript`/`typescript`/…), `language_key` (optional: doc slug e.g. `rust`/`python` — selects Docker image + hints), `network` (bool, default false) | Snapshot workspace text files into the sandbox and run `entry` with an **auto-detected** Docker image; `language_key` aligns with indexed docs metadata. |
+| `sandbox_run` | `entry` (required), `language` (optional), `language_key` (optional doc slug), `network` (bool, default false) | Auto-run by extension/hint: Python/JS/TS/Go/Rust (`cargo run` if `Cargo.toml` present), C/C++, **Java**, **PHP**, **C# / F#** (`dotnet new` + run — often needs `network: true` for NuGet). |
 | `sandbox_shell` | `argv` (list of strings), `language_hint` (optional), `network` (bool) | Run a shell command in the sandbox with the workspace snapshot (e.g. `["sh","-c","cd /workspace && npm install"]`). Use `network: true` for installs. |
 
 **Notes:** `sandbox_*` requires Docker. For `sandbox_shell`, `argv` runs as the container entrypoint; working directory is `/workspace`."""

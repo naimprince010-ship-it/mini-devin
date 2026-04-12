@@ -236,6 +236,7 @@ class AgentSessionDriver(UnifiedSessionDriver):
             "on",
         )
         entry = entry_raw.replace("\\", "/").lstrip("/")
+        snap = self._ws.snapshot_text_files()
         planned = plan_container_run(
             entry=entry,
             language_hint=language,
@@ -247,9 +248,13 @@ class AgentSessionDriver(UnifiedSessionDriver):
             alpine_image=self._sandbox.alpine_image,
             cpp_image=self._sandbox.cpp_image,
             typescript_image=self._sandbox.typescript_image,
+            java_image=self._sandbox.java_image,
+            php_image=self._sandbox.php_image,
+            dotnet_image=self._sandbox.dotnet_image,
             docker_client=self._sandbox.docker_client,
             prefer_generic_if_image_missing=True,
             auto_pull_missing=auto_pull,
+            workspace_files=snap if snap else None,
         )
         client = self._sandbox.docker_client
         present = docker_image_exists(client, planned.image) if client is not None else True
