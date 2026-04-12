@@ -101,6 +101,10 @@ export default function ProjectPlannerPanel() {
   const [memSearchQ, setMemSearchQ] = useState('')
   const [memSearchResults, setMemSearchResults] = useState<any[]>([])
 
+  // Repo → project memory (scan / clone on server)
+  const [ingestInput, setIngestInput] = useState('')
+  const [ingestBusy, setIngestBusy] = useState(false)
+
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 3500) }
 
   // ── Data fetching ─────────────────────────────────────────────────────────
@@ -266,6 +270,44 @@ export default function ProjectPlannerPanel() {
       body: JSON.stringify({ project_id: selectedProject.id, query: memSearchQ }),
     })
     if (res.ok) setMemSearchResults((await res.json()).results || [])
+  }
+
+  const ingestRepoIntoMemory = async () => {
+    if (!selectedProject || !ingestInput.trim()) return
+    const raw = ingestInput.trim()
+    const isUrl = /^https?:\/\//i.test(raw) || raw.startsWith('git@')
+    setIngestBusy(true)
+    const ac = new AbortController()
+    const tid = window.setTimeout(() => ac.abort(), 300_000)
+    try {
+      const body = isUrl ? { repo_url: raw } : { repo_path: raw }
+      const res = await fetch(`${API}/projects/${selectedProject.id}/ingest-repo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: ac.signal,
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const n = typeof data.paths_indexed === 'number' ? data.paths_indexed : 0
+        showToast(`Repository scanned — ${n} paths indexed into project memory`)
+        setIngestInput('')
+        fetchMemory(selectedProject.id)
+      } else {
+        let msg = res.statusText
+        try {
+          const err = await res.json()
+          msg = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail || err)
+        } catch { /* ignore */ }
+        showToast(String(msg).slice(0, 240))
+      }
+    } catch (e: unknown) {
+      const name = e instanceof Error ? e.name : ''
+      showToast(name === 'AbortError' ? 'Timed out — large repos can take several minutes' : 'Could not ingest repository')
+    } finally {
+      window.clearTimeout(tid)
+      setIngestBusy(false)
+    }
   }
 
   // ── Render helpers ────────────────────────────────────────────────────────
@@ -498,6 +540,34 @@ export default function ProjectPlannerPanel() {
                     </div>
                   </div>
                 )}
+
+                {/* Scan repository → long-term project memory */}
+                <div className="bg-[#0f1410] border border-[#1e3a2e] rounded p-3 space-y-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-[#00ff99]/90">
+                    Scan repository → memory
+                  </p>
+                  <p className="text-[10px] text-gray-500 leading-relaxed">
+                    Paste a <span className="text-gray-400">GitHub HTTPS or git@ URL</span> (server clones shallowly, scans README/manifests + file list, saves one memory entry)
+                    or an <span className="text-gray-400">absolute path on this server</span> (e.g. a session workspace folder from Browse).
+                  </p>
+                  <textarea
+                    className="w-full bg-[#0a0a0a] border border-[#333] text-xs text-[#f0f0f0] caret-[#00ff99] rounded px-2 py-1.5 h-16 resize-none placeholder-[#525252] outline-none"
+                    placeholder="https://github.com/org/repo.git  — or —  /path/on/server/to/clone"
+                    value={ingestInput}
+                    onChange={e => setIngestInput(e.target.value)}
+                    disabled={ingestBusy}
+                  />
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={ingestRepoIntoMemory}
+                      disabled={ingestBusy || !ingestInput.trim()}
+                      className="text-xs px-3 py-1.5 rounded font-semibold bg-[#00ff99]/15 text-[#00ff99] border border-[#00ff99]/40 hover:bg-[#00ff99]/25 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {ingestBusy ? 'Scanning…' : 'Scan & save to memory'}
+                    </button>
+                  </div>
+                </div>
 
                 {/* Semantic search */}
                 <div className="flex gap-2">

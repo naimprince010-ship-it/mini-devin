@@ -1541,9 +1541,16 @@ class MemorySearchRequest(BaseModel):
 
 
 class IngestRepoRequest(BaseModel):
-    """Absolute path to a cloned repo on the server (must be under agent-workspace or the app checkout)."""
+    """
+    Provide exactly one of:
+    - ``repo_path``: absolute path on the server (agent-workspace, checkout, or REPO_INGEST_EXTRA_ROOT).
+    - ``repo_url``: https:// or git@… URL — server shallow-clones into agent-workspace, ingests, then deletes
+      unless ``keep_clone`` is true.
+    """
 
-    repo_path: str
+    repo_path: Optional[str] = None
+    repo_url: Optional[str] = None
+    keep_clone: bool = False
 
 
 @app.post("/api/projects")
@@ -1654,22 +1661,62 @@ async def ingest_project_repo_snapshot(project_id: str, req: IngestRepoRequest):
     if not pm.get_project(project_id):
         raise HTTPException(status_code=404, detail="Project not found")
 
-    root = Path(req.repo_path.strip()).expanduser()
-    try:
-        root = root.resolve()
-    except OSError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid path: {e}") from e
-
-    if not root.is_dir():
-        raise HTTPException(status_code=400, detail="repo_path is not a directory")
-    if not is_path_allowed_for_repo_ingest(root):
+    rp = (req.repo_path or "").strip()
+    ru = (req.repo_url or "").strip()
+    if bool(rp) == bool(ru):
         raise HTTPException(
-            status_code=403,
-            detail=(
-                "repo_path must be inside the agent workspace, the Mini-Devin checkout, "
-                "or REPO_INGEST_EXTRA_ROOT (see server docs)."
-            ),
+            status_code=400,
+            detail="Send exactly one of repo_path (server folder) or repo_url (Git clone URL).",
         )
+
+    clone_dir: str | None = None
+    if ru:
+        if not _is_git_remote_url(ru):
+            raise HTTPException(status_code=400, detail="repo_url must be a git HTTPS or SSH remote URL")
+        _mini_devin_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        _workspaces_root = os.path.join(os.path.dirname(_mini_devin_root), "agent-workspace")
+        os.makedirs(_workspaces_root, exist_ok=True)
+        clone_dir = os.path.join(_workspaces_root, "project-ingest", project_id, str(uuid.uuid4())[:10])
+        if os.path.isdir(clone_dir):
+            shutil.rmtree(clone_dir, ignore_errors=True)
+        os.makedirs(clone_dir, exist_ok=True)
+        clone_url = _git_clone_url_with_token(ru)
+        clone_timeout = int(os.getenv("GIT_CLONE_TIMEOUT_SEC", "240"))
+        try:
+            r = subprocess.run(
+                ["git", "clone", "--depth", "1", clone_url, "."],
+                cwd=clone_dir,
+                capture_output=True,
+                text=True,
+                timeout=clone_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            shutil.rmtree(clone_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=400,
+                detail="git clone timed out. Try a smaller repo or increase GIT_CLONE_TIMEOUT_SEC.",
+            ) from None
+        if r.returncode != 0:
+            shutil.rmtree(clone_dir, ignore_errors=True)
+            err = (r.stderr or r.stdout or "").strip()[:1200]
+            raise HTTPException(status_code=400, detail=f"git clone failed: {err}")
+        root = Path(clone_dir).resolve()
+    else:
+        root = Path(rp).expanduser()
+        try:
+            root = root.resolve()
+        except OSError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid path: {e}") from e
+        if not root.is_dir():
+            raise HTTPException(status_code=400, detail="repo_path is not a directory")
+        if not is_path_allowed_for_repo_ingest(root):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "repo_path must be inside the agent workspace, the Mini-Devin checkout, "
+                    "or REPO_INGEST_EXTRA_ROOT (see server docs)."
+                ),
+            )
 
     data = build_repo_digest(root)
     entry = pm.add_entry(
@@ -1680,12 +1727,26 @@ async def ingest_project_repo_snapshot(project_id: str, req: IngestRepoRequest):
         tags=["auto-ingest", "repo-snapshot"],
         importance=8,
     )
-    return {
+    if ru:
+        try:
+            pm.update_project(project_id, repo_url=ru)
+        except Exception:
+            pass
+    if clone_dir and not req.keep_clone:
+        shutil.rmtree(clone_dir, ignore_errors=True)
+
+    out: dict = {
         "entry": entry.to_dict(),
         "paths_indexed": data["paths_count"],
         "manifest_files": data["manifest_files_used"],
         "warnings": data["warnings"],
     }
+    if ru:
+        out["source"] = "repo_url"
+        out["clone_removed"] = not req.keep_clone
+    else:
+        out["source"] = "repo_path"
+    return out
 
 
 @app.delete("/api/memory/{entry_id}")
