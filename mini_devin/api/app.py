@@ -70,6 +70,7 @@ load_dotenv(os.path.join(_REPO_ROOT, ".env"), override=True)
 load_dotenv(override=True)  # optional: cwd `.env` wins for local overrides
 
 from .websocket import ConnectionManager, WebSocketMessage, MessageType
+from ..auth.routes import router as auth_router
 from ..bridge.manager import get_bridge_manager
 from ..database.config import init_db
 from ..sessions.db_manager import DatabaseSessionManager
@@ -313,16 +314,19 @@ class AppApiPrefixMiddleware:
         await self.app(scope, receive, send)
 
 
-# Configure CORS - allow all origins for production
+# CORS: Bearer tokens do not need cookies; avoid allow_origins=["*"] + allow_credentials=True
+# (browsers reject that combination on cross-origin requests).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 # Outermost: normalize /app/api → /api before routing (register after CORS so this runs first on the request)
 app.add_middleware(AppApiPrefixMiddleware)
+
+app.include_router(auth_router, prefix="/api")
 
 
 @app.get("/")

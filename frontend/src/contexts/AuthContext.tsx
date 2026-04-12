@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { User, LoginRequest, RegisterRequest, TokenResponse } from '../types';
 import { getApiBase } from '../config/apiBase';
+import { readApiErrorMessage } from '../config/apiErrors';
 
 interface AuthContextType {
   user: User | null;
@@ -47,8 +48,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
-      throw new Error(errorData.detail || `HTTP ${response.status}`);
+      const msg = await readApiErrorMessage(response, `HTTP ${response.status}`);
+      throw new Error(msg);
     }
 
     return response.json();
@@ -94,18 +95,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: 'Login failed' }));
-        throw new Error(errorData.detail || 'Login failed');
+        const msg = await readApiErrorMessage(response, 'Login failed');
+        throw new Error(msg);
       }
 
       const tokenData: TokenResponse = await response.json();
       localStorage.setItem(TOKEN_KEY, tokenData.access_token);
       setToken(tokenData.access_token);
 
-      const userData = await fetch(`${getApiBase()}/auth/me`, {
-        headers: { 'Authorization': `Bearer ${tokenData.access_token}` },
-      }).then(r => r.json());
-
+      const meRes = await fetch(`${getApiBase()}/auth/me`, {
+        headers: { Authorization: `Bearer ${tokenData.access_token}` },
+      });
+      if (!meRes.ok) {
+        const msg = await readApiErrorMessage(meRes, 'Could not load profile after login');
+        throw new Error(msg);
+      }
+      const userData: User = await meRes.json();
       setUser(userData);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Login failed');
@@ -127,8 +132,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: 'Registration failed' }));
-        throw new Error(errorData.detail || 'Registration failed');
+        const msg = await readApiErrorMessage(response, 'Registration failed');
+        throw new Error(msg);
       }
 
       await login({ username: data.username, password: data.password });
