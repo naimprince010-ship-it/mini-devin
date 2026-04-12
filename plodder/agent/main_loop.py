@@ -22,6 +22,7 @@ from plodder.orchestration.session_driver import (
     UnifiedSessionResult,
 )
 from plodder.sandbox.container_manager import docker_image_exists, plan_container_run, pull_suggestion
+from plodder.sandbox.toolchain_detect import resolve_sql_url_from_env
 from plodder.sandbox.execution_sandbox import ExecutionSandbox
 from plodder.workspace.session_workspace import SessionWorkspace
 
@@ -251,6 +252,11 @@ class AgentSessionDriver(UnifiedSessionDriver):
             java_image=self._sandbox.java_image,
             php_image=self._sandbox.php_image,
             dotnet_image=self._sandbox.dotnet_image,
+            maven_image=self._sandbox.maven_image,
+            gradle_image=self._sandbox.gradle_image,
+            composer_image=self._sandbox.composer_image,
+            postgres_client_image=self._sandbox.postgres_client_image,
+            sql_url=resolve_sql_url_from_env(),
             docker_client=self._sandbox.docker_client,
             prefer_generic_if_image_missing=True,
             auto_pull_missing=auto_pull,

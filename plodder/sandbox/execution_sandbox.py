@@ -46,6 +46,10 @@ class ExecutionSandbox:
         java_image: str = "eclipse-temurin:21-jdk-alpine",
         php_image: str = "php:8.3-cli-alpine",
         dotnet_image: str = "mcr.microsoft.com/dotnet/sdk:8.0-alpine",
+        maven_image: str = "maven:3.9.9-eclipse-temurin-21-alpine",
+        gradle_image: str = "gradle:8.10.2-jdk21-alpine",
+        composer_image: str = "composer:2",
+        postgres_client_image: str = "postgres:16-alpine",
         default_timeout_sec: int = 60,
     ) -> None:
         self.python_image = python_image
@@ -58,6 +62,10 @@ class ExecutionSandbox:
         self.java_image = java_image
         self.php_image = php_image
         self.dotnet_image = dotnet_image
+        self.maven_image = maven_image
+        self.gradle_image = gradle_image
+        self.composer_image = composer_image
+        self.postgres_client_image = postgres_client_image
         self.default_timeout_sec = default_timeout_sec
         try:
             import docker  # type: ignore
@@ -96,14 +104,16 @@ class ExecutionSandbox:
                 tar.addfile(info, io.BytesIO(data))
         tar_bytes = tar_stream.getvalue()
 
-        container = self._docker.containers.create(
-            image,
-            command=command,
-            working_dir=workdir,
-            network_mode=network_mode,
-            mem_limit="512m",
-            detach=True,
-        )
+        create_kw: dict[str, Any] = {
+            "command": command,
+            "working_dir": workdir,
+            "network_mode": network_mode,
+            "mem_limit": "512m",
+            "detach": True,
+        }
+        if environment:
+            create_kw["environment"] = environment
+        container = self._docker.containers.create(image, **create_kw)
         cid = container.id
         container.put_archive(workdir, tar_bytes)
         container.start()
@@ -178,6 +188,7 @@ class ExecutionSandbox:
         notes (``docker pull …``) and optionally a generic ``buildpack-deps`` fallback.
         """
         from plodder.sandbox.container_manager import plan_container_run
+        from plodder.sandbox.toolchain_detect import resolve_sql_url_from_env
 
         auto_pull = os.environ.get("PLODDER_DOCKER_AUTO_PULL", "").strip().lower() in (
             "1",
@@ -199,17 +210,24 @@ class ExecutionSandbox:
             java_image=self.java_image,
             php_image=self.php_image,
             dotnet_image=self.dotnet_image,
+            maven_image=self.maven_image,
+            gradle_image=self.gradle_image,
+            composer_image=self.composer_image,
+            postgres_client_image=self.postgres_client_image,
+            sql_url=resolve_sql_url_from_env(),
             docker_client=self._docker,
             prefer_generic_if_image_missing=True,
             auto_pull_missing=auto_pull,
             workspace_files=files,
         )
+        env = {k: v for k, v in planned.container_env} if planned.container_env else None
         result = self._run_container(
             image=planned.image,
             command=planned.argv,
             files=files,
             timeout_sec=timeout_sec,
             network_mode="bridge" if network else "none",
+            environment=env,
         )
         if planned.notes:
             prefix = "\n".join(planned.notes) + "\n"
@@ -246,6 +264,7 @@ class ExecutionSandbox:
             java_image=self.java_image,
             php_image=self.php_image,
             dotnet_image=self.dotnet_image,
+            postgres_client_image=self.postgres_client_image,
         )
         return self._run_container(
             image=image,

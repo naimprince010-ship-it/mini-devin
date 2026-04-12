@@ -282,7 +282,7 @@ class UniversalPromptEngine:
 | `fs_read` | `path` | Read a UTF-8 text file. |
 | `fs_write` | `path`, `content` | Create/overwrite a file (creates parent dirs). |
 | `fs_delete` | `path` | Delete a file or empty/non-empty directory tree. |
-| `sandbox_run` | `entry` (required), `language` (optional), `language_key` (optional doc slug), `network` (bool, default false) | Auto-run by extension/hint: Python/JS/TS/Go/Rust (`cargo run` if `Cargo.toml` present), C/C++, **Java**, **PHP**, **C# / F#** (`dotnet new` + run — often needs `network: true` for NuGet). |
+| `sandbox_run` | `entry` (required), `language` (optional), `language_key` (optional doc slug), `network` (bool, default false) | Auto-run by extension/hint: Python/JS/TS/Go/Rust (`cargo run` if `Cargo.toml` present), C/C++, **Java** (Maven `package` / Gradle `test` when `pom.xml` / `build.gradle` present, else `javac`), **PHP** (`composer install` when `composer.json` present), **SQL** (`.sql` → `psql -f` when host sets `SANDBOX_SQL_URL` or non-SQLite `DATABASE_URL`; use `network: true` if the DB is not reachable from the container), **C# / F#** (`dotnet new` + run — often needs `network: true` for NuGet). |
 | `sandbox_shell` | `argv` (list of strings), `language_hint` (optional), `network` (bool) | Run a shell command in the sandbox with the workspace snapshot (e.g. `["sh","-c","cd /workspace && npm install"]`). Use `network: true` for installs. |
 
 **Notes:** `sandbox_*` requires Docker. For `sandbox_shell`, `argv` runs as the container entrypoint; working directory is `/workspace`."""

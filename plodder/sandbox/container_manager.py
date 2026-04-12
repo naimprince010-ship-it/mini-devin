@@ -57,6 +57,7 @@ LANGUAGE_KEY_IMAGES: dict[str, str] = {
     "docker": "docker:24-cli",
     "cmake": "kitware/cmake:3.28-debian",
     "ziglang": "ziglang/zig:0.11.0-alpine",
+    "sql": "postgres:16-alpine",
 }
 
 # Slug → ``language_hint`` for ``build_toolchain_spec`` (supported runtimes only)
@@ -87,6 +88,7 @@ _TOOLCHAIN_SLUGS: frozenset[str] = frozenset(
         "php",
         "csharp",
         "fsharp",
+        "sql",
     }
 )
 
@@ -126,6 +128,7 @@ def _slug_matches_toolchain(slug: str, language_id: str) -> bool:
         "cplusplus": "cpp",
         "cs": "csharp",
         "fs": "fsharp",
+        "sql": "sql",
     }
     return alias.get(slug) == language_id
 
@@ -153,6 +156,7 @@ class PlannedContainer:
     language_hint_used: str | None
     notes: list[str] = field(default_factory=list)
     used_generic_fallback: bool = False
+    container_env: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
 
 def _generic_safe_runtime(language_id: str) -> bool:
@@ -175,6 +179,11 @@ def plan_container_run(
     java_image: str = "eclipse-temurin:21-jdk-alpine",
     php_image: str = "php:8.3-cli-alpine",
     dotnet_image: str = "mcr.microsoft.com/dotnet/sdk:8.0-alpine",
+    maven_image: str = "maven:3.9.9-eclipse-temurin-21-alpine",
+    gradle_image: str = "gradle:8.10.2-jdk21-alpine",
+    composer_image: str = "composer:2",
+    postgres_client_image: str = "postgres:16-alpine",
+    sql_url: str | None = None,
     docker_client: Any | None = None,
     prefer_generic_if_image_missing: bool = True,
     auto_pull_missing: bool = False,
@@ -202,7 +211,12 @@ def plan_container_run(
         java_image=java_image,
         php_image=php_image,
         dotnet_image=dotnet_image,
+        maven_image=maven_image,
+        gradle_image=gradle_image,
+        composer_image=composer_image,
+        postgres_client_image=postgres_client_image,
         workspace_files=workspace_files,
+        sql_url=sql_url,
     )
     if spec.language_id == "rust" and workspace_files and any(
         k.replace("\\", "/").endswith("Cargo.toml") for k in workspace_files
@@ -212,6 +226,20 @@ def plan_container_run(
         notes.append(
             "C#/F# uses `dotnet new` + `dotnet run` (NuGet). If restore fails, use sandbox_run with network:true."
         )
+    if spec.language_id == "sql" and sql_url:
+        notes.append("SQL: use network:true if psql cannot reach the database host from the sandbox.")
+    if spec.language_id == "java" and workspace_files:
+        keys = {k.replace("\\", "/").lstrip("/") for k in workspace_files}
+        if any(k.endswith("/pom.xml") or k == "pom.xml" for k in keys):
+            notes.append("Java/Maven: use network:true on first run if dependencies cannot be downloaded.")
+        elif any(
+            k.endswith("/build.gradle") or k.endswith("/build.gradle.kts") for k in keys
+        ):
+            notes.append("Java/Gradle: use network:true if wrapper or dependencies need to be fetched.")
+    if spec.language_id == "php" and workspace_files:
+        keys = {k.replace("\\", "/").lstrip("/") for k in workspace_files}
+        if any(k.endswith("/composer.json") or k == "composer.json" for k in keys):
+            notes.append("PHP/Composer: use network:true if packagist cannot be reached.")
     slug = _slug(str(language_key)) if language_key else ""
     mapped = image_for_language_key(language_key)
     image = spec.image
@@ -256,4 +284,5 @@ def plan_container_run(
         language_hint_used=merged,
         notes=notes,
         used_generic_fallback=used_generic,
+        container_env=spec.container_env,
     )

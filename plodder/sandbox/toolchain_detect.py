@@ -6,6 +6,7 @@ Map entry file / language hint → Docker image + argv for ``/workspace`` layout
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
@@ -17,10 +18,28 @@ class ToolchainSpec:
     language_id: str
     image: str
     argv: list[str]
+    # Passed into ``docker create`` as ``environment`` (e.g. psql connection string).
+    container_env: tuple[tuple[str, str], ...] = ()
 
 
 def _posix(rel: str) -> str:
     return rel.replace("\\", "/")
+
+
+def resolve_sql_url_from_env() -> str | None:
+    """
+    First non-empty ``SANDBOX_SQL_URL`` or ``DATABASE_URL`` suitable for ``psql`` (Postgres family).
+    Skips obvious SQLite URLs so local ``DATABASE_URL=sqlite:///…`` does not trigger SQL mode.
+    """
+    for key in ("SANDBOX_SQL_URL", "DATABASE_URL"):
+        raw = (os.environ.get(key) or "").strip()
+        if not raw:
+            continue
+        scheme = raw.split("://", 1)[0].lower().split("+", 1)[0]
+        if scheme == "sqlite":
+            continue
+        return raw
+    return None
 
 
 def _rust_cargo_argv(rel: str, workspace_files: dict[str, str] | None) -> list[str] | None:
@@ -53,6 +72,29 @@ def _rust_cargo_argv(rel: str, workspace_files: dict[str, str] | None) -> list[s
     return ["sh", "-c", f"cd {cwd} && cargo run --quiet"]
 
 
+def _workspace_key_set(workspace_files: dict[str, str] | None) -> set[str]:
+    if not workspace_files:
+        return set()
+    return {_posix(k).lstrip("/") for k in workspace_files}
+
+
+def _find_project_root(rel: str, keys: set[str], marker: str) -> str | None:
+    """Directory prefix (``''`` for repo root) where ``marker`` exists as a snapshot key."""
+    reln = _posix(rel).lstrip("/")
+    p = PurePosixPath(reln)
+    dirparts = p.parts[:-1] if p.parts else ()
+    candidates: list[str] = [""]
+    acc: list[str] = []
+    for part in dirparts:
+        acc.append(part)
+        candidates.append("/".join(acc))
+    for d in reversed(candidates):
+        key = f"{d}/{marker}".strip("/") if d else marker
+        if key in keys:
+            return d
+    return None
+
+
 def infer_language_from_entry(entry: str, *, hint: str | None) -> str:
     if hint and hint.strip().lower() not in ("", "auto"):
         return hint.strip().lower()
@@ -81,6 +123,8 @@ def infer_language_from_entry(entry: str, *, hint: str | None) -> str:
         return "csharp"
     if suf == ".fs":
         return "fsharp"
+    if suf == ".sql":
+        return "sql"
     return "python"
 
 
@@ -98,14 +142,48 @@ def build_toolchain_spec(
     java_image: str = "eclipse-temurin:21-jdk-alpine",
     php_image: str = "php:8.3-cli-alpine",
     dotnet_image: str = "mcr.microsoft.com/dotnet/sdk:8.0-alpine",
+    maven_image: str = "maven:3.9.9-eclipse-temurin-21-alpine",
+    gradle_image: str = "gradle:8.10.2-jdk21-alpine",
+    composer_image: str = "composer:2",
+    postgres_client_image: str = "postgres:16-alpine",
     workspace_files: dict[str, str] | None = None,
+    sql_url: str | None = None,
 ) -> ToolchainSpec:
     rel = _posix(entry).lstrip("/")
     lang = infer_language_from_entry(rel, hint=language_hint)
-    alias = {"js": "javascript", "ts": "typescript", "py": "python", "node": "javascript"}
+    alias = {
+        "js": "javascript",
+        "ts": "typescript",
+        "py": "python",
+        "node": "javascript",
+        "cs": "csharp",
+        "fs": "fsharp",
+    }
     lang = alias.get(lang, lang)
 
     w = f"/workspace/{rel}"
+    keys = _workspace_key_set(workspace_files)
+
+    if lang == "sql":
+        if not (sql_url or "").strip():
+            return ToolchainSpec(
+                "sql",
+                alpine_image,
+                [
+                    "sh",
+                    "-c",
+                    "echo 'Set SANDBOX_SQL_URL or DATABASE_URL (Postgres) for .sql runs.' && exit 1",
+                ],
+            )
+        sync = (sql_url or "").strip().replace("+asyncpg", "")
+        if sync.startswith("postgres://"):
+            sync = "postgresql://" + sync[len("postgres://") :]
+        return ToolchainSpec(
+            "sql",
+            postgres_client_image,
+            ["sh", "-c", f'psql "$PLODDER_SQL_URL" -v ON_ERROR_STOP=1 -f "{w}"'],
+            container_env=(("PLODDER_SQL_URL", sync),),
+        )
 
     if lang == "python":
         return ToolchainSpec("python", python_image, ["python", w])
@@ -140,6 +218,35 @@ def build_toolchain_spec(
             ["sh", "-c", f"g++ -std=c++17 -O2 -Wall -o /tmp/a.out {w} && /tmp/a.out"],
         )
     if lang == "java":
+        root = _find_project_root(rel, keys, "pom.xml")
+        if root is not None:
+            cwd = "/workspace" if not root else f"/workspace/{root}"
+            return ToolchainSpec(
+                "java",
+                maven_image,
+                ["sh", "-c", f"cd {cwd} && mvn -B -q -DskipTests package"],
+            )
+        root = _find_project_root(rel, keys, "build.gradle") or _find_project_root(
+            rel, keys, "build.gradle.kts"
+        )
+        if root is not None:
+            cwd = "/workspace" if not root else f"/workspace/{root}"
+            gradlew_rel = f"{root}/gradlew".strip("/") if root else "gradlew"
+            if gradlew_rel in keys:
+                return ToolchainSpec(
+                    "java",
+                    gradle_image,
+                    [
+                        "sh",
+                        "-c",
+                        f"cd {cwd} && chmod +x gradlew 2>/dev/null; ./gradlew test --no-daemon -q",
+                    ],
+                )
+            return ToolchainSpec(
+                "java",
+                gradle_image,
+                ["sh", "-c", f"cd {cwd} && gradle test --no-daemon -q"],
+            )
         p = PurePosixPath(rel)
         stem = p.stem
         parent = p.parent
@@ -150,6 +257,18 @@ def build_toolchain_spec(
             ["sh", "-c", f"javac {w} && java -cp {wdir} {stem}"],
         )
     if lang == "php":
+        root = _find_project_root(rel, keys, "composer.json")
+        if root is not None:
+            cwd = "/workspace" if not root else f"/workspace/{root}"
+            return ToolchainSpec(
+                "php",
+                composer_image,
+                [
+                    "sh",
+                    "-c",
+                    f"cd {cwd} && composer install --no-interaction --no-progress && php {w}",
+                ],
+            )
         return ToolchainSpec("php", php_image, ["php", w])
     if lang == "csharp":
         # First run hits NuGet — use sandbox_run with network:true when needed.
@@ -196,6 +315,8 @@ def pick_default_entry(files: dict[str, str]) -> str | None:
         "Program.fs",
         "main.java",
         "index.php",
+        "schema.sql",
+        "migrate.sql",
     ):
         for k in keys:
             if k.replace("\\", "/").endswith(prefer):
@@ -219,6 +340,7 @@ def pick_default_entry(files: dict[str, str]) -> str | None:
                 ".php",
                 ".cs",
                 ".fs",
+                ".sql",
             )
         ):
             return k.replace("\\", "/")
@@ -234,9 +356,12 @@ def image_for_shell_language(
     java_image: str = "eclipse-temurin:21-jdk-alpine",
     php_image: str = "php:8.3-cli-alpine",
     dotnet_image: str = "mcr.microsoft.com/dotnet/sdk:8.0-alpine",
+    postgres_client_image: str = "postgres:16-alpine",
 ) -> str:
     """Pick a base image that likely contains toolchain binaries (npm, pip, sh)."""
     L = (language or "auto").lower()
+    if L in ("sql", "postgres", "postgresql", "psql"):
+        return postgres_client_image
     if L in ("javascript", "typescript", "node", "js", "ts"):
         return node_image
     if L in ("python", "py", "pip"):
