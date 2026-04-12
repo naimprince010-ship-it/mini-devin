@@ -25,18 +25,25 @@ from ..schemas.tools import TerminalInput, TerminalOutput, ToolStatus
 _IS_WINDOWS = sys.platform == "win32"
 
 
-def _translate_for_windows(cmd: str) -> str:
+def _split_compound_command(cmd: str) -> list[str]:
     """
-    Translate common Linux/Unix shell commands to PowerShell-compatible
-    equivalents so the agent's Linux-style commands work on Windows.
-
-    Rules are applied left-to-right, so more specific patterns come first.
+    Split on ';' and '&&' so each clause can be translated separately.
+    Naive split (does not handle semicolons inside quoted strings); good enough
+    for typical agent one-liners like: rm -rf a; rm -rf b; npx create-react-app c
     """
-    if not _IS_WINDOWS:
-        return cmd
+    parts: list[str] = []
+    for chunk in re.split(r"\s*;\s*|\s*&&\s*", cmd):
+        c = chunk.strip()
+        if c:
+            parts.append(c)
+    return parts if parts else [cmd.strip()]
 
-    original = cmd.strip()
 
+def _translate_windows_statement(cmd: str) -> str:
+    """
+    Translate a single shell statement (no ';' / '&&' at this level).
+    Called per segment after compound split.
+    """
     # ── python3 → python ──────────────────────────────────────────────────────
     cmd = re.sub(r'\bpython3(\b|\s)', r'python\1', cmd)
     cmd = re.sub(r'\bpython3\.\d+\b', 'python', cmd)
@@ -63,11 +70,14 @@ def _translate_for_windows(cmd: str) -> str:
         d = m.group(1).strip()
         return f'New-Item -Force -ItemType Directory -Path "{d}" | Out-Null'
 
-    # ── rm -rf dir → Remove-Item -Recurse -Force ──────────────────────────────
+    # ── rm -rf dir → Remove-Item (skip if missing so chains do not abort) ─────
     m = re.match(r'^\s*rm\s+-rf?\s+(.+)$', cmd)
     if m:
-        target = m.group(1).strip()
-        return f'Remove-Item -Recurse -Force "{target}"'
+        target = m.group(1).strip().strip('"').strip("'")
+        return (
+            f'if (Test-Path "{target}") '
+            f'{{ Remove-Item -Recurse -Force "{target}" -ErrorAction Stop }}'
+        )
 
     # ── rm file ────────────────────────────────────────────────────────────────
     m = re.match(r'^\s*rm\s+(.+)$', cmd)
@@ -138,6 +148,24 @@ def _translate_for_windows(cmd: str) -> str:
     cmd = cmd.replace('/dev/null', '$null')
 
     return cmd
+
+
+def _translate_for_windows(cmd: str) -> str:
+    """
+    Translate common Linux/Unix shell commands to PowerShell-compatible
+    equivalents so the agent's Linux-style commands work on Windows.
+
+    Compound commands (separated by ';' or '&&') are split so each clause is
+    translated; otherwise a line like ``rm -rf a; rm -rf b; npx ...`` was
+    incorrectly turned into a single Remove-Item with an invalid path.
+    """
+    if not _IS_WINDOWS:
+        return cmd
+
+    segments = _split_compound_command(cmd)
+    if len(segments) == 1:
+        return _translate_windows_statement(segments[0])
+    return "; ".join(_translate_windows_statement(s) for s in segments)
 
 
 class TerminalTool(BaseTool[TerminalInput, TerminalOutput]):

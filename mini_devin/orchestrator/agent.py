@@ -68,6 +68,7 @@ from ..core.parallel_executor import (
     create_batch_caller,
 )
 from ..reliability.self_correction import SelfCorrectionEngine, ErrorType
+from ..learning.teacher_review import maybe_log_teacher_review
 
 
 
@@ -3649,6 +3650,23 @@ Call a tool (editor or terminal) immediately as your first action."""
         # Auto git commit after task completion (only if still COMPLETED after verification)
         if self.auto_git_commit and task.status == TaskStatus.COMPLETED and self.working_directory:
             await self._auto_commit_changes(task)
+
+        # Optional teacher review + JSONL training log (OpenAI-first; see TEACHER_* env vars)
+        summary_for_teacher = ""
+        for _msg in reversed(self.llm.conversation):
+            if _msg.role == "assistant" and _msg.content:
+                summary_for_teacher = _msg.content
+                break
+        try:
+            await maybe_log_teacher_review(
+                task=task,
+                agent_model=self.llm.config.model,
+                conversation=list(self.llm.conversation),
+                summary=summary_for_teacher,
+                verbose=self.verbose,
+            )
+        except Exception as _e:
+            self._log(f"Teacher review skipped: {_e}")
 
         return task
 
