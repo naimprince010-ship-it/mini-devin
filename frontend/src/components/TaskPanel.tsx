@@ -9,10 +9,13 @@ import { PlanStepsView } from './PlanStepsView';
 import { useToast } from './Toast';
 import { ExportButtons } from './ExportButtons';
 import { getApiBase } from '../config/apiBase';
+import { ModelSelector } from './ModelSelector';
 
 interface TaskPanelProps {
   session: Session;
   onTitleUpdated?: (title: string) => void;
+  /** After PATCH /sessions/:id (e.g. model switch), parent refreshes session state. */
+  onSessionUpdated?: (session: Session) => void;
 }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -48,7 +51,7 @@ function calcEstimatedCost(promptTokens: number, completionTokens: number): stri
   return `$${cost.toFixed(3)}`;
 }
 
-export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
+export function TaskPanel({ session, onTitleUpdated, onSessionUpdated }: TaskPanelProps) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskDescription, setTaskDescription] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
@@ -57,6 +60,7 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
   /** Which task row shows live / restored stream (must be state so reload re-renders). */
   const [streamTaskId, setStreamTaskId] = useState<string | null>(null);
   const [showExport, setShowExport] = useState(false);
+  const [modelBusy, setModelBusy] = useState(false);
   const currentTaskIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const toolCallIdMapRef = useRef<Map<string, string>>(new Map()); // ws tool -> context id
@@ -436,6 +440,31 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
   const currentPhase = events.phase;
   const phaseLabel = currentPhase ? (PHASE_LABELS[currentPhase] || currentPhase) : null;
 
+  const sessionModel = (session.model || 'auto').trim() || 'auto';
+
+  const handleModelPick = async (modelId: string) => {
+    if (modelId === sessionModel || modelBusy) return;
+    if (isStreaming) {
+      toast.error('Model switch', 'Wait until the agent finishes or stop it, then change model.');
+      return;
+    }
+    setModelBusy(true);
+    try {
+      const updated = await api.patchSession(session.session_id, { model: modelId });
+      onSessionUpdated?.(updated);
+      toast.success(
+        'Model updated',
+        updated.model?.toLowerCase() === 'auto'
+          ? 'Using Auto (server picks from your API keys).'
+          : `Using ${updated.model}.`,
+      );
+    } catch (e) {
+      toast.error('Could not switch model', e instanceof Error ? e.message : 'Unknown error');
+    } finally {
+      setModelBusy(false);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-[#0f0f0f]">
       {/* Header */}
@@ -455,24 +484,18 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
                   <span className="text-[#525252] font-normal"> · SSE</span>
                 )}
               </span>
-              {/* Model badge */}
-              {session.model && (
-                <>
-                  <span className="text-[#2a2a2a]">·</span>
-                  <div className="flex items-center gap-1 text-[10px] text-[#525252]">
-                    <Cpu size={9} />
-                    <span
-                      className={
-                        session.model.toLowerCase() === 'auto'
-                          ? 'text-[#3399ff] font-semibold'
-                          : ''
-                      }
-                    >
-                      {session.model.toLowerCase() === 'auto' ? 'Auto' : session.model}
-                    </span>
-                  </div>
-                </>
-              )}
+              {/* Model (compact label; full picker below) */}
+              <span className="text-[#2a2a2a]">·</span>
+              <div className="flex items-center gap-1 text-[10px] text-[#525252]">
+                <Cpu size={9} />
+                <span
+                  className={
+                    sessionModel.toLowerCase() === 'auto' ? 'text-[#3399ff] font-semibold' : ''
+                  }
+                >
+                  {sessionModel.toLowerCase() === 'auto' ? 'Auto' : sessionModel}
+                </span>
+              </div>
               {/* Workspace badge */}
               {session.working_directory && (
                 <>
@@ -525,6 +548,25 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
               </div>
             )}
           </div>
+        </div>
+
+        {/* LLM switch (chat) — PATCH /sessions/:id */}
+        <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-[#525252] font-bold shrink-0">
+            Chat model
+          </span>
+          <div className="flex-1 min-w-0 max-w-md">
+            <ModelSelector
+              includeAutoOption
+              value={sessionModel}
+              onChange={handleModelPick}
+              disabled={isStreaming || modelBusy}
+              className="text-left"
+            />
+          </div>
+          {modelBusy && (
+            <span className="text-[10px] text-[#737373]">Saving…</span>
+          )}
         </div>
 
         {/* Phase progress bar */}

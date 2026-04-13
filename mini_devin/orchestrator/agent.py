@@ -426,6 +426,22 @@ class Agent:
         self._system_prompt_base = _sys
         self.llm.set_system_prompt(_sys)
 
+    def set_primary_llm_model(self, model: str) -> None:
+        """
+        Swap the primary :class:`LLMClient` (e.g. user picked another model in the UI).
+
+        Keeps the in-memory conversation so chat context continues; ``create_llm_client``
+        resolves ``auto`` the same way as session creation.
+        """
+        new_llm = create_llm_client(model=model)
+        new_llm.conversation = list(self.llm.conversation)
+        self.llm = new_llm
+        if self._artifact_logger is not None:
+            try:
+                self._artifact_logger.set_model(self.llm.config.model)
+            except Exception:
+                pass
+
     def _get_observation_llm(self) -> LLMClient:
         """Gemini Flash (default) for observation/diagnostics; falls back to primary LLM if misconfigured."""
         if self._observation_llm_override is not None:

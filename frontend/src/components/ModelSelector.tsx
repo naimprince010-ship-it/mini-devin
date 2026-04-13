@@ -26,6 +26,9 @@ interface ModelSelectorProps {
   onChange: (modelId: string) => void;
   className?: string;
   showDetails?: boolean;
+  /** Prepend ``auto`` so chat can match server default (same as new-session Auto). */
+  includeAutoOption?: boolean;
+  disabled?: boolean;
 }
 
 const providerMeta: Record<string, { icon: React.ReactNode; color: string; label: string }> = {
@@ -37,7 +40,25 @@ const providerMeta: Record<string, { icon: React.ReactNode; color: string; label
 
 const formatCtx = (n: number) => n >= 1_000_000 ? `${(n/1_000_000).toFixed(1)}M` : `${(n/1000).toFixed(0)}K`;
 
-export function ModelSelector({ value, onChange, className = '', showDetails = false }: ModelSelectorProps) {
+const AUTO_MODEL: Model = {
+  id: 'auto',
+  name: 'Auto (server default)',
+  provider: 'openai',
+  context_window: 0,
+  supports_tools: true,
+  supports_vision: true,
+  max_output_tokens: 0,
+  description: 'Uses LLM_MODEL or the best model for your configured API keys.',
+};
+
+export function ModelSelector({
+  value,
+  onChange,
+  className = '',
+  showDetails = false,
+  includeAutoOption = false,
+  disabled = false,
+}: ModelSelectorProps) {
   const [models, setModels] = useState<Model[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [isOpen, setIsOpen] = useState(false);
@@ -69,8 +90,10 @@ export function ModelSelector({ value, onChange, className = '', showDetails = f
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  const selectedModel = models.find(m => m.id === value);
-  const filtered = filterProvider ? models.filter(m => m.provider === filterProvider) : models;
+  const displayModels: Model[] = includeAutoOption ? [AUTO_MODEL, ...models] : models;
+
+  const selectedModel = displayModels.find(m => m.id === value);
+  const filtered = filterProvider ? displayModels.filter(m => m.provider === filterProvider) : displayModels;
   const grouped = filtered.reduce((acc, m) => {
     if (!acc[m.provider]) acc[m.provider] = [];
     acc[m.provider].push(m);
@@ -88,15 +111,18 @@ export function ModelSelector({ value, onChange, className = '', showDetails = f
   const meta = selectedModel ? providerMeta[selectedModel.provider] : null;
 
   return (
-    <div className={`relative ${className}`} ref={dropdownRef}>
+    <div className={`relative ${className} ${disabled ? 'opacity-50 pointer-events-none' : ''}`} ref={dropdownRef}>
       <button
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
-        className="w-full px-3 py-2.5 bg-[#1a1a1a] text-white rounded-lg border border-[#262626] hover:border-[#363636] focus:border-[#00ff99]/50 focus:outline-none flex items-center justify-between gap-2 transition-colors"
+        disabled={disabled}
+        onClick={() => !disabled && setIsOpen(!isOpen)}
+        className="w-full px-3 py-2.5 bg-[#1a1a1a] text-white rounded-lg border border-[#262626] hover:border-[#363636] focus:border-[#00ff99]/50 focus:outline-none flex items-center justify-between gap-2 transition-colors disabled:cursor-not-allowed"
       >
         <div className="flex items-center gap-2 min-w-0">
           {meta && <span className={meta.color}>{meta.icon}</span>}
-          <span className="text-sm truncate">{selectedModel?.name || 'Select a model'}</span>
+          <span className="text-sm truncate">
+            {selectedModel?.name || (value === 'auto' ? AUTO_MODEL.name : 'Select a model')}
+          </span>
         </div>
         <ChevronDown size={14} className={`text-[#737373] flex-shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
@@ -134,7 +160,7 @@ export function ModelSelector({ value, onChange, className = '', showDetails = f
 
           {/* Model list */}
           <div className="overflow-y-auto max-h-72 custom-scrollbar">
-            {Object.entries(grouped).map(([provider, providerModels]) => (
+            {(Object.entries(grouped) as [string, Model[]][]).map(([provider, providerModels]) => (
               <div key={provider}>
                 {!filterProvider && (
                   <div className="px-3 pt-3 pb-1 flex items-center gap-2">

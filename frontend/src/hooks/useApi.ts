@@ -124,6 +124,22 @@ export function useApi() {
     }
   }, []);
 
+  const patchSession = useCallback(async (sessionId: string, body: { model: string }): Promise<Session> => {
+    setLoading(true);
+    setError(null);
+    try {
+      return await fetchApi<Session>(`/sessions/${sessionId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update session');
+      throw e;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   const deleteSession = useCallback(async (sessionId: string): Promise<void> => {
     setLoading(true);
     setError(null);
@@ -480,6 +496,7 @@ export function useApi() {
     createSession,
     listSessions,
     getSession,
+    patchSession,
     deleteSession,
     stopSession,
     // Tasks

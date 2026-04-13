@@ -1001,6 +1001,47 @@ async def get_session(session_id: str):
         "model": getattr(s, "model", "auto"),
     }
 
+
+class PatchSessionRequest(BaseModel):
+    """Partial session update (e.g. switch LLM for the next message)."""
+
+    model: str | None = None
+
+
+@app.patch("/api/sessions/{session_id}")
+@app.patch("/sessions/{session_id}")
+async def patch_session(session_id: str, body: PatchSessionRequest, request: Request):
+    """Update session fields. Currently supports ``model`` (primary chat LLM)."""
+    await _await_app_db_startup(request)
+
+    if body.model is None:
+        raise HTTPException(status_code=400, detail="No updatable fields (send {\"model\": \"...\"})")
+
+    ok, err = await session_manager.set_session_model(session_id, body.model)
+    if not ok:
+        if err == "Session not found":
+            raise HTTPException(status_code=404, detail=err)
+        if err and "running" in err.lower():
+            raise HTTPException(status_code=409, detail=err)
+        raise HTTPException(status_code=400, detail=err or "Failed to update session")
+
+    s = await session_manager.get_session(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {
+        "session_id": s.session_id,
+        "created_at": s.created_at.isoformat(),
+        "status": s.status.value,
+        "working_directory": s.working_directory,
+        "workspace_id": getattr(s, "workspace_id", None),
+        "current_task": s.current_task_id,
+        "iteration": s.iteration,
+        "total_tasks": s.total_tasks,
+        "title": getattr(s, "title", ""),
+        "model": getattr(s, "model", body.model),
+    }
+
+
 @app.delete("/api/sessions/{session_id}")
 @app.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):

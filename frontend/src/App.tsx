@@ -348,6 +348,10 @@ function App() {
     }
   };
 
+  const handleSessionUpdated = (s: Session) => {
+    setSelectedSession(s);
+  };
+
   // Real-time title from WebSocket (session_title_updated)
   const handleTitleUpdated = (title: string) => {
     setSelectedSession(prev => prev ? { ...prev, title } : prev);
@@ -559,7 +563,11 @@ function App() {
                 <Panel defaultSize={45} minSize={30}>
                   <div className={`h-full flex flex-col ${bgPrimary} relative overflow-hidden`}>
                     <ErrorBoundary>
-                      <TaskPanel session={selectedSession} onTitleUpdated={handleTitleUpdated} />
+                      <TaskPanel
+                        session={selectedSession}
+                        onTitleUpdated={handleTitleUpdated}
+                        onSessionUpdated={handleSessionUpdated}
+                      />
                     </ErrorBoundary>
                   </div>
                 </Panel>

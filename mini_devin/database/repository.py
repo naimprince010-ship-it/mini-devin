@@ -96,6 +96,18 @@ class SessionRepository:
         )
         return result.rowcount > 0
 
+    async def update_model(self, session_id: str, model: str) -> bool:
+        """Persist primary LLM model id (e.g. ``gpt-4o``, ``auto``, ``gemini/gemini-2.0-flash``)."""
+        result = await self.session.execute(
+            update(SessionModel)
+            .where(SessionModel.id == session_id)
+            .values(
+                model=model,
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        return result.rowcount > 0
+
     async def update_persistence(
         self,
         session_id: str,

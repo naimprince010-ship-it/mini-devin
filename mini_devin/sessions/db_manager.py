@@ -196,7 +196,38 @@ class DatabaseSessionManager:
                     cancel_event=self._cancel_events[session_id],
                     workspace_id=workspace_id,
                 )
-    
+
+    async def set_session_model(self, session_id: str, model: str) -> tuple[bool, str | None]:
+        """
+        Update stored session model and swap the in-memory agent LLM when loaded.
+
+        Returns ``(True, None)`` on success, or ``(False, error_message)``.
+        """
+        stored = (model or "auto").strip() or "auto"
+        async with self._session_lock:
+            async with self._session_maker() as db:
+                repo = SessionRepository(db)
+                row = await repo.get(session_id)
+                if not row:
+                    return False, "Session not found"
+                if row.status == DBSessionStatus.RUNNING:
+                    return (
+                        False,
+                        "Cannot change model while a task is running. Wait for it to finish or stop the agent.",
+                    )
+                ok = await repo.update_model(session_id, stored)
+                if not ok:
+                    return False, "Session not found"
+                await db.commit()
+
+            agent = self._agents.get(session_id)
+            if agent:
+                try:
+                    agent.set_primary_llm_model(stored)
+                except Exception as e:
+                    return False, str(e)
+        return True, None
+
     async def get_session(self, session_id: str) -> Session | None:
         """Get a session by ID."""
         async with self._session_maker() as db:
