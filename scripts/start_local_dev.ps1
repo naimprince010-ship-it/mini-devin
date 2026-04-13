@@ -20,7 +20,7 @@ if (-not (Test-Path (Join-Path $fe "node_modules"))) {
     Set-Location $Root
 }
 
-$apiCmd = "Set-Location '$Root'; poetry run uvicorn mini_devin.api.app:app --host 127.0.0.1 --port 8000 --reload"
+$apiCmd = "Set-Location '$Root'; poetry run uvicorn mini_devin.api:app --host 127.0.0.1 --port 8000 --reload"
 Start-Process powershell -WindowStyle Minimized -ArgumentList @("-NoExit", "-Command", $apiCmd)
 
 $uiCmd = "Set-Location '$fe'; npm run dev"

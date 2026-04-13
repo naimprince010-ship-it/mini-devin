@@ -44,7 +44,7 @@ cd frontend && npm install && cd ..
 
 ### 3. Start backend
 ```bash
-poetry run uvicorn mini_devin.api.app:app --host 127.0.0.1 --port 8000
+poetry run uvicorn mini_devin.api:app --host 127.0.0.1 --port 8000
 ```
 
 ### 4. Start frontend (new terminal)

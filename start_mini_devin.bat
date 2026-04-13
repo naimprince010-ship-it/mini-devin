@@ -81,9 +81,9 @@ poetry env info >nul 2>&1
 if not errorlevel 1 set "USE_POETRY=1"
 
 if "!USE_POETRY!"=="1" (
-    poetry run python -m uvicorn mini_devin.api.app:app --host 0.0.0.0 --port 8000
+    poetry run python -m uvicorn mini_devin.api:app --host 0.0.0.0 --port 8000
 ) else (
-    python -m uvicorn mini_devin.api.app:app --host 0.0.0.0 --port 8000
+    python -m uvicorn mini_devin.api:app --host 0.0.0.0 --port 8000
 )
 
 REM If server crashes, pause so user can see error

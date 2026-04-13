@@ -97,7 +97,8 @@ def run_server():
         RESTART_FLAG.unlink()
 
     # Configuration
-    api_module = "mini_devin.api.app"
+    # Package entry so ``api/__init__.py`` runs (mounts orchestration + re-exports ``app``).
+    api_module = "mini_devin.api"
     host = "0.0.0.0"
     port = _resolve_listen_port()
 

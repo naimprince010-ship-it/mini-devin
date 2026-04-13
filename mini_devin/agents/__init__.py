@@ -12,6 +12,7 @@ from .planner import (
     PlanningStrategy,
     PlanQuality,
     PlanValidationResult,
+    SupervisorRoutingPlanner,
     TaskAnalysis,
     create_planner_agent,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "PlanQuality",
     "PlanValidationResult",
     "TaskAnalysis",
+    "SupervisorRoutingPlanner",
     "create_planner_agent",
     # Self-Developer Agent
     "SelfDeveloperAgent",

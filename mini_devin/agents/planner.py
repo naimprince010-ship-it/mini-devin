@@ -5,6 +5,9 @@ This module implements a specialized planning agent that creates detailed
 execution plans before the main agent starts working. It decomposes complex
 tasks into milestones and steps, validates plans for feasibility, and
 supports plan refinement and replanning.
+
+For OpenHands-style **manager–worker** orchestration (routing only, no coding),
+use :class:`SupervisorRoutingPlanner` with :mod:`mini_devin.orchestration`.
 """
 
 import json
@@ -841,6 +844,141 @@ Provide the recovery plan as JSON."""
             return "complex"
         else:
             return "very_complex"
+
+
+SUPERVISOR_ROUTING_ONLY_PROMPT = """You are the Supervisor Orchestrator for Plodder (Manager role, OpenHands-style).
+
+STRICT RULES:
+- You ONLY output one JSON object for routing and decomposition. No markdown code fences.
+- You NEVER write source code, shell commands, diffs, patches, or pretend to call tools.
+- You NEVER act as the coding worker. Stateless workers will implement your sub-goals.
+
+Output JSON schema (exact keys):
+{
+  "version": "1.0",
+  "reasoning": "short rationale for the decomposition",
+  "subtasks": [
+    {
+      "id": "unique-string-id",
+      "goal": "single clear outcome for one worker session",
+      "acceptance_criteria": ["verifiable criterion"],
+      "depends_on": ["id-of-prerequisite-subtask"]
+    }
+  ]
+}
+
+Guidelines:
+- Produce 2–12 subtasks; each goal must be assignable to an autonomous coding agent with shared repo access.
+- depends_on lists prerequisite subtask ids only (DAG). Use [] for root tasks.
+- Keep goals independent where possible so layers can run in parallel when deps allow.
+"""
+
+
+PIVOT_PLAN_SYSTEM_PROMPT = """You are the Supervisor Orchestrator (OpenHands-style plan / Agent.step replanning).
+
+A WORKER sub-task has FAILED. You receive structured feedback (WorkerObservation-style JSON).
+
+STRICT RULES:
+- Output ONE JSON object only. No markdown fences. No source code, no shell, no tool calls.
+- You do NOT implement work — only routing / plan updates.
+
+You MUST:
+1. Use the observation error and summary to explain the pivot in "reasoning".
+2. List the failed sub-task in "pivoted" with "status": "pivoted" (and a short "note").
+3. Emit "replacement_subtasks": alternative sub-goals that bypass the failure (smaller steps, prerequisites, or a different approach).
+   - Each item: "id" (new unique string), "goal", "acceptance_criteria" (array), "depends_on" (array of ids).
+   - "depends_on" may ONLY reference ids from completed_subtask_ids OR other replacement_subtasks ids (DAG among new ids is allowed).
+
+JSON schema:
+{
+  "reasoning": "why the plan changed",
+  "pivoted": [{"id": "<failed_subtask_id>", "status": "pivoted", "note": "..."}],
+  "replacement_subtasks": [
+    {"id": "new-1", "goal": "...", "acceptance_criteria": ["..."], "depends_on": []}
+  ]
+}
+"""
+
+
+class SupervisorRoutingPlanner:
+    """
+    Routing-only supervisor: decomposes goals into sub-tasks as JSON.
+
+    Does not run terminal/editor tools or modify the filesystem; workers execute.
+    """
+
+    def __init__(self, llm_client: LLMClient | None = None) -> None:
+        self._llm = llm_client or create_llm_client()
+        self._llm.set_system_prompt(SUPERVISOR_ROUTING_ONLY_PROMPT)
+
+    @staticmethod
+    def _parse_json_response(text: str) -> dict[str, Any]:
+        match = re.search(r"\{[\s\S]*\}", text or "")
+        if not match:
+            raise ValueError("Supervisor did not return a JSON object")
+        return json.loads(match.group(0))
+
+    async def decompose_to_subtasks(self, goal: str, workspace_hint: str = "") -> dict[str, Any]:
+        """
+        Return a dict with keys ``version``, ``reasoning``, ``subtasks`` (list of routing specs).
+
+        Raises ValueError if the model output is not usable.
+        """
+        parts = [f"Decompose this goal into subtasks:\n\n{goal.strip()}"]
+        if workspace_hint:
+            parts.append(f"\nShared workspace root (all workers use this path): {workspace_hint}")
+        parts.append("\nReturn JSON only, no prose outside the JSON object.")
+        response = await self._llm.chat("\n".join(parts))
+        data = self._parse_json_response(str(response))
+        subs = data.get("subtasks")
+        if not isinstance(subs, list) or not subs:
+            raise ValueError("Supervisor JSON missing non-empty 'subtasks' array")
+        data.setdefault("version", "1.0")
+        data.setdefault("reasoning", "")
+        return data
+
+    async def pivot_after_failure(
+        self,
+        *,
+        failed_subtask_id: str,
+        observation: dict[str, Any],
+        overall_goal: str,
+        completed_subtask_ids: list[str],
+        remaining_plan_summary: str,
+        workspace_hint: str = "",
+    ) -> dict[str, Any]:
+        """
+        Self-healing plan update: consume a failed WorkerObservation and return pivot JSON.
+
+        Keys: ``reasoning``, ``pivoted`` (list), ``replacement_subtasks`` (list).
+        """
+        prev = SUPERVISOR_ROUTING_ONLY_PROMPT
+        try:
+            self._llm.set_system_prompt(PIVOT_PLAN_SYSTEM_PROMPT)
+            payload = {
+                "failed_subtask_id": failed_subtask_id,
+                "observation": observation,
+                "overall_goal": overall_goal,
+                "completed_subtask_ids": completed_subtask_ids,
+                "remaining_plan_summary": remaining_plan_summary,
+            }
+            parts = [
+                "The task below failed. Produce the pivot JSON.\n",
+                json.dumps(payload, ensure_ascii=False, indent=2),
+            ]
+            if workspace_hint:
+                parts.append(f"\nShared workspace: {workspace_hint}")
+            response = await self._llm.chat("\n".join(parts))
+            data = self._parse_json_response(str(response))
+            if not isinstance(data.get("pivoted"), list):
+                data["pivoted"] = []
+            rep = data.get("replacement_subtasks")
+            if not isinstance(rep, list):
+                raise ValueError("Pivot JSON missing 'replacement_subtasks' array")
+            data.setdefault("reasoning", "")
+            return data
+        finally:
+            self._llm.set_system_prompt(prev)
 
 
 def create_planner_agent(
