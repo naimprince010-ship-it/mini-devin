@@ -261,15 +261,25 @@ class UniversalPromptEngine:
             "{\n"
             '  "status": "continue" | "done",\n'
             '  "rationale": "1-3 sentences: what you will do or why you stop",\n'
+            '  "sub_goal": "required with terminal/fs_write/fs_delete/atomic_edit/sandbox_run: concrete sub-goal",\n'
+            '  "risk_assessment": "required: what could fail; never assume paths exist without listing/reading first",\n'
+            '  "expected_outcome": "required: what you expect to observe next (stdout, files, diagnostics)",\n'
+            '  "observe": "optional: one sentence on last tool output",\n'
+            '  "think": "optional: one sentence linking observation to next action",\n'
+            '  "act_summary": "optional: short phrase naming tools you will call",\n'
             '  "tool_calls": [\n'
             '    {"name": "<tool>", "args": { ... }}\n'
             "  ]\n"
             "}\n"
             "```\n"
-            "- If ``status`` is ``done``, set ``tool_calls`` to ``[]`` and briefly state success/failure in ``rationale``.\n"
+            "- If ``status`` is ``done``, set ``tool_calls`` to ``[]``; ``sub_goal`` / ``risk_assessment`` / "
+            "``expected_outcome`` may be empty strings.\n"
+            "- If ``continue`` and any tool is ``sandbox_shell``, ``sandbox_run``, ``atomic_edit``, ``fs_write``, "
+            "or ``fs_delete``, all three monologue fields are **mandatory** (each meaningful, ≥12 characters).\n"
             "- If ``continue``, emit one or more tool calls; you will receive structured results next turn.\n"
-            "- Use **relative paths** from the workspace root (POSIX ``/``).\n"
-            "- After stderr names a file/line, prefer ``fs_read`` that path, then ``fs_write`` a minimal fix.\n"
+            "- Use **relative paths** from the workspace root (POSIX ``/``); confirm paths with ``fs_list`` / "
+            "``fs_read`` before mutating.\n"
+            "- After stderr names a file/line, prefer ``fs_read`` that path, then a minimal ``atomic_edit``.\n"
         )
 
     def session_unified_tools_catalog(self) -> str:
@@ -289,6 +299,6 @@ class UniversalPromptEngine:
 | `search_codebase` | `query` (required), `top_k` (optional, default 8) | **Semantic search** over indexed workspace source (LanceDB at session start). Use for cross-file symbols, configs, or patterns instead of manual `grep` when exploring. |
 | `atomic_edit` | `path`, `mode` (``str_replace`` or ``write_full``), `old_string`+`new_string` (replace) or `content` (full write) | **Hands**: read-verify-write in one step; prefer over raw `fs_write` for surgical edits. |
 | `lsp_check` | `path`, `content` (optional in-memory buffer) | **Eyes (code)**: Pyright/tsc/syntax diagnostics on disk or snapshot text. |
-| `playwright_observe` | `url` (optional, default `http://127.0.0.1:5173`) | **Eyes (UI)**: headless screenshot as base64; call before claiming frontend success. |
+| `playwright_observe` | `url` (optional, default `http://127.0.0.1:5173`), `capture_console` (bool, default false), `wait_ms` (200–8000, default 900) | **Eyes (UI)**: headless screenshot as base64; with `capture_console: true`, also returns **browser console** lines + page errors (use when `npm run dev` / Vite fails). |
 
 **Notes:** `sandbox_*` requires Docker. For `sandbox_shell`, `argv` runs in `/workspace` with **session-persistent cwd and exports** (see `.plodder/shell/session_state.json`). `search_codebase` requires a successful workspace index at session start (see transcript `code_index` phase)."""

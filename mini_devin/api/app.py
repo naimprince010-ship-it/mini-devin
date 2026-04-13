@@ -1510,7 +1510,7 @@ async def list_providers():
     if os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
         providers.append({
             "id": "google", "name": "Google", "configured": True, "enabled": True,
-            "models": ["gemini/gemini-1.5-pro", "gemini/gemini-1.5-flash"]
+            "models": ["gemini/gemini-2.0-flash", "gemini/gemini-1.5-pro"]
         })
     return {"providers": providers}
 
@@ -1542,12 +1542,12 @@ async def list_models():
         ])
     if os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
         models.extend([
+            {"id": "gemini/gemini-2.0-flash", "name": "Gemini 2.0 Flash", "provider": "google",
+             "context_window": 1000000, "supports_tools": True, "supports_vision": True,
+             "max_output_tokens": 8192, "description": "Fast Gemini (recommended; Google AI Studio)"},
             {"id": "gemini/gemini-1.5-pro", "name": "Gemini 1.5 Pro", "provider": "google",
              "context_window": 1000000, "supports_tools": True, "supports_vision": True,
-             "max_output_tokens": 8192, "description": "Google's most capable model"},
-            {"id": "gemini/gemini-1.5-flash", "name": "Gemini 1.5 Flash", "provider": "google",
-             "context_window": 1000000, "supports_tools": True, "supports_vision": True,
-             "max_output_tokens": 8192, "description": "Fast & efficient Gemini"},
+             "max_output_tokens": 8192, "description": "Google's capable 1.5-series model"},
         ])
     if not models:
         # Fallback defaults so UI always has something to show

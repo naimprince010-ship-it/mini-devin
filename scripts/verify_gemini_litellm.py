@@ -34,7 +34,7 @@ async def _run() -> int:
 
     from mini_devin.core.llm_client import create_llm_client
 
-    model = (os.environ.get("LLM_MODEL") or "gemini/gemini-1.5-flash").strip()
+    model = (os.environ.get("LLM_MODEL") or "gemini/gemini-2.0-flash").strip()
     client = create_llm_client(model=model)
     client.set_system_prompt("You are a test harness. Reply with exactly one word: OK")
     client.add_user_message("Ping.")

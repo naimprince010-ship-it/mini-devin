@@ -149,6 +149,7 @@ async def _main() -> None:
         sandbox=StubSandbox(),
         max_rounds=12,
         inject_logic_plan=True,
+        enforce_think_before_act=False,
     )
     r = await driver.run("Build a tiny Python demo under main.py and verify it runs.")
     print("success:", r.success)

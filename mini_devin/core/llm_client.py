@@ -20,8 +20,9 @@ from mini_devin.core.providers import (
 
 
 def _is_gemini_litellm_model(model_id: str) -> bool:
+    """True for Google AI Studio (``gemini/``) and mistaken ``google/gemini`` prefixes (normalized at call time)."""
     m = (model_id or "").strip().lower()
-    return m.startswith("gemini/") or m.startswith("vertex_ai/")
+    return m.startswith("gemini/") or m.startswith("vertex_ai/") or m.startswith("google/gemini")
 
 
 def _gemini_safety_settings_block_none() -> list[dict[str, str]]:
@@ -367,6 +368,8 @@ class LLMClient:
         _apply_gemini_safety_override(kwargs, model_name)
         if self._custom_client and self.config.provider == Provider.OPENAI:
             kwargs["client"] = self._custom_client
+        if self.config.provider == Provider.GOOGLE and self.config.api_key:
+            kwargs["api_key"] = self.config.api_key
         try:
             response = await acompletion(**kwargs)
         except Exception as e:
@@ -439,6 +442,9 @@ class LLMClient:
         if self._custom_client and self.config.provider == Provider.OPENAI:
              kwargs["client"] = self._custom_client
 
+        if self.config.provider == Provider.GOOGLE and self.config.api_key:
+            kwargs["api_key"] = self.config.api_key
+
         # Make the API call
         try:
             print(f"[LLM] Requesting completion: model={model_name}, tools={len(tools) if tools else 0}, stream={stream}")
@@ -452,7 +458,13 @@ class LLMClient:
             elif "RateLimitError" in error_msg or "429" in error_msg:
                 raise RuntimeError(f"LLM Rate Limit Reached: {error_msg}")
             elif "NotFoundError" in error_msg or "404" in error_msg:
-                raise RuntimeError(f"LLM Model Not Found: {model_name}. Check if the model ID is correct.")
+                raise RuntimeError(
+                    f"LLM Model Not Found: {model_name}. "
+                    "For Google AI Studio, LiteLLM expects ``gemini/<model>`` (not ``google/...``). "
+                    "Legacy ``gemini/gemini-1.5-flash`` is remapped to ``gemini/gemini-2.0-flash`` by default; "
+                    "set GEMINI_FLASH_SUCCESSOR_MODEL to override. Raw error: "
+                    + error_msg[:500]
+                )
             else:
                 raise RuntimeError(f"LLM API Error: {error_msg}")
         

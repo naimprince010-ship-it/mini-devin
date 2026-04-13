@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
 from plodder.core.universal_prompt_engine import PolyglotSystemPrompt, UniversalPromptEngine
@@ -21,7 +21,15 @@ from plodder.agent.orchestrator import PlodderWorklog, SessionRecoveryTracker, e
 from plodder.memory.learned_patterns import load_learned_patterns_for_prompt
 from plodder.memory.session_memory import EpisodeMemory
 from plodder.memory.workspace_code_index import WorkspaceCodeIndex
-from plodder.orchestration.reasoning_loop import REASONING_LOOP_SEED_SUFFIX, extract_shell_inner
+from plodder.orchestration.reasoning_loop import (
+    REASONING_LOOP_SEED_SUFFIX,
+    build_agent_thought_text,
+    extract_shell_inner,
+    goal_suggests_frontend_stack,
+    monologue_validation_error,
+    parse_driver_turn,
+    terminal_failure_followup_hints,
+)
 from plodder.sandbox.stateful_shell_tracker import StatefulShellTracker
 from plodder.workspace.atomic_editor import atomic_edit
 from plodder.workspace.session_workspace import SessionWorkspace
@@ -52,41 +60,6 @@ class SupportsSessionSandbox(Protocol):
         timeout_sec: int | None = None,
         network: bool = False,
     ) -> SandboxResult: ...
-
-
-def _strip_json_fence(raw: str) -> str:
-    t = raw.strip()
-    if t.startswith("```"):
-        t = re.sub(r"^```(?:json)?\s*", "", t, flags=re.IGNORECASE)
-        t = re.sub(r"\s*```$", "", t)
-    return t.strip()
-
-
-def parse_driver_turn(raw: str) -> dict[str, Any]:
-    """Parse one assistant JSON object; raise ValueError on invalid shape."""
-    data = json.loads(_strip_json_fence(raw))
-    if not isinstance(data, dict):
-        raise ValueError("root must be object")
-    status = data.get("status", "continue")
-    if status not in ("continue", "done"):
-        raise ValueError("status must be continue|done")
-    calls = data.get("tool_calls") or []
-    if not isinstance(calls, list):
-        raise ValueError("tool_calls must be list")
-    for c in calls:
-        if not isinstance(c, dict) or "name" not in c:
-            raise ValueError("each tool_call needs name")
-        if "args" not in c or not isinstance(c["args"], dict):
-            c["args"] = {}
-    out: dict[str, Any] = {
-        "status": status,
-        "rationale": str(data.get("rationale", "")),
-        "tool_calls": calls,
-    }
-    for k in ("observe", "think", "act_summary"):
-        if k in data and data[k] is not None:
-            out[k] = str(data[k])[:4000]
-    return out
 
 
 @dataclass
@@ -149,6 +122,8 @@ class UnifiedSessionDriver:
         enable_episode_memory: bool = True,
         enable_workspace_code_index: bool = True,
         enable_stateful_shell: bool = True,
+        enforce_think_before_act: bool = True,
+        inject_long_context_anchor: bool = True,
     ) -> None:
         self._llm = llm
         self._ws = workspace
@@ -161,6 +136,8 @@ class UnifiedSessionDriver:
         self._enable_episode_memory = enable_episode_memory
         self._enable_workspace_code_index = enable_workspace_code_index
         self._enable_stateful_shell = enable_stateful_shell
+        self._enforce_think_before_act = enforce_think_before_act
+        self._inject_long_context_anchor = inject_long_context_anchor
         self._runtime_code_index: WorkspaceCodeIndex | None = None
         self._runtime_episode_memory: EpisodeMemory | None = None
         self._runtime_shell_tracker: StatefulShellTracker | None = None
@@ -183,7 +160,54 @@ class UnifiedSessionDriver:
             "and **playwright_observe** before claiming UI/code success."
         )
         seed_user += REASONING_LOOP_SEED_SUFFIX
+        if goal_suggests_frontend_stack(goal):
+            snap = self._host_environment_snapshot_block()
+            if snap.strip():
+                seed_user += (
+                    "\n\n## Host workspace snapshot (environmental grounding)\n"
+                    "Plodder captured `pwd`-style layout at session start — **reconcile** with "
+                    "`sandbox_shell` + `fs_list` before assuming paths exist.\n```text\n"
+                    + _truncate(snap, 9000)
+                    + "\n```\n"
+                )
         return seed_user
+
+    def _host_environment_snapshot_block(self) -> str:
+        try:
+            from mini_devin.reliability.self_correction import gather_workspace_diagnostics_sync
+
+            return gather_workspace_diagnostics_sync(str(self._ws.root), max_chars=8000)
+        except Exception:
+            return ""
+
+    def _long_context_anchor_block(self, worklog: PlodderWorklog, round_idx: int) -> str:
+        """
+        Re-inject PLAN.md and worklog tail so long-horizon tasks (Gemini-scale context) stay grounded.
+        Full PLAN.md every 5 rounds; worklog tail every round.
+        """
+        chunks: list[str] = []
+        plan_path = Path(self._ws.root) / "PLAN.md"
+        if round_idx == 0 or round_idx % 5 == 0:
+            if plan_path.is_file():
+                try:
+                    pt = plan_path.read_text(encoding="utf-8", errors="replace")
+                    if len(pt) > 40_000:
+                        pt = pt[:40_000] + "\n\n...(PLAN.md truncated)\n"
+                    chunks.append("## PLAN.md (workspace root)\n```markdown\n" + pt + "\n```")
+                except OSError:
+                    pass
+        summary = (worklog.summary_of_progress or "").strip()
+        if summary:
+            tail = summary[-8000:] if len(summary) > 8000 else summary
+            chunks.append("## Worklog summary_of_progress (tail)\n```text\n" + tail + "\n```")
+        tail_events = worklog.events[-10:]
+        if tail_events:
+            chunks.append(
+                "## Recent worklog events (last 10)\n```json\n"
+                + json.dumps(tail_events, indent=2, default=str, ensure_ascii=False)[:8000]
+                + "\n```"
+            )
+        return "\n\n".join(chunks) if chunks else ""
 
     async def _complete(self, messages: list[ChatMessage]) -> str:
         return await self._llm(messages)
@@ -266,11 +290,27 @@ class UnifiedSessionDriver:
                             "content": "## Episode continuity (from session_memory.jsonl)\n" + cont,
                         }
                     )
+            if self._inject_long_context_anchor:
+                anchor = self._long_context_anchor_block(worklog, round_idx)
+                if anchor.strip():
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": "## Long-horizon continuity (PLAN.md + worklog)\n" + anchor,
+                        }
+                    )
             raw = await self._complete(messages)
             tr_assistant: dict[str, Any] = {"round": round_idx, "assistant_raw": raw[:24000]}
             try:
                 turn = parse_driver_turn(raw)
-                for k in ("observe", "think", "act_summary"):
+                for k in (
+                    "observe",
+                    "think",
+                    "act_summary",
+                    "sub_goal",
+                    "risk_assessment",
+                    "expected_outcome",
+                ):
                     if k in turn:
                         tr_assistant[k] = turn[k]
             except (json.JSONDecodeError, ValueError) as e:
@@ -291,10 +331,11 @@ class UnifiedSessionDriver:
 
             transcript.append(tr_assistant)
             final_rationale = turn["rationale"]
-            if self._runtime_episode_memory and (turn.get("rationale") or "").strip():
+            thought_blob = build_agent_thought_text(turn)
+            if self._runtime_episode_memory and thought_blob.strip():
                 self._runtime_episode_memory.append(
                     "thought",
-                    {"text": str(turn.get("rationale", ""))[:8000]},
+                    {"text": thought_blob[:8000]},
                     round_idx=round_idx,
                 )
             if turn["status"] == "done":
@@ -315,7 +356,15 @@ class UnifiedSessionDriver:
                 terminated_with_done = True
                 break
 
-            thought = str(turn.get("rationale", "") or "")
+            if self._enforce_think_before_act:
+                mono_err = monologue_validation_error(turn)
+                if mono_err:
+                    messages.append({"role": "assistant", "content": raw[:12000]})
+                    messages.append({"role": "user", "content": mono_err})
+                    rounds_used += 1
+                    continue
+
+            thought = build_agent_thought_text(turn)
 
             calls = turn["tool_calls"][: self._max_tool_calls_per_turn]
             if not calls:
@@ -379,6 +428,7 @@ class UnifiedSessionDriver:
                     )
 
             obs = "## Tool results\n```json\n" + json.dumps(results, indent=2) + "\n```"
+            obs += terminal_failure_followup_hints(results)
             if diag_hints:
                 obs += "\n\n## Orchestrator (repeated-failure observation)\n" + json.dumps(
                     diag_hints, indent=2
@@ -512,6 +562,43 @@ class UnifiedSessionDriver:
                 }
             if name == "playwright_observe":
                 url = str(args.get("url", "http://127.0.0.1:5173")).strip()
+                capture_console = bool(args.get("capture_console", False))
+                wait_raw = args.get("wait_ms", 900)
+                try:
+                    wait_ms = int(wait_raw)
+                except (TypeError, ValueError):
+                    wait_ms = 900
+                wait_ms = max(200, min(wait_ms, 8000))
+                if capture_console:
+                    from plodder.tools.browser_manager import capture_url_screenshot_with_console
+
+                    data = await asyncio.to_thread(
+                        capture_url_screenshot_with_console,
+                        url,
+                        wait_after_load_ms=wait_ms,
+                    )
+                    if not data.get("ok"):
+                        return {
+                            "tool": name,
+                            "ok": False,
+                            "error": str(data.get("error", "observe failed")),
+                            "url": url,
+                            "console_messages": data.get("console_messages") or [],
+                            "page_errors": data.get("page_errors") or [],
+                        }
+                    img = str(data.get("image_base64", "") or "")
+                    cap = 48_000
+                    return {
+                        "tool": name,
+                        "ok": True,
+                        "url": url,
+                        "capture_console": True,
+                        "image_base64": img[:cap],
+                        "image_truncated": len(img) > cap,
+                        "console_messages": data.get("console_messages") or [],
+                        "console_truncated": bool(data.get("console_truncated")),
+                        "page_errors": data.get("page_errors") or [],
+                    }
                 from plodder.tools.browser_manager import capture_url_screenshot_base64
 
                 b64 = await asyncio.to_thread(capture_url_screenshot_base64, url)

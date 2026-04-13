@@ -616,10 +616,17 @@ class DatabaseSessionManager:
                             data.get("query"),
                             data.get("screenshot_base64"),
                         )
-                    
+                    elif update_type == "file_changed":
+                        await connection_manager.send_file_changed(
+                            session_id,
+                            task_id,
+                            data.get("path", ""),
+                            data.get("content", ""),
+                        )
+
                     # Update iteration and status in database with locking
-                    # Skip for high-frequency stream events
-                    if update_type not in ("tokens", "thinking", "tool_output"):
+                    # Skip for high-frequency stream events (and large file_changed payloads)
+                    if update_type not in ("tokens", "thinking", "tool_output", "file_changed"):
                         iteration = agent.state.iteration if agent and hasattr(agent, 'state') else 0
                         async with update_lock:
                             async with self._session_maker() as db:
@@ -693,6 +700,12 @@ class DatabaseSessionManager:
                     "browser_event",
                     payload if isinstance(payload, dict) else {"event_type": "other"},
                 )),
+                "on_file_changed": lambda path, content=None: _fire(
+                    on_update(
+                        "file_changed",
+                        {"path": path, "content": content if content is not None else ""},
+                    )
+                ),
             }
 
             # Run the agent — track asyncio.Task for cancellation

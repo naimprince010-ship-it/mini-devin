@@ -229,7 +229,16 @@ function browserMetaFromTool(tool: string, input: Record<string, unknown>): { ty
     }
     return { type: 'other', url: (input.url as string) || undefined, query: (input.query as string) || undefined };
 }
-const FILE_WRITE_TOOLS = new Set(['write_file', 'edit_file', 'str_replace_editor', 'create_file', 'write_to_file', 'patch_file', 'overwrite_file']);
+const FILE_WRITE_TOOLS = new Set([
+    'write_file',
+    'edit_file',
+    'str_replace_editor',
+    'create_file',
+    'write_to_file',
+    'patch_file',
+    'overwrite_file',
+    'atomic_edit',
+]);
 
 export function SessionEventsProvider({ children }: { children: React.ReactNode }) {
     const [state, setState] = useState<SessionEventsState>(defaultState);
@@ -331,25 +340,38 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
                     ];
                 }
 
-                // File edits — also check tool_completed output for content (from backend editor tool)
+                // File edits — editor / atomic_edit / legacy write tools (content when present on WS output)
                 if (tool && (FILE_WRITE_TOOLS.has(tool.tool) || tool.tool === 'editor')) {
                     const inputAction = (tool.input.action as string) || '';
-                    const isWrite = FILE_WRITE_TOOLS.has(tool.tool) || inputAction === 'write_file' || inputAction === 'apply_patch';
+                    const isEditorMutation =
+                        tool.tool === 'editor' &&
+                        ['write_file', 'apply_patch', 'str_replace'].includes(inputAction);
+                    const isAtomic = tool.tool === 'atomic_edit';
+                    const isWrite =
+                        FILE_WRITE_TOOLS.has(tool.tool) ||
+                        isEditorMutation ||
+                        isAtomic;
                     if (isWrite) {
-                        const path = (tool.input.path as string) || (tool.input.file_path as string) || (tool.input.filename as string) || 'unknown';
-                        // Prefer content from output (backend sends actual written content), fallback to input
-                        const content = (output.content as string)
-                            || (output.file_content as string)
-                            || (tool.input.content as string)
-                            || (tool.input.new_content as string)
-                            || '';
+                        const path =
+                            (tool.input.path as string) ||
+                            (output.path as string) ||
+                            (tool.input.file_path as string) ||
+                            (tool.input.filename as string) ||
+                            'unknown';
+                        const content =
+                            (output.content as string) ||
+                            (output.file_content as string) ||
+                            (output.new_content as string) ||
+                            (tool.input.content as string) ||
+                            (tool.input.new_content as string) ||
+                            '';
                         const fileEdit: FileEdit = {
-                            path,
+                            path: path.replace(/\\/g, '/'),
                             content,
                             timestamp: new Date(),
                             toolId: id,
                         };
-                        const existing = prev.fileEdits.findIndex(f => f.path === path);
+                        const existing = prev.fileEdits.findIndex(f => f.path === fileEdit.path);
                         if (existing >= 0) {
                             const updated = [...prev.fileEdits];
                             fileEdit.before = updated[existing].content;
@@ -514,14 +536,15 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
     }, []);
 
     const onFileChangedFromWS = useCallback((path: string, content: string) => {
+        const normPath = (path || '').replace(/\\/g, '/');
         setState(prev => {
             const fileEdit: FileEdit = {
-                path,
+                path: normPath,
                 content,
                 timestamp: new Date(),
                 toolId: `ws-${Date.now()}`,
             };
-            const existing = prev.fileEdits.findIndex(f => f.path === path);
+            const existing = prev.fileEdits.findIndex(f => f.path === normPath);
             let fileEdits: FileEdit[];
             if (existing >= 0) {
                 fileEdits = [...prev.fileEdits];
@@ -531,7 +554,7 @@ export function SessionEventsProvider({ children }: { children: React.ReactNode 
                 fileEdits = [...prev.fileEdits, fileEdit];
             }
             const changedFiles = new Set(prev.changedFiles);
-            changedFiles.add(path);
+            changedFiles.add(normPath);
             return { ...prev, fileEdits, changedFiles };
         });
     }, []);

@@ -196,6 +196,66 @@ class BrowserManager:
         }
 
 
+def capture_url_screenshot_with_console(
+    url: str,
+    *,
+    headless: bool = True,
+    full_page: bool = False,
+    wait_until: str = "domcontentloaded",
+    wait_after_load_ms: int = 900,
+) -> dict[str, Any]:
+    """
+    One-shot navigation + screenshot + browser **console** + uncaught page errors.
+
+    Used when ``npm run dev`` / Vite fails and the agent needs runtime signals like OpenHands.
+    """
+    console_lines: list[str] = []
+    page_errors: list[str] = []
+    if sync_playwright is None:
+        return {"ok": False, "error": "playwright is not installed", "url": url}
+    try:
+        wait_s = max(0.25, min(wait_after_load_ms / 1000.0, 12.0))
+        with BrowserManager(headless=headless) as bm:
+            page = bm.page
+
+            def on_console(msg: Any) -> None:
+                try:
+                    console_lines.append(f"{msg.type}: {msg.text}")
+                except Exception:
+                    pass
+
+            def on_page_error(err: Any) -> None:
+                try:
+                    page_errors.append(str(err))
+                except Exception:
+                    pass
+
+            page.on("console", on_console)
+            page.on("pageerror", on_page_error)
+            bm.navigate(url, wait_until=wait_until)
+            time.sleep(wait_s)
+            b64 = bm.take_screenshot_base64(full_page=full_page)
+            cap = 48_000
+            img = b64 or ""
+            return {
+                "ok": True,
+                "url": url,
+                "image_base64": img[:cap],
+                "image_truncated": len(img) > cap,
+                "console_messages": console_lines[:160],
+                "console_truncated": len(console_lines) > 160,
+                "page_errors": page_errors[:48],
+            }
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False,
+            "error": str(e),
+            "url": url,
+            "console_messages": console_lines[:80],
+            "page_errors": page_errors[:24],
+        }
+
+
 def capture_url_screenshot_base64(
     url: str,
     *,

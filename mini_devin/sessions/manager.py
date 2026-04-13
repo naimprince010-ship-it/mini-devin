@@ -421,7 +421,8 @@ class SessionManager:
                     )
                 elif update_type == "file_changed":
                     await connection_manager.send_file_changed(
-                        session_id, task_id,
+                        session_id,
+                        task_id,
                         data.get("path", ""),
                         data.get("content", ""),
                     )
@@ -478,6 +479,12 @@ class SessionManager:
                     on_update(
                         "tool_output",
                         {"line": line, "type": "output", "ts": __import__("time").time()},
+                    )
+                ),
+                "on_file_changed": lambda path, content=None: asyncio.create_task(
+                    on_update(
+                        "file_changed",
+                        {"path": path, "content": content if content is not None else ""},
                     )
                 ),
             }

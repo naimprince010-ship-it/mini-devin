@@ -432,9 +432,9 @@ class Agent:
             return self._observation_llm_override
         if self._observation_llm is None:
             try:
-                om = (os.environ.get("LLM_MODEL_OBSERVATION") or "gemini/gemini-1.5-flash").strip()
+                om = (os.environ.get("LLM_MODEL_OBSERVATION") or "gemini/gemini-2.0-flash").strip()
                 if not om:
-                    om = "gemini/gemini-1.5-flash"
+                    om = "gemini/gemini-2.0-flash"
                 temp = float((os.environ.get("LLM_OBSERVATION_TEMPERATURE") or "0.1").strip() or 0.1)
                 self._observation_llm = create_llm_client(model=om, temperature=temp)
             except ValueError:
@@ -487,6 +487,34 @@ class Agent:
                 + "\n\n_(Workspace context — refreshed each model call.)_",
             }
         ]
+
+    async def _emit_file_changed_ui(self, relative_path: str, file_content: str | None = None) -> None:
+        """Notify UI (WebSocket) with full file text after a successful workspace edit."""
+        if "on_file_changed" not in self.callbacks:
+            return
+        rp = str(relative_path or "").strip().replace("\\", "/")
+        if not rp:
+            return
+        text = file_content
+        if text is None:
+            if not self.working_directory:
+                return
+            root = Path(self.working_directory).resolve()
+            candidate = (root / rp).resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                return
+            if not candidate.is_file():
+                return
+            try:
+                text = candidate.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return
+        cap = int(os.environ.get("PLODDER_WS_FILE_CHANGED_MAX_CHARS", "500000"))
+        if len(text) > cap:
+            text = text[:cap] + "\n\n...(truncated for Plodder UI sync)\n"
+        await self._trigger_callback("on_file_changed", rp, text)
 
     async def _prepare_messages_for_llm_turn(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         from mini_devin.core.context_condenser import condense_chat_messages
@@ -1621,8 +1649,6 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                         output = f"str_replace: {result.replacements_made} replacement(s) in {result.path}"
                         if self._artifact_logger:
                             self._artifact_logger.add_file_modified(file_path)
-                        # Notify frontend of file change
-                        await self._trigger_callback("on_file_changed", file_path)
                     else:
                         output = f"Error: {result.error_message}"
 
@@ -1731,6 +1757,14 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                     and "BLOCKED" not in out_final
                 ):
                     self._context_focus_path = str(file_path).replace("\\", "/")
+
+                if (
+                    file_path
+                    and action in ("write_file", "str_replace", "apply_patch")
+                    and "Error" not in out_final
+                    and "BLOCKED" not in out_final
+                ):
+                    await self._emit_file_changed_ui(str(file_path).replace("\\", "/"))
 
                 return out_final
             

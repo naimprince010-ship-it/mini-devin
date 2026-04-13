@@ -308,7 +308,7 @@ class TestModelRegistry:
         registry = ModelRegistry()
         registry.configure_providers(google=GoogleAIConfig(api_key="AIza-x", enabled=True))
         default = registry.get_default_model()
-        assert default == "gemini/gemini-1.5-flash"
+        assert default == "gemini/gemini-2.0-flash"
 
     def test_get_default_model_prefers_google_when_both_keys(self):
         """Gemini is the preferred default when both Google and OpenAI are configured."""
@@ -317,7 +317,7 @@ class TestModelRegistry:
             google=GoogleAIConfig(api_key="AIza-x", enabled=True),
             openai=OpenAIConfig(api_key="sk-x", enabled=True),
         )
-        assert registry.get_default_model() == "gemini/gemini-1.5-flash"
+        assert registry.get_default_model() == "gemini/gemini-2.0-flash"
 
     def test_get_default_model_anthropic(self):
         """Test getting default model when only Anthropic is configured."""
@@ -356,9 +356,17 @@ class TestGetLiteLLMModelName:
         assert name == "ollama/llama3.2"
 
     def test_gemini_model(self):
-        """Gemini LiteLLM ids pass through unchanged."""
+        """Legacy Gemini 1.5 Flash maps to current Google AI Studio default (2.0 Flash)."""
         name = get_litellm_model_name("gemini/gemini-1.5-flash")
-        assert name == "gemini/gemini-1.5-flash"
+        assert name == "gemini/gemini-2.0-flash"
+
+    def test_google_prefix_gemini_maps_to_litellm_route(self):
+        """Wrong ``google/`` prefix for AI Studio is normalized to ``gemini/``."""
+        assert get_litellm_model_name("google/gemini-2.0-flash") == "gemini/gemini-2.0-flash"
+
+    def test_gemini_flash_successor_env_override(self):
+        with patch.dict(os.environ, {"GEMINI_FLASH_SUCCESSOR_MODEL": "gemini/gemini-2.5-flash"}):
+            assert get_litellm_model_name("gemini/gemini-1.5-flash") == "gemini/gemini-2.5-flash"
 
     def test_unknown_model(self):
         """Test unknown model returns as-is."""

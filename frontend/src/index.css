@@ -75,6 +75,14 @@ code {
   border-color: var(--border-color);
 }
 
+/* Monaco — highlight region after agent / atomic_edit sync */
+.monaco-editor .plodder-agent-edit-highlight {
+  background-color: rgba(0, 255, 153, 0.1) !important;
+}
+.monaco-editor .plodder-agent-edit-margin {
+  border-left: 3px solid rgba(0, 255, 153, 0.65) !important;
+}
+
 .devin-active-tab {
   background-color: rgba(0, 255, 153, 0.1);
   color: var(--accent-green);

@@ -2,7 +2,7 @@
 Multi-Model Provider Support for Plodder (Phase 12).
 
 This module provides support for multiple LLM providers:
-- Google Gemini (via LiteLLM, e.g. gemini/gemini-1.5-flash)
+- Google Gemini (via LiteLLM, e.g. ``gemini/gemini-2.0-flash`` for Google AI Studio)
 - OpenAI (GPT-4, GPT-4o, GPT-3.5)
 - Anthropic (Claude 3.5, Claude 3)
 - Ollama (local models)
@@ -292,14 +292,14 @@ OLLAMA_MODELS = [
 
 GEMINI_MODELS = [
     ModelInfo(
-        id="gemini/gemini-1.5-flash",
-        name="Gemini 1.5 Flash",
+        id="gemini/gemini-2.0-flash",
+        name="Gemini 2.0 Flash",
         provider=Provider.GOOGLE,
         context_window=1_000_000,
         supports_tools=True,
         supports_vision=True,
         max_output_tokens=8192,
-        description="Fast Gemini 1.5 with long context (Google AI Studio via LiteLLM)",
+        description="Fast Gemini 2.0 (Google AI Studio; LiteLLM ``gemini/`` route)",
     ),
 ]
 
@@ -444,7 +444,7 @@ class ModelRegistry:
     def get_default_model(self) -> str:
         """Get the default model ID based on configured providers."""
         if self.is_provider_configured(Provider.GOOGLE):
-            return os.environ.get("DEFAULT_GEMINI_MODEL", "gemini/gemini-1.5-flash")
+            return os.environ.get("DEFAULT_GEMINI_MODEL", "gemini/gemini-2.0-flash")
         if self.is_provider_configured(Provider.OPENAI):
             return "gpt-4o"
         if self.is_provider_configured(Provider.ANTHROPIC):
@@ -485,6 +485,33 @@ def get_model_registry() -> ModelRegistry:
     return _registry
 
 
+def normalize_gemini_model_id_for_litellm(model_id: str) -> str:
+    """
+    Map legacy or wrong-prefix Gemini IDs to a model string Google AI Studio + LiteLLM accept.
+
+    LiteLLM uses the ``gemini/`` prefix for API-key (Google AI Studio) access — not ``google/``.
+    Unversioned ``gemini-1.5-flash`` often returns HTTP 404 from Google; the default successor is
+    ``gemini/gemini-2.0-flash``. Override with ``GEMINI_FLASH_SUCCESSOR_MODEL``.
+    """
+    key = (model_id or "").strip()
+    if not key:
+        return key
+    low = key.lower()
+    successor = (os.environ.get("GEMINI_FLASH_SUCCESSOR_MODEL") or "gemini/gemini-2.0-flash").strip()
+    legacy_flash = frozenset(
+        {
+            "gemini/gemini-1.5-flash",
+            "google/gemini-1.5-flash",
+            "gemini-1.5-flash",
+        }
+    )
+    if low in legacy_flash:
+        return successor
+    if low.startswith("google/gemini"):
+        return "gemini/" + key.split("/", 1)[1]
+    return key
+
+
 def get_litellm_model_name(model_id: str, registry: ModelRegistry | None = None) -> str:
     """
     Convert a model ID to the format expected by LiteLLM.
@@ -496,6 +523,7 @@ def get_litellm_model_name(model_id: str, registry: ModelRegistry | None = None)
     Returns:
         Model name in LiteLLM format
     """
+    model_id = normalize_gemini_model_id_for_litellm(model_id)
     if registry is None:
         registry = get_model_registry()
     

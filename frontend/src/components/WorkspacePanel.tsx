@@ -4,7 +4,7 @@ import { MemoryView } from './MemoryView';
 import { FileExplorer } from './FileExplorer';
 import { ToolCallLog } from './ToolCallLog';
 import { FileDiffView } from './FileDiffView';
-import { MonacoEditorPanel } from './MonacoEditorPanel';
+import { MonacoEditorPanel, type AgentRemoteSnapshot } from './MonacoEditorPanel';
 import { ActivityFeed } from './ActivityFeed';
 import { useSessionEvents } from '../contexts/SessionEventsContext';
 
@@ -20,6 +20,38 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
     const events = useSessionEvents();
     // Monaco editor state: which file is open
     const [openFile, setOpenFile] = useState<string | null>(null);
+    const [serverRefetchKey, setServerRefetchKey] = useState(0);
+    const lastAtomicRefetchToolId = useRef<string | null>(null);
+
+    const latestAgentRemote: AgentRemoteSnapshot | null = React.useMemo(() => {
+        if (!openFile) return null;
+        const norm = openFile.replace(/\\/g, '/');
+        const hits = events.fileEdits.filter(f => f.path.replace(/\\/g, '/') === norm);
+        const last = hits[hits.length - 1];
+        if (!last) return null;
+        return {
+            revision: last.timestamp.getTime(),
+            content: last.content,
+            before: last.before,
+        };
+    }, [openFile, events.fileEdits]);
+
+    // Plodder ``atomic_edit`` often completes without full file body on tool_result — refetch from API.
+    useEffect(() => {
+        const done = events.toolCalls.filter(t => t.status === 'completed');
+        const last = done[done.length - 1];
+        if (!last || !openFile) return;
+        if (last.tool !== 'atomic_edit') return;
+        if (last.id === lastAtomicRefetchToolId.current) return;
+        const p = String((last.input?.path as string) || '').replace(/\\/g, '/');
+        if (p !== openFile.replace(/\\/g, '/')) return;
+        lastAtomicRefetchToolId.current = last.id;
+        setServerRefetchKey(k => k + 1);
+    }, [events.toolCalls, openFile]);
+
+    useEffect(() => {
+        lastAtomicRefetchToolId.current = null;
+    }, [openFile]);
 
     // Shell UX state
     const [shellSearch, setShellSearch] = useState('');
@@ -329,14 +361,30 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
                 {activeTab === 'editor' && (
                     <div className="absolute inset-0 flex flex-col">
                         {openFile && sessionId ? (
-                            // Monaco editor for the selected file
-                            <MonacoEditorPanel
-                                sessionId={sessionId}
-                                filePath={openFile}
-                                initialContent={events.fileEdits.find(f => f.path === openFile)?.content}
-                                onClose={() => setOpenFile(null)}
-                                onSaved={() => { }}
-                            />
+                            <div className="flex h-full min-h-0">
+                                <div className="w-52 flex-shrink-0 border-r border-[#1a1a1a] flex flex-col bg-[#080808] min-h-0">
+                                    <div className="text-[9px] uppercase tracking-wider text-[#525252] px-2 py-1.5 border-b border-[#1a1a1a] flex-shrink-0">
+                                        Workspace
+                                    </div>
+                                    <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+                                        <FileExplorer
+                                            sessionId={sessionId}
+                                            onFileSelect={(path: string) => { setOpenFile(path); }}
+                                        />
+                                    </div>
+                                </div>
+                                <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+                                    <MonacoEditorPanel
+                                        sessionId={sessionId}
+                                        filePath={openFile}
+                                        initialContent={events.fileEdits.find(f => f.path.replace(/\\/g, '/') === openFile.replace(/\\/g, '/'))?.content}
+                                        agentRemote={latestAgentRemote}
+                                        serverRefetchKey={serverRefetchKey}
+                                        onClose={() => setOpenFile(null)}
+                                        onSaved={() => { }}
+                                    />
+                                </div>
+                            </div>
                         ) : events.fileEdits.length > 0 ? (
                             // File diff view when agent has written files
                             <div className="flex flex-col h-full">

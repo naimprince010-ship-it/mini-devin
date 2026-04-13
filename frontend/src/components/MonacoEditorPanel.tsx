@@ -9,11 +9,23 @@ import Editor, { OnMount } from '@monaco-editor/react';
 import type * as Monaco from 'monaco-editor';
 import { Save, X, AlertCircle, Loader2 } from 'lucide-react';
 import { getApiBase } from '../config/apiBase';
+import { computeChangedLineSpan } from '../utils/diffLineRange';
+
+/** Latest snapshot from WebSocket / tool stream (same path as ``filePath``). */
+export interface AgentRemoteSnapshot {
+    revision: number;
+    content: string;
+    before?: string;
+}
 
 interface MonacoEditorPanelProps {
     sessionId: string;
     filePath: string;          // relative to working dir
     initialContent?: string;   // if already known (e.g. from file_changed event)
+    /** Live workspace sync — bumps ``revision`` when agent edits this file (incl. atomic_edit via WS). */
+    agentRemote?: AgentRemoteSnapshot | null;
+    /** Increment to force GET /file refresh (e.g. atomic_edit without full content on tool_result). */
+    serverRefetchKey?: number;
     onClose?: () => void;
     onSaved?: (path: string, content: string) => void;
 }
@@ -59,7 +71,13 @@ function markerSeverity(m: typeof Monaco, s: string): Monaco.MarkerSeverity {
 }
 
 export function MonacoEditorPanel({
-    sessionId, filePath, initialContent, onClose, onSaved,
+    sessionId,
+    filePath,
+    initialContent,
+    agentRemote,
+    serverRefetchKey = 0,
+    onClose,
+    onSaved,
 }: MonacoEditorPanelProps) {
     const [content, setContent] = useState<string>(initialContent ?? '');
     const [loading, setLoading] = useState(!initialContent);
@@ -69,9 +87,13 @@ export function MonacoEditorPanel({
     const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
     const monacoRef = useRef<typeof Monaco | null>(null);
     const hoverDisposableRef = useRef<{ dispose: () => void } | null>(null);
+    const decoIdsRef = useRef<string[]>([]);
+    const lastRemoteRev = useRef<number>(0);
+    const [editorReady, setEditorReady] = useState(false);
 
     // Load file content
     useEffect(() => {
+        setEditorReady(false);
         if (initialContent !== undefined) {
             setContent(initialContent);
             setLoading(false);
@@ -94,6 +116,87 @@ export function MonacoEditorPanel({
                 setLoading(false);
             });
     }, [sessionId, filePath, initialContent]);
+
+    // Re-fetch from API when parent signals disk may have changed (e.g. Plodder atomic_edit).
+    useEffect(() => {
+        if (!sessionId || !filePath || serverRefetchKey <= 0) return;
+        let cancelled = false;
+        void (async () => {
+            try {
+                const r = await fetch(
+                    `${getApiBase()}/sessions/${sessionId}/file?path=${encodeURIComponent(filePath)}`,
+                );
+                if (!r.ok || cancelled) return;
+                const d = (await r.json()) as { content?: string };
+                const txt = d.content ?? '';
+                const ed = editorRef.current;
+                const model = ed?.getModel();
+                if (!ed || !model || cancelled) return;
+                if (model.getValue() !== txt) {
+                    ed.executeEdits('server-refetch', [{ range: model.getFullModelRange(), text: txt }]);
+                    setContent(txt);
+                    setDirty(false);
+                }
+            } catch {
+                /* ignore */
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [serverRefetchKey, sessionId, filePath]);
+
+    // Apply live agent / WS snapshot + highlight changed lines (OpenHands-style).
+    useEffect(() => {
+        if (loading || !agentRemote) return;
+        if (agentRemote.revision === lastRemoteRev.current) return;
+        const ed = editorRef.current;
+        const monaco = monacoRef.current;
+        const model = ed?.getModel();
+        if (!ed || !monaco || !model) return;
+
+        lastRemoteRev.current = agentRemote.revision;
+
+        if (model.getValue() !== agentRemote.content) {
+            ed.executeEdits('agent-remote', [
+                { range: model.getFullModelRange(), text: agentRemote.content },
+            ]);
+            setContent(agentRemote.content);
+            setDirty(false);
+        }
+
+        const span = computeChangedLineSpan(agentRemote.before, agentRemote.content);
+        decoIdsRef.current = ed.deltaDecorations(
+            decoIdsRef.current,
+            span
+                ? [
+                    {
+                        range: new monaco.Range(
+                            span.startLine,
+                            1,
+                            span.endLine,
+                            Math.max(1, model.getLineMaxColumn(span.endLine)),
+                        ),
+                        options: {
+                            isWholeLine: true,
+                            className: 'plodder-agent-edit-highlight',
+                            marginClassName: 'plodder-agent-edit-margin',
+                        },
+                    },
+                ]
+                : [],
+        );
+    }, [loading, editorReady, agentRemote?.revision, agentRemote?.content, agentRemote?.before]);
+
+    useEffect(() => {
+        lastRemoteRev.current = 0;
+    }, [filePath, sessionId]);
+
+    useEffect(() => {
+        if (!agentRemote && editorRef.current) {
+            decoIdsRef.current = editorRef.current.deltaDecorations(decoIdsRef.current, []);
+        }
+    }, [agentRemote]);
 
     const pullDiagnostics = useCallback(async () => {
         const editor = editorRef.current;
@@ -238,6 +341,11 @@ export function MonacoEditorPanel({
     const onMount: OnMount = (editor, monaco) => {
         editorRef.current = editor;
         monacoRef.current = monaco;
+        setEditorReady(true);
+        editor.onDidDispose(() => {
+            decoIdsRef.current = [];
+            setEditorReady(false);
+        });
     };
 
     return (
