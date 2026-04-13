@@ -12,6 +12,7 @@ depends on ``mini_devin``.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
 from dataclasses import dataclass, field
@@ -27,6 +28,11 @@ from plodder.core.universal_prompt_engine import (
 from plodder.lsp.bridge import DiagnosticsReport
 from plodder.orchestration.session_driver import UnifiedSessionDriver, UnifiedSessionResult
 from plodder.sandbox.execution_sandbox import SandboxResult
+from plodder.memory.reflection import run_self_heal_reflection
+from plodder.tools.browser_heuristics import (
+    build_vision_user_content,
+    looks_like_frontend_test_failure,
+)
 
 from mini_devin.reliability.self_correction import (
     error_fingerprint,
@@ -145,6 +151,7 @@ class SelfHealResult:
     sandbox_attempts: list[dict[str, Any]] = field(default_factory=list)
     plan_raw: str = ""
     last_repair_raw: str = ""
+    reflection_markdown: str = ""
 
 
 class SelfHealLoop:
@@ -153,6 +160,11 @@ class SelfHealLoop:
 
     For **multi-file projects** with filesystem + shell + auto-detected sandbox images,
     use ``UnifiedSessionDriver`` in ``plodder.orchestration.session_driver``.
+
+    Optional **browser vision** (Playwright): set ``browser_inspection_url`` and
+    ``use_browser_vision_on_frontend_failure=True`` so that when sandbox output looks like a
+    frontend test failure (Vitest/Jest/Playwright, etc.), the next repair prompt includes a
+    live screenshot for vision-capable LLMs.
     """
 
     def __init__(
@@ -164,6 +176,10 @@ class SelfHealLoop:
         target_language: str = "python",
         max_repair_attempts: int = 3,
         sandbox_timeout_sec: int | None = 30,
+        browser_inspection_url: str | None = None,
+        use_browser_vision_on_frontend_failure: bool = False,
+        reflection_workspace_root: str | None = None,
+        enable_reflection_after_recovery: bool = False,
     ) -> None:
         self._llm = llm
         self._sandbox = sandbox
@@ -171,6 +187,12 @@ class SelfHealLoop:
         self._target_language = target_language
         self._max_repair_attempts = max_repair_attempts
         self._sandbox_timeout_sec = sandbox_timeout_sec
+        #: When sandbox stderr/stdout looks like a frontend test failure, open this URL and
+        #: attach a screenshot to the repair prompt (vision-capable ``llm`` only).
+        self._browser_inspection_url = (browser_inspection_url or "").strip() or None
+        self._use_browser_vision_on_frontend_failure = use_browser_vision_on_frontend_failure
+        self._reflection_workspace_root = (reflection_workspace_root or "").strip() or None
+        self._enable_reflection_after_recovery = enable_reflection_after_recovery
 
     async def _complete(self, messages: list[ChatMessage]) -> str:
         return await self._llm(messages)
@@ -216,6 +238,23 @@ class SelfHealLoop:
             )
             ok = result.exit_code == 0 and not result.timed_out
             if ok:
+                reflection_md = ""
+                if (
+                    self._enable_reflection_after_recovery
+                    and self._reflection_workspace_root
+                    and len(attempts) >= 3
+                ):
+                    try:
+                        reflection_md = await run_self_heal_reflection(
+                            self._llm,
+                            goal=goal,
+                            plan_brief=plan.to_markdown_brief() if plan else "",
+                            attempts=attempts,
+                            final_code=code or "",
+                            workspace_root=self._reflection_workspace_root,
+                        )
+                    except Exception:
+                        reflection_md = ""
                 return SelfHealResult(
                     success=True,
                     goal=goal,
@@ -224,6 +263,7 @@ class SelfHealLoop:
                     sandbox_attempts=attempts,
                     plan_raw=plan_raw,
                     last_repair_raw=last_repair_raw,
+                    reflection_markdown=reflection_md,
                 )
             if run_idx >= max_runs - 1:
                 break
@@ -234,18 +274,42 @@ class SelfHealLoop:
                 exit_code=result.exit_code,
                 command=result.command,
             )
+            repair_prompt_text = self._engine.repair_user_prompt(
+                plan,
+                target_language=self._target_language,
+                prior_code=code,
+                execution_feedback_md=fb,
+                attempt=run_idx + 1,
+            )
+            user_content: str | list[dict[str, Any]] = repair_prompt_text
+            if (
+                self._use_browser_vision_on_frontend_failure
+                and self._browser_inspection_url
+                and looks_like_frontend_test_failure(result.stderr or "", result.stdout or "")
+            ):
+                try:
+                    from plodder.tools.browser_manager import capture_url_screenshot_base64
+
+                    b64 = await asyncio.to_thread(
+                        capture_url_screenshot_base64,
+                        self._browser_inspection_url,
+                    )
+                    if b64:
+                        png_bytes = base64.standard_b64decode(b64)
+                        extra = (
+                            "\n\n## Live UI screenshot\n"
+                            "The PNG below shows the page at `"
+                            + self._browser_inspection_url
+                            + "` after the test failure. "
+                            "Use layout/visual cues to fix CSS/JS if applicable."
+                        )
+                        user_content = build_vision_user_content(repair_prompt_text + extra, png_bytes)
+                except Exception:
+                    user_content = repair_prompt_text
+
             repair_messages = [
                 *self._engine.system_messages(),
-                {
-                    "role": "user",
-                    "content": self._engine.repair_user_prompt(
-                        plan,
-                        target_language=self._target_language,
-                        prior_code=code,
-                        execution_feedback_md=fb,
-                        attempt=run_idx + 1,
-                    ),
-                },
+                {"role": "user", "content": user_content},
             ]
             last_repair_raw = await self._complete(repair_messages)
             code = extract_code_fence(last_repair_raw, self._target_language)
@@ -258,6 +322,7 @@ class SelfHealLoop:
             sandbox_attempts=attempts,
             plan_raw=plan_raw,
             last_repair_raw=last_repair_raw,
+            reflection_markdown="",
         )
 
 

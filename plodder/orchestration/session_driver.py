@@ -18,6 +18,9 @@ from plodder.core.universal_prompt_engine import PolyglotSystemPrompt, Universal
 from plodder.sandbox.execution_sandbox import SandboxResult
 from plodder.sandbox.toolchain_detect import pick_default_entry
 from plodder.agent.orchestrator import PlodderWorklog, SessionRecoveryTracker, export_worklog_json
+from plodder.memory.learned_patterns import load_learned_patterns_for_prompt
+from plodder.memory.session_memory import EpisodeMemory
+from plodder.memory.workspace_code_index import WorkspaceCodeIndex
 from plodder.workspace.session_workspace import SessionWorkspace
 
 
@@ -104,6 +107,7 @@ _BASE_ALLOWED_TOOLS = frozenset(
         "sandbox_shell",
         "github",
         "gitleaks",
+        "search_codebase",
     }
 )
 
@@ -132,6 +136,8 @@ class UnifiedSessionDriver:
         max_tool_calls_per_turn: int = 8,
         sandbox_timeout_sec: int | None = 120,
         inject_logic_plan: bool = True,
+        enable_episode_memory: bool = True,
+        enable_workspace_code_index: bool = True,
     ) -> None:
         self._llm = llm
         self._ws = workspace
@@ -141,6 +147,10 @@ class UnifiedSessionDriver:
         self._max_tool_calls_per_turn = max_tool_calls_per_turn
         self._sandbox_timeout_sec = sandbox_timeout_sec
         self._inject_logic_plan = inject_logic_plan
+        self._enable_episode_memory = enable_episode_memory
+        self._enable_workspace_code_index = enable_workspace_code_index
+        self._runtime_code_index: WorkspaceCodeIndex | None = None
+        self._runtime_episode_memory: EpisodeMemory | None = None
 
     def allowed_tools(self) -> frozenset[str]:
         """Tool names this driver accepts (subclasses may extend)."""
@@ -169,7 +179,14 @@ class UnifiedSessionDriver:
             self._engine.session_unified_driver_contract(),
             self._engine.session_unified_tools_catalog(),
         ]
-        return "\n\n".join(parts)
+        base = "\n\n".join(parts)
+        try:
+            learned = load_learned_patterns_for_prompt(self._ws.root)
+        except Exception:
+            learned = ""
+        if learned:
+            base = base + "\n\n" + learned
+        return base
 
     async def run(self, goal: str) -> UnifiedSessionResult:
         from plodder.orchestration.self_heal import parse_pseudo_plan_json
@@ -179,6 +196,24 @@ class UnifiedSessionDriver:
         recovery_tracker = SessionRecoveryTracker()
         worklog = PlodderWorklog(goal=goal, workspace_root=str(self._ws.root))
         prior_round_diagnostic = False
+
+        self._runtime_code_index = None
+        self._runtime_episode_memory = None
+        if self._enable_episode_memory:
+            self._runtime_episode_memory = EpisodeMemory(self._ws.root)
+            self._runtime_episode_memory.append(
+                "meta",
+                {"event": "session_start", "goal": goal[:4000]},
+                round_idx=None,
+            )
+        if self._enable_workspace_code_index:
+            idx = WorkspaceCodeIndex(self._ws.root)
+            try:
+                stats = await asyncio.to_thread(idx.index_workspace)
+                transcript.append({"phase": "code_index", "stats": stats})
+                self._runtime_code_index = idx
+            except Exception as e:
+                transcript.append({"phase": "code_index", "error": str(e)})
 
         if self._inject_logic_plan:
             plan_messages: list[ChatMessage] = [
@@ -203,6 +238,15 @@ class UnifiedSessionDriver:
         terminated_with_done = False
 
         for round_idx in range(self._max_rounds):
+            if round_idx > 0 and self._runtime_episode_memory:
+                cont = self._runtime_episode_memory.get_condensed_context()
+                if cont.strip():
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": "## Episode continuity (from session_memory.jsonl)\n" + cont,
+                        }
+                    )
             raw = await self._complete(messages)
             transcript.append({"round": round_idx, "assistant_raw": raw[:24000]})
             try:
@@ -223,6 +267,12 @@ class UnifiedSessionDriver:
                 continue
 
             final_rationale = turn["rationale"]
+            if self._runtime_episode_memory and (turn.get("rationale") or "").strip():
+                self._runtime_episode_memory.append(
+                    "thought",
+                    {"text": str(turn.get("rationale", ""))[:8000]},
+                    round_idx=round_idx,
+                )
             if turn["status"] == "done":
                 low = final_rationale.lower()
                 success = not any(
@@ -269,6 +319,21 @@ class UnifiedSessionDriver:
                 else:
                     res = await self._exec_tool_async(name, args)
                     results.append(res)
+                if self._runtime_episode_memory:
+                    self._runtime_episode_memory.append(
+                        "action",
+                        {"tool": name, "args": dict(args) if isinstance(args, dict) else {}},
+                        round_idx=round_idx,
+                    )
+                    self._runtime_episode_memory.append(
+                        "observation",
+                        {
+                            "tool": name,
+                            "ok": bool(res.get("ok", True)),
+                            "summary": json.dumps(res, default=str, ensure_ascii=False)[:6000],
+                        },
+                        round_idx=round_idx,
+                    )
                 bundle = recovery_tracker.record_tool_observation(name, res)
                 worklog.record_action_observation(
                     round_idx=round_idx,
@@ -321,6 +386,15 @@ class UnifiedSessionDriver:
         except OSError:
             worklog_payload["export_error"] = "failed to write worklog.json (disk full or permissions)"
 
+        if self._runtime_episode_memory:
+            self._runtime_episode_memory.append(
+                "meta",
+                {"event": "session_end", "success": success, "rounds": rounds_used},
+                round_idx=None,
+            )
+        self._runtime_code_index = None
+        self._runtime_episode_memory = None
+
         return UnifiedSessionResult(
             success=success,
             goal=goal,
@@ -362,6 +436,20 @@ class UnifiedSessionDriver:
                 return await run_github_tool_for_workspace(str(self._ws.root), args)
             if name == "gitleaks":
                 return await self._tool_gitleaks_async(args)
+            if name == "search_codebase":
+                q = str(args.get("query", "")).strip()
+                if not q:
+                    return {"tool": name, "ok": False, "error": "query is required"}
+                top_k = int(args.get("top_k", 8))
+                idx = self._runtime_code_index
+                if idx is None:
+                    return {
+                        "tool": name,
+                        "ok": False,
+                        "error": "workspace code index not available (indexing failed or disabled)",
+                    }
+                hits = idx.search(q, top_k=top_k)
+                return {"tool": name, "ok": True, "query": q, "hits": hits}
         except Exception as e:  # noqa: BLE001 — surface to model
             return {"tool": name, "ok": False, "error": str(e), "args": args}
         return {"tool": name, "ok": False, "error": "unreachable"}

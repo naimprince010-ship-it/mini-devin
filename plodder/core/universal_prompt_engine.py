@@ -286,5 +286,6 @@ class UniversalPromptEngine:
 | `sandbox_shell` | `argv` (list of strings), `language_hint` (optional), `network` (bool) | Run a shell command in the sandbox with the workspace snapshot (e.g. `["sh","-c","cd /workspace && npm install"]`). Use `network: true` for installs. |
 | `github` | `action` (`create_branch`, `commit`, `create_pr`, `automated_workflow`, `get_pr_status`, `merge_pr`), plus branch/PR fields | GitHub or GitLab: `GITHUB_TOKEN` / GitHub remote, or `GITLAB_TOKEN` + `gitlab.com` / `GITLAB_HOST` / `GITLAB_API_URL`. Use `base_branch` `"default"` for the default branch. `create_pr` supports `draft`, `assignees`, `linked_issues` (GitHub; GitLab skips assignee IDs). Bitbucket is rejected. |
 | `gitleaks` | `extra_args` (optional list of strings) | Run `gitleaks detect` on the workspace root if `gitleaks` is installed on the server. |
+| `search_codebase` | `query` (required), `top_k` (optional, default 8) | **Semantic search** over indexed workspace source (LanceDB at session start). Use for cross-file symbols, configs, or patterns instead of manual `grep` when exploring. |
 
-**Notes:** `sandbox_*` requires Docker. For `sandbox_shell`, `argv` runs as the container entrypoint; working directory is `/workspace`."""
+**Notes:** `sandbox_*` requires Docker. For `sandbox_shell`, `argv` runs as the container entrypoint; working directory is `/workspace`. `search_codebase` requires a successful workspace index at session start (see transcript `code_index` phase)."""
