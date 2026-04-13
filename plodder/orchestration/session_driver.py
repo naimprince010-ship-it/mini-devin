@@ -21,6 +21,9 @@ from plodder.agent.orchestrator import PlodderWorklog, SessionRecoveryTracker, e
 from plodder.memory.learned_patterns import load_learned_patterns_for_prompt
 from plodder.memory.session_memory import EpisodeMemory
 from plodder.memory.workspace_code_index import WorkspaceCodeIndex
+from plodder.orchestration.reasoning_loop import REASONING_LOOP_SEED_SUFFIX, extract_shell_inner
+from plodder.sandbox.stateful_shell_tracker import StatefulShellTracker
+from plodder.workspace.atomic_editor import atomic_edit
 from plodder.workspace.session_workspace import SessionWorkspace
 
 
@@ -75,11 +78,15 @@ def parse_driver_turn(raw: str) -> dict[str, Any]:
             raise ValueError("each tool_call needs name")
         if "args" not in c or not isinstance(c["args"], dict):
             c["args"] = {}
-    return {
+    out: dict[str, Any] = {
         "status": status,
         "rationale": str(data.get("rationale", "")),
         "tool_calls": calls,
     }
+    for k in ("observe", "think", "act_summary"):
+        if k in data and data[k] is not None:
+            out[k] = str(data[k])[:4000]
+    return out
 
 
 @dataclass
@@ -108,6 +115,9 @@ _BASE_ALLOWED_TOOLS = frozenset(
         "github",
         "gitleaks",
         "search_codebase",
+        "atomic_edit",
+        "lsp_check",
+        "playwright_observe",
     }
 )
 
@@ -138,6 +148,7 @@ class UnifiedSessionDriver:
         inject_logic_plan: bool = True,
         enable_episode_memory: bool = True,
         enable_workspace_code_index: bool = True,
+        enable_stateful_shell: bool = True,
     ) -> None:
         self._llm = llm
         self._ws = workspace
@@ -149,8 +160,10 @@ class UnifiedSessionDriver:
         self._inject_logic_plan = inject_logic_plan
         self._enable_episode_memory = enable_episode_memory
         self._enable_workspace_code_index = enable_workspace_code_index
+        self._enable_stateful_shell = enable_stateful_shell
         self._runtime_code_index: WorkspaceCodeIndex | None = None
         self._runtime_episode_memory: EpisodeMemory | None = None
+        self._runtime_shell_tracker: StatefulShellTracker | None = None
 
     def allowed_tools(self) -> frozenset[str]:
         """Tool names this driver accepts (subclasses may extend)."""
@@ -165,9 +178,11 @@ class UnifiedSessionDriver:
         if plan_md:
             seed_user += f"## Pseudo-logic plan (follow; do not contradict)\n{plan_md}\n\n"
         seed_user += (
-            "Implement using tools. Prefer small edits. "
-            "When ready to verify, use `sandbox_run` with the correct `entry` path."
+            "Implement using tools. Prefer **atomic_edit** for surgical file edits. "
+            "When ready to verify, use `sandbox_run` with the correct `entry` path; use **lsp_check** "
+            "and **playwright_observe** before claiming UI/code success."
         )
+        seed_user += REASONING_LOOP_SEED_SUFFIX
         return seed_user
 
     async def _complete(self, messages: list[ChatMessage]) -> str:
@@ -215,6 +230,10 @@ class UnifiedSessionDriver:
             except Exception as e:
                 transcript.append({"phase": "code_index", "error": str(e)})
 
+        self._runtime_shell_tracker = (
+            StatefulShellTracker(self._ws.root) if self._enable_stateful_shell else None
+        )
+
         if self._inject_logic_plan:
             plan_messages: list[ChatMessage] = [
                 *self._engine.system_messages(),
@@ -248,10 +267,14 @@ class UnifiedSessionDriver:
                         }
                     )
             raw = await self._complete(messages)
-            transcript.append({"round": round_idx, "assistant_raw": raw[:24000]})
+            tr_assistant: dict[str, Any] = {"round": round_idx, "assistant_raw": raw[:24000]}
             try:
                 turn = parse_driver_turn(raw)
+                for k in ("observe", "think", "act_summary"):
+                    if k in turn:
+                        tr_assistant[k] = turn[k]
             except (json.JSONDecodeError, ValueError) as e:
+                transcript.append(tr_assistant)
                 messages.append({"role": "assistant", "content": raw[:12000]})
                 messages.append(
                     {
@@ -266,6 +289,7 @@ class UnifiedSessionDriver:
                 rounds_used += 1
                 continue
 
+            transcript.append(tr_assistant)
             final_rationale = turn["rationale"]
             if self._runtime_episode_memory and (turn.get("rationale") or "").strip():
                 self._runtime_episode_memory.append(
@@ -394,6 +418,7 @@ class UnifiedSessionDriver:
             )
         self._runtime_code_index = None
         self._runtime_episode_memory = None
+        self._runtime_shell_tracker = None
 
         return UnifiedSessionResult(
             success=success,
@@ -450,6 +475,56 @@ class UnifiedSessionDriver:
                     }
                 hits = idx.search(q, top_k=top_k)
                 return {"tool": name, "ok": True, "query": q, "hits": hits}
+            if name == "atomic_edit":
+                rel = str(args.get("path", "")).strip()
+                mode = str(args.get("mode", "str_replace")).strip().lower()
+                if mode not in ("str_replace", "write_full"):
+                    return {"tool": name, "ok": False, "error": "mode must be str_replace or write_full"}
+                try:
+                    out = atomic_edit(
+                        self._ws,
+                        rel,
+                        mode=mode,  # type: ignore[arg-type]
+                        old_string=args.get("old_string"),
+                        new_string=args.get("new_string"),
+                        content=args.get("content"),
+                    )
+                    return {"tool": name, "ok": True, **out}
+                except Exception as ex:
+                    return {"tool": name, "ok": False, "error": str(ex)}
+            if name == "lsp_check":
+                rel = str(args.get("path", "")).strip()
+                if not rel:
+                    return {"tool": name, "ok": False, "error": "path is required"}
+                from mini_devin.lsp.diagnostics import collect_diagnostics
+
+                content = args.get("content")
+                c = str(content) if content is not None else None
+                items, src = collect_diagnostics(str(self._ws.root), rel, c)
+                err_n = sum(1 for d in items if d.get("severity") == "error")
+                return {
+                    "tool": name,
+                    "ok": err_n == 0,
+                    "path": rel,
+                    "source": src,
+                    "diagnostics": items[:80],
+                    "error_count": err_n,
+                }
+            if name == "playwright_observe":
+                url = str(args.get("url", "http://127.0.0.1:5173")).strip()
+                from plodder.tools.browser_manager import capture_url_screenshot_base64
+
+                b64 = await asyncio.to_thread(capture_url_screenshot_base64, url)
+                if not b64:
+                    return {"tool": name, "ok": False, "error": "screenshot failed (Playwright/url?)"}
+                cap = 48_000
+                return {
+                    "tool": name,
+                    "ok": True,
+                    "url": url,
+                    "image_base64": b64[:cap],
+                    "image_truncated": len(b64) > cap,
+                }
         except Exception as e:  # noqa: BLE001 — surface to model
             return {"tool": name, "ok": False, "error": str(e), "args": args}
         return {"tool": name, "ok": False, "error": "unreachable"}
@@ -536,14 +611,20 @@ class UnifiedSessionDriver:
         language_hint = str(hint) if hint is not None else None
         network = bool(args.get("network", False))
         files = self._ws.snapshot_text_files()
+        argv_list = list(argv)
+        inner = extract_shell_inner(argv_list)
+        if self._runtime_shell_tracker is not None:
+            argv_list = self._runtime_shell_tracker.wrap_argv(argv_list)
         result = await asyncio.to_thread(
             self._sandbox.run_shell_in_workspace,
             files,
-            list(argv),
+            argv_list,
             language_hint=language_hint,
             timeout_sec=self._sandbox_timeout_sec,
             network=network,
         )
+        if self._runtime_shell_tracker is not None and inner is not None:
+            self._runtime_shell_tracker.ingest_user_command(inner)
         return self._sandbox_result_dict("sandbox_shell", result)
 
     @staticmethod

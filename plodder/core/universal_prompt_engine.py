@@ -287,5 +287,8 @@ class UniversalPromptEngine:
 | `github` | `action` (`create_branch`, `commit`, `create_pr`, `automated_workflow`, `get_pr_status`, `merge_pr`), plus branch/PR fields | GitHub or GitLab: `GITHUB_TOKEN` / GitHub remote, or `GITLAB_TOKEN` + `gitlab.com` / `GITLAB_HOST` / `GITLAB_API_URL`. Use `base_branch` `"default"` for the default branch. `create_pr` supports `draft`, `assignees`, `linked_issues` (GitHub; GitLab skips assignee IDs). Bitbucket is rejected. |
 | `gitleaks` | `extra_args` (optional list of strings) | Run `gitleaks detect` on the workspace root if `gitleaks` is installed on the server. |
 | `search_codebase` | `query` (required), `top_k` (optional, default 8) | **Semantic search** over indexed workspace source (LanceDB at session start). Use for cross-file symbols, configs, or patterns instead of manual `grep` when exploring. |
+| `atomic_edit` | `path`, `mode` (``str_replace`` or ``write_full``), `old_string`+`new_string` (replace) or `content` (full write) | **Hands**: read-verify-write in one step; prefer over raw `fs_write` for surgical edits. |
+| `lsp_check` | `path`, `content` (optional in-memory buffer) | **Eyes (code)**: Pyright/tsc/syntax diagnostics on disk or snapshot text. |
+| `playwright_observe` | `url` (optional, default `http://127.0.0.1:5173`) | **Eyes (UI)**: headless screenshot as base64; call before claiming frontend success. |
 
-**Notes:** `sandbox_*` requires Docker. For `sandbox_shell`, `argv` runs as the container entrypoint; working directory is `/workspace`. `search_codebase` requires a successful workspace index at session start (see transcript `code_index` phase)."""
+**Notes:** `sandbox_*` requires Docker. For `sandbox_shell`, `argv` runs in `/workspace` with **session-persistent cwd and exports** (see `.plodder/shell/session_state.json`). `search_codebase` requires a successful workspace index at session start (see transcript `code_index` phase)."""

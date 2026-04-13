@@ -77,6 +77,12 @@ def _action_display_name(tool_name: str) -> str:
         return "github_action"
     if tool_name == "gitleaks":
         return "security_scan"
+    if tool_name == "atomic_edit":
+        return "hands_atomic_edit"
+    if tool_name == "lsp_check":
+        return "eyes_lsp"
+    if tool_name == "playwright_observe":
+        return "eyes_playwright"
     return tool_name
 
 
