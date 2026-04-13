@@ -69,6 +69,8 @@ _REPO_ROOT = _discover_repo_root()
 load_dotenv(os.path.join(_REPO_ROOT, ".env"), override=True)
 load_dotenv(override=True)  # optional: cwd `.env` wins for local overrides
 
+DEFAULT_MAX_ITERATIONS = int(os.getenv("DEFAULT_MAX_ITERATIONS", "500"))
+
 from .websocket import ConnectionManager, WebSocketMessage, MessageType
 from ..auth.routes import router as auth_router
 from ..bridge.manager import get_bridge_manager
@@ -836,7 +838,7 @@ async def list_sessions():
 class CreateSessionRequest(BaseModel):
     working_directory: str = "."
     model: str = "auto"
-    max_iterations: int = 50
+    max_iterations: int = DEFAULT_MAX_ITERATIONS
     auto_git_commit: bool = False
     git_push: bool = False
 
@@ -858,7 +860,7 @@ async def create_session(raw_request: Request):
     new_session_id = str(uuid.uuid4())[:8]
 
     model = "auto"
-    max_iterations = 50
+    max_iterations = DEFAULT_MAX_ITERATIONS
     auto_git_commit = False
     git_push = False
     requested_dir = ""
@@ -868,7 +870,7 @@ async def create_session(raw_request: Request):
         requested_dir = body.get("working_directory", "") or ""
         raw_model = body.get("model", "auto")
         model = (str(raw_model).strip() if raw_model is not None else "") or "auto"
-        max_iterations = int(body.get("max_iterations", 50) or 50)
+        max_iterations = int(body.get("max_iterations", DEFAULT_MAX_ITERATIONS) or DEFAULT_MAX_ITERATIONS)
         auto_git_commit = bool(body.get("auto_git_commit", False))
         git_push = bool(body.get("git_push", False))
         project_id = body.get("project_id", "") or ""

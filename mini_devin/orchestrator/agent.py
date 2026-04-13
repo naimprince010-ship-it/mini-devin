@@ -17,6 +17,8 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
+_DEFAULT_AGENT_MAX_ITERATIONS = int(os.environ.get("DEFAULT_MAX_ITERATIONS", "500"))
+
 from ..core.llm_client import LLMClient, create_llm_client
 from ..core.tool_interface import ToolRegistry, get_global_registry
 from ..schemas.state import (
@@ -249,7 +251,7 @@ class Agent:
         llm_client: LLMClient | None = None,
         tool_registry: ToolRegistry | None = None,
         working_directory: str | None = None,
-        max_iterations: int = 50,
+        max_iterations: int = _DEFAULT_AGENT_MAX_ITERATIONS,
         verbose: bool = True,
         auto_verify: bool = True,
         max_repair_iterations: int = 3,
@@ -288,8 +290,10 @@ class Agent:
         self._git_manager = None
         self._repair_loop = None
         
-        # Safety guard
+        # Safety guard (ensure policy iteration ceiling is not below the agent limit)
         self.safety_guard = SafetyGuard(safety_policy or SafetyPolicy())
+        if self.safety_guard.policy.max_iterations_per_task < self.max_iterations:
+            self.safety_guard.policy.max_iterations_per_task = self.max_iterations
         
         # Artifact logger (lazy initialized per task)
         self.artifact_dir = artifact_dir

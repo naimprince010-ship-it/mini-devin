@@ -11,6 +11,7 @@ This module provides multi-session support for:
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -131,7 +132,7 @@ class SessionManager:
         self,
         working_directory: str = ".",
         model: str = "gpt-4o",
-        max_iterations: int = 50,
+        max_iterations: int = int(os.environ.get("DEFAULT_MAX_ITERATIONS", "500")),
     ) -> Session:
         """
         Create a new agent session.

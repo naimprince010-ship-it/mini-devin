@@ -128,7 +128,7 @@ class AgentLoopConfig:
     sandbox: SupportsSessionSandbox | None = None
     engine: UniversalPromptEngine | None = None
     documentation_store: Any | None = None
-    max_rounds: int = 24
+    max_rounds: int = 100
     max_tool_calls_per_turn: int = 8
     sandbox_timeout_sec: int | None = 120
     inject_logic_plan: bool = True

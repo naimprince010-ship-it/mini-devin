@@ -6,6 +6,7 @@ It wraps the existing SessionManager functionality while adding database persist
 """
 
 import asyncio
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -70,7 +71,7 @@ class DatabaseSessionManager:
         self,
         working_directory: str = ".",
         model: str = "gpt-4o",
-        max_iterations: int = 50,
+        max_iterations: int = int(os.environ.get("DEFAULT_MAX_ITERATIONS", "500")),
         session_id: str | None = None,
         use_sandbox: bool = False,
         auto_git_commit: bool = False,

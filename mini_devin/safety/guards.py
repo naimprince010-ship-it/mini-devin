@@ -89,8 +89,8 @@ class SafetyPolicy:
         "id_ed25519",
     ])
     
-    # Iteration limits
-    max_iterations_per_task: int = 50
+    # Iteration limits (orchestrator raises this to match Agent.max_iterations when higher)
+    max_iterations_per_task: int = 500
     max_repair_iterations: int = 3
 
 
