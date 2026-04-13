@@ -29,6 +29,7 @@ from plodder.orchestration.reasoning_loop import (
     monologue_validation_error,
     parse_driver_turn,
     terminal_failure_followup_hints,
+    visual_review_done_gate,
 )
 from plodder.sandbox.stateful_shell_tracker import StatefulShellTracker
 from plodder.workspace.atomic_editor import atomic_edit
@@ -339,6 +340,12 @@ class UnifiedSessionDriver:
                     round_idx=round_idx,
                 )
             if turn["status"] == "done":
+                gate = visual_review_done_gate(goal, worklog)
+                if gate:
+                    messages.append({"role": "assistant", "content": raw[:12000]})
+                    messages.append({"role": "user", "content": gate})
+                    rounds_used += 1
+                    continue
                 low = final_rationale.lower()
                 success = not any(
                     w in low
@@ -569,6 +576,16 @@ class UnifiedSessionDriver:
                 except (TypeError, ValueError):
                     wait_ms = 900
                 wait_ms = max(200, min(wait_ms, 8000))
+                vw_arg = args.get("viewport_width")
+                vh_arg = args.get("viewport_height")
+                try:
+                    viewport_width = int(vw_arg) if vw_arg is not None and str(vw_arg).strip() != "" else None
+                except (TypeError, ValueError):
+                    viewport_width = None
+                try:
+                    viewport_height = int(vh_arg) if vh_arg is not None and str(vh_arg).strip() != "" else None
+                except (TypeError, ValueError):
+                    viewport_height = None
                 if capture_console:
                     from plodder.tools.browser_manager import capture_url_screenshot_with_console
 
@@ -576,6 +593,8 @@ class UnifiedSessionDriver:
                         capture_url_screenshot_with_console,
                         url,
                         wait_after_load_ms=wait_ms,
+                        viewport_width=viewport_width,
+                        viewport_height=viewport_height,
                     )
                     if not data.get("ok"):
                         return {
@@ -583,15 +602,21 @@ class UnifiedSessionDriver:
                             "ok": False,
                             "error": str(data.get("error", "observe failed")),
                             "url": url,
+                            "viewport_width": viewport_width,
+                            "viewport_height": viewport_height,
                             "console_messages": data.get("console_messages") or [],
                             "page_errors": data.get("page_errors") or [],
                         }
                     img = str(data.get("image_base64", "") or "")
                     cap = 48_000
+                    vw_out = data.get("viewport_width", viewport_width or 1280)
+                    vh_out = data.get("viewport_height", viewport_height or 720)
                     return {
                         "tool": name,
                         "ok": True,
                         "url": url,
+                        "viewport_width": vw_out,
+                        "viewport_height": vh_out,
                         "capture_console": True,
                         "image_base64": img[:cap],
                         "image_truncated": len(img) > cap,
@@ -601,14 +626,23 @@ class UnifiedSessionDriver:
                     }
                 from plodder.tools.browser_manager import capture_url_screenshot_base64
 
-                b64 = await asyncio.to_thread(capture_url_screenshot_base64, url)
+                b64 = await asyncio.to_thread(
+                    capture_url_screenshot_base64,
+                    url,
+                    viewport_width=viewport_width,
+                    viewport_height=viewport_height,
+                )
                 if not b64:
                     return {"tool": name, "ok": False, "error": "screenshot failed (Playwright/url?)"}
                 cap = 48_000
+                vw_out = viewport_width if viewport_width is not None else 1280
+                vh_out = viewport_height if viewport_height is not None else 720
                 return {
                     "tool": name,
                     "ok": True,
                     "url": url,
+                    "viewport_width": vw_out,
+                    "viewport_height": vh_out,
                     "image_base64": b64[:cap],
                     "image_truncated": len(b64) > cap,
                 }

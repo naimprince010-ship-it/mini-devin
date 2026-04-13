@@ -203,6 +203,8 @@ def capture_url_screenshot_with_console(
     full_page: bool = False,
     wait_until: str = "domcontentloaded",
     wait_after_load_ms: int = 900,
+    viewport_width: int | None = None,
+    viewport_height: int | None = None,
 ) -> dict[str, Any]:
     """
     One-shot navigation + screenshot + browser **console** + uncaught page errors.
@@ -215,7 +217,11 @@ def capture_url_screenshot_with_console(
         return {"ok": False, "error": "playwright is not installed", "url": url}
     try:
         wait_s = max(0.25, min(wait_after_load_ms / 1000.0, 12.0))
-        with BrowserManager(headless=headless) as bm:
+        vw = int(viewport_width) if viewport_width is not None else 1280
+        vh = int(viewport_height) if viewport_height is not None else 720
+        vw = max(320, min(vw, 3840))
+        vh = max(240, min(vh, 2160))
+        with BrowserManager(headless=headless, viewport=(vw, vh)) as bm:
             page = bm.page
 
             def on_console(msg: Any) -> None:
@@ -240,6 +246,8 @@ def capture_url_screenshot_with_console(
             return {
                 "ok": True,
                 "url": url,
+                "viewport_width": vw,
+                "viewport_height": vh,
                 "image_base64": img[:cap],
                 "image_truncated": len(img) > cap,
                 "console_messages": console_lines[:160],
@@ -262,6 +270,8 @@ def capture_url_screenshot_base64(
     headless: bool = True,
     full_page: bool = False,
     wait_until: str = "domcontentloaded",
+    viewport_width: int | None = None,
+    viewport_height: int | None = None,
 ) -> str | None:
     """
     One-shot: open ``url``, screenshot, close browser. For ``asyncio.to_thread``.
@@ -269,7 +279,11 @@ def capture_url_screenshot_base64(
     Returns base64 PNG or ``None`` on failure.
     """
     try:
-        with BrowserManager(headless=headless) as bm:
+        vw = int(viewport_width) if viewport_width is not None else 1280
+        vh = int(viewport_height) if viewport_height is not None else 720
+        vw = max(320, min(vw, 3840))
+        vh = max(240, min(vh, 2160))
+        with BrowserManager(headless=headless, viewport=(vw, vh)) as bm:
             bm.navigate(url, wait_until=wait_until)
             time.sleep(0.35)
             return bm.take_screenshot_base64(full_page=full_page)

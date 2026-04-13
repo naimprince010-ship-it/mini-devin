@@ -7,14 +7,100 @@ from plodder.orchestration.reasoning_loop import (
     goal_suggests_frontend_stack,
     monologue_validation_error,
     parse_driver_turn,
+    path_suggests_ui_surface,
     shell_argv_suggests_dev_server,
     terminal_failure_followup_hints,
+    visual_review_done_gate,
+    worklog_has_ui_mutation,
 )
 
 
 def test_goal_suggests_frontend_stack() -> None:
     assert goal_suggests_frontend_stack("Build a React dashboard with Vite")
+    assert goal_suggests_frontend_stack("Premium Dashboard with charts")
     assert not goal_suggests_frontend_stack("Fix typo in README")
+
+
+def test_path_suggests_ui_surface() -> None:
+    assert path_suggests_ui_surface("src/components/Foo.tsx")
+    assert path_suggests_ui_surface("tailwind.config.js")
+    assert path_suggests_ui_surface("app/routes/index.tsx")
+    assert not path_suggests_ui_surface("README.md")
+    assert not path_suggests_ui_surface("api/server.py")
+
+
+class _FakeWorklog:
+    __slots__ = ("events",)
+
+    def __init__(self, events: list) -> None:
+        self.events = events
+
+
+def test_worklog_has_ui_mutation() -> None:
+    ev = [
+        {
+            "event_type": "action_observation",
+            "action": {"tool": "atomic_edit", "arguments": {"path": "src/App.tsx"}},
+        }
+    ]
+    assert worklog_has_ui_mutation(ev)
+    assert not worklog_has_ui_mutation(
+        [{"event_type": "action_observation", "action": {"tool": "fs_write", "arguments": {"path": "README.md"}}}]
+    )
+
+
+def test_visual_review_done_gate_skips_non_frontend() -> None:
+    wl = _FakeWorklog(
+        [
+            {
+                "event_type": "action_observation",
+                "action": {"tool": "atomic_edit", "arguments": {"path": "src/App.tsx"}},
+            }
+        ]
+    )
+    assert visual_review_done_gate("Fix typo in README", wl) is None
+
+
+def test_visual_review_done_gate_blocks_without_observe() -> None:
+    wl = _FakeWorklog(
+        [
+            {
+                "event_type": "action_observation",
+                "action": {"tool": "atomic_edit", "arguments": {"path": "src/App.tsx"}},
+            }
+        ]
+    )
+    msg = visual_review_done_gate("Build a React dashboard with Vite", wl)
+    assert msg is not None
+    assert "playwright_observe" in msg
+
+
+def test_visual_review_done_gate_passes_with_two_viewports() -> None:
+    wl = _FakeWorklog(
+        [
+            {
+                "event_type": "action_observation",
+                "action": {"tool": "atomic_edit", "arguments": {"path": "src/App.tsx"}},
+            },
+            {
+                "event_type": "action_observation",
+                "action": {
+                    "tool": "playwright_observe",
+                    "arguments": {"url": "http://127.0.0.1:5173/", "viewport_width": 375},
+                },
+                "observation": {"raw": {"ok": True, "viewport_width": 375}},
+            },
+            {
+                "event_type": "action_observation",
+                "action": {
+                    "tool": "playwright_observe",
+                    "arguments": {"viewport_width": 1440},
+                },
+                "observation": {"raw": {"ok": True, "viewport_width": 1440}},
+            },
+        ]
+    )
+    assert visual_review_done_gate("Build a React dashboard with Vite", wl) is None
 
 
 def test_monologue_required_for_mutation_tools() -> None:

@@ -64,12 +64,18 @@ _MONOLOGUE_MIN_LEN = 12
 
 _FRONTEND_GOAL_PAT = re.compile(
     r"(?i)\b(react|vite|next\.?js|nextjs|tailwind|dashboard|frontend|spa|vue|svelte|"
-    r"npm\s+install|package\.json|playwright|component|tsx|jsx)\b"
+    r"npm\s+install|package\.json|playwright|component|tsx|jsx|shadcn|radix|lucide|premium\s+ui)\b"
 )
 
 _DEV_SERVER_PAT = re.compile(
     r"(?i)\b(npm\s+run\s+dev|yarn\s+dev|pnpm\s+dev|vite\b|webpack-dev|next\s+dev|"
     r"astro\s+dev|parcel\b)\b"
+)
+
+# Paths that count as "UI surface" mutations for mandatory visual review before ``done``.
+_UI_MUTATION_PATH_RE = re.compile(
+    r"(?i)(\.(tsx|jsx|vue|svelte|css)(\.\w+)?$|tailwind\.config\.[cm]?js|/"
+    r"(components?|ui|pages|app|routes|layouts|widgets|styles)/)"
 )
 
 
@@ -89,6 +95,117 @@ def shell_argv_suggests_dev_server(argv: list[str]) -> bool:
     else:
         inner = " ".join(str(x) for x in argv)
     return bool(_DEV_SERVER_PAT.search(inner))
+
+
+def path_suggests_ui_surface(path: str) -> bool:
+    """True if a workspace-relative path is likely front-end UI."""
+    p = (path or "").strip().replace("\\", "/")
+    if not p:
+        return False
+    return bool(_UI_MUTATION_PATH_RE.search(p))
+
+
+def worklog_has_ui_mutation(events: list[dict[str, Any]]) -> bool:
+    """Scan worklog events for atomic_edit/fs_write on UI-like paths."""
+    for e in events:
+        if e.get("event_type") != "action_observation":
+            continue
+        action = e.get("action") or {}
+        tool = str(action.get("tool") or "")
+        if tool not in ("atomic_edit", "fs_write"):
+            continue
+        args = action.get("arguments") or {}
+        if not isinstance(args, dict):
+            continue
+        rel = str(args.get("path", "") or "")
+        if path_suggests_ui_surface(rel):
+            return True
+    return False
+
+
+def _playwright_ok_widths_after_last_ui(events: list[dict[str, Any]]) -> tuple[bool, list[int]]:
+    """
+    After the last UI mutation, collect viewport widths from successful ``playwright_observe``.
+
+    Returns (has_any_ok_observe, list of widths).
+    """
+    last_ui_idx = -1
+    for i, e in enumerate(events):
+        if e.get("event_type") != "action_observation":
+            continue
+        action = e.get("action") or {}
+        tool = str(action.get("tool") or "")
+        if tool not in ("atomic_edit", "fs_write"):
+            continue
+        args = action.get("arguments") or {}
+        if isinstance(args, dict) and path_suggests_ui_surface(str(args.get("path", "") or "")):
+            last_ui_idx = i
+
+    if last_ui_idx < 0:
+        return False, []
+
+    widths: list[int] = []
+    for e in events[last_ui_idx + 1 :]:
+        if e.get("event_type") != "action_observation":
+            continue
+        action = e.get("action") or {}
+        if str(action.get("tool") or "") != "playwright_observe":
+            continue
+        obs = e.get("observation") or {}
+        raw = obs.get("raw") if isinstance(obs, dict) else None
+        if not isinstance(raw, dict) or not raw.get("ok", True):
+            continue
+        args = action.get("arguments") or {}
+        w = args.get("viewport_width") if isinstance(args, dict) else None
+        if w is None:
+            w = raw.get("viewport_width")
+        try:
+            widths.append(int(w) if w is not None else 1280)
+        except (TypeError, ValueError):
+            widths.append(1280)
+
+    return bool(widths), widths
+
+
+def visual_review_done_gate(goal: str, worklog: object) -> str | None:
+    """
+    When the goal is front-end-ish and the worklog shows UI file mutations, block ``status: done``
+    until the agent ran **playwright_observe** twice after the last UI edit: mobile (~375) and
+    desktop (~1440) viewports, so screenshots can be critiqued for layout and contrast.
+    """
+    if not goal_suggests_frontend_stack(goal):
+        return None
+    events = list(getattr(worklog, "events", None) or [])
+    if not worklog_has_ui_mutation(events):
+        return None
+
+    has_observe, widths = _playwright_ok_widths_after_last_ui(events)
+    if not has_observe:
+        return (
+            "## Visual review required (blocking ``done``)\n"
+            "You edited **UI/front-end files** but did not run **playwright_observe** after the last edit.\n"
+            "1. Ensure the dev server URL is reachable from the host (e.g. `http://127.0.0.1:5173`).\n"
+            "2. Call **playwright_observe** with **`viewport_width`: 375** (and optional `viewport_height`: 812**) "
+            "and **`capture_console`: true**.\n"
+            "3. Call **playwright_observe** again with **`viewport_width`: 1440** (e.g. height 900).\n"
+            "4. In your **next** assistant JSON (before ``done``), briefly critique both screenshots: "
+            "**alignment**, **text/background contrast**, and **obvious responsive breaks**.\n"
+            "Reply with **only** one valid JSON object (`status: continue` + those tool calls), not `done` yet."
+        )
+
+    mobile = any(w <= 480 for w in widths)
+    desktop = any(w >= 1200 for w in widths)
+    if not (mobile and desktop):
+        return (
+            "## Visual review incomplete (blocking ``done``)\n"
+            "After your last UI edit you must capture **two** successful **playwright_observe** runs with "
+            "different viewports:\n"
+            "- **Mobile audit**: `viewport_width` **375** (height e.g. 812), `capture_console`: true.\n"
+            "- **Desktop audit**: `viewport_width` **1440** (height e.g. 900).\n"
+            "Then analyze alignment, contrast, and layout breaks before setting ``status`` to ``done``.\n"
+            "Reply with **only** one valid JSON object continuing the loop."
+        )
+    return None
 
 
 def terminal_failure_followup_hints(results: list[dict[str, Any]]) -> str:
@@ -220,13 +337,45 @@ For Node/React dashboards, avoid writing the entire app in one turn:
 3. **Step C** — **one** component or route at a time; after each substantive edit, ``lsp_check``
    on the touched file before moving on.
 
+### Designer mindset (UX)
+
+Act as a **product designer**, not only a coder:
+
+- **Consistency**: Centralize tokens—**Tailwind** ``tailwind.config.*`` (or CSS variables /
+  design tokens)—for **color**, **spacing**, and **typography**. Avoid one-off hex/radius litter.
+- **Component-driven build order**: (1) **layout shells** / page frames → (2) **atomic** pieces
+  (buttons, cards, inputs) → (3) **composed pages** / routes. Never skip straight to a monolithic page.
+- **Micro-interactions**: Every interactive control gets **hover**, **focus-visible**, and
+  **motion** via short **transitions** (opacity/transform/shadow)—keyboard users included.
+- **Premium UI stack**: Prefer **shadcn/ui** (Radix primitives), **Radix UI** primitives, and
+  **Lucide** (or similar) icons over hand-rolled complex CSS when the stack allows (e.g. React + Vite).
+- **State-driven UI**: For data views and forms, always implement **loading**, **error**, and
+  **empty** states (skeletons/spinners, inline errors, friendly empty copy)—not only the happy path.
+
+### Mandatory visual audit (QA) before ``done``
+
+After you **create or materially change** any UI route/component (``.tsx``/``.jsx``/``.vue``/``.css``
+under ``components/``, ``pages/``, ``app/``, etc.):
+
+1. Run **playwright_observe** on the **exact dev URL + route** (e.g. ``http://127.0.0.1:5173/`` or ``/dashboard``).
+2. **Critique** the returned screenshot(s) in your rationale before finishing:
+   **alignment** (centering, grids, spacing), **contrast** (body text vs background), **responsive**
+   obvious breaks.
+3. **Two viewports** (separate tool calls), after the last UI edit:
+   - **375×812** (mobile) with ``capture_console: true``.
+   - **1440×900** (desktop).
+   Pass ``viewport_width`` / ``viewport_height`` on ``playwright_observe`` args.
+4. If something fails visually, **fix and re-observe** before ``status: "done"``.
+
+The driver may **reject** ``done`` until this audit is satisfied for front-end goals.
+
 ### Long-term alignment
 
 Keep actions consistent with **PLAN.md** at the workspace root (if present) and with the
 running **worklog** summary you see each turn—preserve the overall goal across many rounds.
 
-Before ``status: "done"``, run **lsp_check** on files you edited and **playwright_observe**
-(with console when relevant) before claiming UI/code success.
+Before ``status: "done"``, run **lsp_check** on files you edited, complete the **visual audit**
+above when you touched UI, and run **playwright_observe** before claiming UI/code success.
 """
 
 
@@ -245,6 +394,9 @@ __all__ = [
     "goal_suggests_frontend_stack",
     "monologue_validation_error",
     "parse_driver_turn",
+    "path_suggests_ui_surface",
     "shell_argv_suggests_dev_server",
     "terminal_failure_followup_hints",
+    "visual_review_done_gate",
+    "worklog_has_ui_mutation",
 ]
