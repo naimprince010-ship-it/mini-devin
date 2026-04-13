@@ -5,8 +5,10 @@ import json
 from plodder.orchestration.reasoning_loop import (
     build_agent_thought_text,
     goal_suggests_frontend_stack,
+    merge_prefix_summary_and_tail,
     monologue_validation_error,
     parse_driver_turn,
+    partition_messages_sliding_window,
     path_suggests_ui_surface,
     shell_argv_suggests_dev_server,
     terminal_failure_followup_hints,
@@ -73,6 +75,39 @@ def test_visual_review_done_gate_blocks_without_observe() -> None:
     msg = visual_review_done_gate("Build a React dashboard with Vite", wl)
     assert msg is not None
     assert "playwright_observe" in msg
+
+
+def test_partition_messages_sliding_window_keeps_goal_prefix() -> None:
+    messages = [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "## Workspace root\nx\n\n## Goal\nBuild app"},
+    ]
+    for i in range(21):
+        messages.append({"role": "assistant", "content": json.dumps({"status": "continue", "rationale": str(i)})})
+        messages.append({"role": "user", "content": "## Tool results\n```json\n{}\n```"})
+    prefix, stale, tail = partition_messages_sliding_window(messages, max_tool_rounds=20)
+    assert len(prefix) == 2
+    assert "## Goal" in prefix[1]["content"]
+    assert len(stale) == 2
+    assert stale[0]["role"] == "assistant"
+    assert "## Tool results" in stale[1]["content"]
+    assert len(tail) == len(messages) - 4
+    assert "## Tool results" in tail[-1]["content"]
+
+
+def test_merge_prefix_summary_and_tail_inserts_summary_after_goal() -> None:
+    prefix = [
+        {"role": "system", "content": "S"},
+        {"role": "user", "content": "## Goal\nG"},
+    ]
+    tail = [{"role": "assistant", "content": "a"}, {"role": "user", "content": "## Tool results\n{}"}]
+    out = merge_prefix_summary_and_tail(prefix, tail, "- fixed imports\n- ran tests")
+    assert len(out) == 5
+    assert out[0]["role"] == "system"
+    assert "## Goal" in out[1]["content"]
+    assert "Running summary" in out[2]["content"]
+    assert "fixed imports" in out[2]["content"]
+    assert out[3]["role"] == "assistant"
 
 
 def test_visual_review_done_gate_passes_with_two_viewports() -> None:

@@ -23,12 +23,14 @@ from plodder.memory.session_memory import EpisodeMemory
 from plodder.memory.workspace_code_index import WorkspaceCodeIndex
 from plodder.orchestration.reasoning_loop import (
     REASONING_LOOP_SEED_SUFFIX,
+    apply_sliding_window_to_messages,
     build_agent_thought_text,
     extract_shell_inner,
     goal_suggests_frontend_stack,
     monologue_validation_error,
     parse_driver_turn,
     terminal_failure_followup_hints,
+    tool_observation_truncation_limit,
     visual_review_done_gate,
 )
 from plodder.sandbox.stateful_shell_tracker import StatefulShellTracker
@@ -280,6 +282,18 @@ class UnifiedSessionDriver:
         success = False
         rounds_used = 0
         terminated_with_done = False
+        sliding_running_summary = ""
+
+        async def _maybe_sliding_compact() -> None:
+            nonlocal sliding_running_summary
+            try:
+                sliding_running_summary = await apply_sliding_window_to_messages(
+                    messages,
+                    self._complete,
+                    sliding_running_summary,
+                )
+            except Exception:
+                pass
 
         for round_idx in range(self._max_rounds):
             if round_idx > 0 and self._runtime_episode_memory:
@@ -328,6 +342,7 @@ class UnifiedSessionDriver:
                     }
                 )
                 rounds_used += 1
+                await _maybe_sliding_compact()
                 continue
 
             transcript.append(tr_assistant)
@@ -345,6 +360,7 @@ class UnifiedSessionDriver:
                     messages.append({"role": "assistant", "content": raw[:12000]})
                     messages.append({"role": "user", "content": gate})
                     rounds_used += 1
+                    await _maybe_sliding_compact()
                     continue
                 low = final_rationale.lower()
                 success = not any(
@@ -369,6 +385,7 @@ class UnifiedSessionDriver:
                     messages.append({"role": "assistant", "content": raw[:12000]})
                     messages.append({"role": "user", "content": mono_err})
                     rounds_used += 1
+                    await _maybe_sliding_compact()
                     continue
 
             thought = build_agent_thought_text(turn)
@@ -386,6 +403,7 @@ class UnifiedSessionDriver:
                     }
                 )
                 rounds_used += 1
+                await _maybe_sliding_compact()
                 continue
 
             results: list[dict[str, Any]] = []
@@ -441,13 +459,15 @@ class UnifiedSessionDriver:
                     diag_hints, indent=2
                 )
             messages.append({"role": "assistant", "content": raw[:12000]})
-            messages.append({"role": "user", "content": _truncate(obs, 14000)})
+            obs_limit = tool_observation_truncation_limit()
+            messages.append({"role": "user", "content": _truncate(obs, obs_limit)})
             tr_row: dict[str, Any] = {"round": round_idx, "tool_results": results}
             if diag_hints:
                 tr_row["diagnostic_hints"] = diag_hints
             transcript.append(tr_row)
             prior_round_diagnostic = bool(diag_hints)
             rounds_used += 1
+            await _maybe_sliding_compact()
 
         if not terminated_with_done:
             success = False

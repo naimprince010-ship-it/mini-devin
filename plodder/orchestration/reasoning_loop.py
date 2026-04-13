@@ -9,8 +9,230 @@ for high-impact tools (terminal + file mutation).
 from __future__ import annotations
 
 import json
+import os
 import re
-from typing import Any
+from typing import Any, Awaitable, Callable
+
+ChatMessage = dict[str, Any]
+LLMFn = Callable[[list[ChatMessage]], Awaitable[str]]
+
+# OpenHands-style sliding window: full detail for the last N tool-observation rounds.
+SLIDING_WINDOW_TOOL_ROUNDS = int(os.environ.get("PLODDER_SLIDING_WINDOW_ROUNDS", "20") or "20")
+SLIDING_WINDOW_TOOL_ROUNDS = max(3, min(SLIDING_WINDOW_TOOL_ROUNDS, 50))
+
+RUNNING_SUMMARY_SYSTEM_PROMPT = """You maintain a **Running Summary** for a coding agent (Plodder / OpenHands-style).
+
+Rules:
+1. Output **plain markdown only** (no JSON, no tool calls). Be dense and factual.
+2. **Never replace or paraphrase the user's Goal** — that text is kept separately; this summary covers *older* turns only.
+3. **Preserve verbatim detail** for:
+   - **LSP / type errors** (file paths, line numbers, error codes, messages)
+   - **Browser console logs** and **page errors** from Playwright / UI observe tools
+   - **Terminal failures** (exit codes, last lines of stderr)
+4. Keep: files created/edited, key decisions, open bugs, and what remains to be done.
+5. Merge the **Existing running summary** with the **New segment** into one updated summary (deduplicate stale facts).
+"""
+
+
+def sliding_window_memory_disabled() -> bool:
+    """When true, the session driver keeps the full message list (legacy behavior)."""
+    v = (os.environ.get("PLODDER_SLIDING_WINDOW_DISABLE") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def tool_observation_truncation_limit() -> int:
+    """
+    Max chars for a single ``## Tool results`` user block.
+
+    With sliding memory enabled, default is high so Gemini-scale models keep full **LSP**
+    diagnostics and **browser console** payloads in the active (non-summarized) tail.
+    """
+    if sliding_window_memory_disabled():
+        return int(os.environ.get("PLODDER_TOOL_OBS_MAX_CHARS_LEGACY", "14000") or "14000")
+    raw = (os.environ.get("PLODDER_TOOL_OBS_MAX_CHARS") or "").strip()
+    if raw.isdigit():
+        return max(16_000, min(int(raw), 500_000))
+    return 200_000
+
+
+def _is_tool_observation_user(msg: ChatMessage) -> bool:
+    if msg.get("role") != "user":
+        return False
+    c = str(msg.get("content") or "")
+    return (
+        "## Tool results" in c
+        or "## Parse error" in c
+        or "## Think-before-act" in c
+        or "## Visual review" in c
+        or "You set `status` to `continue` but provided no `tool_calls`" in c
+    )
+
+
+def _is_context_injection_user(msg: ChatMessage) -> bool:
+    if msg.get("role") != "user":
+        return False
+    c = str(msg.get("content") or "")
+    return c.startswith("## Episode continuity") or c.startswith("## Long-horizon continuity")
+
+
+def _is_running_summary_user(msg: ChatMessage) -> bool:
+    if msg.get("role") != "user":
+        return False
+    c = str(msg.get("content") or "")
+    return "## Running summary (sliding-window memory" in c
+
+
+def partition_messages_sliding_window(
+    messages: list[ChatMessage],
+    *,
+    max_tool_rounds: int = SLIDING_WINDOW_TOOL_ROUNDS,
+) -> tuple[list[ChatMessage], list[ChatMessage], list[ChatMessage]]:
+    """
+    Split ``messages`` into immutable prefix, stale middle, and full-detail tail.
+
+    - **prefix**: ``[system, first_user]`` — the Goal seed and system prompt; **never** summarized.
+    - **stale**: older turns to fold into the running summary.
+    - **tail**: the last ``max_tool_rounds`` tool-observation cycles (plus their paired assistants
+      and any **context injection** user blocks immediately before each kept assistant).
+    """
+    if len(messages) < 2:
+        return list(messages), [], []
+    prefix = messages[:2]
+    rest = messages[2:]
+    if not rest:
+        return prefix, [], []
+
+    obs_idx = [i for i, m in enumerate(rest) if _is_tool_observation_user(m)]
+    if len(obs_idx) <= max_tool_rounds:
+        return prefix, [], list(rest)
+
+    first_kept = obs_idx[len(obs_idx) - max_tool_rounds]
+    tail_start = first_kept
+    if tail_start > 0 and rest[tail_start - 1].get("role") == "assistant":
+        tail_start -= 1
+    else:
+        j = tail_start - 1
+        while j >= 0:
+            if rest[j].get("role") == "assistant":
+                tail_start = j
+                break
+            j -= 1
+    j = tail_start - 1
+    while j >= 0 and rest[j].get("role") == "user" and _is_context_injection_user(rest[j]):
+        tail_start = j
+        j -= 1
+
+    stale = rest[:tail_start]
+    tail = rest[tail_start:]
+    return prefix, stale, tail
+
+
+def flatten_messages_for_summary(messages: list[ChatMessage], *, max_chars: int = 120_000) -> str:
+    """Linearize assistant/user messages for summarization (cap size for the summarizer call)."""
+    lines: list[str] = []
+    for m in messages:
+        role = str(m.get("role", ""))
+        content = str(m.get("content", "") or "")
+        lines.append(f"### {role.upper()}\n{content}")
+    text = "\n\n".join(lines)
+    if len(text) > max_chars:
+        return text[: max_chars - 80] + "\n\n…(stale segment truncated for summarizer input)…\n"
+    return text
+
+
+def build_running_summary_llm_messages(
+    existing_summary: str,
+    stale_segment_text: str,
+) -> list[ChatMessage]:
+    """Two-turn messages for the summarizer (same LLM as the agent; must return prose only)."""
+    user = (
+        "## Existing running summary\n"
+        + (existing_summary.strip() or "(none — first compaction)")
+        + "\n\n## New conversation segment to fold into the summary\n"
+        + stale_segment_text
+        + "\n\n## Instructions\n"
+        "Write the **updated** running summary in markdown only. "
+        "Keep **all** LSP diagnostic lines and browser console / page-error lines from the segment "
+        "(or explicitly quote them). Do not exceed ~8000 words."
+    )
+    return [
+        {"role": "system", "content": RUNNING_SUMMARY_SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
+
+
+def merge_prefix_summary_and_tail(
+    prefix: list[ChatMessage],
+    tail: list[ChatMessage],
+    running_summary: str,
+) -> list[ChatMessage]:
+    """Rebuild ``messages``: system + Goal user + optional summary user + tail."""
+    out: list[ChatMessage] = list(prefix)
+    rs = running_summary.strip()
+    if rs:
+        out.append(
+            {
+                "role": "user",
+                "content": (
+                    "## Running summary (sliding-window memory; OpenHands-style)\n"
+                    "The **first user message** in this thread (workspace + **Goal**) is unchanged and remains "
+                    "the source of truth for the task.\n"
+                    "Below is a distilled memory of **older** turns. **LSP errors** and **browser console / "
+                    "page errors** from those turns are included here so they stay available alongside the "
+                    "last "
+                    f"{SLIDING_WINDOW_TOOL_ROUNDS} full tool rounds in the tail.\n\n"
+                    + rs
+                ),
+            }
+        )
+    out.extend(tail)
+    return out
+
+
+async def async_refresh_running_summary(
+    llm: LLMFn,
+    existing_summary: str,
+    stale_messages: list[ChatMessage],
+) -> str:
+    """Call the LLM once to fold ``stale_messages`` into ``existing_summary``."""
+    if not stale_messages:
+        return existing_summary
+    stale_eff = [m for m in stale_messages if not _is_running_summary_user(m)]
+    if not stale_eff:
+        return existing_summary
+    stale_text = flatten_messages_for_summary(stale_eff)
+    msgs = build_running_summary_llm_messages(existing_summary, stale_text)
+    raw = await llm(msgs)
+    text = str(raw or "").strip()
+    if text.startswith("```"):
+        text = _strip_json_fence(text)
+    return text[:48_000]
+
+
+async def apply_sliding_window_to_messages(
+    messages: list[ChatMessage],
+    llm: LLMFn,
+    running_summary: str,
+) -> str:
+    """
+    If the message list exceeds the sliding window, summarize ``stale`` via ``llm`` and
+    replace ``messages`` contents with ``prefix + summary user + tail``.
+
+    Returns the updated ``running_summary`` string.
+    """
+    if sliding_window_memory_disabled():
+        return running_summary
+    prefix, stale, tail = partition_messages_sliding_window(messages)
+    if not stale:
+        return running_summary
+    try:
+        new_summary = await async_refresh_running_summary(llm, running_summary, stale)
+    except Exception:
+        return running_summary
+    merged = merge_prefix_summary_and_tail(prefix, tail, new_summary)
+    messages.clear()
+    messages.extend(merged)
+    return new_summary
 
 
 def _strip_json_fence(raw: str) -> str:
@@ -376,6 +598,13 @@ running **worklog** summary you see each turn—preserve the overall goal across
 
 Before ``status: "done"``, run **lsp_check** on files you edited, complete the **visual audit**
 above when you touched UI, and run **playwright_observe** before claiming UI/code success.
+
+### Sliding-window memory (OpenHands-style)
+
+Older turns may be folded into a **Running summary** user message (after the Goal). The **first
+user message** (workspace + **Goal**) is never removed. The last **20** tool-observation rounds
+stay verbatim; **LSP diagnostics** and **browser console** lines from older rounds are kept in
+the summary text so they remain actionable with Gemini-scale context.
 """
 
 
@@ -387,16 +616,26 @@ def extract_shell_inner(argv: list[str]) -> str | None:
 
 
 __all__ = [
+    "SLIDING_WINDOW_TOOL_ROUNDS",
+    "RUNNING_SUMMARY_SYSTEM_PROMPT",
     "REASONING_LOOP_SEED_SUFFIX",
     "TOOLS_REQUIRING_MONOLOGUE",
+    "apply_sliding_window_to_messages",
+    "async_refresh_running_summary",
     "build_agent_thought_text",
+    "build_running_summary_llm_messages",
     "extract_shell_inner",
+    "flatten_messages_for_summary",
     "goal_suggests_frontend_stack",
+    "merge_prefix_summary_and_tail",
     "monologue_validation_error",
     "parse_driver_turn",
+    "partition_messages_sliding_window",
     "path_suggests_ui_surface",
     "shell_argv_suggests_dev_server",
+    "sliding_window_memory_disabled",
     "terminal_failure_followup_hints",
+    "tool_observation_truncation_limit",
     "visual_review_done_gate",
     "worklog_has_ui_mutation",
 ]
