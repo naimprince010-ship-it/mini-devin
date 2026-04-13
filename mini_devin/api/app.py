@@ -73,6 +73,10 @@ from .websocket import ConnectionManager, WebSocketMessage, MessageType
 from ..auth.routes import router as auth_router
 from ..bridge.manager import get_bridge_manager
 from ..database.config import init_db
+from ..sandbox.railway_process_sandbox_test import (
+    allow_test_sandbox_http_route,
+    run_railway_process_sandbox_check,
+)
 from ..sessions.db_manager import DatabaseSessionManager
 
 # Simple in-memory rate limiter (no external dependency)
@@ -355,6 +359,23 @@ async def api_health():
         "repo_root": _REPO_ROOT,
         "openai_key_loaded": bool(oa),
     }
+
+
+@app.get("/test-sandbox")
+async def test_sandbox_route():
+    """
+    Railway-only (or ``ALLOW_TEST_SANDBOX_ROUTE=1``) smoke test: ``ProcessSandbox``
+    runs ``whoami`` / ``pwd`` / ``python3 --version``, writes a probe file, ``cat`` it.
+    Logs each step to stdout for Railway log drains.
+    """
+    if not allow_test_sandbox_http_route():
+        raise HTTPException(
+            status_code=404,
+            detail="test-sandbox disabled. Set ALLOW_TEST_SANDBOX_ROUTE=1 or deploy on Railway.",
+        )
+    payload = await asyncio.to_thread(run_railway_process_sandbox_check, _REPO_ROOT)
+    status = 200 if payload.get("ok") else 500
+    return JSONResponse(payload, status_code=status)
 
 
 # ── Repo management endpoints ─────────────────────────────────────────────────

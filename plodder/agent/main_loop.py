@@ -2,12 +2,13 @@
 Unified agent entry point — RAG, container planning, workspace tree, tool loop, sandbox.
 
 ``run_agent`` wires ``AgentSessionDriver`` (extends ``UnifiedSessionDriver``) with optional
-``DocumentationStore`` and Docker-backed ``ExecutionSandbox`` for ``docs_retrieve`` and
-``container_verify`` tools.
+``DocumentationStore`` and a sandbox: ``ExecutionSandbox`` when Docker is available, otherwise
+``mini_devin.sandbox.ProcessExecutionSandbox`` (host ``bash``). Override with ``AgentLoopConfig.sandbox``.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,8 @@ from plodder.sandbox.container_manager import docker_image_exists, plan_containe
 from plodder.sandbox.toolchain_detect import resolve_sql_url_from_env
 from plodder.sandbox.execution_sandbox import ExecutionSandbox
 from plodder.workspace.session_workspace import SessionWorkspace
+
+_logger = logging.getLogger(__name__)
 
 _TREE_IGNORE = frozenset(
     {".git", "__pycache__", ".venv", "venv", "node_modules", ".mypy_cache", ".pytest_cache", "dist", "build"}
@@ -218,12 +221,6 @@ class AgentSessionDriver(UnifiedSessionDriver):
     async def _tool_container_verify_async(self, args: dict[str, Any]) -> dict[str, Any]:
         if self._sandbox is None:
             return {"tool": "container_verify", "ok": False, "error": "sandbox not configured"}
-        if not isinstance(self._sandbox, ExecutionSandbox):
-            return {
-                "tool": "container_verify",
-                "ok": False,
-                "error": "container_verify requires plodder.sandbox.ExecutionSandbox (Docker SDK)",
-            }
         entry_raw = str(args.get("entry") or "").strip()
         if not entry_raw:
             return {"tool": "container_verify", "ok": False, "error": "entry is required"}
@@ -240,32 +237,38 @@ class AgentSessionDriver(UnifiedSessionDriver):
         )
         entry = entry_raw.replace("\\", "/").lstrip("/")
         snap = self._ws.snapshot_text_files()
+        sb = self._sandbox
         planned = plan_container_run(
             entry=entry,
             language_hint=language,
             language_key=language_key,
-            python_image=self._sandbox.python_image,
-            node_image=self._sandbox.node_image,
-            go_image=self._sandbox.go_image,
-            rust_image=self._sandbox.rust_image,
-            alpine_image=self._sandbox.alpine_image,
-            cpp_image=self._sandbox.cpp_image,
-            typescript_image=self._sandbox.typescript_image,
-            java_image=self._sandbox.java_image,
-            php_image=self._sandbox.php_image,
-            dotnet_image=self._sandbox.dotnet_image,
-            maven_image=self._sandbox.maven_image,
-            gradle_image=self._sandbox.gradle_image,
-            composer_image=self._sandbox.composer_image,
-            postgres_client_image=self._sandbox.postgres_client_image,
+            python_image=getattr(sb, "python_image", "python:3.11-alpine"),
+            node_image=getattr(sb, "node_image", "node:20-alpine"),
+            go_image=getattr(sb, "go_image", "golang:1.22-alpine"),
+            rust_image=getattr(sb, "rust_image", "rust:alpine"),
+            alpine_image=getattr(sb, "alpine_image", "alpine:3.19"),
+            cpp_image=getattr(sb, "cpp_image", "gcc:12-bookworm"),
+            typescript_image=getattr(sb, "typescript_image", "node:22-alpine"),
+            java_image=getattr(sb, "java_image", "eclipse-temurin:21-jdk-alpine"),
+            php_image=getattr(sb, "php_image", "php:8.3-cli-alpine"),
+            dotnet_image=getattr(sb, "dotnet_image", "mcr.microsoft.com/dotnet/sdk:8.0-alpine"),
+            maven_image=getattr(sb, "maven_image", "maven:3.9.9-eclipse-temurin-21-alpine"),
+            gradle_image=getattr(sb, "gradle_image", "gradle:8.10.2-jdk21-alpine"),
+            composer_image=getattr(sb, "composer_image", "composer:2"),
+            postgres_client_image=getattr(sb, "postgres_client_image", "postgres:16-alpine"),
             sql_url=resolve_sql_url_from_env(),
-            docker_client=self._sandbox.docker_client,
+            docker_client=getattr(sb, "docker_client", None),
             prefer_generic_if_image_missing=True,
             auto_pull_missing=auto_pull,
             workspace_files=snap if snap else None,
         )
-        client = self._sandbox.docker_client
+        client = getattr(sb, "docker_client", None)
         present = docker_image_exists(client, planned.image) if client is not None else True
+        notes = list(planned.notes)
+        if client is None:
+            notes.append(
+                "Host process sandbox: Docker image is advisory only; runs use host binaries under the workspace."
+            )
         return {
             "tool": "container_verify",
             "ok": True,
@@ -275,19 +278,59 @@ class AgentSessionDriver(UnifiedSessionDriver):
             "language_hint_used": planned.language_hint_used,
             "image_present_local": present,
             "used_generic_fallback": planned.used_generic_fallback,
-            "notes": planned.notes,
+            "notes": notes,
             "pull_hint": pull_suggestion(planned.image) if not present else "",
         }
+
+
+def _create_default_session_sandbox(ws: SessionWorkspace) -> SupportsSessionSandbox | None:
+    """
+    Prefer Docker ``ExecutionSandbox``; fall back to ``ProcessExecutionSandbox`` when the
+    Docker SDK/daemon is unavailable (e.g. Railway). Set ``PLODDER_FORCE_PROCESS_SANDBOX=1``
+    to always use the process backend.
+    """
+    force = os.environ.get("PLODDER_FORCE_PROCESS_SANDBOX", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if force:
+        try:
+            from mini_devin.sandbox.process_execution_sandbox import ProcessExecutionSandbox
+
+            return ProcessExecutionSandbox(ws.root)
+        except Exception as exc:
+            _logger.warning("PLODDER_FORCE_PROCESS_SANDBOX set but process sandbox failed: %s", exc)
+            return None
+    try:
+        return ExecutionSandbox()
+    except Exception as docker_exc:
+        try:
+            from mini_devin.sandbox.process_execution_sandbox import ProcessExecutionSandbox
+
+            return ProcessExecutionSandbox(ws.root)
+        except Exception as proc_exc:
+            _logger.warning(
+                "Plodder sandbox unavailable (docker: %s; process: %s). "
+                "Install Docker or bash, or pass AgentLoopConfig.sandbox explicitly.",
+                docker_exc,
+                proc_exc,
+            )
+            return None
 
 
 async def run_agent(goal: str, config: AgentLoopConfig) -> UnifiedSessionResult:
     """
     Single entry point: planner pseudo-logic, workspace tree, multi-turn tools (including RAG + container verify).
     """
+    sandbox = config.sandbox
+    if sandbox is None:
+        sandbox = _create_default_session_sandbox(config.workspace)
     driver = AgentSessionDriver(
         llm=config.llm,
         workspace=config.workspace,
-        sandbox=config.sandbox,
+        sandbox=sandbox,
         engine=config.engine or UniversalPromptEngine(PolyglotSystemPrompt()),
         max_rounds=config.max_rounds,
         max_tool_calls_per_turn=config.max_tool_calls_per_turn,

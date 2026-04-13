@@ -27,6 +27,16 @@ def _resolve_bash() -> str:
     for candidate in ("/bin/bash", "/usr/bin/bash"):
         if os.path.isfile(candidate):
             return candidate
+    if os.name == "nt":
+        for base in (
+            os.environ.get("ProgramFiles"),
+            os.environ.get("ProgramFiles(x86)"),
+        ):
+            if not base:
+                continue
+            git_bash = os.path.join(base, "Git", "bin", "bash.exe")
+            if os.path.isfile(git_bash):
+                return git_bash
     found = shutil.which("bash")
     if found:
         return found
