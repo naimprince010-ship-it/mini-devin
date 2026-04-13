@@ -963,6 +963,36 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             },
         })
 
+        schemas.append({
+            "name": "live_preview",
+            "description": (
+                "Detect a local dev server (e.g. Vite on 5173) and register it for the Plodder **Browser** tab Live Preview. "
+                "Use **probe** after `npm run dev` / `vite` in terminal; then **set_active_port** with a listening port. "
+                "The UI reverse-proxies through the API so the iframe is same-origin. "
+                "HMR WebSockets may not tunnel through this proxy—reload still works when files change."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["probe", "set_active_port"],
+                        "description": "probe=scan ports on 127.0.0.1; set_active_port=register port for Browser iframe",
+                    },
+                    "ports": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "For probe: candidate ports (default from LIVE_PREVIEW_PROBE_PORTS env)",
+                    },
+                    "port": {
+                        "type": "integer",
+                        "description": "For set_active_port: must be listening and in LIVE_PREVIEW_ALLOWED_PORTS",
+                    },
+                },
+                "required": ["action"],
+            },
+        })
+
         # Project memory tool schema
         schemas.append({
             "name": "project_memory",
@@ -1353,6 +1383,65 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             answer = self._clarification_answer or "(no answer)"
             self._clarification_event = None
             return f"User answered: {answer}"
+
+        if name == "live_preview":
+            from ..api.live_preview_state import (
+                allowed_ports,
+                probe_local_ports_sync,
+                set_session_preview_port,
+            )
+
+            action = str(arguments.get("action", "probe") or "probe").lower()
+            sid = self.state.session_id
+            if action == "probe":
+                ports = arguments.get("ports")
+                if not isinstance(ports, list) or not ports:
+                    raw = (os.environ.get("LIVE_PREVIEW_PROBE_PORTS") or "5173,3000,8080,4200,8000").strip()
+                    ports = []
+                    for x in raw.split(","):
+                        x = x.strip()
+                        if x.isdigit():
+                            ports.append(int(x))
+                try:
+                    candidates = [int(p) for p in ports]
+                except (TypeError, ValueError):
+                    candidates = [5173, 3000, 8080]
+                listening = probe_local_ports_sync(candidates)
+                return json.dumps(
+                    {
+                        "listening_ports": listening,
+                        "allowed_ports": sorted(allowed_ports()),
+                        "next_step": (
+                            "Call live_preview with action set_active_port and port=<one of listening_ports> "
+                            "so the user's Browser tab can show Live Preview."
+                        ),
+                    },
+                    indent=2,
+                )
+            if action == "set_active_port":
+                try:
+                    p = int(arguments.get("port", 0))
+                except (TypeError, ValueError):
+                    return json.dumps({"ok": False, "error": "invalid port"})
+                ok = await set_session_preview_port(sid, p)
+                if not ok:
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "error": f"Port {p} not allowed or not accepting TCP on 127.0.0.1",
+                            "allowed_ports": sorted(allowed_ports()),
+                        },
+                        indent=2,
+                    )
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "active_port": p,
+                        "browser_iframe": f"/api/sessions/{sid}/live-preview/",
+                    },
+                    indent=2,
+                )
+            return f"Error: unknown live_preview action '{action}'"
         
         tool = self.registry.get(name)
         if not tool:

@@ -7,6 +7,7 @@ import { FileDiffView } from './FileDiffView';
 import { MonacoEditorPanel, type AgentRemoteSnapshot } from './MonacoEditorPanel';
 import { ActivityFeed } from './ActivityFeed';
 import { useSessionEvents } from '../contexts/SessionEventsContext';
+import { getApiBase } from '../config/apiBase';
 
 interface WorkspacePanelProps {
     sessionId?: string;
@@ -22,6 +23,9 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
     const [openFile, setOpenFile] = useState<string | null>(null);
     const [serverRefetchKey, setServerRefetchKey] = useState(0);
     const lastAtomicRefetchToolId = useRef<string | null>(null);
+    const [livePreviewPort, setLivePreviewPort] = useState<number | null>(null);
+    const [livePreviewRefreshKey, setLivePreviewRefreshKey] = useState(0);
+    const lastAtomicPreviewToolId = useRef<string | null>(null);
 
     const latestAgentRemote: AgentRemoteSnapshot | null = React.useMemo(() => {
         if (!openFile) return null;
@@ -52,6 +56,40 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
     useEffect(() => {
         lastAtomicRefetchToolId.current = null;
     }, [openFile]);
+
+    // Live Preview: poll when Browser tab is open (agent registers port via ``live_preview`` tool).
+    useEffect(() => {
+        if (activeTab !== 'browser' || !sessionId) return;
+        let cancelled = false;
+        const poll = async () => {
+            try {
+                const r = await fetch(`${getApiBase()}/sessions/${sessionId}/live-preview/status`);
+                if (!r.ok || cancelled) return;
+                const j = (await r.json()) as { active?: boolean; port?: number | null };
+                if (cancelled) return;
+                if (j.active && typeof j.port === 'number') setLivePreviewPort(j.port);
+                else setLivePreviewPort(null);
+            } catch {
+                /* ignore */
+            }
+        };
+        void poll();
+        const id = window.setInterval(poll, 4000);
+        return () => {
+            cancelled = true;
+            window.clearInterval(id);
+        };
+    }, [activeTab, sessionId]);
+
+    // Reload Live Preview iframe after Plodder ``atomic_edit`` (same pattern as Monaco refetch).
+    useEffect(() => {
+        const done = events.toolCalls.filter(t => t.status === 'completed');
+        const last = done[done.length - 1];
+        if (!last || last.tool !== 'atomic_edit') return;
+        if (last.id === lastAtomicPreviewToolId.current) return;
+        lastAtomicPreviewToolId.current = last.id;
+        setLivePreviewRefreshKey((k) => k + 1);
+    }, [events.toolCalls]);
 
     // Shell UX state
     const [shellSearch, setShellSearch] = useState('');
@@ -124,7 +162,12 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
             id: 'browser',
             label: 'Browser',
             icon: <Globe size={13} />,
-            badge: events.browserEvents.length > 0 ? events.browserEvents.length : undefined,
+            badge:
+                events.browserEvents.length > 0
+                    ? events.browserEvents.length
+                    : livePreviewPort
+                      ? 1
+                      : undefined,
         },
         {
             id: 'memory',
@@ -406,29 +449,54 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
                     </div>
                 )}
 
-                {/* BROWSER */}
+                {/* BROWSER — Live Preview (reverse-proxied dev server) + agent browser tool feed */}
                 {activeTab === 'browser' && (
                     <div className="absolute inset-0 flex flex-col bg-[#050505]">
-                        {events.browserEvents.length === 0 ? (
-                            <div className="flex flex-col items-center justify-center h-full text-center p-8 gap-4 max-w-sm mx-auto">
+                        {sessionId && livePreviewPort ? (
+                            <>
+                                <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-[#1a1a1a] bg-[#0d0d0d] flex-shrink-0">
+                                    <span className="text-[10px] font-mono text-[#00ff99]">
+                                        Live Preview · proxied :{livePreviewPort}
+                                    </span>
+                                    <span className="text-[9px] text-[#3a3a3a]">Refreshes on atomic_edit</span>
+                                </div>
+                                <div className="flex-[1.2] min-h-[180px] border-b border-[#1a1a1a] bg-[#111]">
+                                    <iframe
+                                        key={livePreviewRefreshKey}
+                                        title="Live preview"
+                                        className="w-full h-full border-0 bg-white"
+                                        src={`${getApiBase()}/sessions/${sessionId}/live-preview/?_=${livePreviewRefreshKey}`}
+                                        sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
+                                        referrerPolicy="no-referrer"
+                                    />
+                                </div>
+                            </>
+                        ) : null}
+
+                        {events.browserEvents.length === 0 && !livePreviewPort ? (
+                            <div className="flex flex-col items-center justify-center flex-1 text-center p-8 gap-4 max-w-sm mx-auto">
                                 <Globe size={48} className="text-[#2a2a2a]" />
                                 <div className="space-y-2">
                                     <p className="text-[#525252] text-sm font-medium">Browser</p>
                                     <p className="text-[#3a3a3a] text-xs leading-relaxed">
-                                        While a task is running, searches, fetches, and interactive browser steps appear here as the agent uses{' '}
+                                        <span className="text-[#525252] font-mono">live_preview</span> (probe → set_active_port) registers Vite/dev-server for{' '}
+                                        <strong className="text-[#737373]">Live Preview</strong> here. Agent browser tools still log below.
+                                    </p>
+                                    <p className="text-[#3a3a3a] text-xs leading-relaxed">
+                                        While a task is running, searches, fetches, and Playwright steps appear here as the agent uses{' '}
                                         <span className="text-[#525252] font-mono">browser_search</span>,{' '}
                                         <span className="text-[#525252] font-mono">browser_fetch</span>, or{' '}
-                                        <span className="text-[#525252] font-mono">browser_interactive</span>.
+                                        <span className="text-[#525252] font-mono">browser_playwright</span>.
                                     </p>
                                     <p className="text-[#3a3a3a] text-[11px] leading-relaxed border-t border-[#1a1a1a] pt-3">
                                         This feed is not saved: if you reload the page or open a session restored from history, the Browser tab starts empty even though the chat summary may mention web work.
                                     </p>
                                 </div>
                             </div>
-                        ) : (
+                        ) : events.browserEvents.length > 0 ? (
                             <>
                                 {/* URL Bar */}
-                                <div className="flex items-center gap-2 px-3 py-2 border-b border-[#1a1a1a] bg-[#0d0d0d]">
+                                <div className="flex items-center gap-2 px-3 py-2 border-b border-[#1a1a1a] bg-[#0d0d0d] flex-shrink-0">
                                     <div className="w-2 h-2 rounded-full bg-[#00ff99] animate-pulse flex-shrink-0" />
                                     <div className="flex-1 flex items-center gap-2 px-3 py-1.5 bg-[#111111] border border-[#1e1e1e] rounded-lg">
                                         {lastBrowserEvent?.type === 'search' ? (
@@ -449,7 +517,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
                                 </div>
 
                                 {/* Screenshot or activity log */}
-                                <div className="flex-1 overflow-y-auto custom-scrollbar">
+                                <div className={`overflow-y-auto custom-scrollbar ${livePreviewPort ? 'flex-1 max-h-[40%]' : 'flex-1'}`}>
                                     {lastBrowserEvent?.screenshotBase64 ? (
                                         <div className="flex items-center justify-center p-4">
                                             <img
@@ -494,7 +562,11 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
                                     )}
                                 </div>
                             </>
-                        )}
+                        ) : livePreviewPort ? (
+                            <div className="flex-1 flex items-center justify-center text-[#3a3a3a] text-[11px] px-6 text-center">
+                                No browser tool events yet. Live Preview is active above.
+                            </div>
+                        ) : null}
                     </div>
                 )}
 

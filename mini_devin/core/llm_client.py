@@ -59,10 +59,10 @@ class LLMConfig:
     """Configuration for the LLM client."""
     model: str = "gpt-4o"
     temperature: float = 0.0
-    max_tokens: int = 4096
+    max_tokens: int = 16384
     api_key: str | None = None
     api_base: str | None = None
-    timeout: int = 120
+    timeout: int = 300
     max_retries: int = 3
     provider: Provider | None = None
     # Max messages sent to the API (system preserved; non-system tail-trimmed). None = use env/heuristic.
@@ -722,7 +722,13 @@ def create_llm_client(
     elif provider == Provider.GOOGLE:
         max_tokens = 8192
     else:
-        max_tokens = 4096
+        max_tokens = 16384
+
+    timeout_raw = (os.environ.get("LLM_TIMEOUT_SEC") or "").strip()
+    if timeout_raw.isdigit():
+        timeout = int(timeout_raw)
+    else:
+        timeout = 300
 
     config = LLMConfig(
         model=model,
@@ -731,5 +737,6 @@ def create_llm_client(
         api_base=api_base,
         provider=provider,
         max_tokens=max_tokens,
+        timeout=timeout,
     )
     return LLMClient(config)

@@ -135,7 +135,7 @@ async def condense_chat_messages(
                 {"role": "user", "content": raw_middle},
             ],
             temperature=0.15,
-            max_tokens=min(4096, summarizer.config.max_tokens),
+            max_tokens=min(8192, summarizer.config.max_tokens),
         )
     except Exception:
         summary = (

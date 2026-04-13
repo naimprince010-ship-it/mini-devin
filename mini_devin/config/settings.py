@@ -18,7 +18,7 @@ from .run_modes import RunMode, get_run_mode_config, RunModeConfig
 class SafetySettings:
     """Safety-related settings."""
     
-    max_iterations: int = 50
+    max_iterations: int = 100
     max_repair_iterations: int = 3
     allow_dependency_bump: bool = False
     max_lines_edit: int = 300
@@ -43,7 +43,7 @@ class SafetySettings:
     def from_env(cls) -> "SafetySettings":
         """Load safety settings from environment variables."""
         return cls(
-            max_iterations=int(os.environ.get("MAX_ITERATIONS", "50")),
+            max_iterations=int(os.environ.get("MAX_ITERATIONS", "100")),
             max_repair_iterations=int(os.environ.get("MAX_REPAIR_ITERATIONS", "3")),
             allow_dependency_bump=os.environ.get("ALLOW_DEPENDENCY_BUMP", "false").lower() == "true",
             max_lines_edit=int(os.environ.get("MAX_LINES_EDIT", "300")),
@@ -57,7 +57,7 @@ class LLMSettings:
     
     model: str = "gpt-4o"
     temperature: float = 0.1
-    max_tokens: int = 4096
+    max_tokens: int = 16384
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
     
@@ -67,7 +67,7 @@ class LLMSettings:
         return cls(
             model=os.environ.get("LLM_MODEL", "gpt-4o"),
             temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
-            max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "4096")),
+            max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "16384")),
             openai_api_key=os.environ.get("OPENAI_API_KEY"),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
         )

@@ -1222,6 +1222,44 @@ async def read_file_content(session_id: str, path: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/sessions/{session_id}/live-preview/status")
+@app.get("/sessions/{session_id}/live-preview/status")
+async def live_preview_status(session_id: str):
+    """Registered dev-server port for reverse-proxy Live Preview (Browser tab)."""
+    from .live_preview_state import get_session_preview_port
+
+    sess = await session_manager.get_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+    port = await get_session_preview_port(session_id)
+    iframe_path = f"/api/sessions/{session_id}/live-preview/" if port else None
+    return {"active": bool(port), "port": port, "iframe_path": iframe_path}
+
+
+async def _live_preview_proxy_impl(session_id: str, path: str, request: Request):
+    from .live_preview_proxy import proxy_live_preview
+    from .live_preview_state import get_session_preview_port
+
+    sess = await session_manager.get_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return await proxy_live_preview(session_id, path, request, get_port=get_session_preview_port)
+
+
+@app.api_route("/api/sessions/{session_id}/live-preview", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+@app.api_route("/sessions/{session_id}/live-preview", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def live_preview_proxy_root(session_id: str, request: Request):
+    """Proxy root when URL has no trailing segment (``/live-preview``)."""
+    return await _live_preview_proxy_impl(session_id, "", request)
+
+
+@app.api_route("/api/sessions/{session_id}/live-preview/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+@app.api_route("/sessions/{session_id}/live-preview/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def live_preview_proxy_route(session_id: str, path: str, request: Request):
+    """Reverse-proxy to ``127.0.0.1:{port}`` (Vite default 5173, etc.)."""
+    return await _live_preview_proxy_impl(session_id, path, request)
+
+
 @app.get("/api/sessions/{session_id}/activity-feed")
 @app.get("/sessions/{session_id}/activity-feed")
 async def get_session_activity_feed(session_id: str, limit: int = 500):
@@ -1564,7 +1602,7 @@ async def list_models():
         models.extend([
             {"id": "gpt-4o", "name": "GPT-4o", "provider": "openai",
              "context_window": 128000, "supports_tools": True, "supports_vision": True,
-             "max_output_tokens": 4096, "description": "Most capable GPT-4 model"},
+             "max_output_tokens": 16384, "description": "Most capable GPT-4 model"},
             {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "provider": "openai",
              "context_window": 128000, "supports_tools": True, "supports_vision": True,
              "max_output_tokens": 16384, "description": "Faster, cheaper GPT-4o"},
@@ -1595,7 +1633,7 @@ async def list_models():
         models = [
             {"id": "gpt-4o", "name": "GPT-4o", "provider": "openai",
              "context_window": 128000, "supports_tools": True, "supports_vision": True,
-             "max_output_tokens": 4096, "description": "Requires OPENAI_API_KEY"},
+             "max_output_tokens": 16384, "description": "Requires OPENAI_API_KEY"},
         ]
     return {"models": models}
 

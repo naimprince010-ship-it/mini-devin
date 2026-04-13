@@ -159,7 +159,7 @@ OPENAI_MODELS = [
         context_window=128000,
         supports_tools=True,
         supports_vision=True,
-        max_output_tokens=4096,
+        max_output_tokens=16384,
         description="Most capable GPT-4 model with vision support",
     ),
     ModelInfo(
@@ -311,7 +311,7 @@ AZURE_MODELS = [
         context_window=128000,
         supports_tools=True,
         supports_vision=True,
-        max_output_tokens=4096,
+        max_output_tokens=16384,
         description="GPT-4o on Azure OpenAI",
     ),
     ModelInfo(

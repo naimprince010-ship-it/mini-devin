@@ -285,6 +285,12 @@ class DatabaseSessionManager:
                 repo = SessionRepository(db)
                 result = await repo.delete(session_id)
                 await db.commit()
+                try:
+                    from ..api.live_preview_state import clear_session_preview_port
+
+                    await clear_session_preview_port(session_id)
+                except Exception:
+                    pass
                 return result
     
     async def create_task(

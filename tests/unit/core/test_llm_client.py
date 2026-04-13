@@ -25,10 +25,10 @@ class TestLLMConfig:
         config = LLMConfig()
         assert config.model == "gpt-4o"
         assert config.temperature == 0.0
-        assert config.max_tokens == 4096
+        assert config.max_tokens == 16384
         assert config.api_key is None
         assert config.api_base is None
-        assert config.timeout == 120
+        assert config.timeout == 300
         assert config.max_retries == 3
         assert config.provider is None
         assert config.max_history_messages is None
