@@ -285,6 +285,7 @@ class Agent:
     def __init__(
         self,
         llm_client: LLMClient | None = None,
+        observation_llm_client: LLMClient | None = None,
         tool_registry: ToolRegistry | None = None,
         working_directory: str | None = None,
         max_iterations: int = _DEFAULT_AGENT_MAX_ITERATIONS,
@@ -302,6 +303,9 @@ class Agent:
         session_id: str | None = None,
     ):
         self.llm = llm_client or create_llm_client()
+        self._observation_llm_override = observation_llm_client
+        self._observation_llm: LLMClient | None = None
+        self._context_focus_path: str | None = None
         self.registry = tool_registry or get_global_registry()
         self.working_directory = working_directory
         self.max_iterations = max_iterations
@@ -421,6 +425,83 @@ class Agent:
             pass
         self._system_prompt_base = _sys
         self.llm.set_system_prompt(_sys)
+
+    def _get_observation_llm(self) -> LLMClient:
+        """Gemini Flash (default) for observation/diagnostics; falls back to primary LLM if misconfigured."""
+        if self._observation_llm_override is not None:
+            return self._observation_llm_override
+        if self._observation_llm is None:
+            try:
+                om = (os.environ.get("LLM_MODEL_OBSERVATION") or "gemini/gemini-1.5-flash").strip()
+                if not om:
+                    om = "gemini/gemini-1.5-flash"
+                temp = float((os.environ.get("LLM_OBSERVATION_TEMPERATURE") or "0.1").strip() or 0.1)
+                self._observation_llm = create_llm_client(model=om, temperature=temp)
+            except ValueError:
+                self._observation_llm = self.llm
+        return self._observation_llm
+
+    def _workspace_context_ephemeral_messages(self) -> list[dict[str, Any]]:
+        """Inject PLAN.md + current focus file into every completion (Gemini-scale context)."""
+        chunks: list[str] = []
+        wd = self.working_directory
+        if not wd:
+            return []
+        root = Path(wd).resolve()
+        plan = root / "PLAN.md"
+        if plan.is_file():
+            try:
+                cap_p = int((os.environ.get("PLODDER_PLAN_MD_MAX_CHARS") or "250000").strip() or "250000")
+                pt = plan.read_text(encoding="utf-8", errors="replace")
+                if len(pt) > cap_p:
+                    pt = pt[:cap_p] + "\n\n...(PLAN.md truncated for prompt)\n"
+                chunks.append("## PLAN.md (workspace root)\n```markdown\n" + pt + "\n```")
+            except OSError:
+                pass
+
+        rel = (self._context_focus_path or "").strip().replace("\\", "/")
+        if rel:
+            candidate = (root / rel).resolve()
+            under_root = False
+            try:
+                candidate.relative_to(root)
+                under_root = True
+            except ValueError:
+                under_root = False
+            if under_root and candidate.is_file():
+                try:
+                    cap_f = int((os.environ.get("PLODDER_CONTEXT_FILE_MAX_CHARS") or "400000").strip() or "400000")
+                    body = candidate.read_text(encoding="utf-8", errors="replace")
+                    if len(body) > cap_f:
+                        body = body[:cap_f] + "\n\n...(file truncated for prompt)\n"
+                    chunks.append(f"## Current focus file: `{rel}`\n```\n{body}\n```")
+                except OSError:
+                    pass
+
+        if not chunks:
+            return []
+        return [
+            {
+                "role": "user",
+                "content": "\n\n".join(chunks)
+                + "\n\n_(Workspace context — refreshed each model call.)_",
+            }
+        ]
+
+    async def _prepare_messages_for_llm_turn(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        from mini_devin.core.context_condenser import condense_chat_messages
+
+        base = self.llm.get_conversation_for_api()
+        if os.environ.get("LLM_CONTEXT_CONDENSER", "true").lower() not in ("0", "false", "no"):
+            try:
+                base = await condense_chat_messages(
+                    base,
+                    summarizer=self._get_observation_llm(),
+                )
+            except Exception as _ce:
+                self._log(f"Context condenser skipped: {_ce}")
+        ephemeral = self._workspace_context_ephemeral_messages()
+        return base, ephemeral
 
     def _emit_terminal_line(self, line: str) -> None:
         cb = self.callbacks.get("on_command_output")
@@ -1642,6 +1723,14 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                         duration_ms=duration_ms,
                         success="Error" not in output and "BLOCKED" not in output,
                     )
+
+                if (
+                    file_path
+                    and action in ("read_file", "write_file", "str_replace", "apply_patch")
+                    and "Error" not in out_final
+                    and "BLOCKED" not in out_final
+                ):
+                    self._context_focus_path = str(file_path).replace("\\", "/")
 
                 return out_final
             
@@ -4258,11 +4347,14 @@ Call a tool (editor or terminal) immediately as your first action."""
                     await self._trigger_callback("on_message", token, is_token=True)
 
                 # Get LLM response with tools and streaming
+                _msgs, _eph = await self._prepare_messages_for_llm_turn()
                 response = await self.llm.complete(
                     tools=self._get_tool_schemas(),
                     tool_choice="auto",
                     stream=True,
                     on_token=handle_token,
+                    messages_for_api=_msgs,
+                    ephemeral_user_messages=_eph,
                 )
                 # Detect step progression in the message content
                 if response.content:
@@ -4560,11 +4652,14 @@ Call a tool (editor or terminal) immediately as your first action."""
                                     "Please review the error and provide a corrected tool call."
                                 )
                             
-                            # Ask LLM again
-                            retry_response = await self.llm.complete(
+                            # Ask LLM again (observation / diagnostics stack — default Gemini Flash)
+                            _msgs, _eph = await self._prepare_messages_for_llm_turn()
+                            retry_response = await self._get_observation_llm().complete(
                                 tools=self._get_tool_schemas(),
                                 tool_choice="required", # Force tool use
-                                stream=False
+                                stream=False,
+                                messages_for_api=_msgs,
+                                ephemeral_user_messages=_eph,
                             )
                             
                             if retry_response.tool_calls:
@@ -4678,10 +4773,13 @@ Call a tool (editor or terminal) immediately as your first action."""
                             if self._no_tool_streak >= 1:
                                 # After 2 text-only turns, force a tool call
                                 self._log("Multiple text-only turns — injecting forced tool call.")
-                                forced_response = await self.llm.complete(
+                                _msgs, _eph = await self._prepare_messages_for_llm_turn()
+                                forced_response = await self._get_observation_llm().complete(
                                     tools=self._get_tool_schemas(),
                                     tool_choice="required",
                                     stream=False,
+                                    messages_for_api=_msgs,
+                                    ephemeral_user_messages=_eph,
                                 )
                                 self._no_tool_streak = 0
                                 if forced_response.tool_calls:
@@ -4738,9 +4836,12 @@ Call a tool (editor or terminal) immediately as your first action."""
                 "or ensure API keys and workspace paths are correct."
             )
         
-        # Update token usage
+        # Update token usage (primary + optional observation/diagnostics client)
         usage = self.llm.get_usage_stats()
         task.total_tokens_used = usage["total_tokens"]
+        if self._observation_llm is not None and self._observation_llm is not self.llm:
+            ou = self._observation_llm.get_usage_stats()
+            task.total_tokens_used += ou["total_tokens"]
         
         # Save final artifacts
         if self._artifact_logger:

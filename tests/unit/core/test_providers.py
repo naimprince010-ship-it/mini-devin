@@ -8,6 +8,7 @@ from mini_devin.core.providers import (
     Provider,
     ModelInfo,
     ProviderConfig,
+    GoogleAIConfig,
     OpenAIConfig,
     AnthropicConfig,
     OllamaConfig,
@@ -16,6 +17,7 @@ from mini_devin.core.providers import (
     get_model_registry,
     get_litellm_model_name,
     get_provider_env_vars,
+    GEMINI_MODELS,
     OPENAI_MODELS,
     ANTHROPIC_MODELS,
     OLLAMA_MODELS,
@@ -28,6 +30,7 @@ class TestProvider:
 
     def test_provider_values(self):
         """Test that all provider values are correct."""
+        assert Provider.GOOGLE.value == "google"
         assert Provider.OPENAI.value == "openai"
         assert Provider.ANTHROPIC.value == "anthropic"
         assert Provider.OLLAMA.value == "ollama"
@@ -35,6 +38,7 @@ class TestProvider:
 
     def test_provider_from_string(self):
         """Test creating Provider from string."""
+        assert Provider("google") == Provider.GOOGLE
         assert Provider("openai") == Provider.OPENAI
         assert Provider("anthropic") == Provider.ANTHROPIC
         assert Provider("ollama") == Provider.OLLAMA
@@ -227,7 +231,13 @@ class TestModelRegistry:
     def test_registry_initialization(self):
         """Test ModelRegistry initializes with all models."""
         registry = ModelRegistry()
-        total_models = len(OPENAI_MODELS) + len(ANTHROPIC_MODELS) + len(OLLAMA_MODELS) + len(AZURE_MODELS)
+        total_models = (
+            len(GEMINI_MODELS)
+            + len(OPENAI_MODELS)
+            + len(ANTHROPIC_MODELS)
+            + len(OLLAMA_MODELS)
+            + len(AZURE_MODELS)
+        )
         assert len(registry._models) == total_models
 
     def test_get_model(self):
@@ -293,6 +303,22 @@ class TestModelRegistry:
         default = registry.get_default_model()
         assert default == "gpt-4o"
 
+    def test_get_default_model_google(self):
+        """Test default model when only Google / Gemini is configured."""
+        registry = ModelRegistry()
+        registry.configure_providers(google=GoogleAIConfig(api_key="AIza-x", enabled=True))
+        default = registry.get_default_model()
+        assert default == "gemini/gemini-1.5-flash"
+
+    def test_get_default_model_prefers_google_when_both_keys(self):
+        """Gemini is the preferred default when both Google and OpenAI are configured."""
+        registry = ModelRegistry()
+        registry.configure_providers(
+            google=GoogleAIConfig(api_key="AIza-x", enabled=True),
+            openai=OpenAIConfig(api_key="sk-x", enabled=True),
+        )
+        assert registry.get_default_model() == "gemini/gemini-1.5-flash"
+
     def test_get_default_model_anthropic(self):
         """Test getting default model when only Anthropic is configured."""
         registry = ModelRegistry()
@@ -329,6 +355,11 @@ class TestGetLiteLLMModelName:
         name = get_litellm_model_name("ollama/llama3.2")
         assert name == "ollama/llama3.2"
 
+    def test_gemini_model(self):
+        """Gemini LiteLLM ids pass through unchanged."""
+        name = get_litellm_model_name("gemini/gemini-1.5-flash")
+        assert name == "gemini/gemini-1.5-flash"
+
     def test_unknown_model(self):
         """Test unknown model returns as-is."""
         name = get_litellm_model_name("unknown-model")
@@ -362,6 +393,12 @@ class TestGetProviderEnvVars:
         assert "AZURE_API_KEY" in env_vars
         assert "AZURE_API_BASE" in env_vars
         assert "AZURE_DEPLOYMENT_NAME" in env_vars
+
+    def test_google_env_vars(self):
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "k1", "GOOGLE_API_KEY": "k2"}):
+            env_vars = get_provider_env_vars(Provider.GOOGLE)
+            assert env_vars["GEMINI_API_KEY"] == "k1"
+            assert env_vars["GOOGLE_API_KEY"] == "k2"
 
 
 class TestModelDefinitions:
@@ -398,3 +435,10 @@ class TestModelDefinitions:
             assert model.name is not None
             assert model.provider == Provider.AZURE
             assert model.id.startswith("azure/")
+
+    def test_gemini_models_valid(self):
+        for model in GEMINI_MODELS:
+            assert model.id is not None
+            assert model.name is not None
+            assert model.provider == Provider.GOOGLE
+            assert model.id.startswith("gemini/")

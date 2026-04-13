@@ -2,6 +2,7 @@
 Multi-Model Provider Support for Plodder (Phase 12).
 
 This module provides support for multiple LLM providers:
+- Google Gemini (via LiteLLM, e.g. gemini/gemini-1.5-flash)
 - OpenAI (GPT-4, GPT-4o, GPT-3.5)
 - Anthropic (Claude 3.5, Claude 3)
 - Ollama (local models)
@@ -16,6 +17,7 @@ from typing import Any
 
 class Provider(str, Enum):
     """Supported LLM providers."""
+    GOOGLE = "google"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     OLLAMA = "ollama"
@@ -46,6 +48,26 @@ class ProviderConfig:
     def is_configured(self) -> bool:
         """Check if the provider is properly configured."""
         return self.enabled and self.api_key is not None
+
+
+@dataclass
+class GoogleAIConfig(ProviderConfig):
+    """Google AI Studio / Gemini (LiteLLM ``gemini/...`` models)."""
+
+    provider: Provider = field(default=Provider.GOOGLE, init=False)
+
+    @classmethod
+    def from_env(cls) -> "GoogleAIConfig":
+        return cls(
+            api_key=os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"),
+            enabled=os.environ.get("GOOGLE_AI_ENABLED", "true").lower() == "true",
+        )
+
+    def is_configured(self) -> bool:
+        key = (self.api_key or "").strip()
+        if not key or key.upper() == "YOUR_KEY_HERE":
+            return False
+        return self.enabled
 
 
 @dataclass
@@ -268,6 +290,19 @@ OLLAMA_MODELS = [
     ),
 ]
 
+GEMINI_MODELS = [
+    ModelInfo(
+        id="gemini/gemini-1.5-flash",
+        name="Gemini 1.5 Flash",
+        provider=Provider.GOOGLE,
+        context_window=1_000_000,
+        supports_tools=True,
+        supports_vision=True,
+        max_output_tokens=8192,
+        description="Fast Gemini 1.5 with long context (Google AI Studio via LiteLLM)",
+    ),
+]
+
 AZURE_MODELS = [
     ModelInfo(
         id="azure/gpt-4o",
@@ -317,17 +352,26 @@ class ModelRegistry:
         self._models: dict[str, ModelInfo] = {}
         self._providers: dict[Provider, ProviderConfig] = {}
         
-        for model in OPENAI_MODELS + ANTHROPIC_MODELS + OLLAMA_MODELS + AZURE_MODELS:
+        for model in (
+            GEMINI_MODELS
+            + OPENAI_MODELS
+            + ANTHROPIC_MODELS
+            + OLLAMA_MODELS
+            + AZURE_MODELS
+        ):
             self._models[model.id] = model
     
     def configure_providers(
         self,
+        google: GoogleAIConfig | None = None,
         openai: OpenAIConfig | None = None,
         anthropic: AnthropicConfig | None = None,
         ollama: OllamaConfig | None = None,
         azure: AzureConfig | None = None,
     ) -> None:
         """Configure providers with their settings."""
+        if google:
+            self._providers[Provider.GOOGLE] = google
         if openai:
             self._providers[Provider.OPENAI] = openai
         if anthropic:
@@ -339,6 +383,7 @@ class ModelRegistry:
     
     def configure_from_env(self) -> None:
         """Configure all providers from environment variables."""
+        self._providers[Provider.GOOGLE] = GoogleAIConfig.from_env()
         self._providers[Provider.OPENAI] = OpenAIConfig.from_env()
         self._providers[Provider.ANTHROPIC] = AnthropicConfig.from_env()
         self._providers[Provider.OLLAMA] = OllamaConfig.from_env()
@@ -398,6 +443,8 @@ class ModelRegistry:
     
     def get_default_model(self) -> str:
         """Get the default model ID based on configured providers."""
+        if self.is_provider_configured(Provider.GOOGLE):
+            return os.environ.get("DEFAULT_GEMINI_MODEL", "gemini/gemini-1.5-flash")
         if self.is_provider_configured(Provider.OPENAI):
             return "gpt-4o"
         if self.is_provider_configured(Provider.ANTHROPIC):
@@ -456,6 +503,9 @@ def get_litellm_model_name(model_id: str, registry: ModelRegistry | None = None)
     if model is None:
         return model_id
     
+    if model.provider == Provider.GOOGLE:
+        return model_id
+
     if model.provider == Provider.ANTHROPIC:
         return model_id
     
@@ -473,6 +523,11 @@ def get_litellm_model_name(model_id: str, registry: ModelRegistry | None = None)
 
 def get_provider_env_vars(provider: Provider) -> dict[str, str | None]:
     """Get environment variables for a provider."""
+    if provider == Provider.GOOGLE:
+        return {
+            "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY"),
+            "GOOGLE_API_KEY": os.environ.get("GOOGLE_API_KEY"),
+        }
     if provider == Provider.OPENAI:
         return {
             "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY"),

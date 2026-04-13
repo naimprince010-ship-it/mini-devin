@@ -19,6 +19,31 @@ from mini_devin.core.providers import (
 )
 
 
+def _is_gemini_litellm_model(model_id: str) -> bool:
+    m = (model_id or "").strip().lower()
+    return m.startswith("gemini/") or m.startswith("vertex_ai/")
+
+
+def _gemini_safety_settings_block_none() -> list[dict[str, str]]:
+    """Core categories at BLOCK_NONE for code/terminal-heavy agent workloads."""
+    categories = (
+        "HARM_CATEGORY_HARASSMENT",
+        "HARM_CATEGORY_HATE_SPEECH",
+        "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "HARM_CATEGORY_DANGEROUS_CONTENT",
+    )
+    return [{"category": c, "threshold": "BLOCK_NONE"} for c in categories]
+
+
+def _apply_gemini_safety_override(kwargs: dict[str, Any], model_name: str) -> None:
+    """LiteLLM safety_settings BLOCK_NONE for Gemini / Vertex when enabled via env."""
+    if not _is_gemini_litellm_model(model_name):
+        return
+    if os.environ.get("LLM_GEMINI_SAFETY_BLOCK_NONE", "true").lower() in ("0", "false", "no"):
+        return
+    kwargs["safety_settings"] = _gemini_safety_settings_block_none()
+
+
 # LiteLLM import
 try:
     import litellm
@@ -39,6 +64,8 @@ class LLMConfig:
     timeout: int = 120
     max_retries: int = 3
     provider: Provider | None = None
+    # Max messages sent to the API (system preserved; non-system tail-trimmed). None = use env/heuristic.
+    max_history_messages: int | None = None
 
 
 @dataclass
@@ -131,12 +158,14 @@ class LLMClient:
         """Set up provider-specific configuration."""
         registry = get_model_registry()
         model_info = registry.get_model(self.config.model)
-        
+
         if model_info:
             self.config.provider = model_info.provider
-        
+        elif isinstance(self.config.model, str) and _is_gemini_litellm_model(self.config.model):
+            self.config.provider = Provider.GOOGLE
+
         provider = self.config.provider
-        
+
         if provider == Provider.OPENAI:
             if self.config.api_key:
                 os.environ["OPENAI_API_KEY"] = self.config.api_key
@@ -155,10 +184,15 @@ class LLMClient:
             if config and isinstance(config, AzureConfig):
                 if config.api_base:
                     self.config.api_base = config.api_base
-        else:
+        elif provider == Provider.GOOGLE:
             if self.config.api_key:
+                os.environ["GEMINI_API_KEY"] = self.config.api_key
+                if not (os.environ.get("GOOGLE_API_KEY") or "").strip():
+                    os.environ["GOOGLE_API_KEY"] = self.config.api_key
+        else:
+            if self.config.api_key and provider is None:
                 os.environ["OPENAI_API_KEY"] = self.config.api_key
-        
+
         # SSL Verification Workaround
         # We must use a custom AsyncOpenAI client for OpenAI to bypass SSL issues
         # and avoid organization header conflicts.
@@ -282,16 +316,78 @@ class LLMClient:
                 out.append(LLMMessage(role=role, content=content))
         self.conversation = out
 
+    def _conversation_message_limit(self) -> int | None:
+        """How many messages to send (including system). None = no trimming."""
+        if self.config.max_history_messages is not None:
+            return self.config.max_history_messages if self.config.max_history_messages > 0 else None
+        raw = (os.environ.get("LLM_MAX_HISTORY_MESSAGES") or "").strip()
+        if raw.isdigit():
+            n = int(raw)
+            return n if n > 0 else None
+        if _is_gemini_litellm_model(self.config.model):
+            return 200
+        return 80
+
     def get_conversation_for_api(self) -> list[dict[str, Any]]:
-        """Get conversation in API format."""
-        return [msg.to_dict() for msg in self.conversation]
-    
+        """Get conversation in API format (optional tail trim via LLM_MAX_HISTORY_MESSAGES)."""
+        msgs = [msg.to_dict() for msg in self.conversation]
+        limit = self._conversation_message_limit()
+        if limit is None or len(msgs) <= limit:
+            return msgs
+        system_msgs = [m for m in msgs if m.get("role") == "system"]
+        rest = [m for m in msgs if m.get("role") != "system"]
+        cap_rest = max(0, limit - len(system_msgs))
+        if len(rest) <= cap_rest:
+            return msgs
+        rest = rest[-cap_rest:]
+        return system_msgs + rest
+
+    async def completion_ephemeral(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        temperature: float = 0.2,
+        max_tokens: int = 4096,
+    ) -> str:
+        """
+        One-shot completion without mutating ``self.conversation`` (summaries, condenser, etc.).
+        Applies the same Gemini safety override as ``complete`` when applicable.
+        """
+        model_name = get_litellm_model_name(self.config.model)
+        kwargs: dict[str, Any] = {
+            "model": model_name,
+            "messages": list(messages),
+            "temperature": temperature,
+            "max_tokens": min(max_tokens, self.config.max_tokens),
+            "timeout": self.config.timeout,
+            "stream": False,
+        }
+        if self.config.api_base:
+            kwargs["api_base"] = self.config.api_base
+        _apply_gemini_safety_override(kwargs, model_name)
+        if self._custom_client and self.config.provider == Provider.OPENAI:
+            kwargs["client"] = self._custom_client
+        try:
+            response = await acompletion(**kwargs)
+        except Exception as e:
+            raise RuntimeError(f"LLM ephemeral completion failed: {e}") from e
+        choice = response.choices[0]
+        message = choice.message
+        text = getattr(message, "content", None) or ""
+        if hasattr(response, "usage") and response.usage:
+            self.total_prompt_tokens += getattr(response.usage, "prompt_tokens", 0)
+            self.total_completion_tokens += getattr(response.usage, "completion_tokens", 0)
+            self.total_tokens_used += getattr(response.usage, "total_tokens", 0)
+        return str(text).strip()
+
     async def complete(
         self,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] = "auto",
         stream: bool = False,
         on_token: Callable[[str], Any] | None = None,
+        messages_for_api: list[dict[str, Any]] | None = None,
+        ephemeral_user_messages: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
         """
         Get a completion from the LLM.
@@ -301,12 +397,19 @@ class LLMClient:
             tool_choice: "auto", "none", or {"type": "function", "function": {"name": "..."}}
             stream: Whether to stream the response
             on_token: Optional callback for streaming tokens
-            
+            messages_for_api: When set, use this message list instead of ``get_conversation_for_api()``.
+            ephemeral_user_messages: Extra user messages appended (e.g. PLAN.md + file context).
+
         Returns:
             LLMResponse with content and/or tool calls
         """
-        messages = self.get_conversation_for_api()
-        
+        if messages_for_api is not None:
+            messages = [dict(m) for m in messages_for_api]
+        else:
+            messages = self.get_conversation_for_api()
+        if ephemeral_user_messages:
+            messages = messages + [dict(m) for m in ephemeral_user_messages]
+
         model_name = get_litellm_model_name(self.config.model)
         
         kwargs: dict[str, Any] = {
@@ -330,7 +433,9 @@ class LLMClient:
         
         if self.config.api_base:
             kwargs["api_base"] = self.config.api_base
-        
+
+        _apply_gemini_safety_override(kwargs, model_name)
+
         if self._custom_client and self.config.provider == Provider.OPENAI:
              kwargs["client"] = self._custom_client
 
@@ -557,8 +662,13 @@ def create_llm_client(
         model = os.environ.get("LLM_MODEL") or registry.get_default_model()
     
     model_info = registry.get_model(model)
-    provider = model_info.provider if model_info else None
-    
+    if model_info:
+        provider = model_info.provider
+    elif isinstance(model, str) and _is_gemini_litellm_model(model):
+        provider = Provider.GOOGLE
+    else:
+        provider = None
+
     if api_key is None and provider:
         if provider == Provider.OPENAI:
             api_key = os.environ.get("OPENAI_API_KEY")
@@ -566,20 +676,41 @@ def create_llm_client(
             api_key = os.environ.get("ANTHROPIC_API_KEY")
         elif provider == Provider.AZURE:
             api_key = os.environ.get("AZURE_API_KEY")
+        elif provider == Provider.GOOGLE:
+            api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         elif provider == Provider.OLLAMA:
             api_key = "ollama"
-    
-    if api_key is None:
+
+    if api_key is None and provider != Provider.GOOGLE:
         api_key = os.environ.get("OPENAI_API_KEY")
 
     if isinstance(api_key, str):
         api_key = api_key.strip() or None
+    if isinstance(api_key, str) and api_key.upper() == "YOUR_KEY_HERE":
+        api_key = None
 
     if not api_key:
+        if provider == Provider.GOOGLE or (
+            isinstance(model, str) and _is_gemini_litellm_model(model)
+        ):
+            raise ValueError(
+                "No Gemini API key is set. Add GEMINI_API_KEY=... (or GOOGLE_API_KEY) to the "
+                ".env file in the project root (next to pyproject.toml), save, and restart the API."
+            )
         raise ValueError(
             "No LLM API key is set. For OpenAI models, add OPENAI_API_KEY=sk-... to the "
             ".env file in the project root (next to pyproject.toml), save, and restart the API."
         )
+
+    max_out_raw = (os.environ.get("LLM_MAX_OUTPUT_TOKENS") or "").strip()
+    if max_out_raw.isdigit():
+        max_tokens = int(max_out_raw)
+    elif model_info is not None:
+        max_tokens = model_info.max_output_tokens
+    elif provider == Provider.GOOGLE:
+        max_tokens = 8192
+    else:
+        max_tokens = 4096
 
     config = LLMConfig(
         model=model,
@@ -587,5 +718,6 @@ def create_llm_client(
         temperature=temperature,
         api_base=api_base,
         provider=provider,
+        max_tokens=max_tokens,
     )
     return LLMClient(config)
