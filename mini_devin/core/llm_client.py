@@ -237,7 +237,51 @@ class LLMClient:
         self.conversation = []
         if system_msg:
             self.conversation.append(system_msg)
-    
+
+    def replace_conversation_from_api_messages(self, messages: list[dict[str, Any]]) -> None:
+        """Restore conversation from OpenAI-style dicts (e.g. DB ``conversation_json``)."""
+        out: list[LLMMessage] = []
+        for m in messages:
+            role = str(m.get("role") or "user")
+            raw_content = m.get("content")
+            if isinstance(raw_content, list):
+                content: str | None = json.dumps(raw_content, default=str)
+            elif raw_content is None:
+                content = None
+            else:
+                content = str(raw_content)
+
+            if role == "assistant" and m.get("tool_calls"):
+                tcs: list[ToolCall] = []
+                for tc in m["tool_calls"]:
+                    if isinstance(tc, dict) and "function" in tc:
+                        fn = tc["function"]
+                        name = str(fn.get("name") or "")
+                        raw_args = fn.get("arguments", "{}")
+                        if isinstance(raw_args, str):
+                            try:
+                                args = json.loads(raw_args) if raw_args.strip() else {}
+                            except json.JSONDecodeError:
+                                args = {"_raw": raw_args}
+                        elif isinstance(raw_args, dict):
+                            args = raw_args
+                        else:
+                            args = {}
+                        tcs.append(ToolCall(id=str(tc.get("id") or ""), name=name, arguments=args))
+                out.append(LLMMessage(role="assistant", content=content, tool_calls=tcs))
+            elif role == "tool":
+                out.append(
+                    LLMMessage(
+                        role="tool",
+                        content=content or "",
+                        tool_call_id=m.get("tool_call_id"),
+                        name=m.get("name"),
+                    )
+                )
+            else:
+                out.append(LLMMessage(role=role, content=content))
+        self.conversation = out
+
     def get_conversation_for_api(self) -> list[dict[str, Any]]:
         """Get conversation in API format."""
         return [msg.to_dict() for msg in self.conversation]

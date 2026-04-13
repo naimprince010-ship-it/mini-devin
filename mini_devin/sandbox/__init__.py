@@ -29,13 +29,14 @@ from .docker_sandbox import (
 from .e2b_sandbox import E2BSandbox
 from .factory import create_execution_sandbox, get_sandbox_backend
 from .process_sandbox import ProcessSandbox
-from .process_execution_sandbox import ProcessExecutionSandbox
+from .process_execution_sandbox import ProcessExecutionSandbox, use_host_process_terminal_for_tooling
 from .sandbox import SimpleDockerSandbox, ensure_sandbox_image
 
 __all__ = [
     "DockerSandbox",
     "E2BSandbox",
     "ProcessExecutionSandbox",
+    "use_host_process_terminal_for_tooling",
     "ProcessSandbox",
     "SimpleDockerSandbox",
     "ensure_sandbox_image",

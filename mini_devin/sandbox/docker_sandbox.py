@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -95,6 +96,7 @@ class SandboxResult:
     exit_code: int
     duration_ms: int
     timed_out: bool = False
+    streamed_live: bool = False
 
 
 class DockerSandbox:
@@ -333,6 +335,7 @@ class DockerSandbox:
         command: str,
         timeout: int | None = None,
         working_dir: str | None = None,
+        on_output_line: Callable[[str], None] | None = None,
     ) -> SandboxResult:
         """
         Execute a command in the sandbox.
@@ -387,27 +390,79 @@ class DockerSandbox:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            
+
+            timed_out = False
+            streamed_live = bool(on_output_line)
+
+            async def _drain(
+                reader: asyncio.StreamReader | None,
+                chunks: list[bytes],
+                prefix: str,
+            ) -> None:
+                if reader is None:
+                    return
+                while True:
+                    line = await reader.readline()
+                    if not line:
+                        break
+                    chunks.append(line)
+                    if on_output_line:
+                        text = line.decode("utf-8", errors="replace").rstrip("\r\n")
+                        if text:
+                            on_output_line(f"{prefix}{text}" if prefix else text)
+
+            out_parts: list[bytes] = []
+            err_parts: list[bytes] = []
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=timeout,
-                )
-                timed_out = False
+                if on_output_line:
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            _drain(process.stdout, out_parts, ""),
+                            _drain(process.stderr, err_parts, "[stderr] "),
+                        ),
+                        timeout=timeout,
+                    )
+                    rc = await process.wait()
+                else:
+                    stdout, stderr = await asyncio.wait_for(
+                        process.communicate(),
+                        timeout=timeout,
+                    )
+                    out_parts = [stdout] if stdout else []
+                    err_parts = [stderr] if stderr else []
+                    rc = process.returncode or 0
             except asyncio.TimeoutError:
-                process.kill()
-                stdout, stderr = b"", b"Command timed out"
                 timed_out = True
-            
+                process.kill()
+                try:
+                    await process.wait()
+                except Exception:
+                    pass
+                out_b = b"".join(out_parts)
+                err_b = b"".join(err_parts)
+                end_time = datetime.now(timezone.utc)
+                duration_ms = int((end_time - start_time).total_seconds() * 1000)
+                return SandboxResult(
+                    stdout=out_b.decode("utf-8", errors="replace"),
+                    stderr=(err_b.decode("utf-8", errors="replace") or "Command timed out"),
+                    exit_code=-1,
+                    duration_ms=duration_ms,
+                    timed_out=True,
+                    streamed_live=streamed_live,
+                )
+
             end_time = datetime.now(timezone.utc)
             duration_ms = int((end_time - start_time).total_seconds() * 1000)
-            
+            out_b = b"".join(out_parts)
+            err_b = b"".join(err_parts)
+
             return SandboxResult(
-                stdout=stdout.decode("utf-8", errors="replace"),
-                stderr=stderr.decode("utf-8", errors="replace"),
-                exit_code=process.returncode or 0,
+                stdout=out_b.decode("utf-8", errors="replace"),
+                stderr=err_b.decode("utf-8", errors="replace"),
+                exit_code=int(rc) if rc is not None else 0,
                 duration_ms=duration_ms,
                 timed_out=timed_out,
+                streamed_live=streamed_live,
             )
             
         except Exception as e:
@@ -419,6 +474,7 @@ class DockerSandbox:
                 stderr=str(e),
                 exit_code=-1,
                 duration_ms=duration_ms,
+                streamed_live=False,
             )
     
     async def read_file(self, path: str) -> str | None:

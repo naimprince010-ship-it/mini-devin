@@ -124,12 +124,50 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
+def _apply_session_persistence_schema_sync(connection) -> None:
+    """Add workspace / conversation columns on existing DBs (SQLite + Postgres)."""
+    from sqlalchemy import text
+
+    dialect = connection.dialect.name
+    if dialect == "sqlite":
+        r = connection.execute(text("PRAGMA table_info(sessions)"))
+        cols = {row[1] for row in r.fetchall()}
+        if "workspace_id" not in cols:
+            connection.execute(
+                text("ALTER TABLE sessions ADD COLUMN workspace_id VARCHAR(64)")
+            )
+            connection.execute(
+                text("CREATE UNIQUE INDEX IF NOT EXISTS ix_sessions_workspace_id "
+                     "ON sessions (workspace_id) WHERE workspace_id IS NOT NULL")
+            )
+        if "conversation_json" not in cols:
+            connection.execute(
+                text("ALTER TABLE sessions ADD COLUMN conversation_json TEXT")
+            )
+        return
+
+    # PostgreSQL (and other servers): IF NOT EXISTS for columns
+    connection.execute(
+        text("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(64)")
+    )
+    connection.execute(
+        text("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS conversation_json TEXT")
+    )
+    connection.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_sessions_workspace_id "
+            "ON sessions (workspace_id) WHERE workspace_id IS NOT NULL"
+        )
+    )
+
+
 async def init_db():
     """Initialize the database by creating all tables."""
     from .models import Base as ModelsBase
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(ModelsBase.metadata.create_all)
+        await conn.run_sync(_apply_session_persistence_schema_sync)
 
 
 async def close_db():

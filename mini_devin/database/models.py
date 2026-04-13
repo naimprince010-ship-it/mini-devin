@@ -109,6 +109,10 @@ class SessionModel(Base):
     id = Column(String(36), primary_key=True)
     user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     working_directory = Column(String(1024), nullable=False, default=".")
+    # Stable id for on-disk workspace under PLODDER_AGENT_WORKSPACE_ROOT (survives Railway redeploys when DB + volume match).
+    workspace_id = Column(String(64), nullable=True, unique=True, index=True)
+    # Serialized agent chat (OpenAI-style message dicts) for history after process restart.
+    conversation_json = Column(Text, nullable=True)
     model = Column(String(128), nullable=False, default="gpt-4o")
     max_iterations = Column(Integer, nullable=False, default=50)
     status = Column(Enum(SessionStatus), nullable=False, default=SessionStatus.IDLE)
@@ -132,6 +136,7 @@ class SessionModel(Base):
         return {
             "session_id": self.id,
             "working_directory": self.working_directory,
+            "workspace_id": getattr(self, "workspace_id", None),
             "model": self.model,
             "max_iterations": self.max_iterations,
             "status": self.status.value if self.status else "idle",

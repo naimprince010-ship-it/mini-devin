@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { Session, Task, WebSocketMessage } from '../types';
 import { useApi } from '../hooks/useApi';
-import { useWebSocket } from '../hooks/useWebSocket';
+import { useSessionStream } from '../hooks/useSessionStream';
 import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target, Coins, HelpCircle, X, DollarSign, Cpu, Download, FolderOpen } from 'lucide-react';
 import { StreamingOutput } from './StreamingOutput';
 import { useSessionEvents } from '../contexts/SessionEventsContext';
@@ -52,6 +52,7 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskDescription, setTaskDescription] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
+  const [monologueContent, setMonologueContent] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   /** Which task row shows live / restored stream (must be state so reload re-renders). */
   const [streamTaskId, setStreamTaskId] = useState<string | null>(null);
@@ -98,6 +99,14 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
         setStreamingContent(prev => prev + (data.content as string || ''));
         break;
 
+      case 'thinking': {
+        const chunk = (data.content as string) || '';
+        if (chunk) {
+          setMonologueContent((prev) => prev + chunk);
+        }
+        break;
+      }
+
       case 'token_usage':
         if (data.total_tokens !== undefined) {
           events.onTokenUsage({
@@ -142,6 +151,7 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
         }
         setIsStreaming(true);
         setStreamingContent('');
+        setMonologueContent('');
         setClarificationQuestion(null);
         setClarificationAnswer('');
         events.onTaskStarted();
@@ -287,7 +297,7 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const { isConnected, sendMessage } = useWebSocket({
+  const { isConnected, sendMessage, transport } = useSessionStream({
     sessionId: session.session_id,
     onMessage: handleWebSocketMessage,
   });
@@ -296,6 +306,7 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     loadTasks();
     events.resetForSession();
     setIsStreaming(false);
+    setMonologueContent('');
     // Restore LLM conversation when agent is still in server memory (do not clear first — avoids flash)
     api.getSessionHistory(session.session_id).then(hist => {
       if (hist.total > 0) {
@@ -325,18 +336,21 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [streamingContent, tasks]);
+  }, [streamingContent, monologueContent, tasks]);
 
   const handleSubmitTask = async () => {
     const desc = taskDescription.trim();
     if (!desc) return;
 
-    // If agent is running, send as follow-up via WebSocket
+    // If agent is running, send as follow-up
     if (isStreaming) {
-      if (!sendMessage(desc)) {
+      const ok = await sendMessage(desc);
+      if (!ok) {
         toast.error(
           'Message not sent',
-          'WebSocket is not ready. Wait for the green connection dot, then try again.',
+          transport === 'sse'
+            ? 'Could not POST follow-up to the server. Check the network and try again.'
+            : 'WebSocket is not ready. Wait for the green connection dot, then try again.',
         );
         return;
       }
@@ -352,10 +366,13 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
       );
       return;
     }
-    if (!sendMessage(desc)) {
+    const ok = await sendMessage(desc);
+    if (!ok) {
       toast.error(
         'Message not sent',
-        'Connection closed before send. Wait for reconnect or refresh, then try again.',
+        transport === 'sse'
+          ? 'Could not start the task via API. Check the network and try again.'
+          : 'Connection closed before send. Wait for reconnect or refresh, then try again.',
       );
       return;
     }
@@ -431,7 +448,12 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
             <div className="flex items-center gap-2 mt-1">
               <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-[#00ff99] shadow-[0_0_6px_#00ff99]' : 'bg-red-500'}`} />
               <span className="text-[10px] uppercase tracking-wider text-[#a3a3a3] font-bold">
-                {isConnected ? (isStreaming ? 'Agent Running' : 'Active Agent') : 'Agent Offline'}
+                {isConnected
+                  ? (isStreaming ? 'Agent Running' : 'Active Agent')
+                  : 'Agent Offline'}
+                {isConnected && transport === 'sse' && (
+                  <span className="text-[#525252] font-normal"> · SSE</span>
+                )}
               </span>
               {/* Model badge */}
               {session.model && (
@@ -646,6 +668,14 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
                           );
                           return null;
                         })()}
+                        {monologueContent.length > 0 && (
+                          <div className="text-xs text-[#8a8a8a] whitespace-pre-wrap border-l-2 border-[#404040] pl-3 py-2 font-mono bg-[#080808] rounded-r-md max-h-40 overflow-y-auto custom-scrollbar">
+                            <span className="text-[10px] uppercase tracking-wider text-[#525252] block mb-1">
+                              Internal monologue
+                            </span>
+                            {monologueContent}
+                          </div>
+                        )}
                         <StreamingOutput content={streamingContent} isStreaming={isStreaming} />
                       </div>
                         );

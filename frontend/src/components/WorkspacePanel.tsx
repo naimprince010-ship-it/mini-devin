@@ -1,17 +1,18 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Terminal, FileCode, History, Maximize2, Globe, ExternalLink, Search, X, Brain, Trash2, Copy, Check, Loader2, Wifi, AlertTriangle } from 'lucide-react';
+import { Terminal, FileCode, History, Maximize2, Globe, ExternalLink, Search, X, Brain, Trash2, Copy, Check, Loader2, Wifi, AlertTriangle, ListTree } from 'lucide-react';
 import { MemoryView } from './MemoryView';
 import { FileExplorer } from './FileExplorer';
 import { ToolCallLog } from './ToolCallLog';
 import { FileDiffView } from './FileDiffView';
 import { MonacoEditorPanel } from './MonacoEditorPanel';
+import { ActivityFeed } from './ActivityFeed';
 import { useSessionEvents } from '../contexts/SessionEventsContext';
 
 interface WorkspacePanelProps {
     sessionId?: string;
 }
 
-type TabType = 'shell' | 'worklog' | 'editor' | 'browser' | 'memory';
+type TabType = 'shell' | 'worklog' | 'feed' | 'editor' | 'browser' | 'memory';
 
 export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => {
     const [activeTab, setActiveTab] = useState<TabType>('shell');
@@ -75,6 +76,11 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
             label: 'Worklog',
             icon: <History size={13} />,
             badge: events.toolCalls.length > 0 ? events.toolCalls.length : undefined,
+        },
+        {
+            id: 'feed',
+            label: 'Activity',
+            icon: <ListTree size={13} />,
         },
         {
             id: 'editor',
@@ -280,6 +286,13 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
                                 })
                             )}
                         </div>
+                    </div>
+                )}
+
+                {/* ACTIVITY FEED — session_events.jsonl */}
+                {activeTab === 'feed' && (
+                    <div className="absolute inset-0 overflow-hidden">
+                        <ActivityFeed sessionId={sessionId} isRunning={events.isRunning} />
                     </div>
                 )}
 

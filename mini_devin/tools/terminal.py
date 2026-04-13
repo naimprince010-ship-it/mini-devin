@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+from collections.abc import Callable
 
 from ..core.tool_interface import BaseTool, ToolPolicy
 from .host_paths import command_uses_windows_drive_paths, linux_workspace_hint
@@ -168,6 +169,42 @@ def _translate_for_windows(cmd: str) -> str:
     return "; ".join(_translate_windows_statement(s) for s in segments)
 
 
+async def _run_subprocess_with_streaming(
+    process: asyncio.subprocess.Process,
+    timeout: float,
+    on_line: Callable[[str], None] | None,
+) -> tuple[bytes, bytes, int]:
+    out_chunks: list[bytes] = []
+    err_chunks: list[bytes] = []
+
+    async def drain(
+        reader: asyncio.StreamReader | None,
+        chunks: list[bytes],
+        prefix: str,
+    ) -> None:
+        if reader is None:
+            return
+        while True:
+            line = await reader.readline()
+            if not line:
+                break
+            chunks.append(line)
+            if on_line:
+                text = line.decode("utf-8", errors="replace").rstrip("\r\n")
+                if text:
+                    on_line(f"{prefix}{text}" if prefix else text)
+
+    await asyncio.wait_for(
+        asyncio.gather(
+            drain(process.stdout, out_chunks, ""),
+            drain(process.stderr, err_chunks, "[stderr] "),
+        ),
+        timeout=timeout,
+    )
+    code = await process.wait()
+    return b"".join(out_chunks), b"".join(err_chunks), int(code if code is not None else 0)
+
+
 class TerminalTool(BaseTool[TerminalInput, TerminalOutput]):
     """
     Terminal tool for executing shell commands.
@@ -187,11 +224,13 @@ class TerminalTool(BaseTool[TerminalInput, TerminalOutput]):
         blocked_commands: list[str] | None = None,
         max_output_length: int = 50000,
         bridge_session_id: str | None = None,
+        on_output_line: Callable[[str], None] | None = None,
     ):
         super().__init__(policy)
         self.working_directory = working_directory or os.getcwd()
         self.max_output_length = max_output_length
         self.bridge_session_id = bridge_session_id
+        self.on_output_line = on_output_line
         
         # Default blocked commands for safety
         self.blocked_commands = blocked_commands or [
@@ -423,10 +462,18 @@ Output is captured and returned. Long outputs are truncated."""
                 )
             
             try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=input_data.timeout_seconds,
-                )
+                if self.on_output_line:
+                    stdout_bytes, stderr_bytes, exit_code = await _run_subprocess_with_streaming(
+                        process,
+                        float(input_data.timeout_seconds),
+                        self.on_output_line,
+                    )
+                else:
+                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                        process.communicate(),
+                        timeout=input_data.timeout_seconds,
+                    )
+                    exit_code = process.returncode or 0
             except asyncio.TimeoutError:
                 process.kill()
                 await process.wait()
@@ -439,7 +486,7 @@ Output is captured and returned. Long outputs are truncated."""
                     exit_code=-1,
                     execution_time_ms=execution_time,
                 )
-            
+
             # Decode output
             stdout = stdout_bytes.decode("utf-8", errors="replace")
             stderr = stderr_bytes.decode("utf-8", errors="replace")
@@ -453,7 +500,6 @@ Output is captured and returned. Long outputs are truncated."""
             modified_files = self._get_modified_files(working_dir, before_time)
             
             # Determine status
-            exit_code = process.returncode or 0
             status = ToolStatus.SUCCESS if exit_code == 0 else ToolStatus.FAILURE
             
             execution_time = int((time.time() - start_time) * 1000)
@@ -491,10 +537,12 @@ def create_terminal_tool(
     working_directory: str | None = None,
     blocked_commands: list[str] | None = None,
     bridge_session_id: str | None = None,
+    on_output_line: Callable[[str], None] | None = None,
 ) -> TerminalTool:
     """Create a terminal tool with default settings."""
     return TerminalTool(
         working_directory=working_directory,
         blocked_commands=blocked_commands,
         bridge_session_id=bridge_session_id,
+        on_output_line=on_output_line,
     )

@@ -15,7 +15,7 @@ import asyncio
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
@@ -69,8 +69,9 @@ _REPO_ROOT = _discover_repo_root()
 load_dotenv(os.path.join(_REPO_ROOT, ".env"), override=True)
 load_dotenv(override=True)  # optional: cwd `.env` wins for local overrides
 
-DEFAULT_MAX_ITERATIONS = int(os.getenv("DEFAULT_MAX_ITERATIONS", "500"))
+DEFAULT_MAX_ITERATIONS = int(os.getenv("DEFAULT_MAX_ITERATIONS", "200"))
 
+from .streaming_patch import install_streaming_patch
 from .websocket import ConnectionManager, WebSocketMessage, MessageType
 from ..auth.routes import router as auth_router
 from ..bridge.manager import get_bridge_manager
@@ -176,6 +177,7 @@ def _init_git_workspace(working_dir: str) -> None:
 # Database-backed session management
 session_manager = DatabaseSessionManager()
 connection_manager = ConnectionManager()
+install_streaming_patch()
 
 
 async def _background_startup() -> None:
@@ -826,6 +828,7 @@ async def list_sessions():
             "created_at": s.created_at.isoformat(),
             "status": s.status.value,
             "working_directory": s.working_directory,
+            "workspace_id": getattr(s, "workspace_id", None),
             "current_task": s.current_task_id,
             "iteration": s.iteration,
             "total_tasks": s.total_tasks,
@@ -852,12 +855,14 @@ async def create_session(raw_request: Request):
 
     await _await_app_db_startup(raw_request)
 
-    # Workspace root: outside this repository checkout (per-session dirs under agent-workspace)
-    _mini_devin_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    _workspaces_root = os.path.join(os.path.dirname(_mini_devin_root), "agent-workspace")
+    from ..sessions.workspace_paths import get_agent_workspaces_root
+
+    _workspaces_root = get_agent_workspaces_root()
 
     # Generate session ID early so we can create a per-session directory
     new_session_id = str(uuid.uuid4())[:8]
+    # Stable folder name on disk (DB + volume); survives redeploys when DATABASE_URL + PLODDER_AGENT_WORKSPACE_ROOT persist.
+    workspace_id = uuid.uuid4().hex
 
     model = "auto"
     max_iterations = DEFAULT_MAX_ITERATIONS
@@ -880,11 +885,11 @@ async def create_session(raw_request: Request):
     # Determine working directory (empty = fresh folder; URL = git clone like a local IDE repo)
     os.makedirs(_workspaces_root, exist_ok=True)
     if requested_dir in ("", ".", "./"):
-        working_dir = os.path.join(_workspaces_root, new_session_id)
+        working_dir = os.path.join(_workspaces_root, workspace_id)
         os.makedirs(working_dir, exist_ok=True)
         _init_git_workspace(working_dir)
     elif _is_git_remote_url(requested_dir):
-        working_dir = os.path.join(_workspaces_root, new_session_id)
+        working_dir = os.path.join(_workspaces_root, workspace_id)
         if os.path.isdir(working_dir):
             shutil.rmtree(working_dir, ignore_errors=True)
         os.makedirs(working_dir, exist_ok=True)
@@ -917,6 +922,8 @@ async def create_session(raw_request: Request):
             )
         print(f"[API] create_session: cloned repo into {working_dir}")
     else:
+        # User-supplied host path — no managed workspace_id (legacy).
+        workspace_id = None
         working_dir = os.path.abspath(os.path.expanduser(requested_dir.strip()))
         if not os.path.isdir(working_dir):
             raise HTTPException(
@@ -936,6 +943,7 @@ async def create_session(raw_request: Request):
             auto_git_commit=auto_git_commit,
             git_push=git_push,
             session_id=new_session_id,
+            workspace_id=workspace_id,
         )
     except Exception as e:
         import traceback
@@ -965,6 +973,7 @@ async def create_session(raw_request: Request):
         "status": session.status.value,
         "working_directory": session.working_directory,
         "workspace_path": session.working_directory,
+        "workspace_id": getattr(session, "workspace_id", None),
         "model": getattr(session, 'model', model),
         "auto_git_commit": auto_git_commit,
         "git_push": git_push,
@@ -984,6 +993,7 @@ async def get_session(session_id: str):
         "created_at": s.created_at.isoformat(),
         "status": s.status.value,
         "working_directory": s.working_directory,
+        "workspace_id": getattr(s, "workspace_id", None),
         "current_task": s.current_task_id,
         "iteration": s.iteration,
         "total_tasks": s.total_tasks,
@@ -1171,6 +1181,32 @@ async def read_file_content(session_id: str, path: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/sessions/{session_id}/activity-feed")
+@app.get("/sessions/{session_id}/activity-feed")
+async def get_session_activity_feed(session_id: str, limit: int = 500):
+    """
+    Return parsed ``.plodder/session_events.jsonl`` rows for the session workspace (agent timeline).
+    """
+    if not _check_rate_limit(f"activity_feed:{session_id}", max_calls=120, window_seconds=60):
+        raise HTTPException(status_code=429, detail="Too many activity-feed requests")
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    wd = (session.working_directory or "").strip()
+    if not wd or not os.path.isdir(wd):
+        return {"session_id": session_id, "events": [], "total": 0}
+
+    try:
+        lim = max(1, min(int(limit), 5000))
+    except (TypeError, ValueError):
+        lim = 500
+
+    from ..orchestrator.session_events import load_session_events
+
+    rows = load_session_events(wd, max_lines=lim)
+    return {"session_id": session_id, "events": rows, "total": len(rows)}
+
+
 @app.put("/api/sessions/{session_id}/file")
 @app.put("/sessions/{session_id}/file")
 async def write_file_content(session_id: str, req: Request):
@@ -1280,32 +1316,69 @@ async def get_session_history(session_id: str):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     agent = session_manager._agents.get(session_id)
-    if not agent:
-        return {"messages": [], "session_id": session_id}
-    # Return LLM conversation history, excluding system prompt
-    messages = []
-    for msg in agent.llm.conversation:
-        if msg.role == "system":
-            continue
-        entry = {
-            "role": msg.role,
-            "content": msg.content or "",
+
+    def _serialize_llm_messages(conv) -> list[dict]:
+        out = []
+        for msg in conv:
+            if msg.role == "system":
+                continue
+            entry = {
+                "role": msg.role,
+                "content": msg.content or "",
+            }
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                tool_calls_out = []
+                for tc in msg.tool_calls:
+                    if isinstance(tc, dict):
+                        name = tc.get("function", {}).get("name", "") or tc.get("name", "")
+                        args = tc.get("function", {}).get("arguments", {}) or tc.get("args", {})
+                    else:
+                        fn = getattr(tc, "function", None) or tc
+                        name = getattr(fn, "name", "") or getattr(tc, "name", "")
+                        args = getattr(fn, "arguments", {}) or getattr(tc, "args", {})
+                    tool_calls_out.append({"name": name, "args": args})
+                entry["tool_calls"] = tool_calls_out
+            out.append(entry)
+        return out
+
+    if agent and getattr(agent, "llm", None):
+        messages = _serialize_llm_messages(agent.llm.conversation)
+        return {
+            "messages": messages,
+            "session_id": session_id,
+            "total": len(messages),
+            "source": "live",
         }
-        if hasattr(msg, "tool_calls") and msg.tool_calls:
+
+    stored = await session_manager.get_stored_conversation_messages(session_id)
+    if not stored:
+        return {"messages": [], "session_id": session_id, "total": 0, "source": "none"}
+
+    # Stored rows are already OpenAI-style dicts from get_conversation_for_api (minus our UI shim).
+    messages = []
+    for row in stored:
+        if row.get("role") == "system":
+            continue
+        entry = {"role": row.get("role", "user"), "content": row.get("content") or ""}
+        if row.get("tool_calls"):
             tool_calls_out = []
-            for tc in msg.tool_calls:
-                if isinstance(tc, dict):
-                    name = tc.get("function", {}).get("name", "") or tc.get("name", "")
-                    args = tc.get("function", {}).get("arguments", {}) or tc.get("args", {})
+            for tc in row["tool_calls"]:
+                if isinstance(tc, dict) and "function" in tc:
+                    fn = tc["function"]
+                    name = fn.get("name", "")
+                    raw_args = fn.get("arguments", "{}")
+                    try:
+                        import json as _json
+
+                        args = _json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    except Exception:
+                        args = {"raw": raw_args}
+                    tool_calls_out.append({"name": name, "args": args})
                 else:
-                    # ToolCall object
-                    fn = getattr(tc, "function", None) or tc
-                    name = getattr(fn, "name", "") or getattr(tc, "name", "")
-                    args = getattr(fn, "arguments", {}) or getattr(tc, "args", {})
-                tool_calls_out.append({"name": name, "args": args})
+                    tool_calls_out.append({"name": str(tc.get("name", "")), "args": tc.get("args", {})})
             entry["tool_calls"] = tool_calls_out
         messages.append(entry)
-    return {"messages": messages, "session_id": session_id, "total": len(messages)}
+    return {"messages": messages, "session_id": session_id, "total": len(messages), "source": "database"}
 
 @app.get("/api/sessions/{session_id}/tasks")
 @app.get("/sessions/{session_id}/tasks")
@@ -2189,6 +2262,90 @@ async def env_parity_compose(req: GenerateComposeRequest):
         output_path=req.output_path,
     )
     return {"content": content, "path": path}
+
+
+class SessionAgentMessageRequest(BaseModel):
+    """POST body for starting a task or sending a follow-up without WebSocket."""
+
+    message: str
+
+
+@app.get("/api/sessions/{session_id}/stream")
+@app.get("/sessions/{session_id}/stream")
+async def session_events_sse(session_id: str, request: Request):
+    """
+    Server-Sent Events: same JSON payloads as the session WebSocket (receive-only).
+    Use with POST .../agent/message when proxies block WebSockets.
+    """
+    queue = connection_manager.register_sse_queue(session_id)
+
+    async def gen() -> AsyncGenerator[bytes, None]:
+        hello = json.dumps(
+            {
+                "type": "connected",
+                "data": {"transport": "sse"},
+                "session_id": session_id,
+            }
+        )
+        yield f"data: {hello}\n\n".encode()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=25.0)
+                    yield f"data: {payload}\n\n".encode()
+                except asyncio.TimeoutError:
+                    yield b": keepalive\n\n"
+        finally:
+            connection_manager.unregister_sse_queue(session_id, queue)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/api/sessions/{session_id}/agent/message")
+@app.post("/sessions/{session_id}/agent/message")
+async def post_session_agent_message(session_id: str, body: SessionAgentMessageRequest):
+    """Create a new task or inject a follow-up; pairs with GET .../stream (SSE)."""
+    text = (body.message or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="message is required")
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    st = session.status.value if hasattr(session.status, "value") else str(session.status)
+    if st == "running":
+        await session_manager.inject_followup(session_id, text)
+        await connection_manager.broadcast_to_session(
+            session_id,
+            WebSocketMessage(
+                type=MessageType.TOKEN,
+                data={"content": f"\n\n**[Follow-up received]** {text}\n\n"},
+                task_id=session.current_task_id,
+            ),
+        )
+        return {"ok": True, "mode": "followup"}
+    task = await session_manager.create_task(
+        session_id=session_id,
+        description=text,
+        connection_manager=connection_manager,
+    )
+    asyncio.create_task(
+        session_manager.run_task(
+            session_id=session_id,
+            task_id=task.task_id,
+            connection_manager=connection_manager,
+        )
+    )
+    return {"ok": True, "mode": "new_task", "task_id": task.task_id}
 
 
 @app.websocket("/api/bridge/ws")

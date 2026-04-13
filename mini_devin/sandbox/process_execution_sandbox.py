@@ -8,6 +8,7 @@ executor needs: ``run_detected`` and ``run_shell_in_workspace``, returning ``San
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from plodder.sandbox.container_manager import plan_container_run
@@ -73,6 +74,31 @@ class ProcessExecutionSandbox:
         self.composer_image = composer_image
         self.postgres_client_image = postgres_client_image
         self.default_timeout_sec = default_timeout_sec
+
+    def exec_shell(
+        self,
+        command: str,
+        *,
+        workdir: str | None = None,
+        timeout_sec: int | None = None,
+    ) -> SandboxResult:
+        """
+        Run an arbitrary shell command in the workspace via host bash (Railway / no Docker).
+
+        ``workdir`` is passed to :class:`ProcessSandbox` (``None`` or ``\".\"`` → workspace root).
+        """
+        t = timeout_sec if timeout_sec is not None else self.default_timeout_sec
+        t = max(1, min(300, int(t)))
+        code, raw = self._ps.exec_bash(command, workdir=workdir, timeout=float(t))
+        stdout = raw.decode("utf-8", errors="replace")
+        return SandboxResult(
+            stdout=stdout,
+            stderr="",
+            exit_code=code,
+            timed_out=False,
+            container_id=self._ps.container_id,
+            command=command[:4000],
+        )
 
     @property
     def docker_client(self) -> None:
@@ -224,3 +250,21 @@ class ProcessExecutionSandbox:
             network=network,
             command_label=cmd_label,
         )
+
+
+def use_host_process_terminal_for_tooling() -> bool:
+    """
+    True when terminal commands should use :meth:`ProcessExecutionSandbox.exec_shell`
+    (host bash) instead of Docker.
+
+    Enabled when ``RAILWAY_ENVIRONMENT`` is set, or ``USE_PROCESS_EXECUTION_SANDBOX=1``
+    (``true``/``yes``/``on``). Disabled on Windows or when explicitly turned ``off``.
+    """
+    if os.name == "nt":
+        return False
+    v = (os.environ.get("USE_PROCESS_EXECUTION_SANDBOX") or "").strip().lower()
+    if v in ("0", "false", "no", "off"):
+        return False
+    if v in ("1", "true", "yes", "on"):
+        return True
+    return bool((os.environ.get("RAILWAY_ENVIRONMENT") or "").strip())

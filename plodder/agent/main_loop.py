@@ -128,7 +128,7 @@ class AgentLoopConfig:
     sandbox: SupportsSessionSandbox | None = None
     engine: UniversalPromptEngine | None = None
     documentation_store: Any | None = None
-    max_rounds: int = 100
+    max_rounds: int = int(os.environ.get("DEFAULT_MAX_ITERATIONS", "200"))
     max_tool_calls_per_turn: int = 8
     sandbox_timeout_sec: int | None = 120
     inject_logic_plan: bool = True
@@ -288,6 +288,9 @@ def _create_default_session_sandbox(ws: SessionWorkspace) -> SupportsSessionSand
     Prefer Docker ``ExecutionSandbox``; fall back to ``ProcessExecutionSandbox`` when the
     Docker SDK/daemon is unavailable (e.g. Railway). Set ``PLODDER_FORCE_PROCESS_SANDBOX=1``
     to always use the process backend.
+
+    On Railway (``RAILWAY_ENVIRONMENT``) or ``USE_PROCESS_EXECUTION_SANDBOX=1``, use the host
+    process sandbox first so we never depend on a missing Docker socket.
     """
     force = os.environ.get("PLODDER_FORCE_PROCESS_SANDBOX", "").strip().lower() in (
         "1",
@@ -303,6 +306,16 @@ def _create_default_session_sandbox(ws: SessionWorkspace) -> SupportsSessionSand
         except Exception as exc:
             _logger.warning("PLODDER_FORCE_PROCESS_SANDBOX set but process sandbox failed: %s", exc)
             return None
+    try:
+        from mini_devin.sandbox.process_execution_sandbox import (
+            ProcessExecutionSandbox,
+            use_host_process_terminal_for_tooling,
+        )
+
+        if use_host_process_terminal_for_tooling():
+            return ProcessExecutionSandbox(ws.root)
+    except Exception as exc:
+        _logger.warning("ProcessExecutionSandbox preferred on this host but failed: %s", exc)
     try:
         return ExecutionSandbox()
     except Exception as docker_exc:

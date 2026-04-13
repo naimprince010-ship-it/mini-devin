@@ -6,10 +6,13 @@ It wraps the existing SessionManager functionality while adding database persist
 """
 
 import asyncio
+import json
 import os
 import sys
+import time as time_module
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,7 +29,7 @@ from ..database.repository import (
     ArtifactRepository,
 )
 from ..database.config import get_session_maker
-from ..api.websocket import ConnectionManager
+from ..api.websocket import ConnectionManager, MessageType, WebSocketMessage
 from .manager import SessionStatus, TaskStatus, TaskResult, Task, Session
 from ..schemas.state import TaskState, TaskGoal, TaskStatus as AgentTaskStatus
 
@@ -62,6 +65,53 @@ class DatabaseSessionManager:
         
         # Locks for thread safety
         self._session_lock = asyncio.Lock()
+
+    def _resolve_workspace_for_db_session(self, db_session: SessionModel) -> str:
+        from .workspace_paths import resolve_session_workspace_directory
+
+        return resolve_session_workspace_directory(
+            getattr(db_session, "workspace_id", None),
+            db_session.working_directory,
+        )
+
+    async def _persist_agent_conversation(self, session_id: str, agent: Any) -> None:
+        """Write LLM messages + current workspace path to the DB (Railway-friendly)."""
+        if not agent or not getattr(agent, "llm", None):
+            return
+        try:
+            msgs = agent.llm.get_conversation_for_api()
+            sys_msgs = [x for x in msgs if x.get("role") == "system"]
+            rest = [x for x in msgs if x.get("role") != "system"]
+            if len(rest) > 240:
+                rest = rest[-240:]
+            trimmed = sys_msgs + rest
+            payload = json.dumps(trimmed, default=str)
+            if len(payload) > 4_000_000:
+                payload = json.dumps((sys_msgs + rest[-80:])[-120:], default=str)
+            wd = getattr(agent, "working_directory", None)
+            async with self._session_maker() as db:
+                repo = SessionRepository(db)
+                await repo.update_persistence(
+                    session_id,
+                    conversation_json=payload,
+                    working_directory=str(wd) if wd else None,
+                )
+                await db.commit()
+        except Exception as e:
+            print(f"[Session] persist conversation/workspace: {e}")
+
+    async def get_stored_conversation_messages(self, session_id: str) -> list[dict[str, Any]]:
+        """Load persisted chat messages when the in-memory agent is gone."""
+        async with self._session_maker() as db:
+            repo = SessionRepository(db)
+            row = await repo.get(session_id)
+            if not row or not getattr(row, "conversation_json", None):
+                return []
+            try:
+                data = json.loads(row.conversation_json)
+                return data if isinstance(data, list) else []
+            except json.JSONDecodeError:
+                return []
     
     async def _get_db_session(self) -> AsyncSession:
         """Get a database session."""
@@ -71,8 +121,9 @@ class DatabaseSessionManager:
         self,
         working_directory: str = ".",
         model: str = "gpt-4o",
-        max_iterations: int = int(os.environ.get("DEFAULT_MAX_ITERATIONS", "500")),
+        max_iterations: int = int(os.environ.get("DEFAULT_MAX_ITERATIONS", "200")),
         session_id: str | None = None,
+        workspace_id: str | None = None,
         use_sandbox: bool = False,
         auto_git_commit: bool = False,
         git_push: bool = False,
@@ -93,6 +144,7 @@ class DatabaseSessionManager:
                     model=model,
                     max_iterations=max_iterations,
                     session_id=session_id,
+                    workspace_id=workspace_id,
                 )
                 await db.commit()
                 
@@ -137,6 +189,7 @@ class DatabaseSessionManager:
                     max_iterations=max_iterations,
                     agent=agent,
                     cancel_event=self._cancel_events[session_id],
+                    workspace_id=workspace_id,
                 )
     
     async def get_session(self, session_id: str) -> Session | None:
@@ -406,13 +459,20 @@ class DatabaseSessionManager:
 
                 llm_client = create_llm_client(model=db_session.model)
 
+                resolved_wd = self._resolve_workspace_for_db_session(db_session)
                 agent = Agent(
                     llm_client=llm_client,
-                    working_directory=db_session.working_directory,
+                    working_directory=resolved_wd,
                     max_iterations=db_session.max_iterations,
                     session_id=session_id,
                 )
-                
+                raw_conv = getattr(db_session, "conversation_json", None)
+                if raw_conv:
+                    try:
+                        agent.llm.replace_conversation_from_api_messages(json.loads(raw_conv))
+                    except Exception as _h:
+                        print(f"[Session] hydrate conversation for {session_id}: {_h}")
+
                 self._agents[session_id] = agent
                 self._cancel_events[session_id] = asyncio.Event()
         
@@ -482,6 +542,9 @@ class DatabaseSessionManager:
             # Lock for serialized database updates in background tasks
             update_lock = asyncio.Lock()
 
+            # Throttle token_usage events (was: every token → heavy UI + DB churn)
+            _last_usage_sent_at = {"t": 0.0}
+
             # Create callback for streaming updates
             async def on_update(update_type: str, data: dict[str, Any]) -> None:
                 if not connection_manager:
@@ -509,14 +572,27 @@ class DatabaseSessionManager:
                         await connection_manager.send_tokens(
                             session_id, task_id, data.get("content", "")
                         )
-                        # Also emit accumulated token usage
-                        if agent and hasattr(agent, 'llm') and agent.llm:
-                            usage = agent.llm.get_usage_stats()
-                            await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
-                                type=MessageType.TOKEN_USAGE,
-                                data=usage,
-                                task_id=task_id,
-                            ))
+                        now_m = time_module.monotonic()
+                        if now_m - _last_usage_sent_at["t"] >= 1.0:
+                            _last_usage_sent_at["t"] = now_m
+                            if agent and hasattr(agent, 'llm') and agent.llm:
+                                usage = agent.llm.get_usage_stats()
+                                await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
+                                    type=MessageType.TOKEN_USAGE,
+                                    data=usage,
+                                    task_id=task_id,
+                                ))
+                    elif update_type == "thinking":
+                        content = data.get("content", "")
+                        if content:
+                            await connection_manager.broadcast_to_session(
+                                session_id,
+                                WebSocketMessage(
+                                    type=SimpleNamespace(value="thinking"),
+                                    data={"content": content},
+                                    task_id=task_id,
+                                ),
+                            )
                     elif update_type == "tool_output":
                         # Shell live streaming — emit a token-style line for the Shell tab
                         line = data.get("line", "")
@@ -537,8 +613,8 @@ class DatabaseSessionManager:
                         )
                     
                     # Update iteration and status in database with locking
-                    # Skip for tokens to reduce database pressure during streaming
-                    if update_type != "tokens":
+                    # Skip for high-frequency stream events
+                    if update_type not in ("tokens", "thinking", "tool_output"):
                         iteration = agent.state.iteration if agent and hasattr(agent, 'state') else 0
                         async with update_lock:
                             async with self._session_maker() as db:
@@ -576,7 +652,9 @@ class DatabaseSessionManager:
                     pass
 
             agent.callbacks = {
-                "on_message": lambda token, is_token=False: _fire(on_update("tokens", {"content": token})),
+                "on_message": lambda token, is_token=False: _fire(
+                    on_update("tokens" if is_token else "thinking", {"content": token})
+                ),
                 "on_tool_start": lambda name, args: _fire(on_update("tool_started", {"tool": name, "input": args})),
                 "on_tool_result": lambda name, args, output, duration: _fire(on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration})),
                 "on_phase_change": lambda phase: _fire(on_update("phase_changed", {"phase": phase})),
@@ -745,6 +823,13 @@ class DatabaseSessionManager:
                 summary=f"Task failed: {e}",
                 duration_seconds=(datetime.now(timezone.utc) - start_time).total_seconds(),
             )
+        finally:
+            ag = self._agents.get(session_id)
+            if ag:
+                try:
+                    await self._persist_agent_conversation(session_id, ag)
+                except Exception:
+                    pass
     
     async def cancel_task(self, session_id: str, task_id: str) -> bool:
         """Cancel a running task."""
@@ -860,7 +945,7 @@ class DatabaseSessionManager:
             if not db_session:
                 raise ValueError(f"Session {session_id} not found")
             
-            base_path = Path(db_session.working_directory).resolve()
+            base_path = Path(self._resolve_workspace_for_db_session(db_session)).resolve()
             target_path = (base_path / directory).resolve()
             
             # Security check: ensure target_path is within base_path
@@ -946,9 +1031,10 @@ class DatabaseSessionManager:
             DBSessionStatus.TERMINATED: SessionStatus.STOPPED,
         }
         
+        resolved_wd = self._resolve_workspace_for_db_session(db_session)
         session = Session(
             session_id=db_session.id,
-            working_directory=db_session.working_directory,
+            working_directory=resolved_wd,
             model=db_session.model,
             max_iterations=db_session.max_iterations,
             status=status_map.get(db_session.status, SessionStatus.IDLE),
@@ -957,6 +1043,7 @@ class DatabaseSessionManager:
             total_tasks=len(db_session.tasks) if db_session.tasks else 0,
             agent=self._agents.get(db_session.id),
             cancel_event=self._cancel_events.get(db_session.id),
+            workspace_id=getattr(db_session, "workspace_id", None),
         )
         
         # Add tasks

@@ -7,6 +7,7 @@ using a state machine approach with planning, execution, and verification phases
 from __future__ import annotations  # Enable forward references for type hints
 
 import asyncio
+import importlib.util
 import json
 import os
 import time
@@ -17,7 +18,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
-_DEFAULT_AGENT_MAX_ITERATIONS = int(os.environ.get("DEFAULT_MAX_ITERATIONS", "500"))
+_DEFAULT_AGENT_MAX_ITERATIONS = int(os.environ.get("DEFAULT_MAX_ITERATIONS", "200"))
 
 from ..core.llm_client import LLMClient, create_llm_client
 from ..core.tool_interface import ToolRegistry, get_global_registry
@@ -72,6 +73,8 @@ from ..core.parallel_executor import (
 from ..reliability.self_correction import SelfCorrectionEngine, ErrorType
 from ..learning.teacher_review import maybe_log_teacher_review
 
+from .planner import Planner
+from .session_events import append_session_event, estimate_llm_cost_usd, load_session_events
 
 
 import sys as _sys_for_prompt
@@ -139,8 +142,13 @@ _SYSTEM_PROMPT_TEMPLATE = """
 - **NEVER say TASK COMPLETE unless you have used at least one tool** AND run verification (tests or a minimal run of the code) with real tool output showing success.
 - **Do NOT just write a plan as text and stop.** After your brief plan, immediately call the first tool.
 
+## Think → Act → Observe (required)
+1. **Think** — Before tool calls, your assistant text must include a short rationale prefixed with **Think:** and tied to a step in workspace `PLAN.md` (e.g. STEP-2).
+2. **Act** — Every `terminal` and `editor` tool call **must** include **`plan_step`** (string, e.g. `"STEP-2"`) matching the plan step you are executing.
+3. **Observe** — Read each tool result fully (stdout/stderr, exit code, and **Observe (filesystem)**). On non-zero exit codes, diagnose and self-correct with a new tool call; do not give up after one failure.
+
 ## Workflow
-1. **Brief plan** (2-3 lines max): State what you will do.
+1. **Brief plan** (2-3 lines max): State what you will do; align with `PLAN.md` at the workspace root (created/updated for each task).
 2. **ACT immediately**: Call the first tool right away — do not wait.
 3. **Continue**: After each tool result, call the next tool needed.
 4. **Verify**: Run tests with the workspace Python (`python -m …` / Runtime context). If tests fail, fix code or tests until green or you hit a clear blocker you report.
@@ -163,9 +171,11 @@ _SYSTEM_PROMPT_TEMPLATE = """
 - `env_parity` — Generate Dockerfile/.env.example/docker-compose; diff local vs production env
 {github_note}
 ## Important Rules
+- Read `PLAN.md` at the repo root when starting; keep steps and `plan_step` references in sync.
 - Read a file before editing it (to avoid overwriting changes)
 - Always write COMPLETE file content when using `write_file`
 - After writing a file, verify with `read_file`
+- If **auto-verify (ruff)** reports issues on a `.py` file, you may set **`apply_ruff_fix`: true** on the next `editor` `write_file` / `str_replace` / `apply_patch` for that file to run **`ruff check --fix`** after the edit, or run the same via `terminal`.
 - If a command fails, read the error and fix it — do NOT give up
 - When done: write **TASK COMPLETE** followed by a short summary of actual results.
 
@@ -339,14 +349,17 @@ class Agent:
         # Docker Sandbox (optional isolated execution)
         self.use_sandbox = use_sandbox
         self._sandbox = None  # Initialized lazily per task
-        
+        self._pex_terminal: Any | None = None  # ProcessExecutionSandbox for Railway-style host bash
+        # Last (prompt, completion) totals when we wrote think/observe — for per-event deltas in JSONL
+        self._last_event_llm_tokens: tuple[int, int] | None = None
+
         # Proactive clarification support
         self._clarification_event: asyncio.Event | None = None
         self._clarification_answer: str | None = None
         
         # Register default tools
         self._register_default_tools()
-        
+
         # Set system prompt (inject workspace so models stop inventing Windows paths)
         wd = self.working_directory or os.getcwd()
         _spec_key = (os.environ.get("AGENT_SPECIALIZATION") or "default").strip().lower()
@@ -361,14 +374,21 @@ class Agent:
         if _spec_extra:
             _sys = _sys + "\n" + _spec_extra + "\n"
         self.llm.set_system_prompt(_sys)
-    
+
+    def _emit_terminal_line(self, line: str) -> None:
+        cb = self.callbacks.get("on_command_output")
+        if cb:
+            cb(line)
+
     def _register_default_tools(self) -> None:
         """Register the default tools (terminal, editor, browser)."""
         # Only register if not already registered
         if not self.registry.get("terminal"):
+            agent = self
             terminal = create_terminal_tool(
                 working_directory=self.working_directory,
                 bridge_session_id=self.state.session_id,
+                on_output_line=lambda ln: agent._emit_terminal_line(ln),
             )
             self.registry.register(terminal)
         
@@ -448,6 +468,10 @@ class Agent:
                             "Use 180–300 for `npm install`, `npx create-*`, `pip install -r`, builds, etc."
                         ),
                     },
+                    "plan_step": {
+                        "type": "string",
+                        "description": 'Plan step id from workspace PLAN.md (e.g. "STEP-2"). Required for traceability.',
+                    },
                 },
                 "required": ["command"],
             },
@@ -464,7 +488,9 @@ class Agent:
 - list_directory: List directory contents
 - apply_patch: Apply a unified diff patch
 
-PREFER str_replace over write_file when editing existing files.""",
+PREFER str_replace over write_file when editing existing files.
+
+Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `apply_patch` for a `.py` file to run `ruff check --fix` on that path after a successful edit, then re-run `ruff check` (requires ruff config in the repo). Use when auto-verify reports ruff violations.""",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -493,6 +519,10 @@ PREFER str_replace over write_file when editing existing files.""",
                         "type": "boolean",
                         "description": "Replace all occurrences (for str_replace action, default false)",
                     },
+                    "plan_step": {
+                        "type": "string",
+                        "description": 'Plan step id from workspace PLAN.md (e.g. "STEP-2"). Required for traceability.',
+                    },
                     "pattern": {
                         "type": "string",
                         "description": "Search pattern (for search action)",
@@ -512,6 +542,14 @@ PREFER str_replace over write_file when editing existing files.""",
                     "recursive": {
                         "type": "boolean",
                         "description": "Recursive listing (for list_directory action)",
+                    },
+                    "apply_ruff_fix": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, after a successful write_file/str_replace/apply_patch on a .py file, "
+                            "run `python -m ruff check --fix` on that file, then `ruff check` again. "
+                            "Ignored for non-Python paths or if the edit failed."
+                        ),
                     },
                 },
                 "required": ["action", "path"],
@@ -1069,133 +1107,205 @@ PREFER str_replace over write_file when editing existing files.""",
         try:
             if name == "terminal":
                 command = arguments.get("command", "")
-                
+                plan_step = arguments.get("plan_step")
+
                 # Safety check for commands
                 violation = self._check_command_safety(command)
                 if violation and violation.blocked:
                     self._update_phase(AgentPhase.BLOCKED)
                     return f"BLOCKED: {violation.message}. Task moved to BLOCKED state."
-                
+
+                fs_before = self._workspace_path_set()
+                self._append_session_event(
+                    {
+                        "type": "act",
+                        "tool": "terminal",
+                        "command": command[:2000],
+                        "plan_step": plan_step,
+                    }
+                )
+
                 # Emit command to shell stream
                 on_cmd_output = self.callbacks.get("on_command_output")
                 on_cmd_start = self.callbacks.get("on_command_start")
                 if on_cmd_start:
-                    on_cmd_start(command)   # fires a "command" typed line with ts
+                    on_cmd_start(command)  # fires a "command" typed line with ts
                 elif on_cmd_output:
                     on_cmd_output(f"$ {command}")
-                
-                # ── Docker Sandbox Execution ──
-                if self.use_sandbox and self._sandbox is not None:
-                    try:
-                        if not self._sandbox.is_running():
-                            started = await self._sandbox.start()
-                            if not started:
-                                # Fall through to regular execution
-                                self.use_sandbox = False
-                        
-                        if self._sandbox.is_running():
-                            sandbox_result = await self._sandbox.execute(
-                                command,
-                                working_dir=arguments.get("working_directory"),
-                            )
-                            output_parts = []
-                            if sandbox_result.stdout:
-                                output_parts.append(f"STDOUT:\n{sandbox_result.stdout}")
-                                if on_cmd_output:
-                                    for line in sandbox_result.stdout.splitlines():
-                                        on_cmd_output(line)
-                            if sandbox_result.stderr:
-                                output_parts.append(f"STDERR:\n{sandbox_result.stderr}")
-                                if on_cmd_output:
-                                    for line in sandbox_result.stderr.splitlines():
-                                        on_cmd_output(line)
-                            output_parts.append(f"Exit code: {sandbox_result.exit_code}")
-                            if on_cmd_output:
-                                on_cmd_output(f"Exit code: {sandbox_result.exit_code}")
-                            output = "\n".join(output_parts)
-                            if self._artifact_logger:
-                                duration_ms = int((time.time() - start_time) * 1000)
-                                self._artifact_logger.log_tool_call(
-                                    call_id=call_id,
-                                    tool_name="terminal",
-                                    arguments=arguments,
-                                    result=output,
-                                    duration_ms=duration_ms,
-                                    success=sandbox_result.exit_code == 0,
-                                )
-                                self._artifact_logger.add_command_executed(command)
-                            return output
-                    except Exception as sandbox_err:
-                        self._log(f"Sandbox error, falling back to host: {sandbox_err}")
-                
-                # ── Regular Host Execution ──
+
                 from ..schemas.tools import TerminalInput
+
                 raw_timeout = arguments.get("timeout_seconds", 30)
                 try:
                     timeout_seconds = int(raw_timeout)
                 except (TypeError, ValueError):
                     timeout_seconds = 30
                 timeout_seconds = max(1, min(300, timeout_seconds))
+
+                def _terminal_artifact(out: str, success: bool, exit_c: int | None) -> None:
+                    if self._artifact_logger:
+                        duration_ms = int((time.time() - start_time) * 1000)
+                        self._artifact_logger.log_tool_call(
+                            call_id=call_id,
+                            tool_name="terminal",
+                            arguments=arguments,
+                            result=out,
+                            duration_ms=duration_ms,
+                            success=success,
+                        )
+                        self._artifact_logger.add_command_executed(command)
+
+                # ── ProcessExecutionSandbox first (Railway / USE_PROCESS_EXECUTION_SANDBOX) ──
+                # Avoid touching Docker when the daemon/socket is absent (typical Railway layout).
+                if self._should_use_process_execution_terminal():
+                    work_dir = arguments.get("working_directory", ".")
+                    workdir_ps = None if work_dir in (".", "", None) else work_dir
+                    pex = self._get_pex_terminal()
+                    try:
+                        sb_res = await asyncio.to_thread(
+                            pex.exec_shell,
+                            command,
+                            workdir=workdir_ps,
+                            timeout_sec=timeout_seconds,
+                        )
+                    except Exception as e:
+                        err = f"Error executing terminal command (process sandbox): {e}"
+                        _terminal_artifact(err, False, None)
+                        return self._attach_filesystem_observe(
+                            err, fs_before, tool="terminal", exit_code=None, plan_step=plan_step
+                        )
+                    output_parts = []
+                    if sb_res.stdout:
+                        output_parts.append(f"STDOUT:\n{sb_res.stdout}")
+                        if on_cmd_output:
+                            for line in sb_res.stdout.splitlines():
+                                on_cmd_output(line)
+                    output_parts.append(f"Exit code: {sb_res.exit_code}")
+                    if on_cmd_output:
+                        on_cmd_output(f"Exit code: {sb_res.exit_code}")
+                    output = "\n".join(output_parts)
+                    _terminal_artifact(output, sb_res.exit_code == 0, sb_res.exit_code)
+                    return self._attach_filesystem_observe(
+                        output,
+                        fs_before,
+                        tool="terminal",
+                        exit_code=sb_res.exit_code,
+                        plan_step=plan_step,
+                    )
+
+                # ── Docker Sandbox Execution (optional; skipped on Railway when block above runs) ──
+                if self.use_sandbox and self._sandbox is not None:
+                    try:
+                        if not self._sandbox.is_running():
+                            started = await self._sandbox.start()
+                            if not started:
+                                self.use_sandbox = False
+
+                        if self._sandbox.is_running():
+                            sandbox_result = await self._sandbox.execute(
+                                command,
+                                working_dir=arguments.get("working_directory"),
+                                on_output_line=on_cmd_output,
+                            )
+                            output_parts = []
+                            if sandbox_result.stdout:
+                                output_parts.append(f"STDOUT:\n{sandbox_result.stdout}")
+                                if on_cmd_output and not getattr(
+                                    sandbox_result, "streamed_live", False
+                                ):
+                                    for line in sandbox_result.stdout.splitlines():
+                                        on_cmd_output(line)
+                            if sandbox_result.stderr:
+                                output_parts.append(f"STDERR:\n{sandbox_result.stderr}")
+                                if on_cmd_output and not getattr(
+                                    sandbox_result, "streamed_live", False
+                                ):
+                                    for line in sandbox_result.stderr.splitlines():
+                                        on_cmd_output(line)
+                            output_parts.append(f"Exit code: {sandbox_result.exit_code}")
+                            if on_cmd_output:
+                                on_cmd_output(f"Exit code: {sandbox_result.exit_code}")
+                            output = "\n".join(output_parts)
+                            _terminal_artifact(output, sandbox_result.exit_code == 0, sandbox_result.exit_code)
+                            return self._attach_filesystem_observe(
+                                output,
+                                fs_before,
+                                tool="terminal",
+                                exit_code=sandbox_result.exit_code,
+                                plan_step=plan_step,
+                            )
+                    except Exception as sandbox_err:
+                        self._log(f"Sandbox error, falling back to host: {sandbox_err}")
+
+                # ── Regular Host Execution (terminal tool) ──
                 input_data = TerminalInput(
                     command=command,
                     working_directory=arguments.get("working_directory", "."),
                     timeout_seconds=timeout_seconds,
                 )
-                
-                exit_code = -1
+
                 result = None
                 try:
                     result = await tool.execute(input_data)
-                    exit_code = result.exit_code
                 except Exception as e:
-                    return f"Error executing terminal command: {str(e)}"
-                
-                # Format terminal output
+                    err = f"Error executing terminal command: {str(e)}"
+                    _terminal_artifact(err, False, None)
+                    return self._attach_filesystem_observe(
+                        err, fs_before, tool="terminal", exit_code=None, plan_step=plan_step
+                    )
+
                 output_parts = []
                 if result.stdout:
                     output_parts.append(f"STDOUT:\n{result.stdout}")
                     if on_cmd_output:
                         for line in result.stdout.splitlines():
                             on_cmd_output(line)
-                            
+
                 if result.stderr:
                     output_parts.append(f"STDERR:\n{result.stderr}")
                     if on_cmd_output:
                         for line in result.stderr.splitlines():
                             on_cmd_output(line)
-                            
+
                 output_parts.append(f"Exit code: {result.exit_code}")
                 if on_cmd_output:
                     on_cmd_output(f"Exit code: {result.exit_code}")
-                
+
                 output = "\n".join(output_parts)
-                
-                # Log to artifacts
-                if self._artifact_logger:
-                    duration_ms = int((time.time() - start_time) * 1000)
-                    self._artifact_logger.log_tool_call(
-                        call_id=call_id,
-                        tool_name="terminal",
-                        arguments=arguments,
-                        result=output,
-                        duration_ms=duration_ms,
-                        success=result.exit_code == 0,
-                    )
-                    self._artifact_logger.add_command_executed(command)
-                
-                return output
-            
+                _terminal_artifact(output, result.exit_code == 0, result.exit_code)
+                return self._attach_filesystem_observe(
+                    output,
+                    fs_before,
+                    tool="terminal",
+                    exit_code=result.exit_code,
+                    plan_step=plan_step,
+                )
+
             elif name == "editor":
-                action = arguments.get("action", "read_file")
-                file_path = arguments.get("path", "")
-                
+                fs_before = self._workspace_path_set()
+                plan_step = arguments.get("plan_step")
+                ed_args = dict(arguments)
+                ed_args.pop("plan_step", None)
+                apply_ruff_fix = bool(ed_args.pop("apply_ruff_fix", False))
+                action = ed_args.get("action", "read_file")
+                file_path = ed_args.get("path", "")
+                self._append_session_event(
+                    {
+                        "type": "act",
+                        "tool": "editor",
+                        "action": action,
+                        "path": file_path,
+                        "plan_step": plan_step,
+                    }
+                )
+
                 if action == "read_file":
                     from ..schemas.tools import ReadFileInput, FileRange
                     line_range = None
-                    if arguments.get("start_line"):
+                    if ed_args.get("start_line"):
                         line_range = FileRange(
-                            start_line=arguments["start_line"],
-                            end_line=arguments.get("end_line"),
+                            start_line=ed_args["start_line"],
+                            end_line=ed_args.get("end_line"),
                         )
                     input_data = ReadFileInput(
                         path=file_path,
@@ -1208,7 +1318,7 @@ PREFER str_replace over write_file when editing existing files.""",
                         output = f"Error: {result.error_message}"
                 
                 elif action == "write_file":
-                    content = arguments.get("content", "")
+                    content = ed_args.get("content", "")
                     
                     # Safety check for file edits
                     violation = self._check_file_edit_safety(file_path, content)
@@ -1236,9 +1346,9 @@ PREFER str_replace over write_file when editing existing files.""",
                         output = f"Error: {result.error_message}"
 
                 elif action == "str_replace":
-                    old_str = arguments.get("old_str", "")
-                    new_str = arguments.get("new_str", "")
-                    allow_multiple = arguments.get("allow_multiple", False)
+                    old_str = ed_args.get("old_str", "")
+                    new_str = ed_args.get("new_str", "")
+                    allow_multiple = ed_args.get("allow_multiple", False)
 
                     dep_violation = self._check_dependency_safety(file_path)
                     if dep_violation and dep_violation.blocked:
@@ -1265,9 +1375,9 @@ PREFER str_replace over write_file when editing existing files.""",
                 elif action == "search":
                     from ..schemas.tools import SearchInput
                     input_data = SearchInput(
-                        pattern=arguments.get("pattern", ""),
+                        pattern=ed_args.get("pattern", ""),
                         path=file_path,
-                        file_pattern=arguments.get("file_pattern"),
+                        file_pattern=ed_args.get("file_pattern"),
                     )
                     result = await tool.execute(input_data)
                     if result.status.value == "success":
@@ -1286,7 +1396,7 @@ PREFER str_replace over write_file when editing existing files.""",
                     from ..schemas.tools import ListDirectoryInput
                     input_data = ListDirectoryInput(
                         path=file_path,
-                        recursive=arguments.get("recursive", False),
+                        recursive=ed_args.get("recursive", False),
                     )
                     result = await tool.execute(input_data)
                     if result.status.value == "success":
@@ -1299,7 +1409,7 @@ PREFER str_replace over write_file when editing existing files.""",
                         output = f"Error: {result.error_message}"
                 
                 elif action == "apply_patch":
-                    patch = arguments.get("patch", "")
+                    patch = ed_args.get("patch", "")
                     
                     # Safety check for patch (estimate lines changed)
                     violation = self._check_file_edit_safety(file_path, patch)
@@ -1322,7 +1432,32 @@ PREFER str_replace over write_file when editing existing files.""",
                 
                 else:
                     output = f"Error: Unknown editor action '{action}'"
-                
+
+                written_paths: list[str] = []
+                if action in ("write_file", "str_replace", "apply_patch") and "Error" not in output and "BLOCKED" not in output:
+                    written_paths = [file_path]
+
+                extra_verify = ""
+                if written_paths:
+                    fix_block = ""
+                    if (
+                        apply_ruff_fix
+                        and file_path.endswith(".py")
+                        and "Error" not in output
+                        and "BLOCKED" not in output
+                    ):
+                        fix_block = await self._run_ruff_fix_file(file_path)
+                    extra_verify = fix_block + await self._auto_ruff_check_file(file_path)
+
+                out_final = self._attach_filesystem_observe(
+                    output + extra_verify,
+                    fs_before,
+                    tool="editor",
+                    exit_code=None,
+                    plan_step=plan_step,
+                    written_paths=written_paths or None,
+                )
+
                 # Log to artifacts
                 if self._artifact_logger:
                     duration_ms = int((time.time() - start_time) * 1000)
@@ -1330,12 +1465,12 @@ PREFER str_replace over write_file when editing existing files.""",
                         call_id=call_id,
                         tool_name="editor",
                         arguments=arguments,
-                        result=output[:5000],  # Truncate for logging
+                        result=out_final[:5000],  # Truncate for logging
                         duration_ms=duration_ms,
                         success="Error" not in output and "BLOCKED" not in output,
                     )
-                
-                return output
+
+                return out_final
             
             elif name == "browser_search":
                 query = arguments.get("query", "")
@@ -3318,6 +3453,263 @@ PREFER str_replace over write_file when editing existing files.""",
             except Exception as e:
                 self._log(f"Error in callback '{name}': {e}")
 
+    def _llm_usage_payload_for_session_event(self) -> dict[str, Any]:
+        """Cumulative LLM tokens + rough USD; per-event token/cost delta since last think/observe."""
+        llm = getattr(self, "llm", None)
+        if not llm or not hasattr(llm, "get_usage_stats"):
+            return {}
+        stats = llm.get_usage_stats()
+        cfg = getattr(llm, "config", None)
+        model = getattr(cfg, "model", None) or "unknown"
+        pt = int(stats.get("prompt_tokens", 0))
+        ct = int(stats.get("completion_tokens", 0))
+        tt = int(stats.get("total_tokens", pt + ct))
+
+        prev = getattr(self, "_last_event_llm_tokens", None)
+        if isinstance(prev, tuple) and len(prev) == 2:
+            prev_pt, prev_ct = int(prev[0]), int(prev[1])
+        else:
+            prev_pt, prev_ct = 0, 0
+        dpt = max(0, pt - prev_pt)
+        dct = max(0, ct - prev_ct)
+        self._last_event_llm_tokens = (pt, ct)
+
+        cum_cost, cum_method = estimate_llm_cost_usd(model, pt, ct)
+        del_cost, del_method = estimate_llm_cost_usd(model, dpt, dct)
+
+        payload: dict[str, Any] = {
+            "llm_model": model,
+            "llm_prompt_tokens": pt,
+            "llm_completion_tokens": ct,
+            "llm_total_tokens": tt,
+            "llm_prompt_tokens_delta": dpt,
+            "llm_completion_tokens_delta": dct,
+            "llm_cost_estimate_method_cumulative": cum_method,
+            "llm_cost_estimate_method_delta": del_method,
+            "llm_estimated_cost_is_approximate": True,
+        }
+        if cum_cost is not None:
+            payload["llm_estimated_cost_usd_cumulative"] = round(cum_cost, 8)
+        if del_cost is not None and (dpt > 0 or dct > 0):
+            payload["llm_estimated_cost_usd_delta"] = round(del_cost, 10)
+        return payload
+
+    def _append_session_event(self, event: dict[str, Any]) -> None:
+        wd = self.working_directory
+        if not wd:
+            return
+        if event.get("type") in ("think", "observe"):
+            event = {**event, **self._llm_usage_payload_for_session_event()}
+        append_session_event(wd, event)
+
+    def _workspace_path_set(self) -> set[str]:
+        root = Path(self.working_directory or ".").resolve()
+        out: set[str] = set()
+        if not root.is_dir():
+            return out
+        skip_dirnames = {
+            ".git",
+            "__pycache__",
+            ".venv",
+            "venv",
+            "node_modules",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".plodder",
+        }
+        count = 0
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in skip_dirnames]
+            if any(p in skip_dirnames for p in Path(dirpath).parts):
+                continue
+            for name in filenames:
+                if count >= 4000:
+                    return out
+                p = Path(dirpath) / name
+                try:
+                    rel = p.relative_to(root).as_posix()
+                except ValueError:
+                    continue
+                out.add(rel)
+                count += 1
+        return out
+
+    @staticmethod
+    def _diff_path_sets(before: set[str], after: set[str]) -> dict[str, list[str]]:
+        return {
+            "added_sorted": sorted(after - before)[:200],
+            "removed_sorted": sorted(before - after)[:200],
+        }
+
+    def _should_use_process_execution_terminal(self) -> bool:
+        from mini_devin.sandbox.process_execution_sandbox import use_host_process_terminal_for_tooling
+
+        return use_host_process_terminal_for_tooling()
+
+    def _get_pex_terminal(self) -> Any:
+        if self._pex_terminal is None:
+            from mini_devin.sandbox.process_execution_sandbox import ProcessExecutionSandbox
+
+            self._pex_terminal = ProcessExecutionSandbox(self.working_directory or ".")
+        return self._pex_terminal
+
+    def _workspace_verify_command_hint(self, written_path: str) -> str:
+        root = Path(self.working_directory or ".").resolve()
+        hints: list[str] = []
+        if written_path.endswith(".py"):
+            if (
+                (root / "pyproject.toml").is_file()
+                or (root / "ruff.toml").is_file()
+                or (root / ".ruff.toml").is_file()
+            ):
+                ex = _sys_for_prompt.executable
+                hints.append(
+                    f"**Verify (lint)**: `{ex} -m ruff check {written_path}` or `{ex} -m ruff check .`"
+                )
+                hints.append(
+                    f"**Auto-fix (optional)**: next `editor` on this file with **`apply_ruff_fix`: true**, "
+                    f"or `{ex} -m ruff check --fix \"{written_path}\"`"
+                )
+            if (root / "pytest.ini").is_file() or (root / "pyproject.toml").is_file() or (root / "tests").is_dir():
+                hints.append(f"**Verify (tests)**: `{_sys_for_prompt.executable} -m pytest -q` (narrow paths if slow)")
+        elif written_path.endswith((".ts", ".tsx", ".js", ".jsx")) and (root / "package.json").is_file():
+            hints.append("**Verify**: `npm test` or `npm run lint` if defined in `package.json`.")
+        if hints:
+            return "\n".join(f"- {h}" for h in hints)
+        return ""
+
+    def _attach_filesystem_observe(
+        self,
+        output: str,
+        fs_before: set[str],
+        *,
+        tool: str,
+        exit_code: int | None,
+        plan_step: Any = None,
+        written_paths: list[str] | None = None,
+    ) -> str:
+        fs_after = self._workspace_path_set()
+        delta = self._diff_path_sets(fs_before, fs_after)
+        self._append_session_event(
+            {
+                "type": "observe",
+                "tool": tool,
+                "exit_code": exit_code,
+                "plan_step": plan_step,
+                "filesystem_delta": delta,
+            }
+        )
+        if self.working_directory and tool in ("terminal", "editor"):
+            try:
+                Planner.append_checkpoint(
+                    self.working_directory,
+                    tool,
+                    exit_code,
+                    str(plan_step) if plan_step is not None else None,
+                )
+            except Exception as _e:
+                self._log(f"PLAN.md checkpoint append skipped: {_e}")
+        parts = [output, "", "## Observe (filesystem)", json.dumps(delta, ensure_ascii=False)]
+        for wp in written_paths or []:
+            hint = self._workspace_verify_command_hint(wp)
+            if hint:
+                parts.extend(["", "## Verification suggested", hint])
+        return "\n".join(parts)
+
+    async def _auto_ruff_check_file(self, rel_path: str) -> str:
+        if os.name == "nt" or not rel_path.endswith(".py"):
+            return ""
+        root = Path(self.working_directory or ".").resolve()
+        if not (
+            (root / "pyproject.toml").is_file()
+            or (root / "ruff.toml").is_file()
+            or (root / ".ruff.toml").is_file()
+        ):
+            return ""
+        if importlib.util.find_spec("ruff") is None:
+            self._log(
+                "Auto-verify (ruff): `ruff` is not installed for this interpreter; "
+                "skipping lint (install ruff in the image or add to pyproject optional deps)."
+            )
+            return ""
+        exe = _sys_for_prompt.executable
+        cmd = f'"{exe}" -m ruff check "{rel_path}"'
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                cwd=str(root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=90.0)
+            text = (out or b"").decode("utf-8", errors="replace").strip()
+            self._append_session_event(
+                {
+                    "type": "auto_verify",
+                    "tool": "ruff",
+                    "path": rel_path,
+                    "exit_code": proc.returncode,
+                }
+            )
+            tag = "passed" if proc.returncode == 0 else "failed"
+            fix_hint = ""
+            if proc.returncode != 0:
+                fix_hint = (
+                    "\n\n## Optional: clean up with ruff --fix\n"
+                    f"- Set **`apply_ruff_fix`: true** on your next `editor` call with `write_file`, `str_replace`, or "
+                    f"`apply_patch` for `{rel_path}` so the orchestrator runs `ruff check --fix` after that edit.\n"
+                    f"- Or use `terminal`: `{exe} -m ruff check --fix \"{rel_path}\"` then `{exe} -m ruff check \"{rel_path}\"`.\n"
+                )
+            return f"\n\n## Auto-verify (ruff) — {tag}\n```\n{text[:4000]}\n```{fix_hint}"
+        except FileNotFoundError as e:
+            self._log(f"Auto-verify (ruff): interpreter or ruff not runnable: {e}")
+            return ""
+        except Exception as e:
+            self._log(f"Auto-verify (ruff): non-fatal error: {e}")
+            return f"\n\n## Auto-verify (ruff) — error\n{e}"
+
+    async def _run_ruff_fix_file(self, rel_path: str) -> str:
+        """Run `ruff check --fix` on one file after a successful Python edit (non-Windows hosts)."""
+        if os.name == "nt" or not rel_path.endswith(".py"):
+            return ""
+        root = Path(self.working_directory or ".").resolve()
+        if not (
+            (root / "pyproject.toml").is_file()
+            or (root / "ruff.toml").is_file()
+            or (root / ".ruff.toml").is_file()
+        ):
+            return ""
+        if importlib.util.find_spec("ruff") is None:
+            self._log("Ruff auto-fix skipped: `ruff` package not installed for this interpreter.")
+            return ""
+        exe = _sys_for_prompt.executable
+        cmd = f'"{exe}" -m ruff check --fix "{rel_path}"'
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                cwd=str(root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=120.0)
+            text = (out or b"").decode("utf-8", errors="replace").strip()
+            self._append_session_event(
+                {
+                    "type": "auto_verify",
+                    "tool": "ruff_fix",
+                    "path": rel_path,
+                    "exit_code": proc.returncode,
+                }
+            )
+            tag = "completed" if proc.returncode == 0 else "finished_with_errors"
+            return f"\n\n## Ruff auto-fix (`check --fix`) — {tag}\n```\n{text[:4000]}\n```"
+        except FileNotFoundError as e:
+            self._log(f"Ruff auto-fix: interpreter or ruff not runnable: {e}")
+            return ""
+        except Exception as e:
+            self._log(f"Ruff auto-fix: non-fatal error: {e}")
+            return f"\n\n## Ruff auto-fix — error\n{e}"
+
     async def _update_phase(self, new_phase: AgentPhase) -> None:
         """Update the agent phase."""
         old_phase = self.state.phase
@@ -3346,7 +3738,8 @@ PREFER str_replace over write_file when editing existing files.""",
         self._tools_used_count = 0
         self._no_tool_streak = 0
         self._session_self_correct_lessons = []
-        
+        self._last_event_llm_tokens = None
+
         # Initialize artifact logger
         self._init_artifact_logger(task.task_id, task.goal.description)
         
@@ -3368,6 +3761,24 @@ PREFER str_replace over write_file when editing existing files.""",
                 )
         except Exception as e:
             self._log(f"Workspace bootstrap skipped: {e}")
+
+        if self.working_directory:
+            try:
+                Planner.sync_plan_file(self.working_directory, task.goal.description)
+                self._append_session_event(
+                    {
+                        "type": "task_start",
+                        "task_id": task.task_id,
+                        "goal": (task.goal.description or "")[:4000],
+                    }
+                )
+                await self._trigger_callback(
+                    "on_message",
+                    "Planner: `PLAN.md` updated at workspace root.",
+                    is_token=False,
+                )
+            except Exception as e:
+                self._log(f"Planner sync skipped: {e}")
         
         # Prepend project memory context if this session has a linked project
         _proj_ctx = getattr(self, "_project_context_injection", None)
@@ -3396,10 +3807,38 @@ Acceptance Criteria:
 
 Working Directory: {self.working_directory or 'current directory'}
 
+Structured planning: read `PLAN.md` at the workspace root; every `terminal` / `editor` call must include **`plan_step`** (e.g. `"STEP-2"`).
+
 IMPORTANT: You MUST use tools to complete this task. Do NOT just write text descriptions. 
 Call a tool (editor or terminal) immediately as your first action."""
         
         self.llm.add_user_message(task_message)
+
+        if self.working_directory:
+            try:
+                evs = load_session_events(self.working_directory, max_lines=150)
+                if evs:
+                    slim: list[dict[str, Any]] = []
+                    for e in evs[-45:]:
+                        slim.append(
+                            {
+                                "ts": e.get("ts"),
+                                "type": e.get("type"),
+                                "tool": e.get("tool"),
+                                "plan_step": e.get("plan_step"),
+                                "exit_code": e.get("exit_code"),
+                                "llm_total_tokens": e.get("llm_total_tokens"),
+                                "llm_estimated_cost_usd_cumulative": e.get(
+                                    "llm_estimated_cost_usd_cumulative"
+                                ),
+                            }
+                        )
+                    self.llm.add_user_message(
+                        "Workspace session event tail (resume / continuity):\n"
+                        + json.dumps(slim, ensure_ascii=False)
+                    )
+            except Exception as e:
+                self._log(f"Session event replay skipped: {e}")
         
         # Retrieve relevant context from conversation memory (Phase 18)
         memory_context = ""
@@ -3504,6 +3943,14 @@ Call a tool (editor or terminal) immediately as your first action."""
                         content=response.content,
                         tool_calls=response.tool_calls,
                     )
+                    if (response.content or "").strip() and self.working_directory:
+                        self._append_session_event(
+                            {
+                                "type": "think",
+                                "text": (response.content or "")[:12000],
+                                "task_id": task.task_id,
+                            }
+                        )
                     # OpenAI requires every tool_call_id from this assistant message to get a tool
                     # message next, in order — before any new "user" message. Inline self-correction
                     # injects user messages between tools, so disable it when the batch has >1 call.

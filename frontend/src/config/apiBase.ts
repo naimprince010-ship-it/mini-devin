@@ -28,6 +28,19 @@ export function getApiBase(): string {
   return '/api';
 }
 
+/** SSE URL for session event stream (same JSON as WebSocket). */
+export function getSessionSseUrl(sessionId: string): string {
+  const base = getApiBase().replace(/\/$/, '');
+  const suffix = `/sessions/${sessionId}/stream`;
+  if (base.startsWith('http://') || base.startsWith('https://')) {
+    return `${base}${suffix}`;
+  }
+  if (typeof window !== 'undefined') {
+    return `${window.location.origin}${base.startsWith('/') ? base : `/${base}`}${suffix}`;
+  }
+  return `${base}${suffix}`;
+}
+
 /** WebSocket URL for /api/ws[/sessionId]. */
 export function getApiWsUrl(sessionId?: string): string {
   const base = getApiBase().replace(/\/$/, '');
