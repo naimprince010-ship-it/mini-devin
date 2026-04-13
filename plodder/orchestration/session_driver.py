@@ -11,12 +11,13 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
 from plodder.core.universal_prompt_engine import PolyglotSystemPrompt, UniversalPromptEngine
 from plodder.sandbox.execution_sandbox import SandboxResult
 from plodder.sandbox.toolchain_detect import pick_default_entry
+from plodder.agent.orchestrator import PlodderWorklog, SessionRecoveryTracker, export_worklog_json
 from plodder.workspace.session_workspace import SessionWorkspace
 
 
@@ -87,6 +88,10 @@ class UnifiedSessionResult:
     workspace_root: str
     transcript: list[dict[str, Any]] = field(default_factory=list)
     plan_markdown: str = ""
+    #: OpenHands-style markdown: failure streaks, diagnostic fingerprints, recovery paths
+    post_mortem_markdown: str = ""
+    #: Serialized :class:`PlodderWorklog` (action–observation stream); also written to ``worklog.json``
+    worklog: dict[str, Any] = field(default_factory=dict)
 
 
 _BASE_ALLOWED_TOOLS = frozenset(
@@ -171,6 +176,9 @@ class UnifiedSessionDriver:
 
         transcript: list[dict[str, Any]] = []
         plan_md = ""
+        recovery_tracker = SessionRecoveryTracker()
+        worklog = PlodderWorklog(goal=goal, workspace_root=str(self._ws.root))
+        prior_round_diagnostic = False
 
         if self._inject_logic_plan:
             plan_messages: list[ChatMessage] = [
@@ -233,6 +241,8 @@ class UnifiedSessionDriver:
                 terminated_with_done = True
                 break
 
+            thought = str(turn.get("rationale", "") or "")
+
             calls = turn["tool_calls"][: self._max_tool_calls_per_turn]
             if not calls:
                 messages.append({"role": "assistant", "content": raw[:12000]})
@@ -249,18 +259,48 @@ class UnifiedSessionDriver:
                 continue
 
             results: list[dict[str, Any]] = []
+            diag_hints: list[dict[str, str]] = []
             for c in calls:
                 name = str(c.get("name", ""))
                 args = c.get("args") or {}
                 if name not in self.allowed_tools():
                     results.append({"tool": name, "ok": False, "error": f"unknown tool {name!r}"})
-                    continue
-                results.append(await self._exec_tool_async(name, args))
+                    res = results[-1]
+                else:
+                    res = await self._exec_tool_async(name, args)
+                    results.append(res)
+                bundle = recovery_tracker.record_tool_observation(name, res)
+                worklog.record_action_observation(
+                    round_idx=round_idx,
+                    thought=thought,
+                    tool_name=name,
+                    args=dict(args) if isinstance(args, dict) else {},
+                    result=res,
+                    prior_round_had_diagnostic_injection=prior_round_diagnostic,
+                    diagnostic_bundle=bundle,
+                )
+                if bundle and (bundle.system_block or bundle.incremental_hint):
+                    diag_hints.append(
+                        {
+                            "tool": name,
+                            "system_block": bundle.system_block,
+                            "incremental_hint": bundle.incremental_hint,
+                            "error_fingerprint": bundle.error_fingerprint,
+                        }
+                    )
 
             obs = "## Tool results\n```json\n" + json.dumps(results, indent=2) + "\n```"
+            if diag_hints:
+                obs += "\n\n## Orchestrator (repeated-failure observation)\n" + json.dumps(
+                    diag_hints, indent=2
+                )
             messages.append({"role": "assistant", "content": raw[:12000]})
             messages.append({"role": "user", "content": _truncate(obs, 14000)})
-            transcript.append({"round": round_idx, "tool_results": results})
+            tr_row: dict[str, Any] = {"round": round_idx, "tool_results": results}
+            if diag_hints:
+                tr_row["diagnostic_hints"] = diag_hints
+            transcript.append(tr_row)
+            prior_round_diagnostic = bool(diag_hints)
             rounds_used += 1
 
         if not terminated_with_done:
@@ -271,6 +311,16 @@ class UnifiedSessionDriver:
         if not final_rationale:
             final_rationale = "(no terminal rationale)"
 
+        worklog_payload = worklog.to_dict()
+        worklog_payload["final_rationale"] = final_rationale
+        worklog_payload["success"] = success
+        worklog_payload["rounds_used"] = rounds_used
+        worklog_payload["recovery_paths"] = [asdict(r) for r in recovery_tracker.recovery_paths]
+        try:
+            export_worklog_json(worklog_payload, self._ws.root)
+        except OSError:
+            worklog_payload["export_error"] = "failed to write worklog.json (disk full or permissions)"
+
         return UnifiedSessionResult(
             success=success,
             goal=goal,
@@ -279,6 +329,8 @@ class UnifiedSessionDriver:
             workspace_root=str(self._ws.root),
             transcript=transcript,
             plan_markdown=plan_md,
+            post_mortem_markdown=recovery_tracker.format_report(goal=goal),
+            worklog=worklog_payload,
         )
 
     async def _exec_tool_async(self, name: str, args: dict[str, Any]) -> dict[str, Any]:

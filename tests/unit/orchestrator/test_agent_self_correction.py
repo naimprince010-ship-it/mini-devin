@@ -3,7 +3,13 @@
 import pytest
 from unittest.mock import MagicMock
 
-from mini_devin.reliability.self_correction import SelfCorrectionEngine, ErrorType
+from mini_devin.reliability.self_correction import (
+    SelfCorrectionEngine,
+    ErrorType,
+    error_fingerprint,
+    terminal_sanity_check,
+    incremental_recovery_hint,
+)
 
 class TestSelfCorrectionEngine:
     
@@ -88,3 +94,59 @@ class TestSelfCorrectionEngine:
     def test_get_retry_hint_dependency(self, engine):
         hint = engine.get_retry_hint(ErrorType.DEPENDENCY_MISSING, "terminal", {}, "NotFound")
         assert "install" in hint.lower()
+
+
+def test_error_fingerprint_stable_for_same_failure():
+    fp1 = error_fingerprint("terminal", "No such file: foo\n", 1)
+    fp2 = error_fingerprint("terminal", "No such file: foo\n", 1)
+    assert fp1 == fp2
+    assert fp1 != error_fingerprint("terminal", "other", 1)
+
+
+def test_terminal_sanity_check_rejects_windows_paths_on_linux():
+    ok, msg = terminal_sanity_check("cat G:\\\\repo\\\\x.py", is_windows=False)
+    assert not ok
+    assert "windows" in msg.lower() or "linux" in msg.lower()
+
+
+def test_terminal_sanity_check_accepts_simple_posix():
+    ok, msg = terminal_sanity_check("ls -la ./src", is_windows=False)
+    assert ok
+    assert msg == ""
+
+
+def test_incremental_recovery_hint_pytest():
+    h = incremental_recovery_hint(
+        "terminal",
+        {"command": "pytest tests/"},
+        ErrorType.COMMAND_FAILED,
+        "collected 0 items",
+        last_failed_command="pytest tests/",
+    )
+    low = h.lower()
+    assert "pytest" in low
+    assert "pythonpath" in low or "sys.path" in low
+    assert "-v" in low or "tb=long" in low or "full-trace" in low
+
+
+def test_incremental_recovery_hint_unittest():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.COMMAND_FAILED,
+        "ERROR",
+        last_failed_command="python -m unittest discover",
+    )
+    assert "unittest" in h.lower()
+
+
+def test_incremental_recovery_hint_npm():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.COMMAND_FAILED,
+        "npm ERR!",
+        last_failed_command="npm test",
+    )
+    low = h.lower()
+    assert "package.json" in low or "node_modules" in low

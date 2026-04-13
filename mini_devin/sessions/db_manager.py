@@ -177,6 +177,11 @@ class DatabaseSessionManager:
                 )
                 if sandbox:
                     agent._sandbox = sandbox
+
+                try:
+                    agent.bootstrap_ide_experience()
+                except Exception as _boot_e:
+                    print(f"[Session] bootstrap_ide_experience: {_boot_e}")
                 
                 self._agents[session_id] = agent
                 self._cancel_events[session_id] = asyncio.Event()

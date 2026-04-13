@@ -2,6 +2,11 @@
 Self-heal orchestration — pseudo-logic → code → sandbox → repair loop.
 
 Also contains helpers for LSP-static repair bundles (see ``SelfHealBundle``).
+
+Agent tool-loop guardrails (error fingerprints, terminal sanity, workspace
+snapshots, system-correction text) are re-exported from
+``mini_devin.reliability.self_correction`` for orchestration code that already
+depends on ``mini_devin``.
 """
 
 from __future__ import annotations
@@ -23,6 +28,13 @@ from plodder.lsp.bridge import DiagnosticsReport
 from plodder.orchestration.session_driver import UnifiedSessionDriver, UnifiedSessionResult
 from plodder.sandbox.execution_sandbox import SandboxResult
 
+from mini_devin.reliability.self_correction import (
+    error_fingerprint,
+    format_system_correction_block,
+    gather_workspace_diagnostics_sync,
+    incremental_recovery_hint,
+    terminal_sanity_check,
+)
 
 # ── LLM contract ────────────────────────────────────────────────────────────
 

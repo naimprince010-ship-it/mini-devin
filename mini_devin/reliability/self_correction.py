@@ -4,11 +4,152 @@ Self-Correction Engine for Plodder
 This module provides the core logic for detecting tool failures, classifying
 errors, and generating retry strategies (self-correction) before falling back
 to full replanning.
+
+Also includes **tool-loop resilience** helpers: error fingerprints, terminal
+sanity checks, forced workspace diagnostics, and incremental recovery hints
+(OpenHands-style guardrails — no extra LLM calls).
 """
 
+from __future__ import annotations
+
 from enum import Enum
-from typing import Any, Dict, Optional, Tuple
+import os
 import re
+import subprocess
+from typing import Any, Dict, Optional, Tuple
+
+def error_fingerprint(tool_name: str, tool_output: str, exit_code: Optional[int]) -> str:
+    """
+    Stable key for “same failure” detection (tool + exit + normalized error text).
+    """
+    snippet = re.sub(r"\s+", " ", (tool_output or "")[:500]).strip().lower()
+    return f"{tool_name}|{exit_code}|{snippet}"
+
+
+def terminal_sanity_check(command: str, *, is_windows: bool) -> Tuple[bool, str]:
+    """
+    Lightweight syntax / environment checks before running ``terminal``.
+
+    Does not shell out — avoids bogus commands that always fail the same way.
+    """
+    cmd = (command or "").strip()
+    if not cmd:
+        return False, "Empty command."
+    if "\x00" in cmd:
+        return False, "Command contains null bytes."
+
+    if not is_windows:
+        if re.search(r"(?i)[A-Za-z]:\\", cmd) or re.search(r"(?i)G:\\\\|C:\\\\|D:\\\\", cmd.replace("/", "\\")):
+            return (
+                False,
+                "Windows-style paths are invalid in this Linux/bash environment. "
+                "Use POSIX paths under the workspace (e.g. `./src` or paths from `pwd`).",
+            )
+        if "&&" in cmd and "bash" not in os.environ.get("SHELL", "").lower():
+            # Many deployments still run bash -lc; && is fine. Flag only obvious cmd.exe mixups.
+            if re.match(r"(?i)^\s*cmd\s", cmd):
+                return False, "Mixed cmd.exe syntax with bash; use `;` to chain in bash or a single `bash -lc` string."
+
+    else:
+        # Windows agent shell is often PowerShell — `&&` is invalid in older PS.
+        if "&&" in cmd and not re.search(r"(?i)cmd\s+/c", cmd):
+            return (
+                False,
+                "Use `;` to chain commands in PowerShell, or wrap in `cmd /c \"...\"` if you need `&&`.",
+            )
+
+    # Unbalanced quotes (simple heuristic)
+    if cmd.count('"') % 2 != 0 or cmd.count("'") % 2 != 0:
+        return False, "Unbalanced single or double quotes in command."
+
+    return True, ""
+
+
+def gather_workspace_diagnostics_sync(cwd: str, *, max_chars: int = 10_000) -> str:
+    """
+    Run ``pwd`` + directory listing without the LLM (bounded output).
+
+    Uses POSIX commands on non-Windows and ``cd`` / ``dir`` on Windows.
+    """
+    root = os.path.abspath(cwd or ".")
+    if not os.path.isdir(root):
+        return f"(not a directory: {root})"
+    chunks: list[str] = []
+    try:
+        if os.name == "nt":
+            r = subprocess.run(
+                ["cmd", "/c", "cd"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=20,
+                shell=False,
+            )
+            chunks.append(f"cd:\n{(r.stdout or r.stderr or '').strip()}")
+            r2 = subprocess.run(
+                ["cmd", "/c", "dir"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                shell=False,
+            )
+            chunks.append(f"dir:\n{(r2.stdout or r2.stderr or '').strip()}")
+        else:
+            r = subprocess.run(
+                ["pwd"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                shell=False,
+            )
+            chunks.append(f"pwd:\n{(r.stdout or r.stderr or '').strip()}")
+            r2 = subprocess.run(
+                ["ls", "-la"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=25,
+                shell=False,
+            )
+            chunks.append(f"ls -la:\n{(r2.stdout or r2.stderr or '').strip()}")
+            r3 = subprocess.run(
+                ["sh", "-c", "find . -maxdepth 3 -type f 2>/dev/null | head -n 80"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=35,
+                shell=False,
+            )
+            chunks.append(f"find (depth≤3, cap 80 files):\n{(r3.stdout or r3.stderr or '').strip()}")
+    except Exception as e:
+        chunks.append(f"(diagnostic subprocess error: {e})")
+    out = "\n\n".join(chunks).strip()
+    if len(out) > max_chars:
+        out = out[:max_chars] + "\n…(truncated)…"
+    return out or "(no diagnostic output)"
+
+
+def format_system_correction_block(*, workspace_display: str, is_windows: bool) -> str:
+    """Hard 'System Correction' text injected as a user message on repeated failures."""
+    if is_windows:
+        env = "You are on **Windows** (typically PowerShell). Use `;` to chain commands, `python` (not `python3` unless available), and drive paths only when they exist on this machine."
+        path_hint = "Verify paths with `Test-Path` in PowerShell or `dir` before editing."
+    else:
+        env = "You are on **Linux/bash**. Do **not** use Windows paths (`C:\\\\`, `G:\\\\`, etc.)."
+        path_hint = "The shell cwd should stay under the task workspace; use `pwd` and relative paths like `./src`."
+    ws = workspace_display or "."
+    return (
+        "## System Correction (mandatory read)\n\n"
+        f"{env}\n\n"
+        f"**Current workspace (authoritative):** `{ws}`\n\n"
+        f"{path_hint} For Python, prefer `os.path.exists(\"relative/path\")` (or `Path(...).exists()`) "
+        "before `editor` read/write on files you have not listed yet.\n\n"
+        "**Backtrack:** do not repeat the exact same failing command. Take one simpler diagnostic step "
+        "(e.g. `ls` / `ls tests` / `python -m pytest --collect-only`) before retrying the heavy command."
+    )
+
 
 class ErrorType(str, Enum):
     """Types of errors that can occur during tool execution."""
@@ -23,6 +164,79 @@ class ErrorType(str, Enum):
     LLM_PARSE_ERROR = "llm_parse_error"
     DEPENDENCY_MISSING = "dependency_missing"
     UNKNOWN = "unknown"
+
+
+def incremental_recovery_hint(
+    tool_name: str,
+    args: Dict[str, Any],
+    error_type: ErrorType,
+    output: str,
+    *,
+    last_failed_command: Optional[str] = None,
+) -> str:
+    """
+    Action-aware incremental strategy (no LLM).
+
+    ``last_failed_command`` overrides the terminal command string parsed from ``args``
+    when you have a normalized view of the exact failing shell line.
+    """
+    ol = (output or "").lower()
+    cmd = ""
+    if tool_name == "terminal":
+        cmd = (last_failed_command or "").strip() or str(args.get("command", ""))
+    cmd_l = cmd.lower()
+
+    # --- Python tests (pytest / unittest) ---------------------------------
+    if tool_name == "terminal" and ("pytest" in cmd_l or "py.test" in cmd_l):
+        return (
+            "**Incremental recovery (pytest):** (1) Confirm test files exist: `ls tests` / `find . -name 'test_*.py' | head`. "
+            "(2) Check **PYTHONPATH** / package layout: `echo \"$PYTHONPATH\"`, `python -c \"import sys; print(sys.path)\"`. "
+            "(3) Re-run with visibility: `python -m pytest -v --tb=long` (or `--full-trace`) so hidden tracebacks surface."
+        )
+    if tool_name == "terminal" and (
+        "unittest" in cmd_l
+        or "python -m unittest" in cmd_l
+        or re.search(r"\bunittest\b", cmd_l)
+    ):
+        return (
+            "**Incremental recovery (unittest):** Verify discovery paths: `ls -la`, "
+            "`python -m unittest discover -v` from the package root, and ensure the module path matches the repo layout."
+        )
+
+    # --- Node / npm ecosystem --------------------------------------------
+    if tool_name == "terminal" and any(
+        k in cmd_l for k in (" npm ", "npm ", "npx ", "yarn ", "pnpm ", "node ", "pnpm", "yarn")
+    ):
+        return (
+            "**Incremental recovery (Node/npm):** Inspect `package.json` (`cat package.json` / `head package.json`), "
+            "confirm `ls node_modules` (or `ls -la node_modules/<pkg>`), and verify you are in the directory that contains `package.json`."
+        )
+
+    # --- Editor / path ----------------------------------------------------
+    if tool_name == "editor" and error_type == ErrorType.FILE_NOT_FOUND:
+        p = args.get("path", "")
+        bn = os.path.basename(str(p)).strip()
+        find_hint = (
+            f"`find . -maxdepth 4 -name '*{bn}*' 2>/dev/null | head`"
+            if bn
+            else "`find . -maxdepth 4 -type f 2>/dev/null | head -n 40`"
+        )
+        return (
+            f"**Incremental recovery (editor):** Target `{p}` may be wrong. Run **`pwd`**, then {find_hint}, "
+            "or `ls` on the parent directory before read/write."
+        )
+
+    if "file not found" in ol or "no such file" in ol:
+        return (
+            "**Incremental recovery:** From workspace root, run **`pwd`**, **`ls`**, or **`find . -maxdepth 3`** "
+            "to confirm the path before opening or executing files."
+        )
+
+    if error_type == ErrorType.DEPENDENCY_MISSING:
+        return "**Incremental recovery:** Install the missing dependency or use `python -m <module>` with the interpreter from Runtime context."
+
+    return "**Incremental recovery:** Change one variable at a time (path, cwd, or command) and verify with a minimal check."
+
 
 class SelfCorrectionEngine:
     """

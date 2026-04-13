@@ -73,6 +73,9 @@ data/plodder_lance/
 # Local scratch / duplicate app tree (not part of main repo)
 plloder-work/
 
+# OpenHands upstream (cloned locally for reference; not tracked)
+OpenHands/
+
 # Database
 *.db
 *.sqlite3

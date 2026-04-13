@@ -21,6 +21,13 @@ import secrets
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from mini_devin.sandbox.stateful_exec import (
+    build_stateful_bash_script,
+    maybe_append_exports,
+    noninteractive_export_block,
+    posix_paths_for_docker_workspace,
+)
+
 if TYPE_CHECKING:
     from docker import DockerClient
     from docker.models.containers import Container
@@ -157,16 +164,34 @@ class SimpleDockerSandbox:
         """
         Run ``command`` through ``/bin/bash -lc`` inside the container (``exec_run``).
 
-        Extra kwargs are forwarded to ``Container.exec_run`` (e.g. ``user``, ``privileged``).
+        Uses a **stateful cwd** file under ``/workspace/.mini_devin/_shell/`` (bind-mounted)
+        so ``cd`` persists across ``exec_run`` calls (OpenHands-style session semantics).
+
+        Extra kwargs are forwarded to ``Container.exec_run`` (e.g. ``user``, ``privileged``, ``timeout``).
         """
-        cmd = ["/bin/bash", "-lc", command]
-        return self._container.exec_run(
+        maybe_append_exports(self.project_root, command)
+        ws, cf, ef = posix_paths_for_docker_workspace()
+        body = build_stateful_bash_script(
+            noninteractive_export_block() + command,
+            workspace_posix=ws,
+            cwd_file_posix=cf,
+            env_file_posix=ef,
+            clamp_under_workspace=False,
+        )
+        cmd = ["/bin/bash", "-lc", body]
+        exit_code, out = self._container.exec_run(
             cmd,
             workdir=workdir or self.WORKSPACE,
             environment=environment,
-            demux=demux,
+            demux=True,
             **kwargs,
         )
+        if demux:
+            return exit_code, out
+        if isinstance(out, tuple):
+            merged = (out[0] or b"") + ((b"\n" if out[0] and out[1] else b"") + (out[1] or b""))
+            return exit_code, merged
+        return exit_code, out
 
     def stop(self, *, remove: bool = True, timeout: int = 10) -> None:
         self._container.stop(timeout=timeout)

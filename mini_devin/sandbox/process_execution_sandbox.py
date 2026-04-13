@@ -18,6 +18,8 @@ from plodder.sandbox.execution_sandbox import SandboxResult
 from plodder.sandbox.toolchain_detect import image_for_shell_language, resolve_sql_url_from_env
 
 from mini_devin.sandbox.process_sandbox import ProcessSandbox
+from mini_devin.sandbox.runtime_protocol import ExecutionResult, normalize_exec_result
+from mini_devin.sandbox.shell_text import strip_ansi
 
 
 def _posix_single_quote(s: str) -> str:
@@ -89,13 +91,15 @@ class ProcessExecutionSandbox:
         """
         t = timeout_sec if timeout_sec is not None else self.default_timeout_sec
         t = max(1, min(300, int(t)))
-        code, raw = self._ps.exec_bash(command, workdir=workdir, timeout=float(t))
-        stdout = raw.decode("utf-8", errors="replace")
+        raw = self._ps.exec_bash(command, workdir=workdir, timeout=float(t))
+        er = normalize_exec_result(raw) if not isinstance(raw, ExecutionResult) else raw
+        stdout = strip_ansi(er.stdout.decode("utf-8", errors="replace"))
+        stderr = strip_ansi(er.stderr.decode("utf-8", errors="replace"))
         return SandboxResult(
             stdout=stdout,
-            stderr="",
-            exit_code=code,
-            timed_out=False,
+            stderr=stderr,
+            exit_code=er.exit_code,
+            timed_out=er.timed_out,
             container_id=self._ps.container_id,
             command=command[:4000],
         )
@@ -150,9 +154,12 @@ class ProcessExecutionSandbox:
             t,
             cmd[:800] + ("…" if len(cmd) > 800 else ""),
         )
-        code, raw = self._ps.exec_bash(cmd, timeout=float(t))
-        stdout = raw.decode("utf-8", errors="replace")
+        raw = self._ps.exec_bash(cmd, timeout=float(t))
+        er = normalize_exec_result(raw) if not isinstance(raw, ExecutionResult) else raw
+        stdout = strip_ansi(er.stdout.decode("utf-8", errors="replace"))
         stderr_parts: list[str] = []
+        if er.stderr:
+            stderr_parts.append(strip_ansi(er.stderr.decode("utf-8", errors="replace")))
         if network:
             stderr_parts.append(
                 "(process sandbox) network=true ignored — commands run on the host network."
@@ -161,8 +168,8 @@ class ProcessExecutionSandbox:
         return SandboxResult(
             stdout=stdout,
             stderr=stderr,
-            exit_code=code,
-            timed_out=False,
+            exit_code=er.exit_code,
+            timed_out=er.timed_out,
             container_id=self._ps.container_id,
             command=command_label[:4000],
         )

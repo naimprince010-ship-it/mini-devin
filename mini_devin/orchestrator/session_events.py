@@ -84,18 +84,22 @@ def estimate_llm_cost_usd(
     return None, "unknown_model"
 
 
-def append_session_event(workspace: str | Path, event: dict[str, Any]) -> Path | None:
-    """Append one JSON line; returns path written or None on failure."""
+def append_session_event(workspace: str | Path, event: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    Append one JSON line.
+
+    Returns the full row dict (including ``ts``) on success, or ``None`` on failure.
+    """
     try:
         root = Path(workspace).resolve()
         root.mkdir(parents=True, exist_ok=True)
         log_dir = root / ".plodder"
         log_dir.mkdir(parents=True, exist_ok=True)
         path = log_dir / "session_events.jsonl"
-        row = {"ts": datetime.now(timezone.utc).isoformat(), **event}
+        row: dict[str, Any] = {"ts": datetime.now(timezone.utc).isoformat(), **event}
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, default=str, ensure_ascii=False) + "\n")
-        return path
+        return row
     except OSError:
         return None
 

@@ -12,7 +12,7 @@ import asyncio
 import json
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
 from .protocol import PlanEvent, SupervisorAction, WorkerObservation
 from .task_scheduler import (
@@ -106,13 +106,20 @@ class PlodderOrchestrator:
         *,
         max_retries_per_subtask: int = 2,
         max_replans: int = 3,
+        playbook_tags: Sequence[str] | None = None,
     ):
         from ..agents.planner import SupervisorRoutingPlanner
+        from ..skills.playbook import playbook_tags_from_env
 
         self._session_manager = session_manager
         self._supervisor = supervisor or SupervisorRoutingPlanner()
         self._max_retries = max(0, int(max_retries_per_subtask))
         self._max_replans = max(0, int(max_replans))
+        self._playbook_tags: list[str] = (
+            [str(t).strip() for t in playbook_tags if str(t).strip()]
+            if playbook_tags is not None
+            else playbook_tags_from_env()
+        )
 
     def _parse_subtasks(self, raw: dict[str, Any]) -> list[SchedulableUnit]:
         out: list[SchedulableUnit] = []
@@ -165,7 +172,7 @@ class PlodderOrchestrator:
         last_err: str | None = None
         worker_session_id = ""
         for attempt in range(self._max_retries + 1):
-            desc = self._worker_task_prompt(unit, prior, attempt, last_err)
+            desc = self._worker_task_prompt(unit, prior, attempt, last_err, workspace=workspace)
             try:
                 worker_session = await WorkerRuntime.create_worker_session(
                     self._session_manager,
@@ -389,7 +396,11 @@ class PlodderOrchestrator:
         prior_obs: dict[str, WorkerObservation],
         attempt: int,
         last_error: str | None,
+        *,
+        workspace: str,
     ) -> str:
+        from ..skills.playbook import format_playbooks_for_prompt
+
         base = _prior_context(prior_obs)
         ac = "\n".join(f"- {c}" for c in unit.acceptance_criteria) or "- Complete the sub-goal."
         hdr = f"[Orchestrator sub-task {unit.id}]\n\nPrimary goal:\n{unit.goal}\n\nAcceptance:\n{ac}\n"
@@ -400,6 +411,10 @@ class PlodderOrchestrator:
                 f"\n## Self-correction (attempt {attempt + 1})\n"
                 f"Previous run failed: {last_error}\nAdjust approach and satisfy acceptance criteria.\n"
             )
+        if self._playbook_tags and workspace:
+            block = format_playbooks_for_prompt(workspace, self._playbook_tags)
+            if block:
+                hdr += "\n" + block + "\n"
         return hdr
 
     @staticmethod

@@ -29,6 +29,7 @@ from ..schemas.state import (
     TaskState,
     TaskStatus,
 )
+from ..skills.playbook import discover_repo_root, load_playbook_markdown
 from ..schemas.verification import (
     VerificationSuite,
     create_auto_verification_suite,
@@ -70,11 +71,36 @@ from ..core.parallel_executor import (
     create_parallel_executor,
     create_batch_caller,
 )
-from ..reliability.self_correction import SelfCorrectionEngine, ErrorType
+from ..reliability.post_mortem import (
+    DiagnosticTriggerRecord,
+    FailureStreakRecord,
+    PostMortemPayload,
+    RecoveryPathRecord,
+    format_post_mortem,
+    infer_recovery_path_summary,
+)
+from ..reliability.self_correction import (
+    SelfCorrectionEngine,
+    ErrorType,
+    error_fingerprint,
+    format_system_correction_block,
+    gather_workspace_diagnostics_sync,
+    incremental_recovery_hint,
+)
 from ..learning.teacher_review import maybe_log_teacher_review
 
 from .planner import Planner
-from .session_events import append_session_event, estimate_llm_cost_usd, load_session_events
+from .session_events import estimate_llm_cost_usd, load_session_events
+from .activity_loop import (
+    AgentActivityState,
+    build_activity_meta,
+    classify_action_type,
+    validate_action_pre_flight,
+)
+from .session_worklog import SessionWorklog, load_worklog, save_worklog
+from .terminal_recovery import terminal_recovery_hint
+from .workspace_sidecar import WorkspaceSidecar
+from .standard_events import AgentEventKind, AgentStreamEvent, append_standard_event
 
 
 import sys as _sys_for_prompt
@@ -352,6 +378,20 @@ class Agent:
         self._pex_terminal: Any | None = None  # ProcessExecutionSandbox for Railway-style host bash
         # Last (prompt, completion) totals when we wrote think/observe — for per-event deltas in JSONL
         self._last_event_llm_tokens: tuple[int, int] | None = None
+        # Same tool + identical error text repeated (forces workspace snapshot injection)
+        self._same_error_streak_tool: str | None = None
+        self._same_error_streak_fp: str | None = None
+        self._same_error_streak_n: int = 0
+        # Observation-style post-mortem (forced diagnostic + recovery path)
+        self._post_mortem_diagnostic_triggers: list[DiagnosticTriggerRecord] = []
+        self._post_mortem_failure_streaks: list[FailureStreakRecord] = []
+        self._post_mortem_recovery_paths: list[RecoveryPathRecord] = []
+        self._pending_diagnostic_fp: str | None = None
+        # OpenHands-style activity loop state (Action → Observation stream metadata)
+        self._activity_state = AgentActivityState()
+        self._current_activity_context: dict[str, Any] | None = None
+        self._workspace_sidecar: WorkspaceSidecar | None = None
+        self._last_terminal_command: str | None = None
 
         # Proactive clarification support
         self._clarification_event: asyncio.Event | None = None
@@ -373,6 +413,13 @@ class Agent:
         _sys = SYSTEM_PROMPT + f"\n\n**Workspace root (authoritative):** `{wd}`\n"
         if _spec_extra:
             _sys = _sys + "\n" + _spec_extra + "\n"
+        try:
+            from .tool_function_registry import canonical_tools_prompt_block
+
+            _sys = _sys + "\n\n" + canonical_tools_prompt_block()
+        except Exception:
+            pass
+        self._system_prompt_base = _sys
         self.llm.set_system_prompt(_sys)
 
     def _emit_terminal_line(self, line: str) -> None:
@@ -425,7 +472,78 @@ class Agent:
             from ..tools.github import create_github_tool
             github_tool = create_github_tool()
             self.registry.register(github_tool)
-    
+
+    def _ensure_workspace_sidecar(self) -> None:
+        wd = self.working_directory
+        if not wd or self._workspace_sidecar is not None:
+            return
+        self._workspace_sidecar = WorkspaceSidecar(wd)
+        self._workspace_sidecar.start()
+
+    def stop_workspace_sidecar(self) -> None:
+        if self._workspace_sidecar:
+            self._workspace_sidecar.stop()
+            self._workspace_sidecar = None
+
+    async def cleanup(self) -> None:
+        """Release background resources (file watcher, etc.)."""
+        self.stop_workspace_sidecar()
+
+    def bootstrap_ide_experience(self) -> None:
+        """
+        Emit greeting + live workspace index to the event stream (OpenHands-style IDE open).
+        Call once after the session is bound to a workspace.
+        """
+        wd = self.working_directory
+        if not wd:
+            return
+        self._ensure_workspace_sidecar()
+        snap = ""
+        if self._workspace_sidecar:
+            snap = self._workspace_sidecar.get_snapshot_text(max_lines=600, max_chars=12_000)
+        wl = load_worklog(wd)
+        resume_note = ""
+        if wl and wl.current_plan:
+            resume_note = (
+                f"\n\n**Saved progress**: {len(wl.current_plan)} plan step(s) on disk "
+                f"(last task `{wl.last_task_id}`, cursor step index {wl.current_step_idx}). "
+                "Starting the same task id will restore the plan."
+            )
+        greeting = (
+            "Welcome — this workspace is wired for an autonomous coding loop. "
+            "The tree below is refreshed by a background watcher; use **terminal** as your primary "
+            "sensor (build, test, git) and **editor** for precise file work. Describe a task when ready."
+        )
+        text = greeting + "\n\n## Workspace index (sidecar)\n\n```text\n" + snap + "\n```" + resume_note
+        self._append_session_event(
+            AgentStreamEvent(
+                kind=AgentEventKind.STATUS,
+                role="agent",
+                text=text[:12000],
+                legacy_type="ide_bootstrap",
+                meta={"bootstrap": True, "repo_root": str(Path(wd).resolve())},
+            )
+        )
+
+    def _persist_worklog(self, task: TaskState) -> None:
+        wd = self.working_directory
+        if not wd:
+            return
+        finished: list[str] = []
+        steps = getattr(self, "_plan_steps", None) or []
+        idx = int(getattr(self, "_current_step_idx", 0))
+        if getattr(self, "_plan_sent", False) and steps:
+            finished = [steps[i] for i in range(min(idx, len(steps)))]
+        log = SessionWorklog(
+            session_id=self.state.session_id,
+            last_task_id=task.task_id,
+            current_plan=list(steps),
+            finished_steps=finished,
+            remaining_tasks=[],
+            current_step_idx=idx,
+        )
+        save_worklog(wd, log)
+
     def _get_tool_schemas(self) -> list[dict[str, Any]]:
         """Get tool schemas for LLM function calling."""
         schemas = []
@@ -435,6 +553,8 @@ class Agent:
         _on_windows = _sys.platform == "win32"
         if _on_windows:
             _terminal_desc = (
+                "**Primary interface**: run shell commands first to observe the real world "
+                "(directory listings, builds, tests, git). "
                 "Execute a shell command via PowerShell on Windows. "
                 "Common Linux commands are auto-translated (python3→python, ls, cat, mkdir -p, rm -rf, grep, touch, etc.). "
                 "Use relative paths from the workspace. Do NOT use absolute Windows paths like C:\\\\. "
@@ -443,6 +563,8 @@ class Agent:
             )
         else:
             _terminal_desc = (
+                "**Primary interface**: run shell commands first to observe the real world "
+                "(ls, git status, builds, tests). "
                 "Execute a shell command in bash under the task workspace. "
                 "Use relative paths (./...) from the workspace. "
                 "Do not use Windows-style paths (C:\\\\, D:\\\\)."
@@ -1066,7 +1188,14 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         
         return schemas
     
-    async def _execute_tool(self, name: str, arguments: dict[str, Any]) -> str:
+    async def _execute_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        thought: str | None = None,
+        activity_source: str = "agent",
+    ) -> str:
         """Execute a tool and return the result as a string."""
         import time
         start_time = time.time()
@@ -1103,27 +1232,73 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         tool = self.registry.get(name)
         if not tool:
             return f"Error: Unknown tool '{name}'"
-        
+
+        arg_dict = dict(arguments) if isinstance(arguments, dict) else {}
+        state_before_snapshot = self._activity_state.to_meta_snapshot()
+        action_type = classify_action_type(name, arg_dict)
+        step = self._activity_state.bump_step()
+        self._activity_state.record_tool(name, action_type)
+        act_meta = build_activity_meta(
+            thought=thought or "",
+            source=activity_source if activity_source in ("agent", "user", "system") else "agent",
+            action_type=action_type,
+            step=step,
+            tool_name=name,
+        )
+        if isinstance(act_meta.get("activity"), dict):
+            act_meta["activity"]["state_before"] = state_before_snapshot
+        self._current_activity_context = act_meta
+
+        ok_pre, pre_msg, viol = validate_action_pre_flight(
+            name,
+            arg_dict,
+            is_windows=(os.name == "nt"),
+            command_safety_check=self._check_command_safety,
+        )
+        if not ok_pre:
+            if viol is not None and getattr(viol, "blocked", False):
+                self._update_phase(AgentPhase.BLOCKED)
+                err_out = f"BLOCKED: {pre_msg}. Task moved to BLOCKED state."
+            else:
+                err_out = (
+                    f"Error: Command failed sanity check (not executed): {pre_msg}\n"
+                    "Fix the command syntax or paths, then retry."
+                )
+            if self.working_directory:
+                obs_act = dict(act_meta.get("activity") or {})
+                obs_act["validation_failed"] = True
+                obs_act["preflight_message"] = pre_msg
+                self._append_session_event(
+                    AgentStreamEvent(
+                        kind=AgentEventKind.OBSERVATION,
+                        tool_name=name,
+                        legacy_type="observe",
+                        output=err_out[:8000],
+                        meta={"preflight_failed": True, "activity": obs_act},
+                    )
+                )
+            self._current_activity_context = None
+            return err_out
+
         try:
+            if self.working_directory:
+                self._append_session_event(
+                    AgentStreamEvent(
+                        kind=AgentEventKind.TOOL_CALL,
+                        tool_name=name,
+                        tool_call_id=call_id,
+                        tool_args=self._sanitize_tool_args_for_log(arguments),
+                        legacy_type="act",
+                        meta=dict(act_meta),
+                    )
+                )
+
             if name == "terminal":
                 command = arguments.get("command", "")
+                self._last_terminal_command = str(command)
                 plan_step = arguments.get("plan_step")
 
-                # Safety check for commands
-                violation = self._check_command_safety(command)
-                if violation and violation.blocked:
-                    self._update_phase(AgentPhase.BLOCKED)
-                    return f"BLOCKED: {violation.message}. Task moved to BLOCKED state."
-
                 fs_before = self._workspace_path_set()
-                self._append_session_event(
-                    {
-                        "type": "act",
-                        "tool": "terminal",
-                        "command": command[:2000],
-                        "plan_step": plan_step,
-                    }
-                )
 
                 # Emit command to shell stream
                 on_cmd_output = self.callbacks.get("on_command_output")
@@ -1180,6 +1355,13 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                         if on_cmd_output:
                             for line in sb_res.stdout.splitlines():
                                 on_cmd_output(line)
+                    if getattr(sb_res, "stderr", None):
+                        output_parts.append(f"STDERR:\n{sb_res.stderr}")
+                        if on_cmd_output:
+                            for line in sb_res.stderr.splitlines():
+                                on_cmd_output(f"[stderr] {line}")
+                    if getattr(sb_res, "timed_out", False):
+                        output_parts.append("(process sandbox) Command timed out and was terminated.")
                     output_parts.append(f"Exit code: {sb_res.exit_code}")
                     if on_cmd_output:
                         on_cmd_output(f"Exit code: {sb_res.exit_code}")
@@ -1289,15 +1471,6 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 apply_ruff_fix = bool(ed_args.pop("apply_ruff_fix", False))
                 action = ed_args.get("action", "read_file")
                 file_path = ed_args.get("path", "")
-                self._append_session_event(
-                    {
-                        "type": "act",
-                        "tool": "editor",
-                        "action": action,
-                        "path": file_path,
-                        "plan_step": plan_step,
-                    }
-                )
 
                 if action == "read_file":
                     from ..schemas.tools import ReadFileInput, FileRange
@@ -2145,7 +2318,9 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                     error=str(e),
                 )
             return error_msg
-    
+        finally:
+            self._current_activity_context = None
+
     def _log(self, message: str) -> None:
         """Log a message if verbose mode is enabled."""
         if self.verbose:
@@ -3453,6 +3628,28 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             except Exception as e:
                 self._log(f"Error in callback '{name}': {e}")
 
+    @staticmethod
+    def _sanitize_tool_args_for_log(arguments: dict[str, Any]) -> dict[str, Any]:
+        """Shrink tool arguments for JSONL (avoid huge file bodies in session_events)."""
+        out: dict[str, Any] = {}
+        for k, v in arguments.items():
+            if k in ("content", "body", "data", "patch", "script"):
+                if isinstance(v, str) and len(v) > 800:
+                    out[k] = f"<{len(v)} chars>"
+                else:
+                    out[k] = v
+            elif isinstance(v, str):
+                out[k] = v[:2000] if len(v) > 2000 else v
+            elif isinstance(v, (int, float, bool)) or v is None:
+                out[k] = v
+            elif isinstance(v, list):
+                out[k] = v[:40] if len(v) > 40 else v
+            elif isinstance(v, dict):
+                out[k] = "<dict>"
+            else:
+                out[k] = str(v)[:500]
+        return out
+
     def _llm_usage_payload_for_session_event(self) -> dict[str, Any]:
         """Cumulative LLM tokens + rough USD; per-event token/cost delta since last think/observe."""
         llm = getattr(self, "llm", None)
@@ -3494,13 +3691,20 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             payload["llm_estimated_cost_usd_delta"] = round(del_cost, 10)
         return payload
 
-    def _append_session_event(self, event: dict[str, Any]) -> None:
+    def _append_session_event(self, event: AgentStreamEvent) -> None:
         wd = self.working_directory
         if not wd:
             return
-        if event.get("type") in ("think", "observe"):
-            event = {**event, **self._llm_usage_payload_for_session_event()}
-        append_session_event(wd, event)
+        flat: dict[str, Any] | None = None
+        if event.kind in (AgentEventKind.STATUS, AgentEventKind.OBSERVATION):
+            u = self._llm_usage_payload_for_session_event()
+            flat = u if u else None
+        append_standard_event(
+            wd,
+            event,
+            flat_extras=flat,
+            session_id=self.state.session_id,
+        )
 
     def _workspace_path_set(self) -> set[str]:
         root = Path(self.working_directory or ".").resolve()
@@ -3590,14 +3794,46 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
     ) -> str:
         fs_after = self._workspace_path_set()
         delta = self._diff_path_sets(fs_before, fs_after)
+        recovery_hint: str | None = None
+        if tool == "terminal":
+            recovery_hint = terminal_recovery_hint(
+                exit_code,
+                output or "",
+                command=getattr(self, "_last_terminal_command", None),
+            )
+        display_out = (output or "") + (f"\n\n{recovery_hint}" if recovery_hint else "")
+        preview = display_out.strip()
+        if len(preview) > 8000:
+            preview = preview[:8000] + "\n…(truncated)…"
+        if tool == "terminal":
+            self._activity_state.record_terminal_outcome(exit_code)
+        if tool == "editor" and written_paths:
+            self._activity_state.record_editor_path(written_paths[0])
+        state_after = self._activity_state.to_meta_snapshot()
+        stream_meta: dict[str, Any] = {
+            "plan_step": plan_step,
+            "filesystem_delta": delta,
+        }
+        ctx = self._current_activity_context
+        if ctx and isinstance(ctx.get("activity"), dict):
+            stream_meta["activity"] = {**ctx["activity"], "state_after": state_after}
+        elif ctx:
+            stream_meta.update(ctx)
+            if "activity" not in stream_meta:
+                stream_meta["activity"] = {"state_after": state_after}
+        else:
+            stream_meta["activity"] = {"state_after": state_after}
+        if recovery_hint:
+            stream_meta["recovery_hint"] = recovery_hint
         self._append_session_event(
-            {
-                "type": "observe",
-                "tool": tool,
-                "exit_code": exit_code,
-                "plan_step": plan_step,
-                "filesystem_delta": delta,
-            }
+            AgentStreamEvent(
+                kind=AgentEventKind.OBSERVATION,
+                tool_name=tool,
+                exit_code=exit_code,
+                output=preview or None,
+                legacy_type="observe",
+                meta=stream_meta,
+            )
         )
         if self.working_directory and tool in ("terminal", "editor"):
             try:
@@ -3609,11 +3845,15 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 )
             except Exception as _e:
                 self._log(f"PLAN.md checkpoint append skipped: {_e}")
-        parts = [output, "", "## Observe (filesystem)", json.dumps(delta, ensure_ascii=False)]
+        parts = [display_out, "", "## Observe (filesystem)", json.dumps(delta, ensure_ascii=False)]
         for wp in written_paths or []:
             hint = self._workspace_verify_command_hint(wp)
             if hint:
                 parts.extend(["", "## Verification suggested", hint])
+        if self._workspace_sidecar and (
+            delta.get("added_sorted") or delta.get("removed_sorted")
+        ):
+            self._workspace_sidecar.refresh(blocking=False)
         return "\n".join(parts)
 
     async def _auto_ruff_check_file(self, rel_path: str) -> str:
@@ -3644,12 +3884,13 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=90.0)
             text = (out or b"").decode("utf-8", errors="replace").strip()
             self._append_session_event(
-                {
-                    "type": "auto_verify",
-                    "tool": "ruff",
-                    "path": rel_path,
-                    "exit_code": proc.returncode,
-                }
+                AgentStreamEvent(
+                    kind=AgentEventKind.OBSERVATION,
+                    tool_name="ruff",
+                    exit_code=proc.returncode,
+                    legacy_type="auto_verify",
+                    meta={"path": rel_path, "auto_verify": "ruff_check"},
+                )
             )
             tag = "passed" if proc.returncode == 0 else "failed"
             fix_hint = ""
@@ -3694,12 +3935,13 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=120.0)
             text = (out or b"").decode("utf-8", errors="replace").strip()
             self._append_session_event(
-                {
-                    "type": "auto_verify",
-                    "tool": "ruff_fix",
-                    "path": rel_path,
-                    "exit_code": proc.returncode,
-                }
+                AgentStreamEvent(
+                    kind=AgentEventKind.OBSERVATION,
+                    tool_name="ruff_fix",
+                    exit_code=proc.returncode,
+                    legacy_type="auto_verify",
+                    meta={"path": rel_path, "auto_verify": "ruff_fix"},
+                )
             )
             tag = "completed" if proc.returncode == 0 else "finished_with_errors"
             return f"\n\n## Ruff auto-fix (`check --fix`) — {tag}\n```\n{text[:4000]}\n```"
@@ -3716,6 +3958,98 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         self.state.phase = new_phase
         self._log(f"Phase transition: {old_phase.value} -> {new_phase.value}")
         await self._trigger_callback("on_phase_change", new_phase.value)
+
+    def _playbook_repo_root(self) -> Path:
+        """Prefer workspace ``skills/`` when present; else repo root from env / discovery."""
+        wd = self.working_directory
+        if wd:
+            p = Path(wd).resolve()
+            if (p / "skills").is_dir():
+                return p
+        return discover_repo_root()
+
+    @staticmethod
+    def _task_blob_for_skill_match(task: TaskState) -> str:
+        parts: list[str] = [task.goal.description or ""]
+        if task.goal.acceptance_criteria:
+            parts.extend(str(c) for c in task.goal.acceptance_criteria)
+        return "\n".join(parts)
+
+    @staticmethod
+    def _infer_auto_playbook_tags(text: str) -> list[str]:
+        """Map task wording to ``skills/<tag>.md`` stems (order preserved, de-duplicated)."""
+        raw = (text or "").lower()
+        seen: set[str] = set()
+        out: list[str] = []
+
+        def add(tag: str) -> None:
+            if tag not in seen:
+                seen.add(tag)
+                out.append(tag)
+
+        if re.search(r"\b(review|verify|validate|audit)\b", raw, re.I):
+            add("code_review")
+        if re.search(r"\bcheck\b", raw, re.I) and not re.search(r"\bcheckout\b", raw, re.I):
+            add("code_review")
+        if "code review" in raw or "pull request" in raw or "pull-request" in raw:
+            add("code_review")
+        if re.search(r"\b(lint|linting|rubric)\b", raw, re.I):
+            add("code_review")
+        if re.search(r"\b(refactor|restructure)\b", raw, re.I) or re.search(
+            r"\b(clean\s*up|cleanup|migrate)\b", raw, re.I
+        ):
+            add("refactor")
+        return out
+
+    def _apply_auto_injected_playbooks(self, task: TaskState) -> None:
+        """
+        Reset system prompt to base, then append matching ``skills/*.md`` blocks.
+
+        Emits a single STATUS row listing loaded tags (via :meth:`_append_session_event`).
+        """
+        base = getattr(self, "_system_prompt_base", None)
+        if not isinstance(base, str) or not base:
+            return
+        self.llm.set_system_prompt(base)
+
+        tags = self._infer_auto_playbook_tags(self._task_blob_for_skill_match(task))
+        if not tags:
+            return
+
+        root = self._playbook_repo_root()
+        loaded: list[str] = []
+        chunks: list[str] = []
+        for tag in tags:
+            body = load_playbook_markdown(root, tag)
+            if body:
+                loaded.append(tag)
+                cap = 12_000
+                if len(body) > cap:
+                    body = body[:cap] + "\n\n…(truncated)…"
+                chunks.append(f"### Skill: `{tag}`\n\n{body}".strip())
+
+        if not loaded:
+            return
+
+        suffix = (
+            "\n\n## Auto-loaded skill playbooks (this task)\n\n"
+            + "\n\n---\n\n".join(chunks)
+        )
+        self.llm.set_system_prompt(base + suffix)
+
+        summary = "Active skill loaded: " + ", ".join(loaded)
+        if self.working_directory:
+            self._append_session_event(
+                AgentStreamEvent(
+                    kind=AgentEventKind.STATUS,
+                    role="system",
+                    text=summary,
+                    legacy_type="skill_autoload",
+                    meta={"active_skills": loaded, "repo_root": str(root)},
+                )
+            )
+        else:
+            self._log(f"[skills] {summary} (no workspace — event not written to JSONL)")
     
     async def run(self, task: TaskState) -> TaskState:
         """
@@ -3730,15 +4064,48 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         self.state.current_task = task
         task.status = TaskStatus.IN_PROGRESS
         task.started_at = datetime.now(timezone.utc)
-        
-        # Reset plan state for this new task
-        self._plan_sent = False
-        self._plan_steps = []
-        self._current_step_idx = 0
+
+        self._ensure_workspace_sidecar()
+        wd = self.working_directory
+        wl = load_worklog(wd) if wd else None
+        resumed = bool(wl and wl.last_task_id == task.task_id and wl.current_plan)
+        if resumed:
+            self._plan_sent = True
+            self._plan_steps = list(wl.current_plan)
+            self._current_step_idx = min(
+                max(0, wl.current_step_idx),
+                max(0, len(self._plan_steps) - 1),
+            )
+            self._append_session_event(
+                AgentStreamEvent(
+                    kind=AgentEventKind.STATUS,
+                    role="system",
+                    text=(
+                        f"Resumed `.plodder/worklog.json` for task `{task.task_id}` — "
+                        f"step {self._current_step_idx + 1}/{len(self._plan_steps)}."
+                    ),
+                    legacy_type="worklog_resume",
+                    meta={"worklog": wl.to_json_dict()},
+                )
+            )
+        else:
+            self._plan_sent = False
+            self._plan_steps = []
+            self._current_step_idx = 0
+
         self._tools_used_count = 0
         self._no_tool_streak = 0
         self._session_self_correct_lessons = []
         self._last_event_llm_tokens = None
+        self._same_error_streak_tool = None
+        self._same_error_streak_fp = None
+        self._same_error_streak_n = 0
+        self._post_mortem_diagnostic_triggers.clear()
+        self._post_mortem_failure_streaks.clear()
+        self._post_mortem_recovery_paths.clear()
+        self._pending_diagnostic_fp = None
+        self._activity_state = AgentActivityState()
+        self._current_activity_context = None
 
         # Initialize artifact logger
         self._init_artifact_logger(task.task_id, task.goal.description)
@@ -3748,6 +4115,7 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         
         self._log(f"Starting task: {task.goal.description}")
         await self._update_phase(AgentPhase.INTAKE)
+        self._apply_auto_injected_playbooks(task)
 
         # Index + README capture ("self-learning" on repo open)
         try:
@@ -3766,11 +4134,15 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             try:
                 Planner.sync_plan_file(self.working_directory, task.goal.description)
                 self._append_session_event(
-                    {
-                        "type": "task_start",
-                        "task_id": task.task_id,
-                        "goal": (task.goal.description or "")[:4000],
-                    }
+                    AgentStreamEvent(
+                        kind=AgentEventKind.STATUS,
+                        role="system",
+                        legacy_type="task_start",
+                        meta={
+                            "task_id": task.task_id,
+                            "goal": (task.goal.description or "")[:4000],
+                        },
+                    )
                 )
                 await self._trigger_callback(
                     "on_message",
@@ -3811,7 +4183,17 @@ Structured planning: read `PLAN.md` at the workspace root; every `terminal` / `e
 
 IMPORTANT: You MUST use tools to complete this task. Do NOT just write text descriptions. 
 Call a tool (editor or terminal) immediately as your first action."""
-        
+        if self._workspace_sidecar:
+            try:
+                task_message = (
+                    task_message
+                    + "\n\n## Live workspace index (background watcher)\n\n```text\n"
+                    + self._workspace_sidecar.get_snapshot_text(max_lines=1200, max_chars=14_000)
+                    + "\n```"
+                )
+            except Exception as e:
+                self._log(f"Workspace tree append skipped: {e}")
+
         self.llm.add_user_message(task_message)
 
         if self.working_directory:
@@ -3900,6 +4282,7 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 self._current_step_idx = 0
                                 await self._trigger_callback("on_plan_created", steps)
                                 await self._trigger_callback("on_step_started", 0, steps[0])
+                                self._persist_worklog(task)
 
                     # --- Step progression detection when a plan is already active ---
                     if getattr(self, '_plan_sent', False):
@@ -3933,6 +4316,7 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 # Start new step
                                 self._current_step_idx = new_step_reached
                                 await self._trigger_callback("on_step_started", self._current_step_idx, self._plan_steps[self._current_step_idx])
+                                self._persist_worklog(task)
 
                 # Handle tool calls
                 if response.tool_calls:
@@ -3945,11 +4329,13 @@ Call a tool (editor or terminal) immediately as your first action."""
                     )
                     if (response.content or "").strip() and self.working_directory:
                         self._append_session_event(
-                            {
-                                "type": "think",
-                                "text": (response.content or "")[:12000],
-                                "task_id": task.task_id,
-                            }
+                            AgentStreamEvent(
+                                kind=AgentEventKind.STATUS,
+                                role="agent",
+                                text=(response.content or "")[:12000],
+                                legacy_type="think",
+                                meta={"task_id": task.task_id},
+                            )
                         )
                     # OpenAI requires every tool_call_id from this assistant message to get a tool
                     # message next, in order — before any new "user" message. Inline self-correction
@@ -3983,7 +4369,11 @@ Call a tool (editor or terminal) immediately as your first action."""
                             exit_code = None
                             
                             try:
-                                result = await self._execute_tool(tc.name, tc.arguments)
+                                result = await self._execute_tool(
+                                    tc.name,
+                                    tc.arguments,
+                                    thought=response.content,
+                                )
                             except Exception as _tool_ex:
                                 result = f"Error: tool execution raised an exception: {_tool_ex}"
                                 self._log(f"Tool execution error: {_tool_ex}")
@@ -4003,7 +4393,24 @@ Call a tool (editor or terminal) immediately as your first action."""
                             error_type = self._correction_engine.classify_error(tc.name, result, exit_code)
                             
                             if error_type == ErrorType.SUCCESS:
+                                self._same_error_streak_tool = None
+                                self._same_error_streak_fp = None
+                                self._same_error_streak_n = 0
                                 tool_success = True
+                                if self._pending_diagnostic_fp is not None:
+                                    ok_args = (
+                                        dict(tc.arguments)
+                                        if isinstance(tc.arguments, dict)
+                                        else {}
+                                    )
+                                    self._post_mortem_recovery_paths.append(
+                                        infer_recovery_path_summary(
+                                            after_error_fingerprint=self._pending_diagnostic_fp,
+                                            next_tool_name=tc.name,
+                                            next_args=ok_args,
+                                        )
+                                    )
+                                    self._pending_diagnostic_fp = None
                                 # If we had retried, record the successful correction
                                 if retry_count > 0:
                                     self._log(f"Self-correction successful after {retry_count} retries")
@@ -4042,18 +4449,78 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 
                             # Tool failed
                             self._log(f"Tool {tc.name} failed with {error_type.value}")
-                            
+                            _args_dict = dict(tc.arguments) if isinstance(tc.arguments, dict) else {}
+                            _fp = error_fingerprint(tc.name, str(result), exit_code)
+                            if tc.name == self._same_error_streak_tool and _fp == self._same_error_streak_fp:
+                                self._same_error_streak_n += 1
+                            else:
+                                self._same_error_streak_tool = tc.name
+                                self._same_error_streak_fp = _fp
+                                self._same_error_streak_n = 1
+
                             if not _single_tool_batch:
                                 self._log(
                                     "Skipping inline self-correction: multiple tool_calls in one turn "
                                     "(API requires all tool results before new user messages)."
                                 )
                                 break
-                            
+
                             if not self._correction_engine.should_retry(error_type, retry_count):
                                 self._log("Max retries reached or error not retryable immediately")
                                 break
-                                
+
+                            _forced_diag = self._same_error_streak_n >= 3
+                            if _forced_diag:
+                                wd0 = self.working_directory or "."
+                                diag = gather_workspace_diagnostics_sync(wd0)
+                                sc = format_system_correction_block(
+                                    workspace_display=wd0,
+                                    is_windows=(os.name == "nt"),
+                                )
+                                _lfc = str(_args_dict.get("command", "") or "")
+                                inc0 = incremental_recovery_hint(
+                                    tc.name,
+                                    _args_dict,
+                                    error_type,
+                                    str(result),
+                                    last_failed_command=_lfc,
+                                )
+                                self._post_mortem_failure_streaks.append(
+                                    FailureStreakRecord(
+                                        tool_name=tc.name,
+                                        error_fingerprint=_fp,
+                                        streak_length=self._same_error_streak_n,
+                                    )
+                                )
+                                self._post_mortem_diagnostic_triggers.append(
+                                    DiagnosticTriggerRecord(
+                                        error_fingerprint=_fp,
+                                        tool_name=tc.name,
+                                        exit_code=exit_code,
+                                        output_preview=str(result)[:400],
+                                    )
+                                )
+                                self._pending_diagnostic_fp = _fp
+                                self.llm.add_user_message(
+                                    f"{sc}\n\n### Live workspace snapshot (after 3 identical tool errors)\n"
+                                    f"```\n{diag}\n```\n\n{inc0}"
+                                )
+                                self._append_session_event(
+                                    AgentStreamEvent(
+                                        kind=AgentEventKind.STATUS,
+                                        role="system",
+                                        text="Injected system correction + workspace snapshot (3× identical tool error).",
+                                        legacy_type="forced_diagnostic",
+                                        meta={
+                                            "tool": tc.name,
+                                            "error_fingerprint": _fp,
+                                        },
+                                    )
+                                )
+                                self._same_error_streak_n = 0
+                                self._same_error_streak_tool = None
+                                self._same_error_streak_fp = None
+
                             # Need to retry with hint
                             try:
                                 bad_args = dict(tc.arguments) if isinstance(tc.arguments, dict) else {"raw": tc.arguments}
@@ -4062,14 +4529,36 @@ Call a tool (editor or terminal) immediately as your first action."""
                             self._last_failed_tool = (tc.name, bad_args, str(result)[:1200])
                             retry_count += 1
                             hint = self._correction_engine.get_retry_hint(error_type, tc.name, tc.arguments, result)
-                            
-                            await self._trigger_callback("on_message", f"🔄 **Self-Correcting**: Tool '{tc.name}' failed. Retrying... (Attempt {retry_count}/{self.max_immediate_retries})\n*Hint:* {hint}", is_token=False)
-                            
+                            inc_line = incremental_recovery_hint(
+                                tc.name,
+                                _args_dict,
+                                error_type,
+                                str(result),
+                                last_failed_command=str(_args_dict.get("command", "") or ""),
+                            )
+
+                            await self._trigger_callback(
+                                "on_message",
+                                f"🔄 **Self-Correcting**: Tool '{tc.name}' failed. Retrying... "
+                                f"(Attempt {retry_count}/{self.max_immediate_retries})\n*Hint:* {hint}",
+                                is_token=False,
+                            )
+
                             # We feed the failed result and hint to LLM to get a corrected tool call
                             self.llm.add_tool_result(tc.id, tc.name, result)
                             tool_ids_answered.add(tc.id)
                             _batch_answered_tool_ids.add(tc.id)
-                            self.llm.add_user_message(f"Your tool call failed: {hint}\nPlease review the error and provide a corrected tool call.")
+                            if _forced_diag:
+                                self.llm.add_user_message(
+                                    f"Your tool call failed (see System Correction + snapshot above).\n"
+                                    f"Reminder: {hint}\n{inc_line}\n"
+                                    "Provide a **different** corrected tool call — do not repeat the same command."
+                                )
+                            else:
+                                self.llm.add_user_message(
+                                    f"Your tool call failed: {hint}\n{inc_line}\n"
+                                    "Please review the error and provide a corrected tool call."
+                                )
                             
                             # Ask LLM again
                             retry_response = await self.llm.complete(
@@ -4156,6 +4645,7 @@ Call a tool (editor or terminal) immediately as your first action."""
                             # Start first step
                             if steps:
                                 await self._trigger_callback("on_step_started", 0, steps[0])
+                            self._persist_worklog(task)
                         
                         # Only allow TASK COMPLETE if at least one tool was used this run
                         _tools_used = getattr(self, '_tools_used_count', 0)
@@ -4202,7 +4692,11 @@ Call a tool (editor or terminal) immediately as your first action."""
                                     )
                                     for tc in forced_response.tool_calls:
                                         try:
-                                            result = await self._execute_tool(tc.name, tc.arguments)
+                                            result = await self._execute_tool(
+                                                tc.name,
+                                                tc.arguments,
+                                                thought=forced_response.content,
+                                            )
                                         except Exception as _fe:
                                             result = f"Error: forced tool execution failed: {_fe}"
                                         self._tools_used_count = getattr(self, '_tools_used_count', 0) + 1
@@ -4271,7 +4765,20 @@ Call a tool (editor or terminal) immediately as your first action."""
             if self.state.phase == AgentPhase.BLOCKED:
                 status = "blocked"
             self._artifact_logger.complete(status=status, summary=summary)
-            
+            try:
+                _pm = PostMortemPayload(
+                    goal_or_task_id=task.task_id,
+                    diagnostic_triggers=list(self._post_mortem_diagnostic_triggers),
+                    recovery_paths=list(self._post_mortem_recovery_paths),
+                    failure_streaks=list(self._post_mortem_failure_streaks),
+                )
+                Path(self._artifact_logger.get_run_dir()).joinpath("post_mortem.md").write_text(
+                    format_post_mortem(_pm),
+                    encoding="utf-8",
+                )
+            except Exception as _pm_err:
+                self._log(f"Warning: could not write post_mortem.md: {_pm_err}")
+
             self._log(f"Artifacts saved to: {self._artifact_logger.get_run_dir()}")
         
         # Save task summary to conversation memory (Phase 18)

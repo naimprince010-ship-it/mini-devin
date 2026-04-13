@@ -168,7 +168,11 @@ class SessionManager:
                 max_iterations=max_iterations,
                 session_id=session_id,
             )
-            
+            try:
+                agent.bootstrap_ide_experience()
+            except Exception as _boot_e:
+                print(f"[Session] bootstrap_ide_experience: {_boot_e}")
+
             session = Session(
                 session_id=session_id,
                 working_directory=working_directory,

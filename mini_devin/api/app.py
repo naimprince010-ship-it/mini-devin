@@ -1207,6 +1207,50 @@ async def get_session_activity_feed(session_id: str, limit: int = 500):
     return {"session_id": session_id, "events": rows, "total": len(rows)}
 
 
+@app.get("/api/sessions/{session_id}/timeline")
+@app.get("/sessions/{session_id}/timeline")
+async def get_session_timeline(session_id: str, limit: int = 5000):
+    """
+    Normalized Thought / Action / Observation timeline (JSON export–friendly).
+    """
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    wd = (session.working_directory or "").strip()
+    if not wd or not os.path.isdir(wd):
+        return {"session_id": session_id, "workspace": wd, "events": [], "total": 0}
+    try:
+        lim = max(1, min(int(limit), 20_000))
+    except (TypeError, ValueError):
+        lim = 5000
+    from ..orchestrator.event_stream import EventStream
+
+    es = EventStream(wd)
+    events = es.to_export_list(max_lines=lim)
+    return {
+        "session_id": session_id,
+        "workspace": wd,
+        "events": events,
+        "total": len(events),
+    }
+
+
+@app.get("/api/sessions/{session_id}/worklog")
+@app.get("/sessions/{session_id}/worklog")
+async def get_session_worklog(session_id: str):
+    """Current plan / steps persisted in ``.plodder/worklog.json``."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    wd = (session.working_directory or "").strip()
+    if not wd or not os.path.isdir(wd):
+        return {"session_id": session_id, "worklog": None}
+    from ..orchestrator.session_worklog import load_worklog
+
+    wl = load_worklog(wd)
+    return {"session_id": session_id, "worklog": wl.to_json_dict() if wl else None}
+
+
 @app.put("/api/sessions/{session_id}/file")
 @app.put("/sessions/{session_id}/file")
 async def write_file_content(session_id: str, req: Request):
@@ -2299,6 +2343,52 @@ async def session_events_sse(session_id: str, request: Request):
                     yield b": keepalive\n\n"
         finally:
             connection_manager.unregister_sse_queue(session_id, queue)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/events/{session_id}")
+@app.get("/sessions/{session_id}/agent-events")
+async def agent_standard_events_sse(session_id: str, request: Request):
+    """
+    Server-Sent Events: rows emitted by :func:`append_standard_event` for this session
+    (``kind``, ``type``, ``ts``, tool fields, LLM usage extras — same shape as JSONL).
+    """
+    from ..orchestrator.event_broadcaster import get_agent_event_broadcaster
+
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    broadcaster = get_agent_event_broadcaster()
+    queue = broadcaster.subscribe(session_id)
+
+    async def gen() -> AsyncGenerator[bytes, None]:
+        hello = json.dumps(
+            {"kind": "connected", "channel": "agent_events", "session_id": session_id},
+            default=str,
+            ensure_ascii=False,
+        )
+        yield f"data: {hello}\n\n".encode()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=25.0)
+                    yield f"data: {payload}\n\n".encode()
+                except asyncio.TimeoutError:
+                    yield b": keepalive\n\n"
+        finally:
+            broadcaster.unsubscribe(session_id, queue)
 
     return StreamingResponse(
         gen(),

@@ -10,6 +10,7 @@ import sys
 
 import docker.errors
 from mini_devin.sandbox import SimpleDockerSandbox
+from mini_devin.sandbox.runtime_protocol import normalize_exec_result
 
 
 def _posix_single_quote(s: str) -> str:
@@ -30,8 +31,9 @@ def main() -> int:
             print(f"container_id: {sb.container_id[:12]}…\n")
 
             for cmd in ("python3 --version", "git --version"):
-                code, out = sb.exec_bash(cmd)
-                text = out.decode(errors="replace") if isinstance(out, bytes) else str(out)
+                er = normalize_exec_result(sb.exec_bash(cmd))
+                text = er.output.decode(errors="replace")
+                code = er.exit_code
                 print(f"$ {cmd}\nexit={code}\n{text}")
                 if code != 0:
                     print(f"WARNING: non-zero exit for: {cmd}", file=sys.stderr)
@@ -42,8 +44,9 @@ def main() -> int:
                 + ")"
             )
             write_cmd = f"python3 -c {_posix_single_quote(inner)}"
-            code, out = sb.exec_bash(write_cmd)
-            wout = out.decode(errors="replace") if isinstance(out, bytes) else out
+            wer = normalize_exec_result(sb.exec_bash(write_cmd))
+            code = wer.exit_code
+            wout = wer.output.decode(errors="replace")
             print(f"$ (write {fname})\nexit={code}\n{wout!r}")
     except docker.errors.BuildError as exc:
         print(

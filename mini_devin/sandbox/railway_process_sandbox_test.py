@@ -12,6 +12,7 @@ import os
 from typing import Any
 
 from mini_devin.sandbox.process_sandbox import ProcessSandbox
+from mini_devin.sandbox.runtime_protocol import normalize_exec_result
 
 logger = logging.getLogger(__name__)
 
@@ -66,14 +67,14 @@ def run_railway_process_sandbox_check(project_root: str | None = None) -> dict[s
     )
 
     for cmd in ("whoami", "pwd", "python3 --version"):
-        code, raw = sb.exec_bash(cmd)
-        text = raw.decode("utf-8", errors="replace").strip()
-        entry = {"command": cmd, "exit_code": code, "output": text}
+        er = normalize_exec_result(sb.exec_bash(cmd))
+        text = er.output.decode("utf-8", errors="replace").strip()
+        entry = {"command": cmd, "exit_code": er.exit_code, "output": text}
         result["commands"].append(entry)
         logger.info("[sandbox-test] cmd=%r exit=%s out=%r", cmd, code, text[:500])
         print(f"[sandbox-test] $ {cmd} -> exit={code} out={text!r}", flush=True)
-        if code != 0:
-            result["errors"].append(f"command failed: {cmd} (exit {code})")
+        if er.exit_code != 0:
+            result["errors"].append(f"command failed: {cmd} (exit {er.exit_code})")
 
     rel_path = PROBE_FILENAME
     inner = (
@@ -84,8 +85,9 @@ def run_railway_process_sandbox_check(project_root: str | None = None) -> dict[s
         + ")"
     )
     write_cmd = f"python3 -c {_posix_single_quote(inner)} && cat {_posix_single_quote(rel_path)}"
-    code, raw = sb.exec_bash(write_cmd)
-    cat_text = raw.decode("utf-8", errors="replace")
+    wer = normalize_exec_result(sb.exec_bash(write_cmd))
+    code = wer.exit_code
+    cat_text = wer.output.decode("utf-8", errors="replace")
     exists = os.path.isfile(host_path)
     result["file_test"] = {
         "relative_path": rel_path,

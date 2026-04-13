@@ -21,6 +21,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 
+from mini_devin.sandbox.shell_text import strip_ansi
+from mini_devin.sandbox.stateful_exec import (
+    build_stateful_bash_script,
+    maybe_append_exports,
+    noninteractive_export_block,
+    posix_paths_for_docker_workspace,
+    shell_state_dir,
+)
+
 
 class SandboxStatus(str, Enum):
     """Status of the sandbox."""
@@ -375,16 +384,30 @@ class DockerSandbox:
                 )
 
         start_time = datetime.now(timezone.utc)
-        
+
         try:
-            # Build docker exec command
+            maybe_append_exports(self.repo_path, cmd_stripped)
+            ws, cf, ef = posix_paths_for_docker_workspace()
+            inner_script = build_stateful_bash_script(
+                noninteractive_export_block() + cmd_stripped,
+                workspace_posix=ws,
+                cwd_file_posix=cf,
+                env_file_posix=ef,
+                clamp_under_workspace=False,
+            )
+            helper = shell_state_dir(self.repo_path) / "docker_run_inner.sh"
+            helper.write_text(inner_script + "\n", encoding="utf-8", newline="\n")
+
             cmd_parts = [
-                "docker", "exec",
-                "-w", work_dir,
+                "docker",
+                "exec",
+                "-w",
+                work_dir,
                 self.container_id,
-                "sh", "-c", command,
+                "sh",
+                "/workspace/.mini_devin/_shell/docker_run_inner.sh",
             ]
-            
+
             process = await asyncio.create_subprocess_exec(
                 *cmd_parts,
                 stdout=asyncio.subprocess.PIPE,
@@ -407,7 +430,7 @@ class DockerSandbox:
                         break
                     chunks.append(line)
                     if on_output_line:
-                        text = line.decode("utf-8", errors="replace").rstrip("\r\n")
+                        text = strip_ansi(line.decode("utf-8", errors="replace").rstrip("\r\n"))
                         if text:
                             on_output_line(f"{prefix}{text}" if prefix else text)
 
@@ -443,8 +466,10 @@ class DockerSandbox:
                 end_time = datetime.now(timezone.utc)
                 duration_ms = int((end_time - start_time).total_seconds() * 1000)
                 return SandboxResult(
-                    stdout=out_b.decode("utf-8", errors="replace"),
-                    stderr=(err_b.decode("utf-8", errors="replace") or "Command timed out"),
+                    stdout=strip_ansi(out_b.decode("utf-8", errors="replace")),
+                    stderr=strip_ansi(
+                        (err_b.decode("utf-8", errors="replace") or "Command timed out")
+                    ),
                     exit_code=-1,
                     duration_ms=duration_ms,
                     timed_out=True,
@@ -457,8 +482,8 @@ class DockerSandbox:
             err_b = b"".join(err_parts)
 
             return SandboxResult(
-                stdout=out_b.decode("utf-8", errors="replace"),
-                stderr=err_b.decode("utf-8", errors="replace"),
+                stdout=strip_ansi(out_b.decode("utf-8", errors="replace")),
+                stderr=strip_ansi(err_b.decode("utf-8", errors="replace")),
                 exit_code=int(rc) if rc is not None else 0,
                 duration_ms=duration_ms,
                 timed_out=timed_out,
