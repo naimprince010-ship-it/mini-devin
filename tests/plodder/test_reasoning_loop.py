@@ -208,4 +208,4 @@ def test_terminal_failure_followup_hints() -> None:
         [{"tool": "sandbox_shell", "ok": False, "stderr": "nope", "argv": ["sh", "-c", "npm run dev"]}]
     )
     assert "playwright_observe" in hint
-    assert "capture_console" in hint
+    assert "browser_click" in hint

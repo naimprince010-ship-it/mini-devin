@@ -264,7 +264,7 @@ class UniversalPromptEngine:
             "{\n"
             '  "status": "continue" | "done",\n'
             '  "rationale": "1-3 sentences: what you will do or why you stop",\n'
-            '  "sub_goal": "required with terminal/fs_write/fs_delete/atomic_edit/sandbox_run: concrete sub-goal",\n'
+            '  "sub_goal": "required with terminal/fs_write/fs_delete/atomic_edit/sandbox_run/browser_click/browser_type: concrete sub-goal",\n'
             '  "risk_assessment": "required: what could fail; never assume paths exist without listing/reading first",\n'
             '  "expected_outcome": "required: what you expect to observe next (stdout, files, diagnostics)",\n'
             '  "observe": "optional: one sentence on last tool output",\n'
@@ -278,7 +278,8 @@ class UniversalPromptEngine:
             "- If ``status`` is ``done``, set ``tool_calls`` to ``[]``; ``sub_goal`` / ``risk_assessment`` / "
             "``expected_outcome`` may be empty strings.\n"
             "- If ``continue`` and any tool is ``sandbox_shell``, ``sandbox_run``, ``atomic_edit``, ``fs_write``, "
-            "or ``fs_delete``, all three monologue fields are **mandatory** (each meaningful, ≥12 characters).\n"
+            "``fs_delete``, ``browser_click``, or ``browser_type``, all three monologue fields are **mandatory** "
+            "(each meaningful, ≥12 characters).\n"
             "- If ``continue``, emit one or more tool calls; you will receive structured results next turn.\n"
             "- Use **relative paths** from the workspace root (POSIX ``/``); confirm paths with ``fs_list`` / "
             "``fs_read`` before mutating.\n"
@@ -302,6 +303,10 @@ class UniversalPromptEngine:
 | `search_codebase` | `query` (required), `top_k` (optional, default 8) | **Semantic search** over indexed workspace source (LanceDB at session start). Use for cross-file symbols, configs, or patterns instead of manual `grep` when exploring. |
 | `atomic_edit` | `path`, `mode` (``str_replace`` or ``write_full``), `old_string`+`new_string` (replace) or `content` (full write) | **Hands**: read-verify-write in one step; prefer over raw `fs_write` for surgical edits. |
 | `lsp_check` | `path`, `content` (optional in-memory buffer) | **Eyes (code)**: Pyright/tsc/syntax diagnostics on disk or snapshot text. |
-| `playwright_observe` | `url` (optional, default `http://127.0.0.1:5173`), `capture_console` (bool, default false), `wait_ms` (200–8000, default 900), `viewport_width`, `viewport_height` (optional; use **375** + **1440** widths for mobile/desktop visual audits) | **Eyes (UI)**: headless screenshot as base64; with `capture_console: true`, also returns **browser console** lines + page errors. After UI edits, capture **two** widths (mobile + desktop) and critique alignment/contrast before `done`. |
+| `playwright_observe` | `url` (optional; omit to stay on the current tab after the first load), `wait_ms`, `capture_console` (default true), `include_accessibility` (default true), `max_interactive_elements` (10–200, default 120), `full_page_screenshot` (bool), `viewport_width` / `viewport_height` (optional; e.g. **375×812** mobile + **1440×900** desktop for visual audits) | **Browser agent (observe)**: persistent Chromium; PNG + **accessibility tree** + **`interactive_elements`** (`p1`…, bounding boxes, `data-plodder-id` on the page). With console on: **page_errors** + **network_failures** (HTTP ≥400). Blank tab defaults to `http://127.0.0.1:5173`. After UI edits, capture **two** widths when auditing responsiveness. |
+| `browser_click` | `element_id` (e.g. `p12` or `12` from last observe), `verify` (default true → nested `post_action_observe`), `verify_include_screenshot` (default false), `post_wait_ms`, plus same observe toggles as above for the verify pass | **Hands**: scroll-into-view + click on the grounded element. |
+| `browser_type` | `element_id`, `text`, `submit` (bool, press Enter after fill), same options as `browser_click` | **Hands**: fill input/textarea, optional submit. |
+| `browser_scroll` | `direction` (`up` / `down` / `top` / `bottom`), `pixels` (optional, default 600) | Scroll the viewport. |
+| `browser_close` | (none) | Close the Playwright session (normally automatic at session end). |
 
-**Notes:** `sandbox_*` requires Docker. For `sandbox_shell`, `argv` runs in `/workspace` with **session-persistent cwd and exports** (see `.plodder/shell/session_state.json`). `search_codebase` requires a successful workspace index at session start (see transcript `code_index` phase)."""
+**Notes:** `sandbox_*` requires Docker. For `sandbox_shell`, `argv` runs in `/workspace` with **session-persistent cwd and exports** (see `.plodder/shell/session_state.json`). `search_codebase` requires a successful workspace index at session start (see transcript `code_index` phase). Browser tools require Playwright + Chromium (`pip install playwright && playwright install chromium`)."""

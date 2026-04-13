@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
@@ -40,6 +41,14 @@ from plodder.workspace.session_workspace import SessionWorkspace
 
 ChatMessage = dict[str, Any]
 LLMFn = Callable[[list[ChatMessage]], Awaitable[str]]
+
+
+def _clamp_int(v: Any, lo: int, hi: int, default: int) -> int:
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        n = default
+    return max(lo, min(n, hi))
 
 
 class SupportsSessionSandbox(Protocol):
@@ -94,6 +103,10 @@ _BASE_ALLOWED_TOOLS = frozenset(
         "atomic_edit",
         "lsp_check",
         "playwright_observe",
+        "browser_click",
+        "browser_type",
+        "browser_scroll",
+        "browser_close",
     }
 )
 
@@ -144,6 +157,8 @@ class UnifiedSessionDriver:
         self._runtime_code_index: WorkspaceCodeIndex | None = None
         self._runtime_episode_memory: EpisodeMemory | None = None
         self._runtime_shell_tracker: StatefulShellTracker | None = None
+        self._browser_lock = threading.Lock()
+        self._browser_pw: Any = None  # PlodderPlaywrightSession | None (lazy import)
 
     def allowed_tools(self) -> frozenset[str]:
         """Tool names this driver accepts (subclasses may extend)."""
@@ -160,7 +175,8 @@ class UnifiedSessionDriver:
         seed_user += (
             "Implement using tools. Prefer **atomic_edit** for surgical file edits. "
             "When ready to verify, use `sandbox_run` with the correct `entry` path; use **lsp_check** "
-            "and **playwright_observe** before claiming UI/code success."
+            "and the browser tools (**playwright_observe**, then **browser_click** / **browser_type** "
+            "using `element_id` from `interactive_elements`) before claiming UI/code success."
         )
         seed_user += REASONING_LOOP_SEED_SUFFIX
         if goal_suggests_frontend_stack(goal):
@@ -211,6 +227,65 @@ class UnifiedSessionDriver:
                 + "\n```"
             )
         return "\n\n".join(chunks) if chunks else ""
+
+    async def _browser_session_shutdown_async(self) -> None:
+        def _close() -> None:
+            with self._browser_lock:
+                pw = self._browser_pw
+                if pw is not None:
+                    try:
+                        pw.close()
+                    except Exception:
+                        pass
+                    self._browser_pw = None
+
+        await asyncio.to_thread(_close)
+
+    async def _browser_exec(self, fn: Callable[[Any], dict[str, Any]]) -> dict[str, Any]:
+        def wrapper() -> dict[str, Any]:
+            with self._browser_lock:
+                from plodder.tools.browser_grounding import PlodderPlaywrightSession
+
+                if self._browser_pw is None:
+                    self._browser_pw = PlodderPlaywrightSession(headless=True)
+                return fn(self._browser_pw)
+
+        return await asyncio.to_thread(wrapper)
+
+    @staticmethod
+    def _observe_bundle_kwargs(args: dict[str, Any]) -> dict[str, Any]:
+        wait_ms = _clamp_int(args.get("wait_ms"), 200, 8000, 900)
+        capture_console = bool(args.get("capture_console", True))
+        include_accessibility = bool(args.get("include_accessibility", True))
+        max_elements = _clamp_int(args.get("max_interactive_elements"), 10, 200, 120)
+        full_page = bool(args.get("full_page_screenshot", False))
+        vw_arg = args.get("viewport_width")
+        vh_arg = args.get("viewport_height")
+        try:
+            viewport_width = int(vw_arg) if vw_arg is not None and str(vw_arg).strip() != "" else None
+        except (TypeError, ValueError):
+            viewport_width = None
+        try:
+            viewport_height = int(vh_arg) if vh_arg is not None and str(vh_arg).strip() != "" else None
+        except (TypeError, ValueError):
+            viewport_height = None
+        return {
+            "wait_ms": wait_ms,
+            "capture_console": capture_console,
+            "include_accessibility": include_accessibility,
+            "max_elements": max_elements,
+            "full_page": full_page,
+            "viewport_width": viewport_width,
+            "viewport_height": viewport_height,
+        }
+
+    @staticmethod
+    def _nav_url_from_args(args: dict[str, Any]) -> str | None:
+        raw = args.get("url")
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        return s if s else None
 
     async def _complete(self, messages: list[ChatMessage]) -> str:
         return await self._llm(messages)
@@ -295,179 +370,182 @@ class UnifiedSessionDriver:
             except Exception:
                 pass
 
-        for round_idx in range(self._max_rounds):
-            if round_idx > 0 and self._runtime_episode_memory:
-                cont = self._runtime_episode_memory.get_condensed_context()
-                if cont.strip():
+        try:
+            for round_idx in range(self._max_rounds):
+                if round_idx > 0 and self._runtime_episode_memory:
+                    cont = self._runtime_episode_memory.get_condensed_context()
+                    if cont.strip():
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": "## Episode continuity (from session_memory.jsonl)\n" + cont,
+                            }
+                        )
+                if self._inject_long_context_anchor:
+                    anchor = self._long_context_anchor_block(worklog, round_idx)
+                    if anchor.strip():
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": "## Long-horizon continuity (PLAN.md + worklog)\n" + anchor,
+                            }
+                        )
+                raw = await self._complete(messages)
+                tr_assistant: dict[str, Any] = {"round": round_idx, "assistant_raw": raw[:24000]}
+                try:
+                    turn = parse_driver_turn(raw)
+                    for k in (
+                        "observe",
+                        "think",
+                        "act_summary",
+                        "sub_goal",
+                        "risk_assessment",
+                        "expected_outcome",
+                    ):
+                        if k in turn:
+                            tr_assistant[k] = turn[k]
+                except (json.JSONDecodeError, ValueError) as e:
+                    transcript.append(tr_assistant)
+                    messages.append({"role": "assistant", "content": raw[:12000]})
                     messages.append(
                         {
                             "role": "user",
-                            "content": "## Episode continuity (from session_memory.jsonl)\n" + cont,
+                            "content": (
+                                "## Parse error\n"
+                                f"Your last message was not valid JSON: {e}\n"
+                                "Reply again with **only** one JSON object per the contract."
+                            ),
                         }
                     )
-            if self._inject_long_context_anchor:
-                anchor = self._long_context_anchor_block(worklog, round_idx)
-                if anchor.strip():
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": "## Long-horizon continuity (PLAN.md + worklog)\n" + anchor,
-                        }
-                    )
-            raw = await self._complete(messages)
-            tr_assistant: dict[str, Any] = {"round": round_idx, "assistant_raw": raw[:24000]}
-            try:
-                turn = parse_driver_turn(raw)
-                for k in (
-                    "observe",
-                    "think",
-                    "act_summary",
-                    "sub_goal",
-                    "risk_assessment",
-                    "expected_outcome",
-                ):
-                    if k in turn:
-                        tr_assistant[k] = turn[k]
-            except (json.JSONDecodeError, ValueError) as e:
+                    rounds_used += 1
+                    await _maybe_sliding_compact()
+                    continue
+
                 transcript.append(tr_assistant)
-                messages.append({"role": "assistant", "content": raw[:12000]})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "## Parse error\n"
-                            f"Your last message was not valid JSON: {e}\n"
-                            "Reply again with **only** one JSON object per the contract."
-                        ),
-                    }
-                )
-                rounds_used += 1
-                await _maybe_sliding_compact()
-                continue
-
-            transcript.append(tr_assistant)
-            final_rationale = turn["rationale"]
-            thought_blob = build_agent_thought_text(turn)
-            if self._runtime_episode_memory and thought_blob.strip():
-                self._runtime_episode_memory.append(
-                    "thought",
-                    {"text": thought_blob[:8000]},
-                    round_idx=round_idx,
-                )
-            if turn["status"] == "done":
-                gate = visual_review_done_gate(goal, worklog)
-                if gate:
-                    messages.append({"role": "assistant", "content": raw[:12000]})
-                    messages.append({"role": "user", "content": gate})
-                    rounds_used += 1
-                    await _maybe_sliding_compact()
-                    continue
-                low = final_rationale.lower()
-                success = not any(
-                    w in low
-                    for w in (
-                        "failed",
-                        "failure",
-                        "could not",
-                        "cannot",
-                        "unable",
-                        "not successful",
-                        "still broken",
-                    )
-                )
-                rounds_used += 1
-                terminated_with_done = True
-                break
-
-            if self._enforce_think_before_act:
-                mono_err = monologue_validation_error(turn)
-                if mono_err:
-                    messages.append({"role": "assistant", "content": raw[:12000]})
-                    messages.append({"role": "user", "content": mono_err})
-                    rounds_used += 1
-                    await _maybe_sliding_compact()
-                    continue
-
-            thought = build_agent_thought_text(turn)
-
-            calls = turn["tool_calls"][: self._max_tool_calls_per_turn]
-            if not calls:
-                messages.append({"role": "assistant", "content": raw[:12000]})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "You set `status` to `continue` but provided no `tool_calls`. "
-                            "Emit tools or set `status` to `done`."
-                        ),
-                    }
-                )
-                rounds_used += 1
-                await _maybe_sliding_compact()
-                continue
-
-            results: list[dict[str, Any]] = []
-            diag_hints: list[dict[str, str]] = []
-            for c in calls:
-                name = str(c.get("name", ""))
-                args = c.get("args") or {}
-                if name not in self.allowed_tools():
-                    results.append({"tool": name, "ok": False, "error": f"unknown tool {name!r}"})
-                    res = results[-1]
-                else:
-                    res = await self._exec_tool_async(name, args)
-                    results.append(res)
-                if self._runtime_episode_memory:
+                final_rationale = turn["rationale"]
+                thought_blob = build_agent_thought_text(turn)
+                if self._runtime_episode_memory and thought_blob.strip():
                     self._runtime_episode_memory.append(
-                        "action",
-                        {"tool": name, "args": dict(args) if isinstance(args, dict) else {}},
+                        "thought",
+                        {"text": thought_blob[:8000]},
                         round_idx=round_idx,
                     )
-                    self._runtime_episode_memory.append(
-                        "observation",
-                        {
-                            "tool": name,
-                            "ok": bool(res.get("ok", True)),
-                            "summary": json.dumps(res, default=str, ensure_ascii=False)[:6000],
-                        },
-                        round_idx=round_idx,
+                if turn["status"] == "done":
+                    gate = visual_review_done_gate(goal, worklog)
+                    if gate:
+                        messages.append({"role": "assistant", "content": raw[:12000]})
+                        messages.append({"role": "user", "content": gate})
+                        rounds_used += 1
+                        await _maybe_sliding_compact()
+                        continue
+                    low = final_rationale.lower()
+                    success = not any(
+                        w in low
+                        for w in (
+                            "failed",
+                            "failure",
+                            "could not",
+                            "cannot",
+                            "unable",
+                            "not successful",
+                            "still broken",
+                        )
                     )
-                bundle = recovery_tracker.record_tool_observation(name, res)
-                worklog.record_action_observation(
-                    round_idx=round_idx,
-                    thought=thought,
-                    tool_name=name,
-                    args=dict(args) if isinstance(args, dict) else {},
-                    result=res,
-                    prior_round_had_diagnostic_injection=prior_round_diagnostic,
-                    diagnostic_bundle=bundle,
-                )
-                if bundle and (bundle.system_block or bundle.incremental_hint):
-                    diag_hints.append(
+                    rounds_used += 1
+                    terminated_with_done = True
+                    break
+
+                if self._enforce_think_before_act:
+                    mono_err = monologue_validation_error(turn)
+                    if mono_err:
+                        messages.append({"role": "assistant", "content": raw[:12000]})
+                        messages.append({"role": "user", "content": mono_err})
+                        rounds_used += 1
+                        await _maybe_sliding_compact()
+                        continue
+
+                thought = build_agent_thought_text(turn)
+
+                calls = turn["tool_calls"][: self._max_tool_calls_per_turn]
+                if not calls:
+                    messages.append({"role": "assistant", "content": raw[:12000]})
+                    messages.append(
                         {
-                            "tool": name,
-                            "system_block": bundle.system_block,
-                            "incremental_hint": bundle.incremental_hint,
-                            "error_fingerprint": bundle.error_fingerprint,
+                            "role": "user",
+                            "content": (
+                                "You set `status` to `continue` but provided no `tool_calls`. "
+                                "Emit tools or set `status` to `done`."
+                            ),
                         }
                     )
+                    rounds_used += 1
+                    await _maybe_sliding_compact()
+                    continue
 
-            obs = "## Tool results\n```json\n" + json.dumps(results, indent=2) + "\n```"
-            obs += terminal_failure_followup_hints(results)
-            if diag_hints:
-                obs += "\n\n## Orchestrator (repeated-failure observation)\n" + json.dumps(
-                    diag_hints, indent=2
-                )
-            messages.append({"role": "assistant", "content": raw[:12000]})
-            obs_limit = tool_observation_truncation_limit()
-            messages.append({"role": "user", "content": _truncate(obs, obs_limit)})
-            tr_row: dict[str, Any] = {"round": round_idx, "tool_results": results}
-            if diag_hints:
-                tr_row["diagnostic_hints"] = diag_hints
-            transcript.append(tr_row)
-            prior_round_diagnostic = bool(diag_hints)
-            rounds_used += 1
-            await _maybe_sliding_compact()
+                results: list[dict[str, Any]] = []
+                diag_hints: list[dict[str, str]] = []
+                for c in calls:
+                    name = str(c.get("name", ""))
+                    args = c.get("args") or {}
+                    if name not in self.allowed_tools():
+                        results.append({"tool": name, "ok": False, "error": f"unknown tool {name!r}"})
+                        res = results[-1]
+                    else:
+                        res = await self._exec_tool_async(name, args)
+                        results.append(res)
+                    if self._runtime_episode_memory:
+                        self._runtime_episode_memory.append(
+                            "action",
+                            {"tool": name, "args": dict(args) if isinstance(args, dict) else {}},
+                            round_idx=round_idx,
+                        )
+                        self._runtime_episode_memory.append(
+                            "observation",
+                            {
+                                "tool": name,
+                                "ok": bool(res.get("ok", True)),
+                                "summary": json.dumps(res, default=str, ensure_ascii=False)[:6000],
+                            },
+                            round_idx=round_idx,
+                        )
+                    bundle = recovery_tracker.record_tool_observation(name, res)
+                    worklog.record_action_observation(
+                        round_idx=round_idx,
+                        thought=thought,
+                        tool_name=name,
+                        args=dict(args) if isinstance(args, dict) else {},
+                        result=res,
+                        prior_round_had_diagnostic_injection=prior_round_diagnostic,
+                        diagnostic_bundle=bundle,
+                    )
+                    if bundle and (bundle.system_block or bundle.incremental_hint):
+                        diag_hints.append(
+                            {
+                                "tool": name,
+                                "system_block": bundle.system_block,
+                                "incremental_hint": bundle.incremental_hint,
+                                "error_fingerprint": bundle.error_fingerprint,
+                            }
+                        )
+
+                obs = "## Tool results\n```json\n" + json.dumps(results, indent=2) + "\n```"
+                obs += terminal_failure_followup_hints(results)
+                if diag_hints:
+                    obs += "\n\n## Orchestrator (repeated-failure observation)\n" + json.dumps(
+                        diag_hints, indent=2
+                    )
+                messages.append({"role": "assistant", "content": raw[:12000]})
+                obs_limit = tool_observation_truncation_limit()
+                messages.append({"role": "user", "content": _truncate(obs, obs_limit)})
+                tr_row: dict[str, Any] = {"round": round_idx, "tool_results": results}
+                if diag_hints:
+                    tr_row["diagnostic_hints"] = diag_hints
+                transcript.append(tr_row)
+                prior_round_diagnostic = bool(diag_hints)
+                rounds_used += 1
+                await _maybe_sliding_compact()
+        finally:
+            await self._browser_session_shutdown_async()
 
         if not terminated_with_done:
             success = False
@@ -588,84 +666,78 @@ class UnifiedSessionDriver:
                     "error_count": err_n,
                 }
             if name == "playwright_observe":
-                url = str(args.get("url", "http://127.0.0.1:5173")).strip()
-                capture_console = bool(args.get("capture_console", False))
-                wait_raw = args.get("wait_ms", 900)
-                try:
-                    wait_ms = int(wait_raw)
-                except (TypeError, ValueError):
-                    wait_ms = 900
-                wait_ms = max(200, min(wait_ms, 8000))
-                vw_arg = args.get("viewport_width")
-                vh_arg = args.get("viewport_height")
-                try:
-                    viewport_width = int(vw_arg) if vw_arg is not None and str(vw_arg).strip() != "" else None
-                except (TypeError, ValueError):
-                    viewport_width = None
-                try:
-                    viewport_height = int(vh_arg) if vh_arg is not None and str(vh_arg).strip() != "" else None
-                except (TypeError, ValueError):
-                    viewport_height = None
-                if capture_console:
-                    from plodder.tools.browser_manager import capture_url_screenshot_with_console
+                nav_url = self._nav_url_from_args(args)
+                kw = self._observe_bundle_kwargs(args)
 
-                    data = await asyncio.to_thread(
-                        capture_url_screenshot_with_console,
-                        url,
-                        wait_after_load_ms=wait_ms,
-                        viewport_width=viewport_width,
-                        viewport_height=viewport_height,
+                def _observe(s: Any) -> dict[str, Any]:
+                    return s.observe_bundle(url=nav_url, **kw)
+
+                data = await self._browser_exec(_observe)
+                return {"tool": name, **data}
+            if name == "browser_click":
+                kw = self._observe_bundle_kwargs(args)
+                post_wait = _clamp_int(args.get("post_wait_ms"), 200, 8000, 600)
+                verify = bool(args.get("verify", True))
+                vimg = bool(args.get("verify_include_screenshot", False))
+                eid = str(args.get("element_id", ""))
+
+                def _click(s: Any) -> dict[str, Any]:
+                    return s.click_element(
+                        eid,
+                        post_wait_ms=post_wait,
+                        verify=verify,
+                        verify_include_screenshot=vimg,
+                        capture_console=kw["capture_console"],
+                        include_accessibility=kw["include_accessibility"],
+                        max_elements=kw["max_elements"],
+                        full_page=kw["full_page"],
                     )
-                    if not data.get("ok"):
-                        return {
-                            "tool": name,
-                            "ok": False,
-                            "error": str(data.get("error", "observe failed")),
-                            "url": url,
-                            "viewport_width": viewport_width,
-                            "viewport_height": viewport_height,
-                            "console_messages": data.get("console_messages") or [],
-                            "page_errors": data.get("page_errors") or [],
-                        }
-                    img = str(data.get("image_base64", "") or "")
-                    cap = 48_000
-                    vw_out = data.get("viewport_width", viewport_width or 1280)
-                    vh_out = data.get("viewport_height", viewport_height or 720)
+
+                data = await self._browser_exec(_click)
+                return {"tool": name, **data}
+            if name == "browser_type":
+                kw = self._observe_bundle_kwargs(args)
+                post_wait = _clamp_int(args.get("post_wait_ms"), 200, 8000, 600)
+                verify = bool(args.get("verify", True))
+                vimg = bool(args.get("verify_include_screenshot", False))
+                submit = bool(args.get("submit", False))
+                eid = str(args.get("element_id", ""))
+                text = str(args.get("text", ""))
+
+                def _type(s: Any) -> dict[str, Any]:
+                    return s.type_element(
+                        eid,
+                        text,
+                        submit=submit,
+                        post_wait_ms=post_wait,
+                        verify=verify,
+                        verify_include_screenshot=vimg,
+                        capture_console=kw["capture_console"],
+                        include_accessibility=kw["include_accessibility"],
+                        max_elements=kw["max_elements"],
+                        full_page=kw["full_page"],
+                    )
+
+                data = await self._browser_exec(_type)
+                return {"tool": name, **data}
+            if name == "browser_scroll":
+                direction = str(args.get("direction", "down")).strip().lower()
+                if direction not in ("up", "down", "top", "bottom"):
                     return {
                         "tool": name,
-                        "ok": True,
-                        "url": url,
-                        "viewport_width": vw_out,
-                        "viewport_height": vh_out,
-                        "capture_console": True,
-                        "image_base64": img[:cap],
-                        "image_truncated": len(img) > cap,
-                        "console_messages": data.get("console_messages") or [],
-                        "console_truncated": bool(data.get("console_truncated")),
-                        "page_errors": data.get("page_errors") or [],
+                        "ok": False,
+                        "error": "direction must be one of: up, down, top, bottom",
                     }
-                from plodder.tools.browser_manager import capture_url_screenshot_base64
+                pixels = _clamp_int(args.get("pixels"), 50, 4000, 600)
 
-                b64 = await asyncio.to_thread(
-                    capture_url_screenshot_base64,
-                    url,
-                    viewport_width=viewport_width,
-                    viewport_height=viewport_height,
-                )
-                if not b64:
-                    return {"tool": name, "ok": False, "error": "screenshot failed (Playwright/url?)"}
-                cap = 48_000
-                vw_out = viewport_width if viewport_width is not None else 1280
-                vh_out = viewport_height if viewport_height is not None else 720
-                return {
-                    "tool": name,
-                    "ok": True,
-                    "url": url,
-                    "viewport_width": vw_out,
-                    "viewport_height": vh_out,
-                    "image_base64": b64[:cap],
-                    "image_truncated": len(b64) > cap,
-                }
+                def _scroll(s: Any) -> dict[str, Any]:
+                    return s.scroll_viewport(direction, pixels=pixels)  # type: ignore[arg-type]
+
+                data = await self._browser_exec(_scroll)
+                return {"tool": name, **data}
+            if name == "browser_close":
+                await self._browser_session_shutdown_async()
+                return {"tool": name, "ok": True}
         except Exception as e:  # noqa: BLE001 — surface to model
             return {"tool": name, "ok": False, "error": str(e), "args": args}
         return {"tool": name, "ok": False, "error": "unreachable"}

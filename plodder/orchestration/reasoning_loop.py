@@ -278,6 +278,8 @@ TOOLS_REQUIRING_MONOLOGUE = frozenset(
         "atomic_edit",
         "fs_write",
         "fs_delete",
+        "browser_click",
+        "browser_type",
     }
 )
 
@@ -442,8 +444,9 @@ def terminal_failure_followup_hints(results: list[dict[str, Any]]) -> str:
             "",
             "## OpenHands retry-with-diagnostic",
             "Before repeating the same terminal command: run **lsp_check** on paths mentioned in stderr "
-            "or on files you recently edited; for web/runtime failures use **playwright_observe** with "
-            "`capture_console: true` on the dev URL to read **browser console** output and uncaught page errors.",
+            "or on files you recently edited; for web/runtime failures run **playwright_observe** on the URL "
+            "(console + **network_failures** are on by default) and only then **browser_click** / **browser_type** "
+            "using `element_id` from `interactive_elements`.",
         ]
         argv = res.get("argv")
         cmd = str(res.get("command", "") or "")
@@ -455,7 +458,7 @@ def terminal_failure_followup_hints(results: list[dict[str, Any]]) -> str:
         if devish:
             lines.append(
                 "This failure pattern matches a **dev server** class command (`npm run dev`, `vite`, …): "
-                "prefer **playwright_observe** with `capture_console: true` before the next edit cycle."
+                "prefer **playwright_observe** (console + network) and interactive **browser_*** tools before the next edit cycle."
             )
         return "\n".join(lines)
     return ""
@@ -485,7 +488,7 @@ def monologue_validation_error(turn: dict[str, Any]) -> str | None:
         return None
     return (
         "## Think-before-act (required)\n"
-        "Your JSON scheduled terminal or file-mutation tools without a complete **monologue**.\n"
+        "Your JSON scheduled terminal, file-mutation, or browser-interaction tools without a complete **monologue**.\n"
         "On the **same** JSON object as ``tool_calls``, include these string fields "
         f"(each ≥ {_MONOLOGUE_MIN_LEN} characters):\n"
         "- ``sub_goal``: concrete outcome for this turn.\n"
@@ -529,6 +532,7 @@ with ``fs_list`` / ``fs_read`` or ``sandbox_shell`` mapping before mutating file
 
 Whenever you call **any** of:
 ``sandbox_shell``, ``sandbox_run``, ``atomic_edit``, ``fs_write``, ``fs_delete``,
+``browser_click``, ``browser_type``,
 the **same** JSON object **must** include:
 
 - ``sub_goal``: what this turn accomplishes (one concrete sub-goal).
@@ -547,8 +551,9 @@ match the real workspace.
 ### Retry-with-diagnostic
 
 If a terminal command fails: **do not** blindly repeat it. Run ``lsp_check`` on edited paths
-cited in stderr; for UI/runtime issues run ``playwright_observe`` with ``capture_console: true``
-to capture **browser console** lines. Then fix and retry.
+cited in stderr; for UI/runtime issues run ``playwright_observe`` (screenshot + a11y + interactive map +
+console + failed network requests), then reason from ``post_action_observe`` after clicks/types if the UI
+did not change as expected. Then fix and retry.
 
 ### Atomic incremental development (hands)
 
@@ -597,7 +602,9 @@ Keep actions consistent with **PLAN.md** at the workspace root (if present) and 
 running **worklog** summary you see each turn—preserve the overall goal across many rounds.
 
 Before ``status: "done"``, run **lsp_check** on files you edited, complete the **visual audit**
-above when you touched UI, and run **playwright_observe** before claiming UI/code success.
+above when you touched UI, and exercise flows with **playwright_observe** plus **browser_click** /
+**browser_type** as needed (check console and ``network_failures`` before blaming application code)
+before claiming UI/code success.
 
 ### Sliding-window memory (OpenHands-style)
 

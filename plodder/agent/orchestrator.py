@@ -83,6 +83,14 @@ def _action_display_name(tool_name: str) -> str:
         return "eyes_lsp"
     if tool_name == "playwright_observe":
         return "eyes_playwright"
+    if tool_name == "browser_click":
+        return "hands_browser_click"
+    if tool_name == "browser_type":
+        return "hands_browser_type"
+    if tool_name == "browser_scroll":
+        return "hands_browser_scroll"
+    if tool_name == "browser_close":
+        return "browser_close"
     return tool_name
 
 
