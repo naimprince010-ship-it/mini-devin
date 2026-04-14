@@ -662,7 +662,22 @@ class Agent:
             "The tree below is refreshed by a background watcher; use **terminal** as your primary "
             "sensor (build, test, git) and **editor** for precise file work. Describe a task when ready."
         )
-        text = greeting + "\n\n## Workspace index (sidecar)\n\n```text\n" + snap + "\n```" + resume_note
+        preview_note = ""
+        if self._should_use_process_execution_terminal():
+            preview_note = (
+                "\n\n**Browser Live Preview**: When you run a dev server (`npm run dev`, Vite, etc.) it "
+                "usually listens on **127.0.0.1**. After it is listening, call the **live_preview** tool: "
+                "`action: probe`, then **`set_active_port`** with one of the reported ports so the **Browser** "
+                "tab iframe loads your app (same-origin proxy through this API)."
+            )
+        text = (
+            greeting
+            + preview_note
+            + "\n\n## Workspace index (sidecar)\n\n```text\n"
+            + snap
+            + "\n```"
+            + resume_note
+        )
         self._append_session_event(
             AgentStreamEvent(
                 kind=AgentEventKind.STATUS,
@@ -699,6 +714,10 @@ class Agent:
         # Terminal tool schema — OS-aware description
         import sys as _sys
         _on_windows = _sys.platform == "win32"
+        _lp_terminal_tail = (
+            " After a dev UI server is running in the background, call **live_preview** "
+            "(`probe`, then `set_active_port`) so the **Browser** tab can show it."
+        )
         if _on_windows:
             _terminal_desc = (
                 "**Primary interface**: run shell commands first to observe the real world "
@@ -717,6 +736,8 @@ class Agent:
                 "Use relative paths (./...) from the workspace. "
                 "Do not use Windows-style paths (C:\\\\, D:\\\\)."
             )
+        if self._should_use_process_execution_terminal():
+            _terminal_desc = _terminal_desc + _lp_terminal_tail
         schemas.append({
             "name": "terminal",
             "description": _terminal_desc,
@@ -992,7 +1013,10 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 "Detect a local dev server (e.g. Vite on 5173) and register it for the Plodder **Browser** tab Live Preview. "
                 "Use **probe** after `npm run dev` / `vite` in terminal; then **set_active_port** with a listening port. "
                 "The UI reverse-proxies through the API so the iframe is same-origin. "
-                "HMR WebSockets may not tunnel through this proxy—reload still works when files change."
+                "HMR WebSockets may not tunnel through this proxy—reload still works when files change. "
+                "**Host reachability**: The dev server must listen on **127.0.0.1** where this API process can see it "
+                "(e.g. Railway injects `RAILWAY_ENVIRONMENT`, or set `USE_PROCESS_EXECUTION_SANDBOX=1` for a host-side terminal). "
+                "A terminal confined to an isolated one-shot Docker exec typically cannot register those ports here without extra port forwarding."
             ),
             "parameters": {
                 "type": "object",
