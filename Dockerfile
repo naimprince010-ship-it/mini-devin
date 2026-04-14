@@ -34,10 +34,9 @@ WORKDIR /app/frontend
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi \
     && NODE_OPTIONS=--max-old-space-size=4096 npm run build
 
-# Copy rest of the app (includes ``scripts/railway_entrypoint.sh``)
+# Copy rest of the app (includes ``scripts/railway_entrypoint.py``)
 WORKDIR /app
 COPY . .
-RUN chmod +x /app/scripts/railway_entrypoint.sh
 
 # Do not set PORT here — Railway injects PORT at runtime (often 8080). EXPOSE documents typical PaaS port.
 EXPOSE 8080
@@ -46,5 +45,6 @@ EXPOSE 8080
 ENV GIT_PYTHON_REFRESH=quiet
 ENV PYTHONIOENCODING=UTF-8
 
-# Local watchdog / hot-restart: ``python scripts/bootstrap.py`` (not used in this image).
-CMD ["/app/scripts/railway_entrypoint.sh"]
+# Python entrypoint avoids CRLF/shebang issues with ``.sh`` from Windows checkouts.
+# Local watchdog: ``python scripts/bootstrap.py``
+CMD ["python", "/app/scripts/railway_entrypoint.py"]
