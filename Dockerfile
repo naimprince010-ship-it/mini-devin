@@ -34,17 +34,17 @@ WORKDIR /app/frontend
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi \
     && NODE_OPTIONS=--max-old-space-size=4096 npm run build
 
-# Copy rest of the app
+# Copy rest of the app (includes ``scripts/railway_entrypoint.sh``)
 WORKDIR /app
 COPY . .
+RUN chmod +x /app/scripts/railway_entrypoint.sh
 
-# Do not set PORT here — Railway injects PORT at runtime (often 8080). Local runs
-# use scripts/bootstrap.py fallback when PORT is unset. EXPOSE documents typical PaaS port.
+# Do not set PORT here — Railway injects PORT at runtime (often 8080). EXPOSE documents typical PaaS port.
 EXPOSE 8080
 
 # Environment hardening
 ENV GIT_PYTHON_REFRESH=quiet
 ENV PYTHONIOENCODING=UTF-8
 
-# Run the bootstrap watchdog
-CMD ["python", "scripts/bootstrap.py"]
+# Local watchdog / hot-restart: ``python scripts/bootstrap.py`` (not used in this image).
+CMD ["/app/scripts/railway_entrypoint.sh"]
