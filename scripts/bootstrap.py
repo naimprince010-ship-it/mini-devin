@@ -9,8 +9,10 @@ touch a `.restart_flag` file to trigger a restart.
 
 import os
 import subprocess
-import time
 import sys
+import threading
+import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -116,7 +118,17 @@ def run_server():
             f"listen port ({port}) or the edge returns 502."
         )
 
-    _run_alembic_upgrade_if_applicable()
+    # Run DB migrations without blocking the first uvicorn bind. Railway (and similar)
+    # healthchecks hit /api/health soon after the container starts; ``alembic upgrade head``
+    # can legitimately take minutes on cold Postgres and used to starve the listener.
+    migrations_started = False
+
+    def _migrate_background() -> None:
+        try:
+            _run_alembic_upgrade_if_applicable()
+        except Exception as e:
+            print(f"[Bootstrap] Background alembic failed: {e}")
+            traceback.print_exc()
 
     while True:
         # Start server with uvicorn
@@ -140,9 +152,18 @@ def run_server():
                 stdout=None,
                 stderr=None
             )
-        
+
         print(f"[Bootstrap] Plodder process started with PID: {process.pid}")
-        
+
+        if not migrations_started:
+            migrations_started = True
+            threading.Thread(
+                target=_migrate_background,
+                name="alembic-upgrade",
+                daemon=True,
+            ).start()
+            print("[Bootstrap] Alembic migrations running in background (non-blocking for health checks).")
+
         last_ping = time.time()
         while process.poll() is None:
             # Simple heartbeat in logs
@@ -185,5 +206,4 @@ if __name__ == "__main__":
         print("\n[Bootstrap] Watchdog stopped by user.")
     except Exception as e:
         print(f"[Bootstrap] Fatal error: {e}")
-        import traceback
         traceback.print_exc()
