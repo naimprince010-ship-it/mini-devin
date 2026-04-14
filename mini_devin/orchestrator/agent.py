@@ -1023,6 +1023,9 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 "Use **probe** after `npm run dev` / `vite` in terminal; then **set_active_port** with a listening port. "
                 "The UI reverse-proxies through the API so the iframe is same-origin. "
                 "HMR WebSockets may not tunnel through this proxy—reload still works when files change. "
+                "**Not for external sites**: Live Preview cannot open arbitrary public URLs (e.g. user says 'open example.com'). "
+                "Use **browser_playwright** or **browser_fetch** with the full https URL instead. "
+                "On Railway, **PORT** (often 8080) is usually this API — probing it does not load a third-party domain. "
                 "**Host reachability**: The dev server must listen on **127.0.0.1** where this API process can see it "
                 "(e.g. Railway injects `RAILWAY_ENVIRONMENT`, or set `USE_PROCESS_EXECUTION_SANDBOX=1` for a host-side terminal). "
                 "A terminal confined to an isolated one-shot Docker exec typically cannot register those ports here without extra port forwarding."
@@ -1444,6 +1447,8 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         if name == "live_preview":
             from ..api.live_preview_state import (
                 allowed_ports,
+                live_preview_probe_hints,
+                live_preview_set_port_warning,
                 probe_local_ports_sync,
                 set_session_preview_port,
             )
@@ -1464,17 +1469,17 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 except (TypeError, ValueError):
                     candidates = [5173, 3000, 8080]
                 listening = probe_local_ports_sync(candidates)
-                return json.dumps(
-                    {
-                        "listening_ports": listening,
-                        "allowed_ports": sorted(allowed_ports()),
-                        "next_step": (
-                            "Call live_preview with action set_active_port and port=<one of listening_ports> "
-                            "so the user's Browser tab can show Live Preview."
-                        ),
-                    },
-                    indent=2,
-                )
+                payload: dict[str, Any] = {
+                    "listening_ports": listening,
+                    "allowed_ports": sorted(allowed_ports()),
+                    "next_step": (
+                        "Call live_preview with action set_active_port and port=<one of listening_ports> "
+                        "only if that port is **your workspace dev server** (e.g. Vite). "
+                        "Do not use Live Preview to open external domains."
+                    ),
+                }
+                payload.update(live_preview_probe_hints(listening_ports=listening))
+                return json.dumps(payload, indent=2)
             if action == "set_active_port":
                 try:
                     p = int(arguments.get("port", 0))
@@ -1490,14 +1495,15 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                         },
                         indent=2,
                     )
-                return json.dumps(
-                    {
-                        "ok": True,
-                        "active_port": p,
-                        "browser_iframe": f"/api/sessions/{sid}/live-preview/",
-                    },
-                    indent=2,
-                )
+                out_ok: dict[str, Any] = {
+                    "ok": True,
+                    "active_port": p,
+                    "browser_iframe": f"/api/sessions/{sid}/live-preview/",
+                }
+                w = live_preview_set_port_warning(p)
+                if w:
+                    out_ok["warning"] = w
+                return json.dumps(out_ok, indent=2)
             return f"Error: unknown live_preview action '{action}'"
         
         tool = self.registry.get(name)

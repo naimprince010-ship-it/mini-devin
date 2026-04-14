@@ -865,6 +865,8 @@ class UnifiedSessionDriver:
         """
         from mini_devin.api.live_preview_state import (
             allowed_ports,
+            live_preview_probe_hints,
+            live_preview_set_port_warning,
             probe_local_ports_sync,
             set_session_preview_port,
         )
@@ -926,13 +928,17 @@ class UnifiedSessionDriver:
                     "error": f"Port {p} not allowed or not accepting TCP on 127.0.0.1",
                     "allowed_ports": sorted(allowed_ports()),
                 }
-            return {
+            out_set: dict[str, Any] = {
                 "tool": "live_preview",
                 "ok": True,
                 "action": "set_active_port",
                 "active_port": p,
                 "browser_iframe": f"/api/sessions/{sid}/live-preview/",
             }
+            w = live_preview_set_port_warning(p)
+            if w:
+                out_set["warning"] = w
+            return out_set
 
         return {"tool": "live_preview", "ok": False, "error": f"unknown live_preview action {action!r}"}
 

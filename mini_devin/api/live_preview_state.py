@@ -90,3 +90,37 @@ def probe_local_ports_sync(ports: list[int]) -> list[int]:
         if tcp_port_open("127.0.0.1", pi):
             listening.append(pi)
     return listening
+
+
+def live_preview_probe_hints(*, listening_ports: list[int]) -> dict[str, Any]:
+    """
+    Extra JSON fields for ``live_preview`` **probe** so models do not treat Railway ``PORT``
+    (this API process) as a user's dev UI, and do not use Live Preview for external domains.
+    """
+    hints: dict[str, Any] = {
+        "what_live_preview_is_for": (
+            "Reverse-proxy a **workspace dev server** you started on this host's 127.0.0.1 (e.g. Vite/npm). "
+            "It does **not** open arbitrary public websites — for https://example.com use **browser_playwright** "
+            "or **browser_fetch**."
+        ),
+    }
+    raw = (os.environ.get("PORT") or "").strip()
+    if raw.isdigit():
+        pe = int(raw)
+        if pe in listening_ports:
+            hints["platform_bind_warning"] = (
+                f"Port {pe} matches the service PORT env — usually **this** Plodder/API process (e.g. Railway), "
+                "not a site the user asked to 'preview' by domain name. Registering it loads this app in the iframe."
+            )
+    return hints
+
+
+def live_preview_set_port_warning(port: int) -> str | None:
+    """Non-None when ``set_active_port`` likely points at this deployment's HTTP listener."""
+    raw = (os.environ.get("PORT") or "").strip()
+    if raw.isdigit() and int(raw) == port:
+        return (
+            "This port matches PORT (often this Plodder deployment). The Browser tab will show this service, "
+            "not an external URL. Open external sites with browser_playwright or browser_fetch."
+        )
+    return None

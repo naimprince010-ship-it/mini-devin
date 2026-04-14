@@ -533,8 +533,10 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                 <div className="space-y-2">
                                     <p className="text-[#525252] text-sm font-medium">Browser</p>
                                     <p className="text-[#3a3a3a] text-xs leading-relaxed">
-                                        <span className="text-[#525252] font-mono">live_preview</span> (probe → set_active_port) registers Vite/dev-server for{' '}
-                                        <strong className="text-[#737373]">Live Preview</strong> here. Agent browser tools still log below.
+                                        <span className="text-[#525252] font-mono">live_preview</span> (probe → set_active_port) registers a{' '}
+                                        <strong className="text-[#737373]">workspace dev server</strong> on this host (e.g. Vite) for the iframe — not public URLs you type in chat.
+                                        External sites appear via <span className="text-[#525252] font-mono">browser_playwright</span> /{' '}
+                                        <span className="text-[#525252] font-mono">browser_fetch</span> in the log below.
                                     </p>
                                     <p className="text-[#3a3a3a] text-xs leading-relaxed">
                                         While a task is running, searches, fetches, and Playwright steps appear here as the agent uses{' '}

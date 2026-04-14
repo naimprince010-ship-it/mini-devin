@@ -69,3 +69,4 @@ def test_live_preview_probe_ok_with_session_id() -> None:
     assert r.get("action") == "probe"
     assert isinstance(r.get("listening_ports"), list)
     assert "allowed_ports" in r
+    assert "what_live_preview_is_for" in r
