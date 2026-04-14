@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "plodder"
-version = "0.1.0"
+version = "0.2.0"
 description = "Plodder — autonomous AI software engineer (terminal, editor, browser, Plodder core libraries)"
 authors = ["Plodder"]
 readme = "README.md"

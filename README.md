@@ -36,6 +36,20 @@ Details: [docs/PLATFORM.md](docs/PLATFORM.md).
 
 ---
 
+## Releases, CI, and scope
+
+- **Versioning:** See [CHANGELOG.md](CHANGELOG.md) and `pyproject.toml` (`0.2.0`).
+- **CI:** GitHub Actions runs Ruff, a **required** `unit-core` pytest gate (`tests/unit/backbone`, `tests/unit/enterprise`), frontend `npm run build`, eval tests, and `poetry build`. Packaging **Build** depends on lint + unit-core + frontend (not on eval, so eval cannot block wheels).
+- **Security:** [docs/SECURITY.md](docs/SECURITY.md) — never commit `.env` or API keys.
+- **Scope (vs hosted “agent clouds”):** This repo is **self-hosted** software (CLI, SDK, local GUI via Docker/your infra). It is **not** a turnkey multi-tenant SaaS; bring your own keys, hosting, and hardening.
+
+### Optional: event backbone smoke
+
+- `run_simple` always starts the backbone bus for tool dispatch.
+- Full `Agent.run()` also uses the bus when **`PLODDER_BACKBONE_FOR_RUN`** is `1`/`true`/`yes`/`on` (see `.env.example`). Default off for compatibility.
+
+---
+
 ## Quick Start (Local)
 
 ### Prerequisites
@@ -152,6 +166,7 @@ Create a REST API with CRUD operations for a todo list using FastAPI + SQLite
 ```
 plodder/
 ├── mini_devin/
+│   ├── backbone/         # EventStream, runtimes, AgentController (OpenHands-style shim)
 │   ├── api/              # FastAPI backend (WebSocket + REST)
 │   ├── orchestrator/     # Agent loop, planning, LLM calls
 │   ├── tools/            # Terminal, Editor, Browser, GitHub
@@ -194,4 +209,4 @@ plodder/
 
 ## License
 
-MIT
+[MIT](LICENSE)
