@@ -176,6 +176,46 @@ def _openai_non_system_window_valid(msgs: list[dict[str, Any]]) -> bool:
     return True
 
 
+def _strip_trailing_incomplete_assistant_tool_calls(
+    rest: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Remove trailing ``assistant`` rows that still declare ``tool_calls`` but have no
+    following ``tool`` messages (e.g. crashed turn). OpenAI rejects these on the next request.
+    """
+    out = list(rest)
+    while out:
+        lm = out[-1]
+        if lm.get("role") != "assistant" or not lm.get("tool_calls"):
+            break
+        if not _tool_call_ids_from_api_assistant_dict(lm):
+            break
+        out.pop()
+    return out
+
+
+def coerce_messages_openai_strict(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Ensure ``messages`` satisfy OpenAI ordering for ``tool_calls`` / ``tool`` roles.
+
+    Used after optional context condensing or other transforms that might leave a
+    dangling assistant tool-call block.
+    """
+    system_msgs = [dict(m) for m in messages if m.get("role") == "system"]
+    rest = [dict(m) for m in messages if m.get("role") != "system"]
+    rest = _strip_trailing_incomplete_assistant_tool_calls(rest)
+    if _openai_non_system_window_valid(rest):
+        return system_msgs + rest
+    fixed = _tail_trim_non_system_openai_safe(rest, len(rest))
+    if fixed:
+        return system_msgs + fixed
+    rest = _strip_trailing_incomplete_assistant_tool_calls(rest)
+    fixed = _tail_trim_non_system_openai_safe(rest, len(rest))
+    if fixed:
+        return system_msgs + fixed
+    return system_msgs + rest
+
+
 def _tail_trim_non_system_openai_safe(
     full_rest: list[dict[str, Any]],
     cap: int,
@@ -187,9 +227,9 @@ def _tail_trim_non_system_openai_safe(
     """
     if cap <= 0:
         return []
-    if len(full_rest) <= cap:
-        return list(full_rest)
-    start = len(full_rest) - cap
+    # Even when len(full_rest) <= cap, the whole tail may violate tool/tool_calls ordering
+    # (e.g. corrupt history). Scan from the leftmost allowed start, same as a capped tail.
+    start = max(0, len(full_rest) - cap)
     while start < len(full_rest):
         window = full_rest[start:]
         if _openai_non_system_window_valid(window):
@@ -413,8 +453,6 @@ class LLMClient:
         cap_rest = max(0, limit - len(system_msgs))
         if cap_rest <= 0:
             return system_msgs
-        if len(rest) <= cap_rest:
-            return msgs
         rest = _tail_trim_non_system_openai_safe(rest, cap_rest)
         return system_msgs + rest
 
@@ -432,7 +470,7 @@ class LLMClient:
         model_name = get_litellm_model_name(self.config.model)
         kwargs: dict[str, Any] = {
             "model": model_name,
-            "messages": list(messages),
+            "messages": coerce_messages_openai_strict(list(messages)),
             "temperature": temperature,
             "max_tokens": min(max_tokens, self.config.max_tokens),
             "timeout": self.config.timeout,
@@ -487,6 +525,7 @@ class LLMClient:
             messages = self.get_conversation_for_api()
         if ephemeral_user_messages:
             messages = messages + [dict(m) for m in ephemeral_user_messages]
+        messages = coerce_messages_openai_strict(messages)
 
         model_name = get_litellm_model_name(self.config.model)
         

@@ -168,3 +168,53 @@ def test_find_suffix_start_none_when_no_assistant_for_tool_call_id():
         {"role": "tool", "tool_call_id": "orphan_id", "name": "terminal", "content": "out"},
     ]
     assert find_suffix_start_for_last_n_tool_observations(messages, last_n=1) is None
+
+
+def test_condense_skips_when_suffix_would_start_with_incomplete_tool_batch(low_condense_thresholds):
+    """Corrupt transcript: assistant issued two tool_calls but only one tool row — never condense."""
+    summarizer = MagicMock()
+    summarizer.completion_ephemeral = AsyncMock(return_value="SHOULD_NOT")
+    summarizer.config.max_tokens = 8192
+    filler = "z" * 200
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "goal"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "bad_a",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                },
+                {
+                    "id": "bad_b",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "bad_a", "name": "terminal", "content": "missing bad_b"},
+        {"role": "user", "content": filler},
+        {"role": "assistant", "content": "mid"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "ok_c",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "ok_c", "name": "terminal", "content": "done"},
+    ]
+
+    async def _run():
+        return await condense_chat_messages(messages, summarizer=summarizer)
+
+    out = asyncio.run(_run())
+    assert out is messages
+    summarizer.completion_ephemeral.assert_not_called()

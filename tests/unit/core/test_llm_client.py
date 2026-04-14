@@ -15,6 +15,7 @@ from mini_devin.core.llm_client import (
     create_llm_client,
     _openai_non_system_window_valid,
     _tail_trim_non_system_openai_safe,
+    coerce_messages_openai_strict,
 )
 from mini_devin.core.providers import Provider
 
@@ -337,6 +338,43 @@ class TestLLMClient:
         full = [{"role": "user", "content": "old"}, a, t1, u]
         assert _tail_trim_non_system_openai_safe(full, 2) == [u]
         assert _tail_trim_non_system_openai_safe(full, 3) == [a, t1, u]
+
+    def test_coerce_messages_openai_strict_trims_jagged_prefix(self):
+        a_bad = {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "x1", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+                {"id": "x2", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+            ],
+        }
+        t1 = {"role": "tool", "tool_call_id": "x1", "name": "t", "content": "only one"}
+        u = {"role": "user", "content": "nudge"}
+        a_ok = {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "y1", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+            ],
+        }
+        t_ok = {"role": "tool", "tool_call_id": "y1", "name": "t", "content": "ok"}
+        msgs = [{"role": "system", "content": "S"}, a_bad, t1, u, a_ok, t_ok]
+        fixed = coerce_messages_openai_strict(msgs)
+        assert fixed[0] == {"role": "system", "content": "S"}
+        assert _openai_non_system_window_valid(fixed[1:])
+        assert fixed[-1] == t_ok
+
+    def test_coerce_messages_strips_trailing_hanging_assistant(self):
+        msgs = [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "g"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "z", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+                ],
+            },
+        ]
+        fixed = coerce_messages_openai_strict(msgs)
+        assert fixed == [{"role": "system", "content": "S"}, {"role": "user", "content": "g"}]
 
     @patch("mini_devin.core.llm_client.LITELLM_AVAILABLE", True)
     @patch("mini_devin.core.llm_client.litellm")

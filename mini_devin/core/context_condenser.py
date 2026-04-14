@@ -12,6 +12,8 @@ import json
 import os
 from typing import TYPE_CHECKING, Any
 
+from mini_devin.core.llm_client import _openai_non_system_window_valid
+
 if TYPE_CHECKING:
     from mini_devin.core.llm_client import LLMClient
 
@@ -108,6 +110,11 @@ async def condense_chat_messages(
     if suffix_start is None:
         return messages
 
+    suffix_probe = messages[suffix_start:]
+    ns_suffix = [m for m in suffix_probe if m.get("role") != "system"]
+    if ns_suffix and not _openai_non_system_window_valid(ns_suffix):
+        return messages
+
     prefix, prefix_end = split_goal_prefix(messages)
     if prefix_end >= suffix_start:
         return messages
@@ -150,4 +157,8 @@ async def condense_chat_messages(
         "content": "## Condensed prior context (middle segment)\n\n" + (summary.strip() or "(empty summary)"),
     }
     suffix = messages[suffix_start:]
-    return [*prefix, condensed_user, *suffix]
+    out = [*prefix, condensed_user, *suffix]
+    ns_out = [m for m in out if m.get("role") != "system"]
+    if not _openai_non_system_window_valid(ns_out):
+        return messages
+    return out

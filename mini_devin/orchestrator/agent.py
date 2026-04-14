@@ -557,14 +557,23 @@ class Agent:
 
     async def _prepare_messages_for_llm_turn(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         from mini_devin.core.context_condenser import condense_chat_messages
+        from mini_devin.core.llm_client import _openai_non_system_window_valid
 
         base = self.llm.get_conversation_for_api()
         if os.environ.get("LLM_CONTEXT_CONDENSER", "true").lower() not in ("0", "false", "no"):
             try:
-                base = await condense_chat_messages(
+                condensed = await condense_chat_messages(
                     base,
                     summarizer=self._get_observation_llm(),
                 )
+                ns = [m for m in condensed if m.get("role") != "system"]
+                if _openai_non_system_window_valid(ns):
+                    base = condensed
+                elif condensed is not base:
+                    self._log(
+                        "Context condenser returned OpenAI-unsafe message ordering; "
+                        "using un-condensed history for this turn."
+                    )
             except Exception as _ce:
                 self._log(f"Context condenser skipped: {_ce}")
         ephemeral = self._workspace_context_ephemeral_messages()
