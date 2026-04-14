@@ -118,6 +118,21 @@ def _truncate(s: str, n: int) -> str:
     return s[: n - 20] + "\n…(truncated)…\n"
 
 
+def _shell_scaffold_operation_cancelled(stdout: str, stderr: str, command: str) -> bool:
+    """
+    npm/create-vite often exits 0 while printing ``Operation cancelled`` when stdin is not a TTY
+    and the target directory already exists (default non-interactive overwrite = no).
+    Treat that as failure so follow-up hints and ``ok: false`` propagate.
+    """
+    blob = ((stdout or "") + "\n" + (stderr or "")).lower()
+    if "operation cancelled" not in blob:
+        return False
+    cmd = (command or "").lower()
+    if any(p in cmd for p in ("create-vite", "create vite", "npm create vite", "@vite/create-vite")):
+        return True
+    return "npx" in cmd and "vite" in cmd
+
+
 class UnifiedSessionDriver:
     """
     Multi-file autonomous loop: list/read/write/delete + sandbox run/shell.
@@ -181,6 +196,14 @@ class UnifiedSessionDriver:
         )
         seed_user += REASONING_LOOP_SEED_SUFFIX
         if goal_suggests_frontend_stack(goal):
+            seed_user += (
+                "\n\n## Headless ``sandbox_shell`` (no TTY)\n"
+                "npm / **create-vite** cannot answer interactive prompts. If the target folder may already exist, "
+                "either **`rm -rf <dir>`** then scaffold, or use **`npm create vite@latest <dir> -- --template … "
+                "--overwrite`** (and **`--no-interactive`** when the CLI supports it). "
+                "If you see **Operation cancelled**, do **not** repeat the same bare `npx create-vite …` without "
+                "``--overwrite`` or a clean path.\n"
+            )
             snap = self._host_environment_snapshot_block()
             if snap.strip():
                 seed_user += (
@@ -847,9 +870,12 @@ class UnifiedSessionDriver:
         raw_err = result.stderr or ""
         out, out_was_trunc = truncate_stream(raw_out)
         err, err_was_trunc = truncate_stream(raw_err)
+        base_ok = result.exit_code == 0 and not result.timed_out
+        if base_ok and _shell_scaffold_operation_cancelled(raw_out, raw_err, result.command):
+            base_ok = False
         return {
             "tool": tool,
-            "ok": result.exit_code == 0 and not result.timed_out,
+            "ok": base_ok,
             "exit_code": result.exit_code,
             "timed_out": result.timed_out,
             "command": result.command,

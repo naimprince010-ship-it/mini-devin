@@ -23,6 +23,21 @@ def test_goal_suggests_frontend_stack() -> None:
     assert not goal_suggests_frontend_stack("Fix typo in README")
 
 
+def test_terminal_failure_followup_hints_create_vite_cancel() -> None:
+    results = [
+        {
+            "tool": "sandbox_shell",
+            "ok": False,
+            "command": "npx create-vite@latest x --template react-ts",
+            "stdout": "Operation cancelled\n",
+            "stderr": "",
+        }
+    ]
+    hint = terminal_failure_followup_hints(results)
+    assert "create-vite" in hint.lower()
+    assert "overwrite" in hint.lower() or "rm -rf" in hint.lower()
+
+
 def test_path_suggests_ui_surface() -> None:
     assert path_suggests_ui_surface("src/components/Foo.tsx")
     assert path_suggests_ui_surface("tailwind.config.js")
