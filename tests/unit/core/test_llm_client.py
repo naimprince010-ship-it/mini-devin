@@ -13,6 +13,8 @@ from mini_devin.core.llm_client import (
     LLMResponse,
     LLMClient,
     create_llm_client,
+    _openai_non_system_window_valid,
+    _tail_trim_non_system_openai_safe,
 )
 from mini_devin.core.providers import Provider
 
@@ -292,6 +294,49 @@ class TestLLMClient:
         assert len(api_conv) == 4
         assert api_conv[0] == {"role": "system", "content": "S"}
         assert api_conv[-1]["content"] == "u9"
+
+    @patch("mini_devin.core.llm_client.LITELLM_AVAILABLE", True)
+    @patch("mini_devin.core.llm_client.litellm")
+    def test_get_conversation_for_api_trim_does_not_split_tool_batch(self, mock_litellm):
+        """Tail trim must not leave tool rows without their assistant or drop tool replies."""
+        client = LLMClient(
+            LLMConfig(model="gpt-4o", api_key="test", max_history_messages=4)
+        )
+        client.set_system_prompt("S")
+        client.add_user_message("u0")
+        client.add_assistant_message(
+            content=None,
+            tool_calls=[
+                ToolCall(id="call_a", name="t", arguments={}),
+                ToolCall(id="call_b", name="t", arguments={}),
+            ],
+        )
+        client.add_tool_result("call_a", "t", "ra")
+        client.add_tool_result("call_b", "t", "rb")
+        client.add_user_message("u1")
+        api_conv = client.get_conversation_for_api()
+        assert api_conv[0] == {"role": "system", "content": "S"}
+        assert _openai_non_system_window_valid(api_conv[1:])
+        assert api_conv[-1]["role"] == "user"
+        assert api_conv[-1]["content"] == "u1"
+
+    def test_tail_trim_openai_safe_helper(self):
+        """Sanity-check the pure tail trim used by get_conversation_for_api."""
+        a = {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "f", "arguments": "{}"},
+                }
+            ],
+        }
+        t1 = {"role": "tool", "tool_call_id": "c1", "name": "f", "content": "ok"}
+        u = {"role": "user", "content": "hi"}
+        full = [{"role": "user", "content": "old"}, a, t1, u]
+        assert _tail_trim_non_system_openai_safe(full, 2) == [u]
+        assert _tail_trim_non_system_openai_safe(full, 3) == [a, t1, u]
 
     @patch("mini_devin.core.llm_client.LITELLM_AVAILABLE", True)
     @patch("mini_devin.core.llm_client.litellm")

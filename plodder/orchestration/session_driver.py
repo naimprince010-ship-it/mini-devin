@@ -35,6 +35,7 @@ from plodder.orchestration.reasoning_loop import (
     visual_review_done_gate,
 )
 from plodder.sandbox.stateful_shell_tracker import StatefulShellTracker
+from plodder.sandbox.stream_truncate import truncate_stream
 from plodder.workspace.atomic_editor import atomic_edit
 from plodder.workspace.session_workspace import SessionWorkspace
 
@@ -842,12 +843,18 @@ class UnifiedSessionDriver:
 
     @staticmethod
     def _sandbox_result_dict(tool: str, result: SandboxResult) -> dict[str, Any]:
+        raw_out = result.stdout or ""
+        raw_err = result.stderr or ""
+        out, out_was_trunc = truncate_stream(raw_out)
+        err, err_was_trunc = truncate_stream(raw_err)
         return {
             "tool": tool,
             "ok": result.exit_code == 0 and not result.timed_out,
             "exit_code": result.exit_code,
             "timed_out": result.timed_out,
             "command": result.command,
-            "stdout": _truncate(result.stdout or "", 6000),
-            "stderr": _truncate(result.stderr or "", 6000),
+            "stdout": out,
+            "stderr": err,
+            "stdout_truncated": out_was_trunc,
+            "stderr_truncated": err_was_trunc,
         }

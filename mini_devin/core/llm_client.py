@@ -125,6 +125,79 @@ class LLMResponse:
     model: str
 
 
+def _tool_call_ids_from_api_assistant_dict(msg: dict[str, Any]) -> set[str]:
+    """Collect OpenAI ``tool_calls[].id`` values from an assistant message dict."""
+    raw = msg.get("tool_calls")
+    if not raw:
+        return set()
+    out: set[str] = set()
+    for tc in raw:
+        if isinstance(tc, dict):
+            tid = tc.get("id")
+            if tid:
+                out.add(str(tid))
+    return out
+
+
+def _openai_non_system_window_valid(msgs: list[dict[str, Any]]) -> bool:
+    """
+    True if ``msgs`` can be sent as a contiguous non-system suffix to OpenAI-style APIs.
+
+    Rejects orphan ``tool`` messages and assistant rows with ``tool_calls`` that are not
+    immediately followed by ``tool`` messages covering every ``tool_call_id``.
+    """
+    if not msgs:
+        return True
+    if msgs[0].get("role") == "tool":
+        return False
+    i = 0
+    n = len(msgs)
+    while i < n:
+        m = msgs[i]
+        role = m.get("role")
+        if role == "assistant" and m.get("tool_calls"):
+            need = _tool_call_ids_from_api_assistant_dict(m)
+            if not need:
+                i += 1
+                continue
+            seen: set[str] = set()
+            i += 1
+            while i < n and msgs[i].get("role") == "tool":
+                tid = msgs[i].get("tool_call_id")
+                if tid is not None and str(tid) in need:
+                    seen.add(str(tid))
+                i += 1
+            if seen != need:
+                return False
+            continue
+        if role == "tool":
+            return False
+        i += 1
+    return True
+
+
+def _tail_trim_non_system_openai_safe(
+    full_rest: list[dict[str, Any]],
+    cap: int,
+) -> list[dict[str, Any]]:
+    """
+    Keep at most ``cap`` messages from the tail of ``full_rest``, adjusting the left edge
+    so the slice never starts with an orphan ``tool`` row or cuts through an assistant
+    ``tool_calls`` block (which would omit required ``tool`` replies and break the API).
+    """
+    if cap <= 0:
+        return []
+    if len(full_rest) <= cap:
+        return list(full_rest)
+    start = len(full_rest) - cap
+    while start < len(full_rest):
+        window = full_rest[start:]
+        if _openai_non_system_window_valid(window):
+            return window
+        start += 1
+    return []
+
+
 class LLMClient:
     """
     Client for interacting with LLMs via LiteLLM.
@@ -338,9 +411,11 @@ class LLMClient:
         system_msgs = [m for m in msgs if m.get("role") == "system"]
         rest = [m for m in msgs if m.get("role") != "system"]
         cap_rest = max(0, limit - len(system_msgs))
+        if cap_rest <= 0:
+            return system_msgs
         if len(rest) <= cap_rest:
             return msgs
-        rest = rest[-cap_rest:]
+        rest = _tail_trim_non_system_openai_safe(rest, cap_rest)
         return system_msgs + rest
 
     async def completion_ephemeral(

@@ -296,7 +296,10 @@ class ExecutionSandbox:
 
 def format_stacktrace_for_llm(result: SandboxResult) -> str:
     """Normalize stderr/stdout for the self-healing planner (no mutation)."""
+    from plodder.sandbox.stream_truncate import truncate_stream
+
     parts = [f"exit={result.exit_code}", f"timeout={result.timed_out}", f"cmd={result.command}"]
     blob = (result.stderr or "") + ("\n" if result.stderr and result.stdout else "") + (result.stdout or "")
-    parts.append("--- output ---\n" + blob.strip())
+    compact, _ = truncate_stream(blob.strip(), max_chars=12_000)
+    parts.append("--- output ---\n" + compact)
     return "\n".join(parts)
