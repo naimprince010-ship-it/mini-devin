@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Terminal, FileCode, History, Maximize2, Globe, ExternalLink, Search, X, Brain, Trash2, Copy, Check, Loader2, Wifi, AlertTriangle, ListTree } from 'lucide-react';
 import { MemoryView } from './MemoryView';
 import { FileExplorer } from './FileExplorer';
@@ -9,14 +9,38 @@ import { ActivityFeed } from './ActivityFeed';
 import { useSessionEvents } from '../contexts/SessionEventsContext';
 import { getApiBase } from '../config/apiBase';
 
+export type WorkspacePanelTab = 'shell' | 'worklog' | 'feed' | 'editor' | 'browser' | 'memory';
+
 interface WorkspacePanelProps {
     sessionId?: string;
+    /** When set with ``onActiveTabChange``, tab selection is controlled by the parent (OpenHands-style shell). */
+    activeTab?: WorkspacePanelTab;
+    onActiveTabChange?: (tab: WorkspacePanelTab) => void;
+    tabBar?: 'internal' | 'external';
+    frameStyle?: 'default' | 'openhands';
+    borderTone?: 'dark' | 'light';
 }
 
-type TabType = 'shell' | 'worklog' | 'feed' | 'editor' | 'browser' | 'memory';
+type TabType = WorkspacePanelTab;
 
-export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => {
-    const [activeTab, setActiveTab] = useState<TabType>('shell');
+export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
+    sessionId,
+    activeTab: controlledTab,
+    onActiveTabChange,
+    tabBar = 'internal',
+    frameStyle = 'default',
+    borderTone = 'dark',
+}) => {
+    const [internalTab, setInternalTab] = useState<WorkspacePanelTab>('shell');
+    const isControlled = controlledTab !== undefined && onActiveTabChange !== undefined;
+    const activeTab = isControlled ? controlledTab : internalTab;
+    const setActiveTab = useCallback(
+        (t: WorkspacePanelTab) => {
+            if (isControlled) onActiveTabChange(t);
+            else setInternalTab(t);
+        },
+        [isControlled, onActiveTabChange],
+    );
     const shellRef = useRef<HTMLDivElement>(null);
     const events = useSessionEvents();
     // Monaco editor state: which file is open
@@ -198,37 +222,67 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
         return t;
     };
 
+    const currentViewLabel = tabs.find((t) => t.id === activeTab)?.label ?? activeTab;
+
+    const outerFrameClass = useMemo(() => {
+        if (frameStyle === 'openhands') {
+            return borderTone === 'dark'
+                ? 'bg-[#25272D] border border-[#525252] rounded-xl h-full w-full flex flex-col overflow-hidden min-h-0'
+                : 'bg-slate-100 border border-slate-300 rounded-xl h-full w-full flex flex-col overflow-hidden min-h-0 shadow-sm';
+        }
+        return 'h-full w-full flex flex-col bg-[#0a0a0a] border-l border-[#262626] min-h-0';
+    }, [frameStyle, borderTone]);
+
     return (
-        <div className="h-full w-full flex flex-col bg-[#0a0a0a] border-l border-[#262626]">
-            {/* Tab Header */}
-            <div className="flex items-center justify-between px-3 py-2 border-b border-[#262626] bg-[#111111]">
-                <div className="flex gap-1">
-                    {tabs.map(tab => (
-                        <button
-                            key={tab.id}
-                            onClick={() => setActiveTab(tab.id)}
-                            className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === tab.id
-                                ? 'bg-[#1e1e1e] text-white shadow-sm'
-                                : 'text-[#737373] hover:text-[#a3a3a3] hover:bg-[#1a1a1a]'
-                                }`}
-                        >
-                            <span className={activeTab === tab.id ? 'text-[#00ff99]' : ''}>{tab.icon}</span>
-                            {tab.label}
-                            {tab.badge !== undefined && (
-                                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-[#00ff99] text-[#0f0f0f] text-[9px] font-bold flex items-center justify-center">
-                                    {tab.badge > 9 ? '9+' : tab.badge}
-                                </span>
-                            )}
-                        </button>
-                    ))}
+        <div className={outerFrameClass}>
+            {tabBar === 'internal' ? (
+                <div className="flex items-center justify-between px-3 py-2 border-b border-[#262626] bg-[#111111]">
+                    <div className="flex gap-1">
+                        {tabs.map(tab => (
+                            <button
+                                key={tab.id}
+                                type="button"
+                                onClick={() => setActiveTab(tab.id)}
+                                className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === tab.id
+                                    ? 'bg-[#1e1e1e] text-white shadow-sm'
+                                    : 'text-[#737373] hover:text-[#a3a3a3] hover:bg-[#1a1a1a]'
+                                    }`}
+                            >
+                                <span className={activeTab === tab.id ? 'text-[#00ff99]' : ''}>{tab.icon}</span>
+                                {tab.label}
+                                {tab.badge !== undefined && (
+                                    <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-[#00ff99] text-[#0f0f0f] text-[9px] font-bold flex items-center justify-center">
+                                        {tab.badge > 9 ? '9+' : tab.badge}
+                                    </span>
+                                )}
+                            </button>
+                        ))}
+                    </div>
+                    <button type="button" className="p-1.5 text-[#525252] hover:text-[#a3a3a3] rounded-md hover:bg-[#1a1a1a] transition-colors">
+                        <Maximize2 size={13} />
+                    </button>
                 </div>
-                <button className="p-1.5 text-[#525252] hover:text-[#a3a3a3] rounded-md hover:bg-[#1a1a1a] transition-colors">
-                    <Maximize2 size={13} />
-                </button>
-            </div>
+            ) : (
+                <div
+                    className={`flex flex-shrink-0 flex-row items-center justify-between border-b py-2 px-3 ${borderTone === 'dark' ? 'border-[#474A54]' : 'border-slate-300'}`}
+                >
+                    <span
+                        className={`text-xs font-medium ${borderTone === 'dark' ? 'text-white' : 'text-[#0f172a]'}`}
+                    >
+                        {currentViewLabel}
+                    </span>
+                    <button
+                        type="button"
+                        className={`rounded-md p-1.5 transition-colors ${borderTone === 'dark' ? 'text-[#9299AA] hover:bg-[#474A54] hover:text-white' : 'text-slate-500 hover:bg-slate-200 hover:text-slate-900'}`}
+                        title="Workspace"
+                    >
+                        <Maximize2 size={13} />
+                    </button>
+                </div>
+            )}
 
             {/* Content */}
-            <div className="flex-1 overflow-hidden relative">
+            <div className="flex-1 overflow-hidden relative min-h-0">
 
                 {/* SHELL */}
                 {activeTab === 'shell' && (

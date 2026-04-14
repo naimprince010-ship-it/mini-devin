@@ -1,10 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Session } from './types';
 import { SessionList } from './components/SessionList';
-import { TaskPanel } from './components/TaskPanel';
-import { WorkspacePanel } from './components/WorkspacePanel';
+import { SessionWorkspaceShell } from './components/SessionWorkspaceShell';
 import { LoginForm } from './components/LoginForm';
 import { UserMenu } from './components/UserMenu';
 import { SkillsManager } from './components/SkillsManager';
@@ -559,27 +557,14 @@ function App() {
           {/* Content */}
           <div className="flex-1 flex overflow-hidden">
             {activeTab === 'sessions' && selectedSession ? (
-              <PanelGroup direction="horizontal">
-                <Panel defaultSize={45} minSize={30}>
-                  <div className={`h-full flex flex-col ${bgPrimary} relative overflow-hidden`}>
-                    <ErrorBoundary>
-                      <TaskPanel
-                        session={selectedSession}
-                        onTitleUpdated={handleTitleUpdated}
-                        onSessionUpdated={handleSessionUpdated}
-                      />
-                    </ErrorBoundary>
-                  </div>
-                </Panel>
-
-                <PanelResizeHandle className={`w-px ${isDark ? 'bg-[#1a1a1a]' : 'bg-[#e5e5e5]'} hover:bg-[#00ff99]/30 transition-colors cursor-col-resize hidden md:block`} />
-
-                <Panel minSize={30} className="hidden md:block">
-                  <ErrorBoundary>
-                    <WorkspacePanel sessionId={selectedSession.session_id} />
-                  </ErrorBoundary>
-                </Panel>
-              </PanelGroup>
+              <div className={`h-full min-h-0 flex flex-col ${bgPrimary} overflow-hidden`}>
+                <SessionWorkspaceShell
+                  session={selectedSession}
+                  isDark={isDark}
+                  onTitleUpdated={handleTitleUpdated}
+                  onSessionUpdated={handleSessionUpdated}
+                />
+              </div>
             ) : (
               <div className="flex-1 flex flex-col overflow-hidden">
                 {activeTab === 'sessions' ? (

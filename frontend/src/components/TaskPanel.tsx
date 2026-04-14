@@ -16,6 +16,8 @@ interface TaskPanelProps {
   onTitleUpdated?: (title: string) => void;
   /** After PATCH /sessions/:id (e.g. model switch), parent refreshes session state. */
   onSessionUpdated?: (session: Session) => void;
+  /** When ``embedded``, session title and repo path are shown in ``SessionWorkspaceShell`` (OpenHands-style). */
+  workspaceChrome?: 'default' | 'embedded';
 }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -51,7 +53,12 @@ function calcEstimatedCost(promptTokens: number, completionTokens: number): stri
   return `$${cost.toFixed(3)}`;
 }
 
-export function TaskPanel({ session, onTitleUpdated, onSessionUpdated }: TaskPanelProps) {
+export function TaskPanel({
+  session,
+  onTitleUpdated,
+  onSessionUpdated,
+  workspaceChrome = 'default',
+}: TaskPanelProps) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskDescription, setTaskDescription] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
@@ -469,49 +476,72 @@ export function TaskPanel({ session, onTitleUpdated, onSessionUpdated }: TaskPan
     <div className="flex flex-col h-full bg-[#0f0f0f]">
       {/* Header */}
       <div className="px-6 py-4 border-b border-[#262626] bg-[#0f0f0f]/80 backdrop-blur-md sticky top-0 z-10">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-sm font-semibold text-white truncate max-w-[200px]">
-              {session.title || 'Current Session'}
-            </h2>
-            <div className="flex items-center gap-2 mt-1">
-              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-[#00ff99] shadow-[0_0_6px_#00ff99]' : 'bg-red-500'}`} />
-              <span className="text-[10px] uppercase tracking-wider text-[#a3a3a3] font-bold">
+        <div className="flex items-center justify-between gap-3">
+          {workspaceChrome === 'embedded' ? (
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+              <div className={`h-2 w-2 flex-shrink-0 rounded-full ${isConnected ? 'bg-[#00ff99] shadow-[0_0_6px_#00ff99]' : 'bg-red-500'}`} />
+              <span className="text-[10px] font-bold uppercase tracking-wider text-[#a3a3a3]">
                 {isConnected
-                  ? (isStreaming ? 'Agent Running' : 'Active Agent')
-                  : 'Agent Offline'}
+                  ? (isStreaming ? 'Agent running' : 'Connected')
+                  : 'Agent offline'}
                 {isConnected && transport === 'sse' && (
-                  <span className="text-[#525252] font-normal"> · SSE</span>
+                  <span className="font-normal text-[#525252]"> · SSE</span>
                 )}
               </span>
-              {/* Model (compact label; full picker below) */}
               <span className="text-[#2a2a2a]">·</span>
               <div className="flex items-center gap-1 text-[10px] text-[#525252]">
                 <Cpu size={9} />
                 <span
                   className={
-                    sessionModel.toLowerCase() === 'auto' ? 'text-[#3399ff] font-semibold' : ''
+                    sessionModel.toLowerCase() === 'auto' ? 'font-semibold text-[#3399ff]' : ''
                   }
                 >
                   {sessionModel.toLowerCase() === 'auto' ? 'Auto' : sessionModel}
                 </span>
               </div>
-              {/* Workspace badge */}
-              {session.working_directory && (
-                <>
-                  <span className="text-[#2a2a2a]">·</span>
-                  <div className="flex items-center gap-1 text-[10px] text-[#525252]" title={session.working_directory}>
-                    <FolderOpen size={9} />
-                    <span className="font-mono max-w-[120px] truncate">
-                      {session.working_directory.split(/[\\/]/).slice(-2).join('/')}
-                    </span>
-                  </div>
-                </>
-              )}
             </div>
-          </div>
+          ) : (
+            <div>
+              <h2 className="max-w-[200px] truncate text-sm font-semibold text-white">
+                {session.title || 'Current Session'}
+              </h2>
+              <div className="mt-1 flex items-center gap-2">
+                <div className={`h-2 w-2 rounded-full ${isConnected ? 'bg-[#00ff99] shadow-[0_0_6px_#00ff99]' : 'bg-red-500'}`} />
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[#a3a3a3]">
+                  {isConnected
+                    ? (isStreaming ? 'Agent Running' : 'Active Agent')
+                    : 'Agent Offline'}
+                  {isConnected && transport === 'sse' && (
+                    <span className="font-normal text-[#525252]"> · SSE</span>
+                  )}
+                </span>
+                <span className="text-[#2a2a2a]">·</span>
+                <div className="flex items-center gap-1 text-[10px] text-[#525252]">
+                  <Cpu size={9} />
+                  <span
+                    className={
+                      sessionModel.toLowerCase() === 'auto' ? 'font-semibold text-[#3399ff]' : ''
+                    }
+                  >
+                    {sessionModel.toLowerCase() === 'auto' ? 'Auto' : sessionModel}
+                  </span>
+                </div>
+                {session.working_directory && (
+                  <>
+                    <span className="text-[#2a2a2a]">·</span>
+                    <div className="flex items-center gap-1 text-[10px] text-[#525252]" title={session.working_directory}>
+                      <FolderOpen size={9} />
+                      <span className="max-w-[120px] truncate font-mono">
+                        {session.working_directory.split(/[\\/]/).slice(-2).join('/')}
+                      </span>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-shrink-0 items-center gap-2">
             {/* Export button */}
             <div className="relative">
               <button
