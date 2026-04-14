@@ -9,6 +9,8 @@ The model emits strict JSON with ``tool_calls``; the driver executes them agains
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import json
 import os
 import threading
@@ -39,6 +41,27 @@ from plodder.sandbox.stateful_shell_tracker import StatefulShellTracker
 from plodder.sandbox.stream_truncate import truncate_stream
 from plodder.workspace.atomic_editor import atomic_edit
 from plodder.workspace.session_workspace import SessionWorkspace
+
+# API / HTTP session id for ``live_preview`` when ``UnifiedSessionDriver`` is constructed without ``session_id``.
+_plodder_api_session_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "plodder_api_session_id", default=None
+)
+
+
+@contextlib.contextmanager
+def plodder_session_id_binding(session_id: str):
+    """
+    Bind the current asyncio task to an API ``session_id`` so ``UnifiedSessionDriver(..., session_id=None)``
+    still resolves ``live_preview`` to the correct ``/api/sessions/{id}/live-preview/`` registration.
+
+    Used by :class:`mini_devin.sessions.manager.SessionManager` during ``run_task`` (avoids mutating
+    ``os.environ`` when multiple sessions may run concurrently).
+    """
+    token = _plodder_api_session_id.set(session_id)
+    try:
+        yield
+    finally:
+        _plodder_api_session_id.reset(token)
 
 
 ChatMessage = dict[str, Any]
@@ -163,8 +186,14 @@ class UnifiedSessionDriver:
         self._llm = llm
         self._ws = workspace
         self._sandbox = sandbox
-        raw_sid = session_id if session_id is not None else os.environ.get("PLODDER_SESSION_ID")
-        self._session_id = (raw_sid or "").strip() or None
+        if session_id is not None:
+            raw_sid = session_id
+        else:
+            ctx = _plodder_api_session_id.get()
+            raw_sid = (ctx or "").strip() or None
+            if not raw_sid:
+                raw_sid = os.environ.get("PLODDER_SESSION_ID")
+        self._session_id = (str(raw_sid).strip() if raw_sid else "") or None
         self._engine = engine or UniversalPromptEngine(PolyglotSystemPrompt())
         self._max_rounds = max_rounds
         self._max_tool_calls_per_turn = max_tool_calls_per_turn
@@ -842,8 +871,9 @@ class UnifiedSessionDriver:
                 "tool": "live_preview",
                 "ok": False,
                 "error": (
-                    "session_id not set — pass ``session_id`` to ``UnifiedSessionDriver`` / ``AgentSessionDriver`` "
-                    "or set env ``PLODDER_SESSION_ID`` to the API session id so Live Preview can register."
+                    "session_id not set — pass ``session_id`` to ``UnifiedSessionDriver`` / ``AgentLoopConfig``, "
+                    "set env ``PLODDER_SESSION_ID``, or run inside ``plodder_session_id_binding(api_session_id)`` "
+                    "(``SessionManager.run_task`` does this automatically)."
                 ),
             }
 

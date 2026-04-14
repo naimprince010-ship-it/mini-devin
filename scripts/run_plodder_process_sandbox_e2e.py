@@ -135,6 +135,7 @@ async def main_async(workspace: Path, *, use_real: bool, model: str) -> int:
         sandbox=None,
         max_rounds=max_rounds,
         inject_logic_plan=inject_plan,
+        session_id=os.environ.get("PLODDER_SESSION_ID", "e2e-local"),
     )
     log.info("PLODDER_FORCE_PROCESS_SANDBOX=%r", os.environ.get("PLODDER_FORCE_PROCESS_SANDBOX"))
     log.info("Goal: %s", GOAL)
