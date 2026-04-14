@@ -198,6 +198,25 @@ class TestAPIErrorHandling:
         assert response.status_code in [200, 400, 404, 422, 500]
 
 
+class TestIntegrationsEndpoints:
+    """Tests for /api/integrations/* stubs."""
+
+    def test_integrations_status(self, client):
+        response = client.get("/api/integrations/status")
+        assert response.status_code == 200
+        data = response.json()
+        assert "slack_signing_configured" in data
+        assert isinstance(data["slack_signing_configured"], bool)
+
+    def test_slack_url_verification(self, client):
+        response = client.post(
+            "/api/integrations/slack/events",
+            json={"type": "url_verification", "challenge": "abc123"},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"challenge": "abc123"}
+
+
 class TestAPICORS:
     """Tests for CORS configuration."""
 

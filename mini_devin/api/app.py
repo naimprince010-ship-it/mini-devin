@@ -74,6 +74,7 @@ DEFAULT_MAX_ITERATIONS = int(os.getenv("DEFAULT_MAX_ITERATIONS", "200"))
 from .streaming_patch import install_streaming_patch
 from .websocket import ConnectionManager, WebSocketMessage, MessageType
 from ..auth.routes import router as auth_router
+from .integration_routes import router as integrations_router
 from ..bridge.manager import get_bridge_manager
 from ..database.config import init_db
 from ..sandbox.railway_process_sandbox_test import (
@@ -335,6 +336,7 @@ app.add_middleware(
 app.add_middleware(AppApiPrefixMiddleware)
 
 app.include_router(auth_router, prefix="/api")
+app.include_router(integrations_router, prefix="/api")
 
 
 @app.get("/")

@@ -20,6 +20,22 @@
 
 ---
 
+## Platform surface (SDK · CLI · GUI · deploy)
+
+Same agent core, multiple entrypoints — similar idea to [OpenHands](https://github.com/OpenHands/OpenHands) (SDK + CLI + local app + self-hosted cloud).
+
+| Layer | What to use |
+|-------|-------------|
+| **SDK** | `from mini_devin.sdk import PlodderClient, create_agent` — embed in Python apps or CI. |
+| **CLI** | `poetry run plodder run "…"`, `plodder interactive`, `plodder serve`, `plodder version`. |
+| **Local GUI** | `plodder serve` (or `uvicorn mini_devin.api:app`) + `cd frontend && npm run dev`. |
+| **Cloud** | Self-host with `docker-compose.yml` and `.env` on your infrastructure. |
+| **Enterprise hooks** | `mini_devin.enterprise` — starter RBAC (`Role`, `Permission`, `role_allows`). Slack/Jira/Linear attach via your webhooks + API. |
+
+Details: [docs/PLATFORM.md](docs/PLATFORM.md).
+
+---
+
 ## Quick Start (Local)
 
 ### Prerequisites
@@ -44,6 +60,10 @@ cd frontend && npm install && cd ..
 
 ### 3. Start backend
 ```bash
+# Option A — same stack, OpenHands-style CLI entrypoint
+poetry run plodder serve --host 127.0.0.1 --port 8000
+
+# Option B — uvicorn directly
 poetry run uvicorn mini_devin.api:app --host 127.0.0.1 --port 8000
 ```
 

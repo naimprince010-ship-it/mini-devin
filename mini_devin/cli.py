@@ -160,6 +160,32 @@ def version_command(args):
     console.print(f"Plodder version {__version__}")
 
 
+def serve_command(args):
+    """Start the FastAPI server for the Local GUI (REST + WebSocket)."""
+    import uvicorn
+
+    host = args.host
+    port = args.port
+    console.print(
+        Panel.fit(
+            f"[bold]Plodder API[/bold]\n\n"
+            f"URL: [link=http://{host}:{port}]http://{host}:{port}[/link]\n"
+            f"ASGI: [cyan]mini_devin.api.app:app[/cyan]\n\n"
+            "[dim]Start the React UI from [cyan]frontend/[cyan] with "
+            "[cyan]npm run dev[/cyan] (see README).[/dim]",
+            title="serve",
+            border_style="blue",
+        )
+    )
+    uvicorn.run(
+        "mini_devin.api.app:app",
+        host=host,
+        port=port,
+        reload=args.reload,
+        log_level=args.log_level,
+    )
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -187,7 +213,36 @@ def main():
     # Version command
     version_parser = subparsers.add_parser("version", help="Show version")
     version_parser.set_defaults(func=version_command)
-    
+
+    # Local GUI / API server (uvicorn)
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Start the Local GUI backend (FastAPI + WebSocket)",
+    )
+    serve_parser.add_argument(
+        "--host",
+        default=os.environ.get("PLODDER_HOST", "0.0.0.0"),
+        help="Bind host (default: 0.0.0.0 or PLODDER_HOST)",
+    )
+    serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PLODDER_PORT", "8000")),
+        help="Bind port (default: 8000 or PLODDER_PORT)",
+    )
+    serve_parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Enable auto-reload (development)",
+    )
+    serve_parser.add_argument(
+        "--log-level",
+        default="info",
+        choices=("critical", "error", "warning", "info", "debug", "trace"),
+        help="Uvicorn log level",
+    )
+    serve_parser.set_defaults(func=serve_command)
+
     args = parser.parse_args()
     
     if args.command is None:

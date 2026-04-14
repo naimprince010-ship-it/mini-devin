@@ -414,6 +414,12 @@ class Agent:
         self._workspace_sidecar: WorkspaceSidecar | None = None
         self._last_terminal_command: str | None = None
 
+        # EventStream / AgentController (optional; enabled for :meth:`run_simple`)
+        self._backbone_stream: Any = None
+        self._backbone_runtime: Any = None
+        self._backbone_controller: Any = None
+        self._use_backbone_dispatch: bool = False
+
         # Proactive clarification support
         self._clarification_event: asyncio.Event | None = None
         self._clarification_answer: str | None = None
@@ -1367,6 +1373,7 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         *,
         thought: str | None = None,
         activity_source: str = "agent",
+        _inline_backbone: bool = False,
     ) -> str:
         """Execute a tool and return the result as a string."""
         import time
@@ -1512,7 +1519,7 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             return err_out
 
         try:
-            if self.working_directory:
+            if self.working_directory and not _inline_backbone:
                 self._append_session_event(
                     AgentStreamEvent(
                         kind=AgentEventKind.TOOL_CALL,
@@ -1522,6 +1529,17 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                         legacy_type="act",
                         meta=dict(act_meta),
                     )
+                )
+
+            if (
+                self._backbone_controller is not None
+                and not _inline_backbone
+                and getattr(self, "_use_backbone_dispatch", False)
+                and not self.use_sandbox
+            ):
+                return await self._backbone_controller.dispatch_and_wait(
+                    name,
+                    arg_dict,
                 )
 
             if name == "terminal":
@@ -4482,656 +4500,667 @@ Call a tool (editor or terminal) immediately as your first action."""
 
         self._inject_knowledge_augmentations(task.goal.description)
         
-        # Main agent loop
-        iteration = 0
-        while iteration < self.max_iterations:
-            iteration += 1
-            self.state.iteration = iteration
-            self._log(f"Iteration {iteration}/{self.max_iterations}")
-            
-            # Notify frontend of iteration update
-            await self._trigger_callback("on_iteration", iteration, self.max_iterations)
-            
-            
-            # Reset per-iteration safety counters
-            self.safety_guard.reset_iteration()
-            
-            try:
-                # Define token callback
-                async def handle_token(token: str):
-                    # The callback handles token messages in the frontend
-                    await self._trigger_callback("on_message", token, is_token=True)
+        _bb_for_run = os.environ.get("PLODDER_BACKBONE_FOR_RUN", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        if _bb_for_run:
+            await self._async_setup_backbone()
+            self._use_backbone_dispatch = True
 
-                # Get LLM response with tools and streaming
-                _msgs, _eph = await self._prepare_messages_for_llm_turn()
-                response = await self.llm.complete(
-                    tools=self._get_tool_schemas(),
-                    tool_choice="auto",
-                    stream=True,
-                    on_token=handle_token,
-                    messages_for_api=_msgs,
-                    ephemeral_user_messages=_eph,
-                )
-                # Detect step progression in the message content
-                if response.content:
-                    # --- Plan detection: fire on_plan_created when agent produces a numbered plan ---
-                    if not getattr(self, '_plan_sent', False):
-                        # Look for numbered lists that indicate a plan
-                        import re as _re
-                        plan_lines = _re.findall(
-                            r'^\s*(?:\d+\.|-|\*|•)\s+(.+)', response.content, _re.MULTILINE
-                        )
-                        # Only treat as a plan if we have 2+ distinct bullet/number points
-                        if len(plan_lines) >= 2:
-                            steps = [l.strip() for l in plan_lines[:20] if l.strip()]
-                            if steps:
-                                self._plan_sent = True
-                                self._plan_steps = steps
-                                self._current_step_idx = 0
-                                await self._trigger_callback("on_plan_created", steps)
-                                await self._trigger_callback("on_step_started", 0, steps[0])
-                                self._persist_worklog(task)
-
-                    # --- Step progression detection when a plan is already active ---
-                    if getattr(self, '_plan_sent', False):
-                        new_step_reached = -1
-                        # Look for patterns like "Moving to milestone 2" or "Step 2:""
-                        step_patterns = [
-                            r"move to step (\d+)",
-                            r"moving to step (\d+)",
-                            r"starting step (\d+)",
-                            r"now on step (\d+)",
-                            r"proceed to step (\d+)",
-                            r"step (\d+):",
-                            r"milestone (\d+):",
-                            r"^\s*(\d+)\.", # Numbered line
-                        ]
-
-                        content_lower = response.content.lower()
-                        for pattern in step_patterns:
-                            match = _re.search(pattern, content_lower, _re.MULTILINE)
-                            if match:
-                                try:
-                                    new_step_reached = int(match.group(1)) - 1 # 0-indexed
-                                    break
-                                except (ValueError, IndexError):
-                                    continue
-
-                        if 0 <= new_step_reached < len(self._plan_steps):
-                            if new_step_reached > self._current_step_idx:
-                                # Complete previous step
-                                await self._trigger_callback("on_step_completed", self._current_step_idx, self._plan_steps[self._current_step_idx])
-                                # Start new step
-                                self._current_step_idx = new_step_reached
-                                await self._trigger_callback("on_step_started", self._current_step_idx, self._plan_steps[self._current_step_idx])
-                                self._persist_worklog(task)
-
-                # Handle tool calls
-                if response.tool_calls:
-                    await self._update_phase(AgentPhase.EXECUTE)
-                    
-                    # Add assistant message with tool calls
-                    self.llm.add_assistant_message(
-                        content=response.content,
-                        tool_calls=response.tool_calls,
+        try:
+            # Main agent loop
+            iteration = 0
+            while iteration < self.max_iterations:
+                iteration += 1
+                self.state.iteration = iteration
+                self._log(f"Iteration {iteration}/{self.max_iterations}")
+                
+                # Notify frontend of iteration update
+                await self._trigger_callback("on_iteration", iteration, self.max_iterations)
+                
+                
+                # Reset per-iteration safety counters
+                self.safety_guard.reset_iteration()
+                
+                try:
+                    # Define token callback
+                    async def handle_token(token: str):
+                        # The callback handles token messages in the frontend
+                        await self._trigger_callback("on_message", token, is_token=True)
+    
+                    # Get LLM response with tools and streaming
+                    _msgs, _eph = await self._prepare_messages_for_llm_turn()
+                    response = await self.llm.complete(
+                        tools=self._get_tool_schemas(),
+                        tool_choice="auto",
+                        stream=True,
+                        on_token=handle_token,
+                        messages_for_api=_msgs,
+                        ephemeral_user_messages=_eph,
                     )
-                    if (response.content or "").strip() and self.working_directory:
-                        self._append_session_event(
-                            AgentStreamEvent(
-                                kind=AgentEventKind.STATUS,
-                                role="agent",
-                                text=(response.content or "")[:12000],
-                                legacy_type="think",
-                                meta={"task_id": task.task_id},
+                    # Detect step progression in the message content
+                    if response.content:
+                        # --- Plan detection: fire on_plan_created when agent produces a numbered plan ---
+                        if not getattr(self, '_plan_sent', False):
+                            # Look for numbered lists that indicate a plan
+                            import re as _re
+                            plan_lines = _re.findall(
+                                r'^\s*(?:\d+\.|-|\*|•)\s+(.+)', response.content, _re.MULTILINE
                             )
+                            # Only treat as a plan if we have 2+ distinct bullet/number points
+                            if len(plan_lines) >= 2:
+                                steps = [l.strip() for l in plan_lines[:20] if l.strip()]
+                                if steps:
+                                    self._plan_sent = True
+                                    self._plan_steps = steps
+                                    self._current_step_idx = 0
+                                    await self._trigger_callback("on_plan_created", steps)
+                                    await self._trigger_callback("on_step_started", 0, steps[0])
+                                    self._persist_worklog(task)
+    
+                        # --- Step progression detection when a plan is already active ---
+                        if getattr(self, '_plan_sent', False):
+                            new_step_reached = -1
+                            # Look for patterns like "Moving to milestone 2" or "Step 2:""
+                            step_patterns = [
+                                r"move to step (\d+)",
+                                r"moving to step (\d+)",
+                                r"starting step (\d+)",
+                                r"now on step (\d+)",
+                                r"proceed to step (\d+)",
+                                r"step (\d+):",
+                                r"milestone (\d+):",
+                                r"^\s*(\d+)\.", # Numbered line
+                            ]
+    
+                            content_lower = response.content.lower()
+                            for pattern in step_patterns:
+                                match = _re.search(pattern, content_lower, _re.MULTILINE)
+                                if match:
+                                    try:
+                                        new_step_reached = int(match.group(1)) - 1 # 0-indexed
+                                        break
+                                    except (ValueError, IndexError):
+                                        continue
+    
+                            if 0 <= new_step_reached < len(self._plan_steps):
+                                if new_step_reached > self._current_step_idx:
+                                    # Complete previous step
+                                    await self._trigger_callback("on_step_completed", self._current_step_idx, self._plan_steps[self._current_step_idx])
+                                    # Start new step
+                                    self._current_step_idx = new_step_reached
+                                    await self._trigger_callback("on_step_started", self._current_step_idx, self._plan_steps[self._current_step_idx])
+                                    self._persist_worklog(task)
+    
+                    # Handle tool calls
+                    if response.tool_calls:
+                        await self._update_phase(AgentPhase.EXECUTE)
+                        
+                        # Add assistant message with tool calls
+                        self.llm.add_assistant_message(
+                            content=response.content,
+                            tool_calls=response.tool_calls,
                         )
-                    # OpenAI requires every tool_call_id from this assistant message to get a tool
-                    # message next, in order — before any new "user" message. Inline self-correction
-                    # injects user messages between tools, so disable it when the batch has >1 call.
-                    _single_tool_batch = len(response.tool_calls) == 1
-                    # Track all tool_call_ids answered for this assistant turn (replenish on mid-batch break)
-                    _batch_answered_tool_ids: set[str] = set()
-                    
-                    # Execute each tool
-                    for tc in response.tool_calls:
-                        self._last_failed_tool = None
-                        if "on_tool_start" in self.callbacks:
-                            await self._trigger_callback("on_tool_start", tc.name, tc.arguments)
-                        
-                        tool_success = False
-                        retry_count = 0
-                        final_result = ""
-                        # One OpenAI tool message per tool_call_id (retry path may add early; avoid duplicate at end)
-                        tool_ids_answered: set[str] = set()
-                        # Track total tool uses this run (used to gate TASK COMPLETE)
-                        self._tools_used_count = getattr(self, '_tools_used_count', 0) + 1
-                        self._no_tool_streak = 0  # reset streak on real tool call
-                        
-                        # Self-correction retry loop
-                        while retry_count <= self.max_immediate_retries:
-                            self._log(f"Executing tool {tc.name} ({retry_count}/{self.max_immediate_retries}): {json.dumps(tc.arguments)[:100]}...")
-                            import time
-                            start_time = time.time()
-                            
-                            # For tool execution classification
-                            exit_code = None
-                            
-                            try:
-                                result = await self._execute_tool(
-                                    tc.name,
-                                    tc.arguments,
-                                    thought=response.content,
+                        if (response.content or "").strip() and self.working_directory:
+                            self._append_session_event(
+                                AgentStreamEvent(
+                                    kind=AgentEventKind.STATUS,
+                                    role="agent",
+                                    text=(response.content or "")[:12000],
+                                    legacy_type="think",
+                                    meta={"task_id": task.task_id},
                                 )
-                            except Exception as _tool_ex:
-                                result = f"Error: tool execution raised an exception: {_tool_ex}"
-                                self._log(f"Tool execution error: {_tool_ex}")
-                            duration_ms = (time.time() - start_time) * 1000
-                            self._log(f"Tool result: {result[:200]}...")
-                            final_result = result
+                            )
+                        # OpenAI requires every tool_call_id from this assistant message to get a tool
+                        # message next, in order — before any new "user" message. Inline self-correction
+                        # injects user messages between tools, so disable it when the batch has >1 call.
+                        _single_tool_batch = len(response.tool_calls) == 1
+                        # Track all tool_call_ids answered for this assistant turn (replenish on mid-batch break)
+                        _batch_answered_tool_ids: set[str] = set()
+                        
+                        # Execute each tool
+                        for tc in response.tool_calls:
+                            self._last_failed_tool = None
+                            if "on_tool_start" in self.callbacks:
+                                await self._trigger_callback("on_tool_start", tc.name, tc.arguments)
                             
-                            # Parse exit code from terminal output if available
-                            if tc.name == "terminal" and "Exit code:" in result:
+                            tool_success = False
+                            retry_count = 0
+                            final_result = ""
+                            # One OpenAI tool message per tool_call_id (retry path may add early; avoid duplicate at end)
+                            tool_ids_answered: set[str] = set()
+                            # Track total tool uses this run (used to gate TASK COMPLETE)
+                            self._tools_used_count = getattr(self, '_tools_used_count', 0) + 1
+                            self._no_tool_streak = 0  # reset streak on real tool call
+                            
+                            # Self-correction retry loop
+                            while retry_count <= self.max_immediate_retries:
+                                self._log(f"Executing tool {tc.name} ({retry_count}/{self.max_immediate_retries}): {json.dumps(tc.arguments)[:100]}...")
+                                import time
+                                start_time = time.time()
+                                
+                                # For tool execution classification
+                                exit_code = None
+                                
                                 try:
-                                    exit_code_str = result.split("Exit code:")[-1].strip()
-                                    exit_code = int(exit_code_str)
-                                except (ValueError, TypeError):
-                                    pass
-                                    
-                            # Classify the result
-                            error_type = self._correction_engine.classify_error(tc.name, result, exit_code)
-                            
-                            if error_type == ErrorType.SUCCESS:
-                                self._same_error_streak_tool = None
-                                self._same_error_streak_fp = None
-                                self._same_error_streak_n = 0
-                                tool_success = True
-                                if self._pending_diagnostic_fp is not None:
-                                    ok_args = (
-                                        dict(tc.arguments)
-                                        if isinstance(tc.arguments, dict)
-                                        else {}
+                                    result = await self._execute_tool(
+                                        tc.name,
+                                        tc.arguments,
+                                        thought=response.content,
                                     )
-                                    self._post_mortem_recovery_paths.append(
-                                        infer_recovery_path_summary(
-                                            after_error_fingerprint=self._pending_diagnostic_fp,
-                                            next_tool_name=tc.name,
-                                            next_args=ok_args,
+                                except Exception as _tool_ex:
+                                    result = f"Error: tool execution raised an exception: {_tool_ex}"
+                                    self._log(f"Tool execution error: {_tool_ex}")
+                                duration_ms = (time.time() - start_time) * 1000
+                                self._log(f"Tool result: {result[:200]}...")
+                                final_result = result
+                                
+                                # Parse exit code from terminal output if available
+                                if tc.name == "terminal" and "Exit code:" in result:
+                                    try:
+                                        exit_code_str = result.split("Exit code:")[-1].strip()
+                                        exit_code = int(exit_code_str)
+                                    except (ValueError, TypeError):
+                                        pass
+                                        
+                                # Classify the result
+                                error_type = self._correction_engine.classify_error(tc.name, result, exit_code)
+                                
+                                if error_type == ErrorType.SUCCESS:
+                                    self._same_error_streak_tool = None
+                                    self._same_error_streak_fp = None
+                                    self._same_error_streak_n = 0
+                                    tool_success = True
+                                    if self._pending_diagnostic_fp is not None:
+                                        ok_args = (
+                                            dict(tc.arguments)
+                                            if isinstance(tc.arguments, dict)
+                                            else {}
+                                        )
+                                        self._post_mortem_recovery_paths.append(
+                                            infer_recovery_path_summary(
+                                                after_error_fingerprint=self._pending_diagnostic_fp,
+                                                next_tool_name=tc.name,
+                                                next_args=ok_args,
+                                            )
+                                        )
+                                        self._pending_diagnostic_fp = None
+                                    # If we had retried, record the successful correction
+                                    if retry_count > 0:
+                                        self._log(f"Self-correction successful after {retry_count} retries")
+                                        # Reset failures and notify UI about success
+                                        self._consecutive_failures = 0
+                                        await self._trigger_callback("on_message", f"✅ Successfully corrected error in {tc.name}", is_token=False)
+                                        lf = self._last_failed_tool
+                                        if lf and self._use_conversation_memory:
+                                            try:
+                                                tname, bad_args, err_txt = lf
+                                                good_args = (
+                                                    dict(tc.arguments)
+                                                    if isinstance(tc.arguments, dict)
+                                                    else {"raw": tc.arguments}
+                                                )
+                                                self._correction_engine.record_correction(
+                                                    {"name": tname, "arguments": bad_args},
+                                                    err_txt,
+                                                    {"name": tname, "arguments": good_args},
+                                                )
+                                                self.get_conversation_memory().add_error_pattern(
+                                                    error=err_txt[:400],
+                                                    cause=f"{tname} tool (self-correct)",
+                                                    solution=json.dumps(good_args, default=str)[:500],
+                                                    tags=["self_correction", tname],
+                                                    session_id=getattr(self.state, "session_id", None),
+                                                    task_id=task.task_id,
+                                                )
+                                                self._session_self_correct_lessons.append(
+                                                    f"Self-corrected {tname}: {json.dumps(good_args, default=str)[:280]}"
+                                                )
+                                            except Exception as mem_err:
+                                                self._log(f"Warning: could not persist self-correction to memory: {mem_err}")
+                                        self._last_failed_tool = None
+                                    break
+                                    
+                                # Tool failed
+                                self._log(f"Tool {tc.name} failed with {error_type.value}")
+                                _args_dict = dict(tc.arguments) if isinstance(tc.arguments, dict) else {}
+                                _fp = error_fingerprint(tc.name, str(result), exit_code)
+                                if tc.name == self._same_error_streak_tool and _fp == self._same_error_streak_fp:
+                                    self._same_error_streak_n += 1
+                                else:
+                                    self._same_error_streak_tool = tc.name
+                                    self._same_error_streak_fp = _fp
+                                    self._same_error_streak_n = 1
+    
+                                if not _single_tool_batch:
+                                    self._log(
+                                        "Skipping inline self-correction: multiple tool_calls in one turn "
+                                        "(API requires all tool results before new user messages)."
+                                    )
+                                    break
+    
+                                if not self._correction_engine.should_retry(error_type, retry_count):
+                                    self._log("Max retries reached or error not retryable immediately")
+                                    break
+    
+                                _forced_diag = self._same_error_streak_n >= 3
+                                if _forced_diag:
+                                    wd0 = self.working_directory or "."
+                                    diag = gather_workspace_diagnostics_sync(wd0)
+                                    sc = format_system_correction_block(
+                                        workspace_display=wd0,
+                                        is_windows=(os.name == "nt"),
+                                    )
+                                    _lfc = str(_args_dict.get("command", "") or "")
+                                    inc0 = incremental_recovery_hint(
+                                        tc.name,
+                                        _args_dict,
+                                        error_type,
+                                        str(result),
+                                        last_failed_command=_lfc,
+                                    )
+                                    self._post_mortem_failure_streaks.append(
+                                        FailureStreakRecord(
+                                            tool_name=tc.name,
+                                            error_fingerprint=_fp,
+                                            streak_length=self._same_error_streak_n,
                                         )
                                     )
-                                    self._pending_diagnostic_fp = None
-                                # If we had retried, record the successful correction
-                                if retry_count > 0:
-                                    self._log(f"Self-correction successful after {retry_count} retries")
-                                    # Reset failures and notify UI about success
-                                    self._consecutive_failures = 0
-                                    await self._trigger_callback("on_message", f"✅ Successfully corrected error in {tc.name}", is_token=False)
-                                    lf = self._last_failed_tool
-                                    if lf and self._use_conversation_memory:
-                                        try:
-                                            tname, bad_args, err_txt = lf
-                                            good_args = (
-                                                dict(tc.arguments)
-                                                if isinstance(tc.arguments, dict)
-                                                else {"raw": tc.arguments}
-                                            )
-                                            self._correction_engine.record_correction(
-                                                {"name": tname, "arguments": bad_args},
-                                                err_txt,
-                                                {"name": tname, "arguments": good_args},
-                                            )
-                                            self.get_conversation_memory().add_error_pattern(
-                                                error=err_txt[:400],
-                                                cause=f"{tname} tool (self-correct)",
-                                                solution=json.dumps(good_args, default=str)[:500],
-                                                tags=["self_correction", tname],
-                                                session_id=getattr(self.state, "session_id", None),
-                                                task_id=task.task_id,
-                                            )
-                                            self._session_self_correct_lessons.append(
-                                                f"Self-corrected {tname}: {json.dumps(good_args, default=str)[:280]}"
-                                            )
-                                        except Exception as mem_err:
-                                            self._log(f"Warning: could not persist self-correction to memory: {mem_err}")
-                                    self._last_failed_tool = None
-                                break
-                                
-                            # Tool failed
-                            self._log(f"Tool {tc.name} failed with {error_type.value}")
-                            _args_dict = dict(tc.arguments) if isinstance(tc.arguments, dict) else {}
-                            _fp = error_fingerprint(tc.name, str(result), exit_code)
-                            if tc.name == self._same_error_streak_tool and _fp == self._same_error_streak_fp:
-                                self._same_error_streak_n += 1
-                            else:
-                                self._same_error_streak_tool = tc.name
-                                self._same_error_streak_fp = _fp
-                                self._same_error_streak_n = 1
-
-                            if not _single_tool_batch:
-                                self._log(
-                                    "Skipping inline self-correction: multiple tool_calls in one turn "
-                                    "(API requires all tool results before new user messages)."
-                                )
-                                break
-
-                            if not self._correction_engine.should_retry(error_type, retry_count):
-                                self._log("Max retries reached or error not retryable immediately")
-                                break
-
-                            _forced_diag = self._same_error_streak_n >= 3
-                            if _forced_diag:
-                                wd0 = self.working_directory or "."
-                                diag = gather_workspace_diagnostics_sync(wd0)
-                                sc = format_system_correction_block(
-                                    workspace_display=wd0,
-                                    is_windows=(os.name == "nt"),
-                                )
-                                _lfc = str(_args_dict.get("command", "") or "")
-                                inc0 = incremental_recovery_hint(
+                                    self._post_mortem_diagnostic_triggers.append(
+                                        DiagnosticTriggerRecord(
+                                            error_fingerprint=_fp,
+                                            tool_name=tc.name,
+                                            exit_code=exit_code,
+                                            output_preview=str(result)[:400],
+                                        )
+                                    )
+                                    self._pending_diagnostic_fp = _fp
+                                    self.llm.add_user_message(
+                                        f"{sc}\n\n### Live workspace snapshot (after 3 identical tool errors)\n"
+                                        f"```\n{diag}\n```\n\n{inc0}"
+                                    )
+                                    self._append_session_event(
+                                        AgentStreamEvent(
+                                            kind=AgentEventKind.STATUS,
+                                            role="system",
+                                            text="Injected system correction + workspace snapshot (3× identical tool error).",
+                                            legacy_type="forced_diagnostic",
+                                            meta={
+                                                "tool": tc.name,
+                                                "error_fingerprint": _fp,
+                                            },
+                                        )
+                                    )
+                                    self._same_error_streak_n = 0
+                                    self._same_error_streak_tool = None
+                                    self._same_error_streak_fp = None
+    
+                                # Need to retry with hint
+                                try:
+                                    bad_args = dict(tc.arguments) if isinstance(tc.arguments, dict) else {"raw": tc.arguments}
+                                except Exception:
+                                    bad_args = {}
+                                self._last_failed_tool = (tc.name, bad_args, str(result)[:1200])
+                                retry_count += 1
+                                hint = self._correction_engine.get_retry_hint(error_type, tc.name, tc.arguments, result)
+                                inc_line = incremental_recovery_hint(
                                     tc.name,
                                     _args_dict,
                                     error_type,
                                     str(result),
-                                    last_failed_command=_lfc,
+                                    last_failed_command=str(_args_dict.get("command", "") or ""),
                                 )
-                                self._post_mortem_failure_streaks.append(
-                                    FailureStreakRecord(
-                                        tool_name=tc.name,
-                                        error_fingerprint=_fp,
-                                        streak_length=self._same_error_streak_n,
+    
+                                await self._trigger_callback(
+                                    "on_message",
+                                    f"🔄 **Self-Correcting**: Tool '{tc.name}' failed. Retrying... "
+                                    f"(Attempt {retry_count}/{self.max_immediate_retries})\n*Hint:* {hint}",
+                                    is_token=False,
+                                )
+    
+                                # We feed the failed result and hint to LLM to get a corrected tool call
+                                self.llm.add_tool_result(tc.id, tc.name, result)
+                                tool_ids_answered.add(tc.id)
+                                _batch_answered_tool_ids.add(tc.id)
+                                if _forced_diag:
+                                    self.llm.add_user_message(
+                                        f"Your tool call failed (see System Correction + snapshot above).\n"
+                                        f"Reminder: {hint}\n{inc_line}\n"
+                                        "Provide a **different** corrected tool call — do not repeat the same command."
                                     )
-                                )
-                                self._post_mortem_diagnostic_triggers.append(
-                                    DiagnosticTriggerRecord(
-                                        error_fingerprint=_fp,
-                                        tool_name=tc.name,
-                                        exit_code=exit_code,
-                                        output_preview=str(result)[:400],
+                                else:
+                                    self.llm.add_user_message(
+                                        f"Your tool call failed: {hint}\n{inc_line}\n"
+                                        "Please review the error and provide a corrected tool call."
                                     )
-                                )
-                                self._pending_diagnostic_fp = _fp
-                                self.llm.add_user_message(
-                                    f"{sc}\n\n### Live workspace snapshot (after 3 identical tool errors)\n"
-                                    f"```\n{diag}\n```\n\n{inc0}"
-                                )
-                                self._append_session_event(
-                                    AgentStreamEvent(
-                                        kind=AgentEventKind.STATUS,
-                                        role="system",
-                                        text="Injected system correction + workspace snapshot (3× identical tool error).",
-                                        legacy_type="forced_diagnostic",
-                                        meta={
-                                            "tool": tc.name,
-                                            "error_fingerprint": _fp,
-                                        },
-                                    )
-                                )
-                                self._same_error_streak_n = 0
-                                self._same_error_streak_tool = None
-                                self._same_error_streak_fp = None
-
-                            # Need to retry with hint
-                            try:
-                                bad_args = dict(tc.arguments) if isinstance(tc.arguments, dict) else {"raw": tc.arguments}
-                            except Exception:
-                                bad_args = {}
-                            self._last_failed_tool = (tc.name, bad_args, str(result)[:1200])
-                            retry_count += 1
-                            hint = self._correction_engine.get_retry_hint(error_type, tc.name, tc.arguments, result)
-                            inc_line = incremental_recovery_hint(
-                                tc.name,
-                                _args_dict,
-                                error_type,
-                                str(result),
-                                last_failed_command=str(_args_dict.get("command", "") or ""),
-                            )
-
-                            await self._trigger_callback(
-                                "on_message",
-                                f"🔄 **Self-Correcting**: Tool '{tc.name}' failed. Retrying... "
-                                f"(Attempt {retry_count}/{self.max_immediate_retries})\n*Hint:* {hint}",
-                                is_token=False,
-                            )
-
-                            # We feed the failed result and hint to LLM to get a corrected tool call
-                            self.llm.add_tool_result(tc.id, tc.name, result)
-                            tool_ids_answered.add(tc.id)
-                            _batch_answered_tool_ids.add(tc.id)
-                            if _forced_diag:
-                                self.llm.add_user_message(
-                                    f"Your tool call failed (see System Correction + snapshot above).\n"
-                                    f"Reminder: {hint}\n{inc_line}\n"
-                                    "Provide a **different** corrected tool call — do not repeat the same command."
-                                )
-                            else:
-                                self.llm.add_user_message(
-                                    f"Your tool call failed: {hint}\n{inc_line}\n"
-                                    "Please review the error and provide a corrected tool call."
-                                )
-                            
-                            # Ask LLM again (observation / diagnostics stack — default Gemini Flash)
-                            _msgs, _eph = await self._prepare_messages_for_llm_turn()
-                            retry_response = await self._get_observation_llm().complete(
-                                tools=self._get_tool_schemas(),
-                                tool_choice="required", # Force tool use
-                                stream=False,
-                                messages_for_api=_msgs,
-                                ephemeral_user_messages=_eph,
-                            )
-                            
-                            if retry_response.tool_calls:
-                                # Update the current tool call with LLM's new attempt
-                                tc = retry_response.tool_calls[0]
-                                self.llm.add_assistant_message(
-                                    content=retry_response.content,
-                                    tool_calls=[tc],
-                                )
-                            else:
-                                # LLM didn't provide a tool call, break retry loop
-                                break
-                        
-                        if "on_tool_result" in self.callbacks:
-                            await self._trigger_callback("on_tool_result", tc.name, tc.arguments, final_result, duration_ms)
-                        
-                        # Add final tool result once per tool_call_id (retry already appended failure for same id)
-                        if tc.id not in tool_ids_answered:
-                            self.llm.add_tool_result(tc.id, tc.name, final_result)
-                            tool_ids_answered.add(tc.id)
-                            _batch_answered_tool_ids.add(tc.id)
-                        
-                        # Track in task state
-                        if tc.name == "terminal":
-                            task.commands_executed.append(tc.arguments.get("command", ""))
-                            
-                        # Handle Escalation to Planner
-                        if not tool_success:
-                            self._consecutive_failures += 1
-                            if self._correction_engine.should_replan(self._consecutive_failures):
-                                await self._trigger_callback("on_message", "🔁 **Replanning needed**: Consecutive failures exceeded limit.", is_token=False)
-                                self._consecutive_failures = 0
                                 
-                                # trigger replanning
-                                if self.state.current_plan:
-                                    # Find current step
-                                    failed_step_id = None
-                                    from ..schemas.state import StepStatus
-                                    for step in self.state.current_plan.steps:
-                                        if step.status == StepStatus.PENDING or step.status == StepStatus.IN_PROGRESS:
-                                            failed_step_id = step.step_id
-                                            break
-                                            
-                                    if failed_step_id:
-                                        await self.replan_from_failure(failed_step_id, final_result)
-                                        # Force breakdown of iteration loop to let new plan take over
-                                        task.error_count += 1
-                                        # Replan must not leave orphan tool_calls on the last assistant message
-                                        for _ptc in response.tool_calls:
-                                            if _ptc.id not in _batch_answered_tool_ids:
-                                                self.llm.add_tool_result(
-                                                    _ptc.id,
-                                                    _ptc.name,
-                                                    "Error: replan aborted before this tool_call_id received a result.",
-                                                )
-                                                _batch_answered_tool_ids.add(_ptc.id)
-                                        self._synthesize_tool_replies_for_open_assistant_tail()
-                                        break
-                                
-                else:
-                    # No tool calls - check if task is complete
-                    if response.content:
-                        self._log(f"Assistant: {response.content[:200]}...")
-                        self.llm.add_assistant_message(content=response.content)
-                        
-                        # Detect numbered plan in LLM response (e.g. "1. Step one\n2. Step two")
-                        content = response.content or ""
-                        import re
-                        plan_lines = re.findall(r'^\s*(\d+)\.\s+(.+)', content, re.MULTILINE)
-                        if len(plan_lines) >= 2 and not getattr(self, '_plan_sent', False):
-                            steps = [text.strip() for _, text in plan_lines]
-                            self._plan_sent = True
-                            self._plan_steps = steps
-                            self._current_step_idx = 0
-                            await self._trigger_callback("on_plan_created", steps)
-                            await self._update_phase(AgentPhase.PLAN)
-                            
-                            # Start first step
-                            if steps:
-                                await self._trigger_callback("on_step_started", 0, steps[0])
-                            self._persist_worklog(task)
-                        
-                        # Only allow TASK COMPLETE if at least one tool was used this run
-                        _tools_used = getattr(self, '_tools_used_count', 0)
-                        content_lower = response.content.lower()
-                        is_completion = any(phrase in content_lower for phrase in [
-                            "task complete",
-                            "task is complete",
-                            "successfully completed",
-                            "finished the task",
-                            "completed the task",
-                            "all done",
-                        ])
-
-                        if is_completion and _tools_used > 0:
-                            await self._update_phase(AgentPhase.COMPLETE)
-                            task.status = TaskStatus.COMPLETED
-                            task.completed_at = datetime.now(timezone.utc)
-                            self._log("Task completed!")
-                            break
-                        elif is_completion and _tools_used == 0:
-                            # Agent said complete without using any tools — force it to act
-                            self._log("Completion signal with no tool use — forcing tool call.")
-                            self.llm.add_user_message(
-                                "You have not used any tools yet. You MUST use the available tools (terminal, editor, etc.) "
-                                "to actually perform the task. Do NOT just describe what you would do — call a tool now."
-                            )
-                        elif response.finish_reason == "stop":
-                            # Nudge with forced tool use on the next iteration
-                            self._no_tool_streak = getattr(self, '_no_tool_streak', 0) + 1
-                            if self._no_tool_streak >= 1:
-                                # After 2 text-only turns, force a tool call
-                                self._log("Multiple text-only turns — injecting forced tool call.")
+                                # Ask LLM again (observation / diagnostics stack — default Gemini Flash)
                                 _msgs, _eph = await self._prepare_messages_for_llm_turn()
-                                forced_response = await self._get_observation_llm().complete(
+                                retry_response = await self._get_observation_llm().complete(
                                     tools=self._get_tool_schemas(),
-                                    tool_choice="required",
+                                    tool_choice="required", # Force tool use
                                     stream=False,
                                     messages_for_api=_msgs,
                                     ephemeral_user_messages=_eph,
                                 )
-                                self._no_tool_streak = 0
-                                if forced_response.tool_calls:
-                                    # Re-inject as if it was a normal tool call turn
+                                
+                                if retry_response.tool_calls:
+                                    # Update the current tool call with LLM's new attempt
+                                    tc = retry_response.tool_calls[0]
                                     self.llm.add_assistant_message(
-                                        content=forced_response.content,
-                                        tool_calls=forced_response.tool_calls,
+                                        content=retry_response.content,
+                                        tool_calls=[tc],
                                     )
-                                    for tc in forced_response.tool_calls:
-                                        try:
-                                            result = await self._execute_tool(
-                                                tc.name,
-                                                tc.arguments,
-                                                thought=forced_response.content,
-                                            )
-                                        except Exception as _fe:
-                                            result = f"Error: forced tool execution failed: {_fe}"
-                                        self._tools_used_count = getattr(self, '_tools_used_count', 0) + 1
-                                        self.llm.add_tool_result(tc.id, tc.name, result)
-                            else:
+                                else:
+                                    # LLM didn't provide a tool call, break retry loop
+                                    break
+                            
+                            if "on_tool_result" in self.callbacks:
+                                await self._trigger_callback("on_tool_result", tc.name, tc.arguments, final_result, duration_ms)
+                            
+                            # Add final tool result once per tool_call_id (retry already appended failure for same id)
+                            if tc.id not in tool_ids_answered:
+                                self.llm.add_tool_result(tc.id, tc.name, final_result)
+                                tool_ids_answered.add(tc.id)
+                                _batch_answered_tool_ids.add(tc.id)
+                            
+                            # Track in task state
+                            if tc.name == "terminal":
+                                task.commands_executed.append(tc.arguments.get("command", ""))
+                                
+                            # Handle Escalation to Planner
+                            if not tool_success:
+                                self._consecutive_failures += 1
+                                if self._correction_engine.should_replan(self._consecutive_failures):
+                                    await self._trigger_callback("on_message", "🔁 **Replanning needed**: Consecutive failures exceeded limit.", is_token=False)
+                                    self._consecutive_failures = 0
+                                    
+                                    # trigger replanning
+                                    if self.state.current_plan:
+                                        # Find current step
+                                        failed_step_id = None
+                                        from ..schemas.state import StepStatus
+                                        for step in self.state.current_plan.steps:
+                                            if step.status == StepStatus.PENDING or step.status == StepStatus.IN_PROGRESS:
+                                                failed_step_id = step.step_id
+                                                break
+                                                
+                                        if failed_step_id:
+                                            await self.replan_from_failure(failed_step_id, final_result)
+                                            # Force breakdown of iteration loop to let new plan take over
+                                            task.error_count += 1
+                                            # Replan must not leave orphan tool_calls on the last assistant message
+                                            for _ptc in response.tool_calls:
+                                                if _ptc.id not in _batch_answered_tool_ids:
+                                                    self.llm.add_tool_result(
+                                                        _ptc.id,
+                                                        _ptc.name,
+                                                        "Error: replan aborted before this tool_call_id received a result.",
+                                                    )
+                                                    _batch_answered_tool_ids.add(_ptc.id)
+                                            self._synthesize_tool_replies_for_open_assistant_tail()
+                                            break
+                                    
+                    else:
+                        # No tool calls - check if task is complete
+                        if response.content:
+                            self._log(f"Assistant: {response.content[:200]}...")
+                            self.llm.add_assistant_message(content=response.content)
+                            
+                            # Detect numbered plan in LLM response (e.g. "1. Step one\n2. Step two")
+                            content = response.content or ""
+                            import re
+                            plan_lines = re.findall(r'^\s*(\d+)\.\s+(.+)', content, re.MULTILINE)
+                            if len(plan_lines) >= 2 and not getattr(self, '_plan_sent', False):
+                                steps = [text.strip() for _, text in plan_lines]
+                                self._plan_sent = True
+                                self._plan_steps = steps
+                                self._current_step_idx = 0
+                                await self._trigger_callback("on_plan_created", steps)
+                                await self._update_phase(AgentPhase.PLAN)
+                                
+                                # Start first step
+                                if steps:
+                                    await self._trigger_callback("on_step_started", 0, steps[0])
+                                self._persist_worklog(task)
+                            
+                            # Only allow TASK COMPLETE if at least one tool was used this run
+                            _tools_used = getattr(self, '_tools_used_count', 0)
+                            content_lower = response.content.lower()
+                            is_completion = any(phrase in content_lower for phrase in [
+                                "task complete",
+                                "task is complete",
+                                "successfully completed",
+                                "finished the task",
+                                "completed the task",
+                                "all done",
+                            ])
+    
+                            if is_completion and _tools_used > 0:
+                                await self._update_phase(AgentPhase.COMPLETE)
+                                task.status = TaskStatus.COMPLETED
+                                task.completed_at = datetime.now(timezone.utc)
+                                self._log("Task completed!")
+                                break
+                            elif is_completion and _tools_used == 0:
+                                # Agent said complete without using any tools — force it to act
+                                self._log("Completion signal with no tool use — forcing tool call.")
                                 self.llm.add_user_message(
-                                    "Please continue with the task using the tools. "
-                                    "Call a tool (terminal or editor) to take the next action."
+                                    "You have not used any tools yet. You MUST use the available tools (terminal, editor, etc.) "
+                                    "to actually perform the task. Do NOT just describe what you would do — call a tool now."
                                 )
-
+                            elif response.finish_reason == "stop":
+                                # Nudge with forced tool use on the next iteration
+                                self._no_tool_streak = getattr(self, '_no_tool_streak', 0) + 1
+                                if self._no_tool_streak >= 1:
+                                    # After 2 text-only turns, force a tool call
+                                    self._log("Multiple text-only turns — injecting forced tool call.")
+                                    _msgs, _eph = await self._prepare_messages_for_llm_turn()
+                                    forced_response = await self._get_observation_llm().complete(
+                                        tools=self._get_tool_schemas(),
+                                        tool_choice="required",
+                                        stream=False,
+                                        messages_for_api=_msgs,
+                                        ephemeral_user_messages=_eph,
+                                    )
+                                    self._no_tool_streak = 0
+                                    if forced_response.tool_calls:
+                                        # Re-inject as if it was a normal tool call turn
+                                        self.llm.add_assistant_message(
+                                            content=forced_response.content,
+                                            tool_calls=forced_response.tool_calls,
+                                        )
+                                        for tc in forced_response.tool_calls:
+                                            try:
+                                                result = await self._execute_tool(
+                                                    tc.name,
+                                                    tc.arguments,
+                                                    thought=forced_response.content,
+                                                )
+                                            except Exception as _fe:
+                                                result = f"Error: forced tool execution failed: {_fe}"
+                                            self._tools_used_count = getattr(self, '_tools_used_count', 0) + 1
+                                            self.llm.add_tool_result(tc.id, tc.name, result)
+                                else:
+                                    self.llm.add_user_message(
+                                        "Please continue with the task using the tools. "
+                                        "Call a tool (terminal or editor) to take the next action."
+                                    )
+    
+                
+                except Exception as e:
+                    error_msg = f"Error in iteration: {str(e)}"
+                    self._log(error_msg)
+                    # Repair OpenAI message ordering if we stopped mid tool_calls (e.g. LLM error mid-retry)
+                    try:
+                        self._synthesize_tool_replies_for_open_assistant_tail()
+                    except Exception:
+                        pass
+                    
+                    # Report error to UI if callback exists
+                    await self._trigger_callback("on_message", f"⚠️ **Error**: {str(e)}", is_token=False)
+                    
+                    task.last_error = str(e)
+                    task.error_count += 1
+                    
+                    if task.error_count >= 3:
+                        await self._update_phase(AgentPhase.BLOCKED)
+                        task.status = TaskStatus.FAILED
+                        break
             
-            except Exception as e:
-                error_msg = f"Error in iteration: {str(e)}"
-                self._log(error_msg)
-                # Repair OpenAI message ordering if we stopped mid tool_calls (e.g. LLM error mid-retry)
+            # Max iterations reached
+            if iteration >= self.max_iterations:
+                self._log("Max iterations reached")
+                task.status = TaskStatus.FAILED
+                task.last_error = (
+                    f"Max iterations ({self.max_iterations}) reached. "
+                    "Increase max iterations in New Session, split the task into smaller steps, "
+                    "or ensure API keys and workspace paths are correct."
+                )
+            
+            # Update token usage (primary + optional observation/diagnostics client)
+            usage = self.llm.get_usage_stats()
+            task.total_tokens_used = usage["total_tokens"]
+            if self._observation_llm is not None and self._observation_llm is not self.llm:
+                ou = self._observation_llm.get_usage_stats()
+                task.total_tokens_used += ou["total_tokens"]
+            
+            # Save final artifacts
+            if self._artifact_logger:
+                self._artifact_logger.update_tokens(task.total_tokens_used)
+                
+                # Get git diff if available
+                git_mgr = self._get_git_manager()
+                if git_mgr:
+                    diff_result = await git_mgr.get_diff()
+                    if diff_result and not diff_result.is_empty:
+                        self._artifact_logger.set_diff(diff_result.diff_text)
+                
+                # Get final summary from last assistant message
+                summary = ""
+                for msg in reversed(self.llm.conversation):
+                    if msg.role == "assistant" and msg.content:
+                        summary = msg.content
+                        break
+                
+                # Complete the artifact logger
+                status = "completed" if task.status == TaskStatus.COMPLETED else "failed"
+                if self.state.phase == AgentPhase.BLOCKED:
+                    status = "blocked"
+                self._artifact_logger.complete(status=status, summary=summary)
                 try:
-                    self._synthesize_tool_replies_for_open_assistant_tail()
-                except Exception:
-                    pass
-                
-                # Report error to UI if callback exists
-                await self._trigger_callback("on_message", f"⚠️ **Error**: {str(e)}", is_token=False)
-                
-                task.last_error = str(e)
-                task.error_count += 1
-                
-                if task.error_count >= 3:
-                    await self._update_phase(AgentPhase.BLOCKED)
-                    task.status = TaskStatus.FAILED
-                    break
-        
-        # Max iterations reached
-        if iteration >= self.max_iterations:
-            self._log("Max iterations reached")
-            task.status = TaskStatus.FAILED
-            task.last_error = (
-                f"Max iterations ({self.max_iterations}) reached. "
-                "Increase max iterations in New Session, split the task into smaller steps, "
-                "or ensure API keys and workspace paths are correct."
+                    _pm = PostMortemPayload(
+                        goal_or_task_id=task.task_id,
+                        diagnostic_triggers=list(self._post_mortem_diagnostic_triggers),
+                        recovery_paths=list(self._post_mortem_recovery_paths),
+                        failure_streaks=list(self._post_mortem_failure_streaks),
+                    )
+                    Path(self._artifact_logger.get_run_dir()).joinpath("post_mortem.md").write_text(
+                        format_post_mortem(_pm),
+                        encoding="utf-8",
+                    )
+                except Exception as _pm_err:
+                    self._log(f"Warning: could not write post_mortem.md: {_pm_err}")
+    
+                self._log(f"Artifacts saved to: {self._artifact_logger.get_run_dir()}")
+            
+            # Save task summary to conversation memory (Phase 18)
+            if self._use_conversation_memory:
+                try:
+                    self.save_task_summary(
+                        task=task,
+                        summary=summary,
+                        lessons_learned=list(self._session_self_correct_lessons),
+                    )
+                    self._log("Task summary saved to conversation memory")
+                except Exception as e:
+                    self._log(f"Warning: Failed to save task summary to memory: {e}")
+    
+            # ── Checkpoint → Verify → Rollback-on-failure ──────────────────────────
+            # Skip when the agent made no repo edits and ran no shell commands (e.g. browse-only tasks),
+            # so pytest/npm verification does not fail unrelated workspaces.
+            _skip_post_verify = (
+                not task.files_changed
+                and not task.commands_executed
             )
-        
-        # Update token usage (primary + optional observation/diagnostics client)
-        usage = self.llm.get_usage_stats()
-        task.total_tokens_used = usage["total_tokens"]
-        if self._observation_llm is not None and self._observation_llm is not self.llm:
-            ou = self._observation_llm.get_usage_stats()
-            task.total_tokens_used += ou["total_tokens"]
-        
-        # Save final artifacts
-        if self._artifact_logger:
-            self._artifact_logger.update_tokens(task.total_tokens_used)
-            
-            # Get git diff if available
-            git_mgr = self._get_git_manager()
-            if git_mgr:
-                diff_result = await git_mgr.get_diff()
-                if diff_result and not diff_result.is_empty:
-                    self._artifact_logger.set_diff(diff_result.diff_text)
-            
-            # Get final summary from last assistant message
-            summary = ""
-            for msg in reversed(self.llm.conversation):
-                if msg.role == "assistant" and msg.content:
-                    summary = msg.content
-                    break
-            
-            # Complete the artifact logger
-            status = "completed" if task.status == TaskStatus.COMPLETED else "failed"
-            if self.state.phase == AgentPhase.BLOCKED:
-                status = "blocked"
-            self._artifact_logger.complete(status=status, summary=summary)
-            try:
-                _pm = PostMortemPayload(
-                    goal_or_task_id=task.task_id,
-                    diagnostic_triggers=list(self._post_mortem_diagnostic_triggers),
-                    recovery_paths=list(self._post_mortem_recovery_paths),
-                    failure_streaks=list(self._post_mortem_failure_streaks),
-                )
-                Path(self._artifact_logger.get_run_dir()).joinpath("post_mortem.md").write_text(
-                    format_post_mortem(_pm),
-                    encoding="utf-8",
-                )
-            except Exception as _pm_err:
-                self._log(f"Warning: could not write post_mortem.md: {_pm_err}")
-
-            self._log(f"Artifacts saved to: {self._artifact_logger.get_run_dir()}")
-        
-        # Save task summary to conversation memory (Phase 18)
-        if self._use_conversation_memory:
-            try:
-                self.save_task_summary(
-                    task=task,
-                    summary=summary,
-                    lessons_learned=list(self._session_self_correct_lessons),
-                )
-                self._log("Task summary saved to conversation memory")
-            except Exception as e:
-                self._log(f"Warning: Failed to save task summary to memory: {e}")
-
-        # ── Checkpoint → Verify → Rollback-on-failure ──────────────────────────
-        # Skip when the agent made no repo edits and ran no shell commands (e.g. browse-only tasks),
-        # so pytest/npm verification does not fail unrelated workspaces.
-        _skip_post_verify = (
-            not task.files_changed
-            and not task.commands_executed
-        )
-        if task.status == TaskStatus.COMPLETED and self.working_directory:
-            git_mgr = self._get_git_manager()
-            if git_mgr and _skip_post_verify:
-                self._log("Skipping post-task verification (no file edits or terminal commands)")
-                await self._trigger_callback(
-                    "on_message",
-                    "ℹ️ **Git**: Skipping automated verification — no workspace file edits or shell commands this run.",
-                    is_token=False,
-                )
-            elif git_mgr:
-                checkpoint_id = f"post-task-{task.task_id}"
-                try:
-                    # Create a checkpoint with the current changes
-                    await git_mgr.create_checkpoint(checkpoint_id, f"agent: {task.goal.description[:60]}")
-                    self._log(f"Checkpoint created: {checkpoint_id}")
+            if task.status == TaskStatus.COMPLETED and self.working_directory:
+                git_mgr = self._get_git_manager()
+                if git_mgr and _skip_post_verify:
+                    self._log("Skipping post-task verification (no file edits or terminal commands)")
                     await self._trigger_callback(
                         "on_message",
-                        "📌 **Git**: Checkpoint created — running verification…",
+                        "ℹ️ **Git**: Skipping automated verification — no workspace file edits or shell commands this run.",
                         is_token=False,
                     )
-
-                    # Run verification (tests, lints)
-                    verification = await self.run_verification(task_id=task.task_id)
-
-                    if verification and not verification.passed and verification.blocking_failures:
-                        # Tests failed — rollback to checkpoint
+                elif git_mgr:
+                    checkpoint_id = f"post-task-{task.task_id}"
+                    try:
+                        # Create a checkpoint with the current changes
+                        await git_mgr.create_checkpoint(checkpoint_id, f"agent: {task.goal.description[:60]}")
+                        self._log(f"Checkpoint created: {checkpoint_id}")
                         await self._trigger_callback(
                             "on_message",
-                            f"⚠️ **Verification failed** ({len(verification.blocking_failures)} issue(s)). "
-                            "Rolling back to last checkpoint…",
+                            "📌 **Git**: Checkpoint created — running verification…",
                             is_token=False,
                         )
-                        self._log(f"Verification failed. Rolling back to {checkpoint_id}")
-                        await git_mgr.rollback_to_checkpoint(checkpoint_id, hard=True)
-                        task.status = TaskStatus.FAILED
-                        task.last_error = (
-                            f"Verification failed: {', '.join(verification.blocking_failures)}"
-                        )
-                        await self._trigger_callback(
-                            "on_message",
-                            "🔄 **Rolled back** to pre-task state. Please review errors and retry.",
-                            is_token=False,
-                        )
-                    elif verification and verification.passed:
-                        self._log("Verification passed — keeping changes")
-                        await self._trigger_callback(
-                            "on_message",
-                            f"✅ **Verification passed** ({verification.checks_passed}/{verification.total_checks} checks)",
-                            is_token=False,
-                        )
-                except Exception as e:
-                    self._log(f"Checkpoint/verify step skipped: {e}")
-
-        # Auto git commit after task completion (only if still COMPLETED after verification)
-        if self.auto_git_commit and task.status == TaskStatus.COMPLETED and self.working_directory:
-            await self._auto_commit_changes(task)
-
-        # Optional teacher review + JSONL training log (OpenAI-first; see TEACHER_* env vars)
-        summary_for_teacher = ""
-        for _msg in reversed(self.llm.conversation):
-            if _msg.role == "assistant" and _msg.content:
-                summary_for_teacher = _msg.content
-                break
-        try:
-            await maybe_log_teacher_review(
-                task=task,
-                agent_model=self.llm.config.model,
-                conversation=list(self.llm.conversation),
-                summary=summary_for_teacher,
-                verbose=self.verbose,
-            )
-        except Exception as _e:
-            self._log(f"Teacher review skipped: {_e}")
-
-        return task
+    
+                        # Run verification (tests, lints)
+                        verification = await self.run_verification(task_id=task.task_id)
+    
+                        if verification and not verification.passed and verification.blocking_failures:
+                            # Tests failed — rollback to checkpoint
+                            await self._trigger_callback(
+                                "on_message",
+                                f"⚠️ **Verification failed** ({len(verification.blocking_failures)} issue(s)). "
+                                "Rolling back to last checkpoint…",
+                                is_token=False,
+                            )
+                            self._log(f"Verification failed. Rolling back to {checkpoint_id}")
+                            await git_mgr.rollback_to_checkpoint(checkpoint_id, hard=True)
+                            task.status = TaskStatus.FAILED
+                            task.last_error = (
+                                f"Verification failed: {', '.join(verification.blocking_failures)}"
+                            )
+                            await self._trigger_callback(
+                                "on_message",
+                                "🔄 **Rolled back** to pre-task state. Please review errors and retry.",
+                                is_token=False,
+                            )
+                        elif verification and verification.passed:
+                            self._log("Verification passed — keeping changes")
+                            await self._trigger_callback(
+                                "on_message",
+                                f"✅ **Verification passed** ({verification.checks_passed}/{verification.total_checks} checks)",
+                                is_token=False,
+                            )
+                    except Exception as e:
+                        self._log(f"Checkpoint/verify step skipped: {e}")
+    
+            # Auto git commit after task completion (only if still COMPLETED after verification)
+            if self.auto_git_commit and task.status == TaskStatus.COMPLETED and self.working_directory:
+                await self._auto_commit_changes(task)
+    
+            # Optional teacher review + JSONL training log (OpenAI-first; see TEACHER_* env vars)
+            summary_for_teacher = ""
+            for _msg in reversed(self.llm.conversation):
+                if _msg.role == "assistant" and _msg.content:
+                    summary_for_teacher = _msg.content
+                    break
+            try:
+                await maybe_log_teacher_review(
+                    task=task,
+                    agent_model=self.llm.config.model,
+                    conversation=list(self.llm.conversation),
+                    summary=summary_for_teacher,
+                    verbose=self.verbose,
+                )
+            except Exception as _e:
+                self._log(f"Teacher review skipped: {_e}")
+    
+            return task
+        finally:
+            if _bb_for_run:
+                await self._async_teardown_backbone()
 
     async def _auto_commit_changes(self, task: TaskState) -> None:
         """Automatically commit and optionally push changes after task completion."""
@@ -5242,7 +5271,45 @@ Call a tool (editor or terminal) immediately as your first action."""
                         self._log(f"Auto-push failed: {err[:200]}")
         except Exception as e:
             self._log(f"Auto-commit failed: {e}")
-    
+
+    async def _async_setup_backbone(self) -> None:
+        """Create EventStream + runtime + AgentController and start the consumer (idempotent)."""
+        if self._backbone_controller is not None:
+            return
+        from ..backbone import AgentStateStore, EventStream
+        from ..backbone.controller import AgentController, AgentHostRuntime
+        from ..backbone.local_runtime import LocalRuntime
+
+        store = AgentStateStore()
+        stream = EventStream(store=store)
+        use_host = os.environ.get("PLODDER_BACKBONE_HOST_RUNTIME", "1").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        runtime: Any = AgentHostRuntime(self) if use_host else LocalRuntime(self.registry)
+        controller = AgentController(stream, store, runtime)
+        self._backbone_stream = stream
+        self._backbone_runtime = runtime
+        self._backbone_controller = controller
+        await controller.start()
+
+    async def _async_teardown_backbone(self) -> None:
+        """Stop backbone consumer and clear references (safe if already torn down)."""
+        self._use_backbone_dispatch = False
+        ctrl = self._backbone_controller
+        if ctrl is None:
+            self._backbone_stream = None
+            self._backbone_runtime = None
+            return
+        try:
+            await ctrl.stop()
+        finally:
+            self._backbone_controller = None
+            self._backbone_stream = None
+            self._backbone_runtime = None
+
     async def run_simple(self, task_description: str) -> str:
         """
         Simplified interface to run a task from a description.
@@ -5253,29 +5320,34 @@ Call a tool (editor or terminal) immediately as your first action."""
         Returns:
             Summary of what was done
         """
-        task = TaskState(
-            task_id=str(uuid.uuid4()),
-            goal=TaskGoal(
-                description=task_description,
-                acceptance_criteria=[],
-            ),
-        )
-        
-        result = await self.run(task)
-        
-        # Get the last assistant message as summary
-        summary = f"Task {'completed' if result.status == TaskStatus.COMPLETED else 'failed'}"
-        for msg in reversed(self.llm.conversation):
-            if msg.role == "assistant" and msg.content:
-                summary = msg.content
-                break
-                
-        if result.status == TaskStatus.COMPLETED:
-            await self._trigger_callback("on_task_complete", summary)
-        elif result.status == TaskStatus.FAILED:
-            await self._trigger_callback("on_task_failed", result.last_error)
-        
-        return summary
+        await self._async_setup_backbone()
+        self._use_backbone_dispatch = True
+        try:
+            task = TaskState(
+                task_id=str(uuid.uuid4()),
+                goal=TaskGoal(
+                    description=task_description,
+                    acceptance_criteria=[],
+                ),
+            )
+
+            result = await self.run(task)
+
+            # Get the last assistant message as summary
+            summary = f"Task {'completed' if result.status == TaskStatus.COMPLETED else 'failed'}"
+            for msg in reversed(self.llm.conversation):
+                if msg.role == "assistant" and msg.content:
+                    summary = msg.content
+                    break
+
+            if result.status == TaskStatus.COMPLETED:
+                await self._trigger_callback("on_task_complete", summary)
+            elif result.status == TaskStatus.FAILED:
+                await self._trigger_callback("on_task_failed", result.last_error)
+
+            return summary
+        finally:
+            await self._async_teardown_backbone()
 
 
 async def create_agent(
