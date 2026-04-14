@@ -237,6 +237,10 @@ class UnifiedSessionDriver:
                 "--overwrite`** (and **`--no-interactive`** when the CLI supports it). "
                 "If you see **Operation cancelled**, do **not** repeat the same bare `npx create-vite …` without "
                 "``--overwrite`` or a clean path.\n"
+                "\n**Persisted shell cwd**: Plodder may prepend **`cd`** from ``.plodder/shell/session_state.json`` "
+                "each ``sandbox_shell`` run. Before ``cd <subdir>``, run **`pwd`** (or ``fs_read`` that JSON). "
+                "If you are **already inside** `<subdir>`, another ``cd <subdir>`` fails — run **``npm run build``** "
+                "etc. without that extra ``cd``.\n"
             )
             snap = self._host_environment_snapshot_block()
             if snap.strip():

@@ -23,6 +23,21 @@ def test_goal_suggests_frontend_stack() -> None:
     assert not goal_suggests_frontend_stack("Fix typo in README")
 
 
+def test_terminal_failure_followup_hints_cd_no_such_file() -> None:
+    results = [
+        {
+            "tool": "sandbox_shell",
+            "ok": False,
+            "command": "sh -c cd smoke-ui && npm run build",
+            "stdout": "",
+            "stderr": "/bin/bash: line 1: cd: smoke-ui: No such file or directory\n",
+        }
+    ]
+    hint = terminal_failure_followup_hints(results)
+    assert "pwd" in hint.lower()
+    assert "session_state" in hint.lower() or "cwd" in hint.lower()
+
+
 def test_terminal_failure_followup_hints_create_vite_cancel() -> None:
     results = [
         {
