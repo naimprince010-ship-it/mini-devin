@@ -308,5 +308,6 @@ class UniversalPromptEngine:
 | `browser_type` | `element_id`, `text`, `submit` (bool, press Enter after fill), same options as `browser_click` | **Hands**: fill input/textarea, optional submit. |
 | `browser_scroll` | `direction` (`up` / `down` / `top` / `bottom`), `pixels` (optional, default 600) | Scroll the viewport. |
 | `browser_close` | (none) | Close the Playwright session (normally automatic at session end). |
+| `live_preview` | `action` (`probe` or `set_active_port`), `ports` (optional list of ints for probe), `port` (int for set_active_port) | **Live Preview iframe**: probe which allowed ports accept TCP on **this host's** `127.0.0.1`, then register one so the UI **Browser** tab can load `/api/sessions/<session_id>/live-preview/`. Requires `session_id` on the driver (or env `PLODDER_SESSION_ID`). Use with **host** `sandbox_shell` (dev server on localhost); ephemeral Docker shell does not publish ports to the host. |
 
 **Notes:** `sandbox_*` requires Docker. For `sandbox_shell`, `argv` runs in `/workspace` with **session-persistent cwd and exports** (see `.plodder/shell/session_state.json`). `search_codebase` requires a successful workspace index at session start (see transcript `code_index` phase). Browser tools require Playwright + Chromium (`pip install playwright && playwright install chromium`)."""

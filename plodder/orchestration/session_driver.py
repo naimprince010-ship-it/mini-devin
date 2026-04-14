@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -108,6 +109,7 @@ _BASE_ALLOWED_TOOLS = frozenset(
         "browser_type",
         "browser_scroll",
         "browser_close",
+        "live_preview",
     }
 )
 
@@ -156,10 +158,13 @@ class UnifiedSessionDriver:
         enable_stateful_shell: bool = True,
         enforce_think_before_act: bool = True,
         inject_long_context_anchor: bool = True,
+        session_id: str | None = None,
     ) -> None:
         self._llm = llm
         self._ws = workspace
         self._sandbox = sandbox
+        raw_sid = session_id if session_id is not None else os.environ.get("PLODDER_SESSION_ID")
+        self._session_id = (raw_sid or "").strip() or None
         self._engine = engine or UniversalPromptEngine(PolyglotSystemPrompt())
         self._max_rounds = max_rounds
         self._max_tool_calls_per_turn = max_tool_calls_per_turn
@@ -213,6 +218,16 @@ class UnifiedSessionDriver:
                     + _truncate(snap, 9000)
                     + "\n```\n"
                 )
+            seed_user += (
+                "\n\n## Live Preview (optional; same API as the mini-devin agent)\n"
+                "When a **dev server is listening on this machine’s** ``127.0.0.1`` (typical with **host "
+                "process** ``sandbox_shell``, e.g. Railway without Docker), call **`live_preview`** with "
+                "``action: probe`` (optional ``ports`` list), then **`live_preview`** with ``action: set_active_port`` "
+                "and ``port`` set to a **listening** port from the probe so the **Browser** tab can load the "
+                "proxied iframe. Use **``playwright_observe``** with the same host URL (e.g. ``http://127.0.0.1:5173``). "
+                "**Ephemeral Docker** ``sandbox_shell`` runs cannot publish ports to the host — probe will usually "
+                "return empty; then use a tunnel URL in ``playwright_observe`` or switch to host sandbox.\n"
+            )
         return seed_user
 
     def _host_environment_snapshot_block(self) -> str:
@@ -634,6 +649,8 @@ class UnifiedSessionDriver:
                 return await self._tool_sandbox_run_async(args)
             if name == "sandbox_shell":
                 return await self._tool_sandbox_shell_async(args)
+            if name == "live_preview":
+                return await self._tool_live_preview_async(args)
             if name == "github":
                 from plodder.orchestration.github_tool_dispatch import run_github_tool_for_workspace
 
@@ -805,6 +822,85 @@ class UnifiedSessionDriver:
             network=network,
         )
         return self._sandbox_result_dict("sandbox_run", result)
+
+    async def _tool_live_preview_async(self, args: dict[str, Any]) -> dict[str, Any]:
+        """
+        Register a listening TCP port on **this host's** ``127.0.0.1`` for the session Live Preview iframe.
+
+        Matches :func:`mini_devin.orchestrator.agent.Agent._execute_tool` ``live_preview`` behaviour;
+        requires ``session_id`` (constructor or ``PLODDER_SESSION_ID``).
+        """
+        from mini_devin.api.live_preview_state import (
+            allowed_ports,
+            probe_local_ports_sync,
+            set_session_preview_port,
+        )
+
+        sid = self._session_id
+        if not sid:
+            return {
+                "tool": "live_preview",
+                "ok": False,
+                "error": (
+                    "session_id not set — pass ``session_id`` to ``UnifiedSessionDriver`` / ``AgentSessionDriver`` "
+                    "or set env ``PLODDER_SESSION_ID`` to the API session id so Live Preview can register."
+                ),
+            }
+
+        action = str(args.get("action", "probe") or "probe").lower()
+        if action == "probe":
+            ports = args.get("ports")
+            if not isinstance(ports, list) or not ports:
+                raw = (os.environ.get("LIVE_PREVIEW_PROBE_PORTS") or "5173,3000,8080,4200,8000").strip()
+                ports = []
+                for x in raw.split(","):
+                    x = x.strip()
+                    if x.isdigit():
+                        ports.append(int(x))
+            try:
+                candidates = [int(p) for p in ports]
+            except (TypeError, ValueError):
+                candidates = [5173, 3000, 8080]
+            listening = probe_local_ports_sync(candidates)
+            return {
+                "tool": "live_preview",
+                "ok": True,
+                "action": "probe",
+                "listening_ports": listening,
+                "allowed_ports": sorted(allowed_ports()),
+                "next_step": (
+                    "If a port listed is your dev server, call live_preview with action set_active_port "
+                    "and port=<that int> so the Browser tab iframe can load /api/sessions/<id>/live-preview/."
+                ),
+                "note": (
+                    "Ports must accept TCP on 127.0.0.1 on **this** machine. Ephemeral Docker sandbox_shell "
+                    "commands do not expose listener ports here — use host process sandbox, port publish, or a tunnel URL."
+                ),
+            }
+
+        if action == "set_active_port":
+            try:
+                p = int(args.get("port", 0))
+            except (TypeError, ValueError):
+                return {"tool": "live_preview", "ok": False, "error": "invalid port", "action": "set_active_port"}
+            ok = await set_session_preview_port(sid, p)
+            if not ok:
+                return {
+                    "tool": "live_preview",
+                    "ok": False,
+                    "action": "set_active_port",
+                    "error": f"Port {p} not allowed or not accepting TCP on 127.0.0.1",
+                    "allowed_ports": sorted(allowed_ports()),
+                }
+            return {
+                "tool": "live_preview",
+                "ok": True,
+                "action": "set_active_port",
+                "active_port": p,
+                "browser_iframe": f"/api/sessions/{sid}/live-preview/",
+            }
+
+        return {"tool": "live_preview", "ok": False, "error": f"unknown live_preview action {action!r}"}
 
     async def _tool_gitleaks_async(self, args: dict[str, Any]) -> dict[str, Any]:
         import shutil
