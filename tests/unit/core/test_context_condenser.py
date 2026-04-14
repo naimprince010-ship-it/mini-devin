@@ -157,3 +157,14 @@ def test_condense_inserts_summary_block(low_condense_thresholds):
     assert out[0]["role"] == "system"
     assert out[1]["content"] == "goal"
     assert out[-1]["content"] == "o3"
+
+
+def test_find_suffix_start_none_when_no_assistant_for_tool_call_id():
+    """Do not slice a suffix that begins with an orphan ``tool`` (would break OpenAI ordering)."""
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "goal"},
+        {"role": "assistant", "content": "no tools here"},
+        {"role": "tool", "tool_call_id": "orphan_id", "name": "terminal", "content": "out"},
+    ]
+    assert find_suffix_start_for_last_n_tool_observations(messages, last_n=1) is None

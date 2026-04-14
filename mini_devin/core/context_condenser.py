@@ -48,7 +48,8 @@ def find_suffix_start_for_last_n_tool_observations(
             continue
         if str(tcid) in _tool_call_ids_for_assistant(m):
             return i
-    return first_keep
+    # Corrupt / partial transcripts: never start the suffix on an orphan ``tool`` row.
+    return None
 
 
 def split_goal_prefix(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
