@@ -556,10 +556,12 @@ function App() {
             )}
           </div>
 
-          {/* Content */}
-          <div className="flex-1 flex overflow-hidden">
+          {/* Content — min-w-0 so flex row children can shrink; session view must flex-1 to fill width */}
+          <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
             {activeTab === 'sessions' && selectedSession ? (
-              <div className={`h-full min-h-0 flex flex-col ${bgPrimary} overflow-hidden`}>
+              <div
+                className={`flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden ${bgPrimary}`}
+              >
                 <SessionWorkspaceShell
                   session={selectedSession}
                   isDark={isDark}

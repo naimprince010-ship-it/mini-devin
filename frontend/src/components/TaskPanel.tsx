@@ -473,7 +473,7 @@ export function TaskPanel({
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#0f0f0f]">
+    <div className="flex h-full min-h-0 w-full min-w-0 flex-col bg-[#0f0f0f]">
       {/* Header */}
       <div className="px-6 py-4 border-b border-[#262626] bg-[#0f0f0f]/80 backdrop-blur-md sticky top-0 z-10">
         <div className="flex items-center justify-between gap-3">

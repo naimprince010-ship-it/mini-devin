@@ -100,7 +100,7 @@ export function SessionWorkspaceShell({
       : null;
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col gap-2 p-2 lg:gap-3 lg:p-0">
+    <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col gap-2 p-2 lg:gap-3 lg:p-0">
       {/* OpenHands-style: conversation identity (left) + workspace tab strip (right) */}
       <div className="flex flex-shrink-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0 flex-1">
@@ -211,7 +211,7 @@ export function SessionWorkspaceShell({
           {workspaceOpen ? (
             <PanelGroup
               direction="horizontal"
-              className="h-full"
+              className="h-full w-full min-w-0"
               autoSaveId="plodder:workspace-split"
             >
               <Panel defaultSize={58} minSize={30} maxSize={80}>
