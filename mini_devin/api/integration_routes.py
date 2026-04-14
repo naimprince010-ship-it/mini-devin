@@ -54,7 +54,7 @@ async def my_permissions(current_user: UserModel = Depends(get_current_user)) ->
     return {"role": role.value, "permissions": perms}
 
 
-@router.post("/slack/events")
+@router.post("/slack/events", response_model=None)
 async def slack_events(request: Request) -> dict[str, Any] | JSONResponse:
     """
     Slack Events API receiver (stub).
