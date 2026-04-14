@@ -32,6 +32,11 @@ html.light-mode body {
 @tailwind components;
 @tailwind utilities;
 
+#root {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
 body {
   margin: 0;
   background-color: var(--bg-primary);

@@ -100,7 +100,7 @@ export function SessionWorkspaceShell({
       : null;
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col gap-2 p-2 md:gap-3 md:p-0">
+    <div className="flex h-full min-h-0 flex-1 flex-col gap-2 p-2 lg:gap-3 lg:p-0">
       {/* OpenHands-style: conversation identity (left) + workspace tab strip (right) */}
       <div className="flex flex-shrink-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0 flex-1">
@@ -123,7 +123,7 @@ export function SessionWorkspaceShell({
           ) : null}
         </div>
 
-        <div className="flex flex-wrap items-center justify-start gap-1.5 sm:justify-end md:gap-2">
+        <div className="flex flex-wrap items-center justify-start gap-1.5 sm:justify-end lg:gap-2">
           {ALL_TABS.map((id) => {
             const active = workspaceTab === id;
             return (
@@ -137,7 +137,7 @@ export function SessionWorkspaceShell({
                   setMobilePane('workspace');
                 }}
                 title={TAB_LABELS[id]}
-                className={`flex cursor-pointer items-center gap-2 rounded-md pl-1.5 pr-2 py-1 transition-colors md:py-1.5 ${tabIdle} ${handleBg} ${
+                className={`flex cursor-pointer items-center gap-2 rounded-md pl-1.5 pr-2 py-1 transition-colors lg:py-1.5 ${tabIdle} ${handleBg} ${
                   active ? tabActive : ''
                 }`}
               >
@@ -158,7 +158,7 @@ export function SessionWorkspaceShell({
             title={workspaceOpen ? 'Hide workspace panel' : 'Show workspace panel'}
             aria-label={workspaceOpen ? 'Hide workspace panel' : 'Show workspace panel'}
             onClick={() => persistOpen(!workspaceOpen)}
-            className={`rounded-md p-1.5 ${tabIdle} ${handleBg} hidden md:inline-flex`}
+            className={`rounded-md p-1.5 ${tabIdle} ${handleBg} hidden lg:inline-flex`}
           >
             {workspaceOpen ? (
               <PanelRightClose className="h-5 w-5" />
@@ -169,8 +169,8 @@ export function SessionWorkspaceShell({
         </div>
       </div>
 
-      {/* Mobile: chat vs workspace (OpenHands-style stacked / sheet intent) */}
-      <div className="flex flex-shrink-0 items-center gap-1 rounded-lg border border-[var(--border-color)] p-0.5 md:hidden">
+      {/* Below lg: stacked chat/workspace (tablets / narrow laptops) */}
+      <div className="flex flex-shrink-0 items-center gap-1 rounded-lg border border-[var(--border-color)] p-0.5 lg:hidden">
         <button
           type="button"
           className={`flex-1 rounded-md py-1.5 text-xs font-medium ${
@@ -204,13 +204,17 @@ export function SessionWorkspaceShell({
       </div>
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        {/* Desktop: resizable split */}
+        {/* lg+: resizable split (persisted). Below lg: single-pane toggle above. */}
         <div
-          className={`hidden h-full min-h-0 md:block ${!workspaceOpen ? 'flex flex-col' : ''}`}
+          className={`hidden h-full min-h-0 lg:block ${!workspaceOpen ? 'flex flex-col' : ''}`}
         >
           {workspaceOpen ? (
-            <PanelGroup direction="horizontal" className="h-full">
-              <Panel defaultSize={50} minSize={28} maxSize={72}>
+            <PanelGroup
+              direction="horizontal"
+              className="h-full"
+              autoSaveId="plodder:workspace-split"
+            >
+              <Panel defaultSize={58} minSize={30} maxSize={80}>
                 <div className="flex h-full min-h-0 flex-col overflow-hidden">
                   <ErrorBoundary>
                     <TaskPanel
@@ -223,9 +227,10 @@ export function SessionWorkspaceShell({
                 </div>
               </Panel>
               <PanelResizeHandle
-                className={`w-px flex-shrink-0 cursor-col-resize transition-colors hover:bg-[#00ff99]/30 ${isDark ? 'bg-[#1a1a1a]' : 'bg-[#e5e5e5]'}`}
+                hitAreaMargins={{ coarse: 12, fine: 8 }}
+                className={`w-1 flex-shrink-0 cursor-col-resize transition-colors hover:bg-[#00ff99]/30 ${isDark ? 'bg-[#1a1a1a]' : 'bg-[#e5e5e5]'}`}
               />
-              <Panel defaultSize={50} minSize={28}>
+              <Panel defaultSize={42} minSize={20} maxSize={70}>
                 <ErrorBoundary>
                   <WorkspacePanel
                     sessionId={session.session_id}
@@ -252,8 +257,8 @@ export function SessionWorkspaceShell({
           )}
         </div>
 
-        {/* Mobile: single pane */}
-        <div className="flex h-full min-h-0 flex-col md:hidden">
+        {/* Below lg: full-width single pane */}
+        <div className="flex h-full min-h-0 flex-col lg:hidden">
           {mobilePane === 'chat' ? (
             <ErrorBoundary>
               <TaskPanel

@@ -357,7 +357,7 @@ function App() {
 
   if (loading) {
     return (
-      <div className="h-screen flex items-center justify-center bg-[#0f0f0f]">
+      <div className="flex min-h-0 h-dvh items-center justify-center bg-[#0f0f0f]">
         <Loader2 className="animate-spin text-[#00ff99]" size={48} />
       </div>
     );
@@ -414,7 +414,9 @@ function App() {
         />
       )}
 
-      <div className={`h-screen flex ${bgPrimary} ${textPrimary} overflow-hidden`}>
+      <div
+        className={`flex min-h-0 h-dvh max-h-dvh flex-row ${bgPrimary} ${textPrimary} overflow-hidden pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)]`}
+      >
         {/* Left Sidebar — hidden on mobile, slide-in on toggle */}
         <aside
           className={`
