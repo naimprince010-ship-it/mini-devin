@@ -898,21 +898,24 @@ class UnifiedSessionDriver:
             except (TypeError, ValueError):
                 candidates = [5173, 3000, 8080]
             listening = probe_local_ports_sync(candidates)
-            return {
+            out_probe: dict[str, Any] = {
                 "tool": "live_preview",
                 "ok": True,
                 "action": "probe",
                 "listening_ports": listening,
                 "allowed_ports": sorted(allowed_ports()),
                 "next_step": (
-                    "If a port listed is your dev server, call live_preview with action set_active_port "
-                    "and port=<that int> so the Browser tab iframe can load /api/sessions/<id>/live-preview/."
+                    "If a port is **your workspace dev server** (e.g. Vite), call live_preview with action set_active_port "
+                    "and port=<that int> so the Browser tab iframe can load /api/sessions/<id>/live-preview/. "
+                    "Do not use Live Preview for external domains — use browser_playwright or browser_fetch."
                 ),
                 "note": (
                     "Ports must accept TCP on 127.0.0.1 on **this** machine. Ephemeral Docker sandbox_shell "
                     "commands do not expose listener ports here — use host process sandbox, port publish, or a tunnel URL."
                 ),
             }
+            out_probe.update(live_preview_probe_hints(listening_ports=listening))
+            return out_probe
 
         if action == "set_active_port":
             try:
