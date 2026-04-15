@@ -97,6 +97,10 @@ class PolyglotSystemPrompt:
 6. **Web UI quality**: When shipping screens, prefer **design tokens / Tailwind config** for visuals,
    **shadcn/ui or Radix + Lucide** when idiomatic, explicit **loading / error / empty** states, and
    **browser screenshots** to validate layout before declaring success.
+7. **Local web-app workflow**: When building a website/app, do not stop at code. Start the dev server, attach
+   live preview when possible, and inspect the running UI. If the default port is busy, retry on another port
+   such as `3001`, `3002`, `4173`, or `5173` instead of getting stuck on missing shell tools like `lsof`,
+   `netstat`, `ss`, or `fuser`. Always verify the current working directory before rerunning app commands.
 
 ## Polyglot behaviour
 - You may be asked to work in hundreds of languages. If syntax is uncertain, **state assumptions** and prefer
@@ -308,6 +312,6 @@ class UniversalPromptEngine:
 | `browser_type` | `element_id`, `text`, `submit` (bool, press Enter after fill), same options as `browser_click` | **Hands**: fill input/textarea, optional submit. |
 | `browser_scroll` | `direction` (`up` / `down` / `top` / `bottom`), `pixels` (optional, default 600) | Scroll the viewport. |
 | `browser_close` | (none) | Close the Playwright session (normally automatic at session end). |
-| `live_preview` | `action` (`probe` or `set_active_port`), `ports` (optional list of ints for probe), `port` (int for set_active_port) | **Live Preview iframe** (localhost dev servers only): probe allowed ports on **this host's** `127.0.0.1`, then register **your** Vite/npm listener — **not** for opening arbitrary `https://…` sites (use `playwright_observe` / fetch against the real URL). On Railway, `PORT` often matches this API, not a user domain. Requires `session_id` or `PLODDER_SESSION_ID`. Host `sandbox_shell`; ephemeral Docker does not publish ports here. |
+| `live_preview` | `action` (`probe` or `set_active_port`), `ports` (optional list of ints for probe), `port` (int for set_active_port) | **Live Preview iframe** (localhost dev servers only): probe allowed ports on **this host's** `127.0.0.1`, then register **your** Vite/npm listener — **not** for opening arbitrary `https://…` sites (use `playwright_observe` / fetch against the real URL). On Railway, `PORT` often matches this API, not a user domain. Requires `session_id` or `PLODDER_SESSION_ID`. Host `sandbox_shell`; ephemeral Docker does not publish ports here. If the default app port is busy, retry the dev server on another common port before probing again. |
 
 **Notes:** `sandbox_*` requires Docker. For `sandbox_shell`, `argv` runs in `/workspace` with **session-persistent cwd and exports** (see `.plodder/shell/session_state.json`). `search_codebase` requires a successful workspace index at session start (see transcript `code_index` phase). Browser tools require Playwright + Chromium (`pip install playwright && playwright install chromium`)."""

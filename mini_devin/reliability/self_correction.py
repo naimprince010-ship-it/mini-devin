@@ -186,6 +186,25 @@ def incremental_recovery_hint(
         cmd = (last_failed_command or "").strip() or str(args.get("command", ""))
     cmd_l = cmd.lower()
 
+    if tool_name == "terminal" and (
+        "lsof" in ol and "not found" in ol
+        or "netstat" in ol and "not found" in ol
+        or re.search(r"\bss:\s+command not found\b", ol)
+        or "fuser" in ol and "not found" in ol
+    ):
+        return (
+            "**Incremental recovery (missing port tools):** The environment lacks `lsof`/`netstat`/`ss`/`fuser`. "
+            "Do not loop on shell diagnostics; retry the dev server on a different port and then inspect the "
+            "app or attach live preview once it is running."
+        )
+
+    if tool_name == "terminal" and "no such file" in ol and "cd " in cmd_l:
+        return (
+            "**Incremental recovery (cwd/path):** The working directory may be wrong. "
+            "Run **`pwd`** and **`ls`** first, confirm the target directory exists, then retry the command from the "
+            "correct repo/app folder instead of assuming the previous `cd` still applies."
+        )
+
     # --- Python tests (pytest / unittest) ---------------------------------
     if tool_name == "terminal" and ("pytest" in cmd_l or "py.test" in cmd_l):
         return (
@@ -207,6 +226,18 @@ def incremental_recovery_hint(
     if tool_name == "terminal" and any(
         k in cmd_l for k in (" npm ", "npm ", "npx ", "yarn ", "pnpm ", "node ", "pnpm", "yarn")
     ):
+        if (
+            "eaddrinuse" in ol
+            or "address already in use" in ol
+            or "port 3000 is in use" in ol
+            or "port is already in use" in ol
+        ) and any(k in cmd_l for k in ("dev", "start", "next", "vite")):
+            return (
+                "**Incremental recovery (dev server port conflict):** The default port is busy. "
+                "Do not get stuck on `lsof`, `netstat`, `ss`, or `fuser` if they are missing. "
+                "Retry the dev server on another port such as `3001`, `3002`, `4173`, or `5173`, "
+                "then probe/attach live preview to the new port."
+            )
         return (
             "**Incremental recovery (Node/npm):** Inspect `package.json` (`cat package.json` / `head package.json`), "
             "confirm `ls node_modules` (or `ls -la node_modules/<pkg>`), and verify you are in the directory that contains `package.json`."
@@ -227,6 +258,12 @@ def incremental_recovery_hint(
         )
 
     if "file not found" in ol or "no such file" in ol:
+        if "cd " in cmd_l or "cwd" in ol:
+            return (
+                "**Incremental recovery (cwd/path):** The working directory may be wrong. "
+                "Run **`pwd`** and **`ls`** first, confirm the target directory exists, then retry the command from the "
+                "correct repo/app folder instead of assuming the previous `cd` still applies."
+            )
         return (
             "**Incremental recovery:** From workspace root, run **`pwd`**, **`ls`**, or **`find . -maxdepth 3`** "
             "to confirm the path before opening or executing files."

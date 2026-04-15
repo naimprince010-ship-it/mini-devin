@@ -176,3 +176,44 @@ def test_incremental_recovery_hint_npm():
     )
     low = h.lower()
     assert "package.json" in low or "node_modules" in low
+
+
+def test_incremental_recovery_hint_dev_server_port_conflict():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.COMMAND_FAILED,
+        "listen EADDRINUSE: address already in use :::3000",
+        last_failed_command="npm run dev",
+    )
+    low = h.lower()
+    assert "3001" in h or "5173" in h or "4173" in h
+    assert "lsof" in low or "netstat" in low
+    assert "live preview" in low or "preview" in low
+
+
+def test_incremental_recovery_hint_missing_port_tools():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.COMMAND_FAILED,
+        "/bin/bash: line 1: lsof: command not found",
+        last_failed_command="lsof -i :3000",
+    )
+    low = h.lower()
+    assert "lsof" in low
+    assert "different port" in low or "another port" in low
+
+
+def test_incremental_recovery_hint_cwd_mismatch():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.FILE_NOT_FOUND,
+        "/bin/bash: line 8: cd: my-web-app: No such file or directory",
+        last_failed_command="cd my-web-app && npm run dev",
+    )
+    low = h.lower()
+    assert "working directory" in low or "cwd" in low
+    assert "pwd" in low
+    assert "ls" in low

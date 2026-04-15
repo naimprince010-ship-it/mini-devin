@@ -37,6 +37,34 @@ def terminal_recovery_hint(
     if "npm err" in text or "npm error" in text:
         return "**Hint**: npm failure — try `npm ci` vs `npm install`, delete `node_modules` + lockfile mismatch, or check Node version."
 
+    if (
+        "eaddrinuse" in text
+        or "address already in use" in text
+        or "port 3000 is in use" in text
+        or "port is already in use" in text
+    ):
+        return (
+            "**Hint**: Dev server port conflict — retry on another port like `3001`, `3002`, `4173`, or `5173` "
+            "instead of looping on unavailable port-inspection tools."
+        )
+
+    if (
+        "lsof" in text and "not found" in text
+        or "netstat" in text and "not found" in text
+        or "ss: command not found" in text
+        or "fuser" in text and "not found" in text
+    ):
+        return (
+            "**Hint**: Port diagnostic tools are missing in this environment — choose another dev-server port "
+            "or check app startup another way instead of retrying the same shell command."
+        )
+
+    if "no such file or directory" in text and ("cd " in cmd or "cwd" in text):
+        return (
+            "**Hint**: Working directory mismatch — run `pwd` and `ls` first, then retry from the directory that "
+            "actually contains the app or script."
+        )
+
     if "err_connection" in text or "could not resolve host" in text:
         return "**Hint**: Network/DNS failure — retry, check proxy/VPN, or use offline mode if available."
 
