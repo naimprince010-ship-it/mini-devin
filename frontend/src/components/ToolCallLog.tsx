@@ -48,6 +48,32 @@ function getInputSummary(tool: string, input: Record<string, unknown>): string {
     return JSON.stringify(input).slice(0, 60);
 }
 
+function getSuccessDetails(output: Record<string, unknown> | undefined): string[] {
+    if (!output) return [];
+    const details: string[] = [];
+    const prUrl = output.pr_url;
+    if (typeof prUrl === 'string' && prUrl) {
+        details.push(`PR: ${prUrl}`);
+    }
+    const branchName = output.branch_name;
+    if (typeof branchName === 'string' && branchName) {
+        details.push(`Branch: ${branchName}`);
+    }
+    const commitSha = output.commit_sha;
+    if (typeof commitSha === 'string' && commitSha) {
+        details.push(`Commit: ${commitSha.slice(0, 12)}`);
+    }
+    const issueNumber = output.issue_number;
+    if (typeof issueNumber === 'number') {
+        details.push(`Issue: #${issueNumber}`);
+    }
+    const message = output.message;
+    if (details.length === 0 && typeof message === 'string' && message) {
+        details.push(message);
+    }
+    return details.slice(0, 3);
+}
+
 export const ToolCallLog: React.FC<ToolCallLogProps> = ({ toolCalls }) => {
     if (toolCalls.length === 0) {
         return (
@@ -100,6 +126,15 @@ export const ToolCallLog: React.FC<ToolCallLogProps> = ({ toolCalls }) => {
                         {entry.status === 'failed' && entry.output?.error !== undefined && (
                             <div className="mt-1 text-[11px] text-red-400 truncate">
                                 {String(entry.output.error)}
+                            </div>
+                        )}
+                        {entry.status === 'completed' && getSuccessDetails(entry.output).length > 0 && (
+                            <div className="mt-1 space-y-0.5">
+                                {getSuccessDetails(entry.output).map((detail) => (
+                                    <div key={detail} className="text-[11px] text-[#9ae6b4] truncate">
+                                        {detail}
+                                    </div>
+                                ))}
                             </div>
                         )}
                     </div>

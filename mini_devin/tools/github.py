@@ -7,6 +7,7 @@ commits, and pull requests.
 
 import json
 import os
+import subprocess
 from enum import Enum
 from typing import Any, List, Optional, Union
 
@@ -32,6 +33,11 @@ def _resolve_base_branch(base: Optional[str]) -> Optional[str]:
 class GitHubAction(str, Enum):
     """Available GitHub actions."""
 
+    GET_REPO_CONTEXT = "get_repo_context"
+    LIST_ISSUES = "list_issues"
+    GET_ISSUE = "get_issue"
+    LIST_PULL_REQUESTS = "list_pull_requests"
+    GET_PULL_REQUEST = "get_pull_request"
     CREATE_BRANCH = "create_branch"
     COMMIT = "commit"
     CREATE_PR = "create_pr"
@@ -62,6 +68,13 @@ class GitHubToolInput(BaseToolInput):
     
     # Automated Workflow parameters
     task_description: Optional[str] = Field(default=None, description="Task description for automated workflow")
+    issue_number: Optional[int] = Field(default=None, description="Issue number for get_issue")
+    state: str = Field(default="open", description="State filter for list_issues / list_pull_requests")
+    include_comments: bool = Field(
+        default=True,
+        description="Include comments in get_issue / get_pull_request responses",
+    )
+    limit: int = Field(default=20, ge=1, le=100, description="Max results for list actions")
 
     pr_number: Optional[int] = Field(default=None, description="Pull request number (get_pr_status, merge_pr)")
     merge_method: Optional[str] = Field(
@@ -82,6 +95,8 @@ class GitHubToolOutput(BaseToolOutput):
     success: bool = Field(description="Whether the action succeeded")
     message: str = Field(description="Result message")
     pr_url: Optional[str] = Field(default=None, description="Pull request URL, if applicable")
+    data: Any = Field(default=None, description="Structured GitHub response payload")
+    branch_name: Optional[str] = Field(default=None, description="Relevant branch name")
 
 class GitHubTool(BaseTool[GitHubToolInput, GitHubToolOutput]):
     """Tool for GitHub operations."""
@@ -93,6 +108,9 @@ class GitHubTool(BaseTool[GitHubToolInput, GitHubToolOutput]):
 - create_branch: Create and push a new branch from the default branch (``base_branch``: ``default``)
 - commit: Commit and push on the current branch
 - create_pr: Open a PR/MR (``base_branch``: ``default``)
+- get_repo_context: Fetch repository metadata, labels, and branch info
+- list_issues / get_issue: Fetch issue context with labels/comments
+- list_pull_requests / get_pull_request: Fetch PR context with comments/review signals
 - automated_workflow: Branch -> commit -> PR/MR in one shot
 - get_pr_status: JSON status for a PR/MR number
 - merge_pr: Merge (squash by default). Bitbucket remotes are not supported."""
@@ -113,10 +131,71 @@ class GitHubTool(BaseTool[GitHubToolInput, GitHubToolOutput]):
             return self._gitlab
         return self.github_integration
 
+    def _summarize_changed_files(self, repo_path: str) -> list[str]:
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--name-only", "--cached"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            files = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+            if files:
+                return files[:50]
+            result = subprocess.run(
+                ["git", "diff", "--name-only"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return [line.strip() for line in (result.stdout or "").splitlines() if line.strip()][:50]
+        except Exception:
+            return []
+
+    def _build_pr_description(self, input_data: GitHubToolInput) -> str:
+        summary_lines: list[str] = []
+        if input_data.task_description:
+            summary_lines.append(input_data.task_description.strip())
+        if input_data.issue_number is not None:
+            summary_lines.append(f"Addresses GitHub issue #{input_data.issue_number}.")
+        if not summary_lines:
+            summary_lines.append("Implements the requested code changes.")
+
+        changed_files = input_data.files or self._summarize_changed_files(input_data.repo_path)
+        lines = [
+            "## Summary",
+            *[f"- {line}" for line in summary_lines],
+        ]
+        if changed_files:
+            lines.extend(
+                [
+                    "",
+                    "## Changed Files",
+                    *[f"- `{path}`" for path in changed_files],
+                ]
+            )
+        lines.extend(
+            [
+                "",
+                "## Verification",
+                "- Local verification completed before PR creation.",
+            ]
+        )
+        if input_data.linked_issues:
+            lines.extend(
+                [
+                    "",
+                    "## Linked Issues",
+                    *[f"- Closes #{issue}" for issue in input_data.linked_issues],
+                ]
+            )
+        return "\n".join(lines).strip()
+
     async def _init_if_needed(self, repo_path: str):
         if self.initialized:
             return
-        import subprocess
 
         url = ""
         try:
@@ -185,6 +264,120 @@ class GitHubTool(BaseTool[GitHubToolInput, GitHubToolOutput]):
 
             backend = self._host_backend()
 
+            def _supports(method_name: str) -> bool:
+                return callable(getattr(backend, method_name, None))
+
+            if input_data.action == GitHubAction.GET_REPO_CONTEXT:
+                if not _supports("get_repository_context"):
+                    return GitHubToolOutput(
+                        status=ToolStatus.FAILURE,
+                        execution_time_ms=0,
+                        success=False,
+                        message="Repository context is not supported for this git host.",
+                    )
+                context = await backend.get_repository_context(issue_limit=input_data.limit)
+                return GitHubToolOutput(
+                    status=ToolStatus.SUCCESS if context else ToolStatus.FAILURE,
+                    execution_time_ms=0,
+                    success=bool(context),
+                    message="Loaded repository context" if context else "Failed to load repository context",
+                    data=context,
+                )
+
+            if input_data.action == GitHubAction.LIST_ISSUES:
+                if not _supports("list_issues"):
+                    return GitHubToolOutput(
+                        status=ToolStatus.FAILURE,
+                        execution_time_ms=0,
+                        success=False,
+                        message="Issue listing is not supported for this git host.",
+                    )
+                issues = await backend.list_issues(
+                    state=input_data.state,
+                    limit=input_data.limit,
+                    include_comments=input_data.include_comments,
+                )
+                return GitHubToolOutput(
+                    status=ToolStatus.SUCCESS,
+                    execution_time_ms=0,
+                    success=True,
+                    message=f"Loaded {len(issues)} issue(s)",
+                    data=issues,
+                )
+
+            if input_data.action == GitHubAction.GET_ISSUE:
+                if input_data.issue_number is None:
+                    raise ValueError("issue_number is required")
+                if not _supports("get_issue"):
+                    return GitHubToolOutput(
+                        status=ToolStatus.FAILURE,
+                        execution_time_ms=0,
+                        success=False,
+                        message="Issue fetching is not supported for this git host.",
+                    )
+                issue = await backend.get_issue(
+                    input_data.issue_number,
+                    include_comments=input_data.include_comments,
+                )
+                return GitHubToolOutput(
+                    status=ToolStatus.SUCCESS if issue else ToolStatus.FAILURE,
+                    execution_time_ms=0,
+                    success=bool(issue),
+                    message=(
+                        f"Loaded issue #{input_data.issue_number}"
+                        if issue
+                        else f"Failed to load issue #{input_data.issue_number}"
+                    ),
+                    data=issue,
+                )
+
+            if input_data.action == GitHubAction.LIST_PULL_REQUESTS:
+                if not _supports("list_pull_requests"):
+                    return GitHubToolOutput(
+                        status=ToolStatus.FAILURE,
+                        execution_time_ms=0,
+                        success=False,
+                        message="Pull request listing is not supported for this git host.",
+                    )
+                pulls = await backend.list_pull_requests(
+                    state=input_data.state,
+                    limit=input_data.limit,
+                )
+                return GitHubToolOutput(
+                    status=ToolStatus.SUCCESS,
+                    execution_time_ms=0,
+                    success=True,
+                    message=f"Loaded {len(pulls)} pull request(s)",
+                    data=pulls,
+                )
+
+            if input_data.action == GitHubAction.GET_PULL_REQUEST:
+                if input_data.pr_number is None:
+                    raise ValueError("pr_number is required")
+                if not _supports("get_pull_request"):
+                    return GitHubToolOutput(
+                        status=ToolStatus.FAILURE,
+                        execution_time_ms=0,
+                        success=False,
+                        message="Pull request fetching is not supported for this git host.",
+                    )
+                pull = await backend.get_pull_request(
+                    input_data.pr_number,
+                    include_comments=input_data.include_comments,
+                )
+                return GitHubToolOutput(
+                    status=ToolStatus.SUCCESS if pull else ToolStatus.FAILURE,
+                    execution_time_ms=0,
+                    success=bool(pull),
+                    message=(
+                        f"Loaded pull request #{input_data.pr_number}"
+                        if pull
+                        else f"Failed to load pull request #{input_data.pr_number}"
+                    ),
+                    data=pull,
+                    pr_url=pull.get("html_url") if pull else None,
+                )
+
             if input_data.action == GitHubAction.CREATE_BRANCH:
                 if not input_data.branch_name:
                     raise ValueError("branch_name is required")
@@ -196,7 +389,8 @@ class GitHubTool(BaseTool[GitHubToolInput, GitHubToolOutput]):
                     status=ToolStatus.SUCCESS if success else ToolStatus.FAILURE,
                     execution_time_ms=0,
                     success=success,
-                    message=f"Branch {input_data.branch_name} created." if success else "Failed to create branch."
+                    message=f"Branch {input_data.branch_name} created." if success else "Failed to create branch.",
+                    branch_name=input_data.branch_name,
                 )
                 
             elif input_data.action == GitHubAction.COMMIT:
@@ -209,16 +403,19 @@ class GitHubTool(BaseTool[GitHubToolInput, GitHubToolOutput]):
                     status=ToolStatus.SUCCESS if success else ToolStatus.FAILURE,
                     execution_time_ms=0,
                     success=success,
-                    message="Changes committed" if success else "Failed to commit"
+                    message="Changes committed" if success else "Failed to commit",
+                    branch_name=input_data.branch_name,
                 )
                 
             elif input_data.action == GitHubAction.CREATE_PR:
-                if not input_data.branch_name or not input_data.pr_title or not input_data.pr_description:
-                    raise ValueError("branch_name, pr_title, pr_description are required")
-                body = input_data.pr_description
+                if not input_data.branch_name or not input_data.pr_title:
+                    raise ValueError("branch_name and pr_title are required")
+                body = (input_data.pr_description or "").strip() or self._build_pr_description(input_data)
                 if input_data.linked_issues:
-                    body += "\n\n" + "\n".join(f"Closes #{n}" for n in input_data.linked_issues)
-                pr = await self.github_integration.create_pull_request(
+                    issue_lines = "\n".join(f"Closes #{n}" for n in input_data.linked_issues)
+                    if issue_lines not in body:
+                        body += "\n\n" + issue_lines
+                pr = await backend.create_pull_request(
                     title=input_data.pr_title,
                     description=body,
                     head_branch=input_data.branch_name,
@@ -231,7 +428,9 @@ class GitHubTool(BaseTool[GitHubToolInput, GitHubToolOutput]):
                     execution_time_ms=0,
                     success=bool(pr),
                     message=f"Created PR #{pr.number}" if pr else "Failed to create PR",
-                    pr_url=pr.html_url if pr else None
+                    pr_url=pr.html_url if pr else None,
+                    data={"body": body} if pr else None,
+                    branch_name=input_data.branch_name,
                 )
                 
             elif input_data.action == GitHubAction.AUTOMATED_WORKFLOW:
@@ -240,8 +439,9 @@ class GitHubTool(BaseTool[GitHubToolInput, GitHubToolOutput]):
                 pr = await create_automated_pr_workflow(
                     hosting=backend,
                     task_description=input_data.task_description,
-                    changes_made=input_data.files or ["Changed files"],
+                    changes_made=input_data.files or self._summarize_changed_files(input_data.repo_path) or ["Changed files"],
                     branch_name=input_data.branch_name,
+                    linked_issues=input_data.linked_issues,
                 )
                 return GitHubToolOutput(
                     status=ToolStatus.SUCCESS if pr else ToolStatus.FAILURE,

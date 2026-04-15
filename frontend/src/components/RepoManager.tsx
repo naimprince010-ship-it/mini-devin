@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { getApiBase } from '../config/apiBase';
 import { detailFromJsonBody, readJsonResponse } from '../utils/readResponseJson';
+import { Session } from '../types';
 
 interface GitHubOAuthStatus {
   connected: boolean;
@@ -40,9 +41,10 @@ interface RepoManagerProps {
   sessionId?: string;
   onRepoLinked?: (repoId: string) => void;
   onOpenInSession?: (localPath: string, repoName: string) => void;
+  onIssueRunStarted?: (session: Session, taskId: string, issueNumber: number, repoName: string) => void;
 }
 
-export function RepoManager({ apiBaseUrl = getApiBase(), sessionId, onRepoLinked, onOpenInSession }: RepoManagerProps) {
+export function RepoManager({ apiBaseUrl = getApiBase(), sessionId, onRepoLinked, onOpenInSession, onIssueRunStarted }: RepoManagerProps) {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +72,7 @@ export function RepoManager({ apiBaseUrl = getApiBase(), sessionId, onRepoLinked
   const [issueForm, setIssueForm] = useState({ title: '', body: '' });
   const [branchForm, setBranchForm] = useState({ name: '', from: '' });
   const [newRepoForm, setNewRepoForm] = useState({ name: '', description: '', private: false, token: '' });
+  const [issueRunBusy, setIssueRunBusy] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [oauthBusy, setOauthBusy] = useState(false);
 
@@ -333,6 +336,35 @@ export function RepoManager({ apiBaseUrl = getApiBase(), sessionId, onRepoLinked
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to create repo'); }
   };
 
+  const handleRunIssue = async (repoId: string, issue: Issue) => {
+    setIssueRunBusy(`${repoId}-${issue.number}`);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBaseUrl}/repos/${repoId}/issues/${issue.number}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'auto',
+          max_iterations: 80,
+          auto_git_commit: false,
+          git_push: false,
+        }),
+      });
+      const { json, text } = await readJsonResponse<{
+        session?: Session;
+        task?: { task_id?: string };
+      }>(response);
+      if (!response.ok || !json?.session || !json?.task?.task_id) {
+        throw new Error(detailFromJsonBody(json) || text || 'Failed to start issue automation');
+      }
+      onIssueRunStarted?.(json.session, json.task.task_id, issue.number, `${issue.number} ${issue.title}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to start issue automation');
+    } finally {
+      setIssueRunBusy(null);
+    }
+  };
+
   const getStatusBadge = (status: string) => {
     if (status === 'cloned') return <span className="flex items-center gap-1 px-2 py-0.5 bg-green-900/40 text-green-400 text-xs rounded-full"><Check size={10} /> Ready</span>;
     if (status === 'pending') return <span className="flex items-center gap-1 px-2 py-0.5 bg-yellow-900/40 text-yellow-400 text-xs rounded-full"><Loader2 size={10} className="animate-spin" /> Cloning...</span>;
@@ -585,15 +617,30 @@ export function RepoManager({ apiBaseUrl = getApiBase(), sessionId, onRepoLinked
                               </div>
                             )}
                             {(issues[repo.repo_id] || []).map(issue => (
-                              <a key={issue.number} href={issue.url} target="_blank" rel="noopener noreferrer"
-                                className="flex items-start gap-2 py-2 px-2 bg-gray-700 hover:bg-gray-650 rounded-lg group">
+                              <div key={issue.number} className="flex items-start gap-2 py-2 px-2 bg-gray-700 hover:bg-gray-650 rounded-lg group">
                                 <Bug size={14} className="text-red-400 mt-0.5 shrink-0" />
                                 <div className="flex-1 min-w-0">
-                                  <p className="text-sm text-white truncate group-hover:text-blue-300">#{issue.number} {issue.title}</p>
+                                  <a href={issue.url} target="_blank" rel="noopener noreferrer" className="block">
+                                    <p className="text-sm text-white truncate group-hover:text-blue-300">#{issue.number} {issue.title}</p>
+                                  </a>
                                   <p className="text-xs text-gray-400">by {issue.author} {issue.labels.length > 0 && `· ${issue.labels.join(', ')}`}</p>
                                 </div>
-                                <ExternalLink size={11} className="text-gray-500 group-hover:text-blue-400 shrink-0 mt-1" />
-                              </a>
+                                <button
+                                  onClick={() => handleRunIssue(repo.repo_id, issue)}
+                                  disabled={issueRunBusy === `${repo.repo_id}-${issue.number}`}
+                                  className="px-2 py-1 text-[11px] rounded bg-blue-600/20 text-blue-300 hover:bg-blue-600/30 disabled:opacity-50 shrink-0"
+                                  title="Create a new session and let Plodder fix this issue"
+                                >
+                                  {issueRunBusy === `${repo.repo_id}-${issue.number}` ? (
+                                    <span className="inline-flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Starting</span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1"><Play size={11} /> Fix</span>
+                                  )}
+                                </button>
+                                <a href={issue.url} target="_blank" rel="noopener noreferrer" className="text-gray-500 group-hover:text-blue-400 shrink-0 mt-1">
+                                  <ExternalLink size={11} />
+                                </a>
+                              </div>
                             ))}
                             {(issues[repo.repo_id] === undefined || issues[repo.repo_id]?.length === 0) && (
                               <p className="text-gray-500 text-xs text-center py-2">

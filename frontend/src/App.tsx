@@ -614,6 +614,13 @@ function App() {
                         setShowNewSession(true);
                         setActiveTab('sessions');
                       }}
+                      onIssueRunStarted={(session) => {
+                        setSelectedSession(session);
+                        localStorage.setItem(LAST_SESSION_KEY, session.session_id);
+                        setActiveTab('sessions');
+                        setSidebarOpen(false);
+                        setSessionListRefresh((n) => n + 1);
+                      }}
                     />
                   </ErrorBoundary>
                 ) : activeTab === 'monitor' ? (

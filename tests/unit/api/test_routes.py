@@ -1,9 +1,13 @@
 """Unit tests for API routes."""
 
-import pytest
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 from fastapi.testclient import TestClient
 
+from mini_devin.api import app as app_module
 from mini_devin.api.app import app
 from mini_devin.api.routes import router
 
@@ -215,6 +219,76 @@ class TestIntegrationsEndpoints:
         )
         assert response.status_code == 200
         assert response.json() == {"challenge": "abc123"}
+
+
+class TestGitHubIssueAutomationEndpoint:
+    def test_start_issue_automation_creates_session_and_task(self, client, monkeypatch):
+        created_at = datetime.now(timezone.utc)
+        mock_session = SimpleNamespace(
+            session_id="sess1234",
+            created_at=created_at,
+            status=SimpleNamespace(value="idle"),
+            working_directory="E:/tmp/repo",
+            workspace_id="ws123",
+            model="auto",
+            iteration=0,
+            total_tasks=0,
+        )
+        mock_task = SimpleNamespace(
+            task_id="task1234",
+            description="issue automation prompt",
+            status=SimpleNamespace(value="pending"),
+        )
+
+        monkeypatch.setitem(
+            app_module._repos,
+            "repo123",
+            {
+                "repo_id": "repo123",
+                "repo_url": "https://github.com/acme/demo",
+                "repo_name": "demo",
+                "owner": "acme",
+                "default_branch": "main",
+                "local_path": "E:/tmp/repo",
+                "_clone_url": "https://token@github.com/acme/demo.git",
+                "_token": "secret",
+            },
+        )
+
+        async def fake_gh_get(url: str, token: str):
+            if url.endswith("/issues/42"):
+                return {
+                    "number": 42,
+                    "title": "Fix login race",
+                    "body": "It flakes under load.",
+                    "html_url": "https://github.com/acme/demo/issues/42",
+                    "labels": [{"name": "bug"}],
+                }
+            if "/issues/42/comments" in url:
+                return [{"user": {"login": "alice"}, "body": "Also fails on retry"}]
+            raise AssertionError(f"Unexpected URL: {url}")
+
+        create_session = AsyncMock(return_value=mock_session)
+        create_task = AsyncMock(return_value=mock_task)
+        run_task = AsyncMock(return_value=None)
+        monkeypatch.setattr(app_module, "_gh_get", fake_gh_get)
+        monkeypatch.setattr(app_module, "_get_repo_token", lambda repo_id: "secret")
+        monkeypatch.setattr(app_module.session_manager, "create_session", create_session)
+        monkeypatch.setattr(app_module.session_manager, "create_task", create_task)
+        monkeypatch.setattr(app_module.session_manager, "run_task", run_task)
+
+        response = client.post(
+            "/api/repos/repo123/issues/42/run",
+            json={"model": "auto", "max_iterations": 80, "auto_git_commit": False, "git_push": False},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["session"]["session_id"] == "sess1234"
+        assert payload["task"]["task_id"] == "task1234"
+        assert payload["issue"]["number"] == 42
+        create_session.assert_awaited_once()
+        create_task.assert_awaited_once()
 
 
 class TestAPICORS:
