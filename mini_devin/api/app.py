@@ -406,6 +406,82 @@ def _parse_github_url(url: str) -> tuple[str, str]:
         raise ValueError(f"Invalid GitHub URL: {url}")
     return match.group(1), match.group(2)
 
+
+def _serialize_session_payload(
+    session,
+    *,
+    model: str,
+    auto_git_commit: bool,
+    git_push: bool,
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "session_id": session.session_id,
+        "created_at": session.created_at.isoformat(),
+        "status": session.status.value,
+        "working_directory": session.working_directory,
+        "workspace_path": session.working_directory,
+        "workspace_id": getattr(session, "workspace_id", None),
+        "model": getattr(session, "model", model),
+        "auto_git_commit": auto_git_commit,
+        "git_push": git_push,
+        "iteration": session.iteration,
+        "total_tasks": session.total_tasks,
+        "project_id": project_id or None,
+    }
+
+
+def _build_issue_automation_prompt(
+    *,
+    repo_full_name: str,
+    issue: dict[str, Any],
+    comments: list[dict[str, Any]],
+    default_branch: str,
+) -> str:
+    issue_number = issue.get("number")
+    issue_title = (issue.get("title") or "").strip()
+    issue_body = (issue.get("body") or "").strip() or "No issue body provided."
+    labels = [label.get("name") for label in issue.get("labels", []) if label.get("name")]
+    label_line = ", ".join(labels) if labels else "No labels"
+
+    comment_blocks: list[str] = []
+    for comment in comments[:10]:
+        author = (comment.get("user") or {}).get("login") or "unknown"
+        body = (comment.get("body") or "").strip()
+        if body:
+            comment_blocks.append(f"- {author}: {body}")
+    comments_text = "\n".join(comment_blocks) if comment_blocks else "- No comments"
+
+    return f"""You are fixing GitHub issue #{issue_number} in `{repo_full_name}`.
+
+Repository default branch: `{default_branch}`.
+
+Goal:
+- Understand the issue and implement a production-ready fix.
+- Run local verification before declaring success.
+- If git/GitHub access is available, use a PR-based workflow: create a feature branch, commit the verified changes, and open a pull request linked to the issue.
+
+Issue title:
+{issue_title}
+
+Labels:
+{label_line}
+
+Issue body:
+{issue_body}
+
+Issue comments:
+{comments_text}
+
+Execution requirements:
+- Reproduce or inspect the problem first.
+- Make the smallest correct change that fully resolves the issue.
+- Run the most relevant tests/lint/build checks locally and fix failures if they are caused by your changes.
+- If you create a PR, include a clear summary and add `Closes #{issue_number}`.
+- Prefer a branch name like `plodder/issue-{issue_number}-{issue_title[:30].lower().replace(" ", "-")}`.
+
+Finish only when the fix is verified locally, and if possible, a PR has been created."""
+
 @app.get("/api/repos")
 async def list_repos():
     return {"repos": list(_repos.values()), "total": len(_repos)}
@@ -708,6 +784,48 @@ async def list_pulls(repo_id: str, state: str = "open"):
                         "head": p["head"]["ref"], "base": p["base"]["ref"],
                         "created_at": p["created_at"]} for p in data]}
 
+
+@app.get("/api/repos/{repo_id}/pulls/{pr_number}")
+async def get_pull_request_details(repo_id: str, pr_number: int):
+    if repo_id not in _repos:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = _repos[repo_id]
+    token = _get_repo_token(repo_id)
+    owner, name = repo["owner"], repo["repo_name"]
+    pr = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/pulls/{pr_number}", token)
+    issue = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/issues/{pr_number}", token)
+    comments = await _gh_get(
+        f"https://api.github.com/repos/{owner}/{name}/issues/{pr_number}/comments?per_page=50",
+        token,
+    )
+    return {
+        "number": pr["number"],
+        "title": pr["title"],
+        "state": pr["state"],
+        "url": pr["html_url"],
+        "author": pr["user"]["login"],
+        "head": pr["head"]["ref"],
+        "base": pr["base"]["ref"],
+        "body": pr.get("body") or "",
+        "draft": pr.get("draft", False),
+        "mergeable": pr.get("mergeable"),
+        "mergeable_state": pr.get("mergeable_state"),
+        "labels": [l["name"] for l in issue.get("labels", [])],
+        "comments": [
+            {
+                "id": c["id"],
+                "author": (c.get("user") or {}).get("login"),
+                "body": c.get("body", ""),
+                "created_at": c.get("created_at"),
+                "updated_at": c.get("updated_at"),
+                "url": c.get("html_url"),
+            }
+            for c in comments
+        ],
+        "created_at": pr["created_at"],
+        "updated_at": pr["updated_at"],
+    }
+
 @app.post("/api/repos/{repo_id}/pulls")
 async def create_pull_request(repo_id: str, request: Request):
     if repo_id not in _repos:
@@ -737,6 +855,44 @@ async def list_issues(repo_id: str, state: str = "open"):
                          "url": i["html_url"], "author": i["user"]["login"],
                          "created_at": i["created_at"],
                          "labels": [l["name"] for l in i.get("labels", [])]} for i in data if "pull_request" not in i]}
+
+
+@app.get("/api/repos/{repo_id}/issues/{issue_number}")
+async def get_issue_details(repo_id: str, issue_number: int):
+    if repo_id not in _repos:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = _repos[repo_id]
+    token = _get_repo_token(repo_id)
+    owner, name = repo["owner"], repo["repo_name"]
+    issue = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/issues/{issue_number}", token)
+    if "pull_request" in issue:
+        raise HTTPException(status_code=400, detail="Requested item is a pull request, not an issue")
+    comments = await _gh_get(
+        f"https://api.github.com/repos/{owner}/{name}/issues/{issue_number}/comments?per_page=50",
+        token,
+    )
+    return {
+        "number": issue["number"],
+        "title": issue["title"],
+        "state": issue["state"],
+        "url": issue["html_url"],
+        "author": issue["user"]["login"],
+        "body": issue.get("body") or "",
+        "labels": [l["name"] for l in issue.get("labels", [])],
+        "comments": [
+            {
+                "id": c["id"],
+                "author": (c.get("user") or {}).get("login"),
+                "body": c.get("body", ""),
+                "created_at": c.get("created_at"),
+                "updated_at": c.get("updated_at"),
+                "url": c.get("html_url"),
+            }
+            for c in comments
+        ],
+        "created_at": issue["created_at"],
+        "updated_at": issue["updated_at"],
+    }
 
 @app.post("/api/repos/{repo_id}/issues")
 async def create_issue(repo_id: str, request: Request):
@@ -782,6 +938,126 @@ async def list_commits(repo_id: str, branch: str = ""):
     return {"commits": [{"sha": c["sha"][:7], "message": c["commit"]["message"].split("\n")[0],
                           "author": c["commit"]["author"]["name"],
                           "date": c["commit"]["author"]["date"]} for c in data]}
+
+
+@app.get("/api/repos/{repo_id}/metadata")
+async def get_repo_metadata(repo_id: str):
+    if repo_id not in _repos:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = _repos[repo_id]
+    token = _get_repo_token(repo_id)
+    owner, name = repo["owner"], repo["repo_name"]
+    repo_data = await _gh_get(f"https://api.github.com/repos/{owner}/{name}", token)
+    labels = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/labels?per_page=100", token)
+    return {
+        "name": repo_data["name"],
+        "full_name": repo_data["full_name"],
+        "description": repo_data.get("description"),
+        "default_branch": repo_data["default_branch"],
+        "private": repo_data["private"],
+        "labels": [
+            {
+                "name": label["name"],
+                "color": label.get("color"),
+                "description": label.get("description"),
+            }
+            for label in labels
+        ],
+        "open_issues_count": repo_data.get("open_issues_count"),
+        "stargazers_count": repo_data.get("stargazers_count"),
+        "forks_count": repo_data.get("forks_count"),
+        "updated_at": repo_data.get("updated_at"),
+        "url": repo_data.get("html_url"),
+    }
+
+
+class StartIssueAutomationRequest(BaseModel):
+    model: str = "auto"
+    max_iterations: int = DEFAULT_MAX_ITERATIONS
+    auto_git_commit: bool = False
+    git_push: bool = False
+
+
+@app.post("/api/repos/{repo_id}/issues/{issue_number}/run")
+async def start_issue_automation(
+    repo_id: str,
+    issue_number: int,
+    body: StartIssueAutomationRequest,
+):
+    if repo_id not in _repos:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    repo = _repos[repo_id]
+    token = _get_repo_token(repo_id)
+    owner, name = repo["owner"], repo["repo_name"]
+    repo_full_name = f"{owner}/{name}"
+
+    issue = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/issues/{issue_number}", token)
+    if "pull_request" in issue:
+        raise HTTPException(status_code=400, detail="Requested item is a pull request, not an issue")
+    comments = await _gh_get(
+        f"https://api.github.com/repos/{owner}/{name}/issues/{issue_number}/comments?per_page=50",
+        token,
+    )
+
+    requested_dir = (
+        repo.get("local_path")
+        or repo.get("_clone_url")
+        or repo.get("repo_url")
+        or ""
+    )
+    if not requested_dir:
+        raise HTTPException(status_code=400, detail="Repository does not have a usable local path or clone URL")
+
+    session = await session_manager.create_session(
+        working_directory=requested_dir,
+        model=body.model,
+        max_iterations=body.max_iterations,
+        auto_git_commit=body.auto_git_commit,
+        git_push=body.git_push,
+    )
+    task_prompt = _build_issue_automation_prompt(
+        repo_full_name=repo_full_name,
+        issue=issue,
+        comments=comments if isinstance(comments, list) else [],
+        default_branch=repo.get("default_branch", "main"),
+    )
+    task = await session_manager.create_task(
+        session_id=session.session_id,
+        description=task_prompt,
+        connection_manager=connection_manager,
+    )
+    asyncio.create_task(
+        session_manager.run_task(
+            session_id=session.session_id,
+            task_id=task.task_id,
+            connection_manager=connection_manager,
+        )
+    )
+
+    return {
+        "session": _serialize_session_payload(
+            session,
+            model=body.model,
+            auto_git_commit=body.auto_git_commit,
+            git_push=body.git_push,
+        ),
+        "task": {
+            "task_id": task.task_id,
+            "description": task.description,
+            "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+        },
+        "issue": {
+            "number": issue["number"],
+            "title": issue["title"],
+            "url": issue["html_url"],
+        },
+        "repo": {
+            "repo_id": repo_id,
+            "repo_name": repo_full_name,
+            "default_branch": repo.get("default_branch", "main"),
+        },
+    }
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -969,20 +1245,13 @@ async def create_session(raw_request: Request):
             except Exception as e:
                 print(f"[API] Could not inject project memory: {e}")
 
-    return {
-        "session_id": session.session_id,
-        "created_at": session.created_at.isoformat(),
-        "status": session.status.value,
-        "working_directory": session.working_directory,
-        "workspace_path": session.working_directory,
-        "workspace_id": getattr(session, "workspace_id", None),
-        "model": getattr(session, 'model', model),
-        "auto_git_commit": auto_git_commit,
-        "git_push": git_push,
-        "iteration": session.iteration,
-        "total_tasks": session.total_tasks,
-        "project_id": project_id or None,
-    }
+    return _serialize_session_payload(
+        session,
+        model=model,
+        auto_git_commit=auto_git_commit,
+        git_push=git_push,
+        project_id=project_id or None,
+    )
 
 @app.get("/api/sessions/{session_id}")
 @app.get("/sessions/{session_id}")

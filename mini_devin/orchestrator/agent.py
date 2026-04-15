@@ -129,9 +129,11 @@ def _make_system_prompt() -> str:
         github_note = (
             "\n## GitHub (``GITHUB_TOKEN`` is set — use a PR-based workflow)\n"
             "- On a cloned GitHub repo, **avoid committing large features directly to the default branch** when a review is expected.\n"
-            "- Preferred sequence: ``github`` **create_branch** (e.g. ``plodder/add-health-endpoint``) → implement with ``editor``/``terminal`` → "
-            "**commit** (conventional message, e.g. ``feat: add /health``) → **create_pr** (clear title/body). "
+            "- Preferred sequence: ``github`` **get_repo_context** / **get_issue** when you are working from a GitHub issue → ``git`` **checkout_branch** "
+            "(or ``github`` **create_branch**) → implement with ``editor``/``terminal`` → run verification/tests → "
+            "``git``/**github** **commit** → **create_pr** (clear title/body). "
             'For ``base_branch``, omit it or set ``\"default\"`` so the **GitHub repo default** (``main`` or ``master``) is used.\n'
+            "- If the user gives an issue number like ``#123``, fetch it first with ``github`` **get_issue** and use the issue title/body/comments/labels as the task spec.\n"
             "- Use **get_pr_status** with ``pr_number`` to inspect **mergeable**, **mergeable_state**, and **CI combined status** before asking a human to merge.\n"
             "- Use **merge_pr** only when your instructions explicitly allow merging; many teams require human approval on GitHub.\n"
             "- Pass ``repo_path`` as the workspace root (the UI working directory; use ``.`` only if that is the repo root).\n"
@@ -660,6 +662,13 @@ class Agent:
         # Citation store for tracking web references
         if not hasattr(self, "_citation_store"):
             self._citation_store = create_citation_store()
+
+        # Git workflow tool
+        if not self.registry.get("git"):
+            from ..tools.git import create_git_tool
+
+            git_tool = create_git_tool()
+            self.registry.register(git_tool)
             
         # GitHub tool
         if not self.registry.get("github"):
@@ -1486,16 +1495,86 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             },
         })
 
-        # GitHub tool schema
+        # Git tool schema
         schemas.append({
-            "name": "github",
-            "description": "Perform GitHub operations like creating branches, committing, and creating pull requests.",
+            "name": "git",
+            "description": "Perform structured git workflow actions like status, checkout_branch, add, commit, push, and diff.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
                         "enum": [
+                            "status",
+                            "checkout_branch",
+                            "add",
+                            "commit",
+                            "push",
+                            "diff",
+                        ],
+                        "description": "The git action to perform",
+                    },
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Local repository path (default: .)",
+                    },
+                    "branch_name": {
+                        "type": "string",
+                        "description": "Branch name for checkout_branch / push",
+                    },
+                    "create": {
+                        "type": "boolean",
+                        "description": "For checkout_branch: create the branch with git checkout -b",
+                    },
+                    "base_branch": {
+                        "type": "string",
+                        "description": "Optional starting point when creating a branch",
+                    },
+                    "files": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Files for add / commit. Empty means all changes.",
+                    },
+                    "commit_message": {
+                        "type": "string",
+                        "description": "Commit message for commit",
+                    },
+                    "remote": {
+                        "type": "string",
+                        "description": "Remote name for push (default: origin)",
+                    },
+                    "set_upstream": {
+                        "type": "boolean",
+                        "description": "For push: include -u when pushing the branch",
+                    },
+                    "allow_default_branch_push": {
+                        "type": "boolean",
+                        "description": "Explicitly allow push to the remote default branch",
+                    },
+                    "staged_only": {
+                        "type": "boolean",
+                        "description": "For diff: show only staged changes",
+                    },
+                },
+                "required": ["action"],
+            },
+        })
+
+        # GitHub tool schema
+        schemas.append({
+            "name": "github",
+            "description": "Perform GitHub operations like fetching issue/PR context, creating branches, committing, and creating pull requests.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "get_repo_context",
+                            "list_issues",
+                            "get_issue",
+                            "list_pull_requests",
+                            "get_pull_request",
                             "create_branch",
                             "commit",
                             "create_pr",
@@ -1533,6 +1612,22 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                     "task_description": {
                         "type": "string",
                         "description": "Task description (for automated_workflow)",
+                    },
+                    "issue_number": {
+                        "type": "integer",
+                        "description": "Issue number for get_issue",
+                    },
+                    "state": {
+                        "type": "string",
+                        "description": "State filter for list_issues / list_pull_requests (default: open)",
+                    },
+                    "include_comments": {
+                        "type": "boolean",
+                        "description": "Include issue or pull request comments in the response",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results for list actions",
                     },
                     "repo_path": {
                         "type": "string",
