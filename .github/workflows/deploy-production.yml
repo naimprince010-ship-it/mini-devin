@@ -1,0 +1,70 @@
+name: Deploy Production
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy-railway:
+    name: Deploy to Railway Production
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        (
+          github.event.workflow_run.head_branch == 'main' ||
+          github.event.workflow_run.head_branch == 'master'
+        )
+      )
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/railwayapp/cli:latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ secrets.RAILWAY_ENVIRONMENT_ID }}
+    steps:
+      - name: Validate required Railway secrets
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "Missing required GitHub secret: RAILWAY_TOKEN"
+            exit 1
+          fi
+          if [ -z "$RAILWAY_SERVICE_ID" ]; then
+            echo "Missing required GitHub secret: RAILWAY_SERVICE_ID"
+            exit 1
+          fi
+
+      - name: Checkout main branch contents
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || github.event.workflow_run.head_sha }}
+
+      - name: Show deployment target
+        run: |
+          echo "Railway service: $RAILWAY_SERVICE_ID"
+          if [ -n "$RAILWAY_ENVIRONMENT_ID" ]; then
+            echo "Railway environment: $RAILWAY_ENVIRONMENT_ID"
+          else
+            echo "Railway environment: default linked environment"
+          fi
+
+      - name: Deploy to Railway
+        run: |
+          CMD="railway up --service=$RAILWAY_SERVICE_ID --ci"
+          if [ -n "$RAILWAY_ENVIRONMENT_ID" ]; then
+            CMD="$CMD --environment=$RAILWAY_ENVIRONMENT_ID"
+          fi
+          echo "Running: $CMD"
+          sh -lc "$CMD"
