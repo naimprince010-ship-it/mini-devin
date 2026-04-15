@@ -108,6 +108,19 @@ class TestSelfCorrectionEngine:
         assert "coordinates" in low or "raw coordinates" in low
         assert "submit" in low or "overlay" in low or "modal" in low
 
+    def test_get_retry_hint_browser_navigate(self, engine):
+        hint = engine.get_retry_hint(
+            ErrorType.UNKNOWN,
+            "browser_navigate",
+            {"url": "example.com"},
+            "Error: browser_navigate failed: net::ERR_CONNECTION_REFUSED",
+        )
+        low = hint.lower()
+        assert "browser_screenshot" in hint or "browser_playwright" in hint
+        assert "url" in low
+        assert "https://" in hint or "dev server" in low or "redirect" in low
+        assert "submit: true" not in hint
+
 
 def test_error_fingerprint_stable_for_same_failure():
     fp1 = error_fingerprint("terminal", "No such file: foo\n", 1)
