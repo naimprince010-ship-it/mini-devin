@@ -33,6 +33,7 @@ from plodder.orchestration.reasoning_loop import (
     goal_suggests_frontend_stack,
     monologue_validation_error,
     parse_driver_turn,
+    shell_argv_suggests_dev_server,
     terminal_failure_followup_hints,
     tool_observation_truncation_limit,
     visual_review_done_gate,
@@ -237,10 +238,16 @@ class UnifiedSessionDriver:
                 "--overwrite`** (and **`--no-interactive`** when the CLI supports it). "
                 "If you see **Operation cancelled**, do **not** repeat the same bare `npx create-vite …` without "
                 "``--overwrite`` or a clean path.\n"
+                "\n**Install once**: if `node_modules` is already present and `package.json` did not change, do not keep "
+                "rerunning `npm install` / `pnpm install` on every loop.\n"
                 "\n**Persisted shell cwd**: Plodder may prepend **`cd`** from ``.plodder/shell/session_state.json`` "
                 "each ``sandbox_shell`` run. Before ``cd <subdir>``, run **`pwd`** (or ``fs_read`` that JSON). "
                 "If you are **already inside** `<subdir>`, another ``cd <subdir>`` fails — run **``npm run build``** "
                 "etc. without that extra ``cd``.\n"
+                "\n**Long-running dev servers**: choose the correct sandbox mode before starting `npm run dev`, "
+                "`next dev`, `vite`, or `python app.py`. Do **not** spam the same command with trailing `&` after a "
+                "timeout in a one-shot sandbox. If the default port is busy, retry common fallbacks like "
+                "`5001`, `5002`, `5173`, or `8000`, then attach **`live_preview`** once a port is listening.\n"
             )
             snap = self._host_environment_snapshot_block()
             if snap.strip():
@@ -989,8 +996,40 @@ class UnifiedSessionDriver:
         files = self._ws.snapshot_text_files()
         argv_list = list(argv)
         inner = extract_shell_inner(argv_list)
+        dev_server = shell_argv_suggests_dev_server(argv_list)
         if self._runtime_shell_tracker is not None:
             argv_list = self._runtime_shell_tracker.wrap_argv(argv_list)
+        if dev_server:
+            detached_runner = getattr(self._sandbox, "run_dev_server_in_workspace", None)
+            if callable(detached_runner):
+                result = await asyncio.to_thread(
+                    detached_runner,
+                    files,
+                    argv_list,
+                    language_hint=language_hint,
+                    timeout_sec=self._sandbox_timeout_sec,
+                    network=network,
+                )
+                if self._runtime_shell_tracker is not None and inner is not None:
+                    self._runtime_shell_tracker.ingest_user_command(inner)
+                try:
+                    started_port = int(result.get("port", 0))
+                except (TypeError, ValueError, AttributeError):
+                    started_port = 0
+                if result.get("ok") and started_port > 0 and self._session_id:
+                    live_preview = await self._tool_live_preview_async(
+                        {"action": "set_active_port", "port": started_port}
+                    )
+                    result["live_preview"] = live_preview
+                return result
+            return {
+                "tool": "sandbox_shell",
+                "ok": False,
+                "error": (
+                    "This sandbox runs one-shot commands and cannot keep a dev server alive. "
+                    "Use the host process sandbox for `npm run dev` / `python app.py`, then attach `live_preview`."
+                ),
+            }
         result = await asyncio.to_thread(
             self._sandbox.run_shell_in_workspace,
             files,
