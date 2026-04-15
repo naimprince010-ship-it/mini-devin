@@ -196,6 +196,7 @@ When you build or change **user-facing web UI** (React/Vite/Next/Tailwind/CSS co
   when the project stack supports them, instead of bespoke complex CSS.
 - **State-driven UI**: For lists, dashboards, and forms, implement **loading**, **error**, and **empty**
   states—not only the happy path.
+- **Live preview by default**: If you are building a local web app, do not stop at writing files. Install dependencies if needed, start the dev server in the background, detect the listening port, and attach **`live_preview`** so the app can be inspected while work is in progress.
 - **Visual QA**: After substantive UI edits, use **`browser_playwright`** (or the session’s Playwright
   observe tool) to capture the relevant route and **check alignment, contrast, and obvious layout issues**
   before claiming the UI is done.
@@ -209,6 +210,7 @@ When you build or change **user-facing web UI** (React/Vite/Next/Tailwind/CSS co
 - **Modal / overlay handling**: If a click is blocked or the target disappears, assume a modal, cookie banner, or overlay may be intercepting input. Capture a fresh observation, look for close/accept/dismiss controls first, and use **`browser_playwright`** when you need Escape, JS inspection, or deeper debugging.
 - **Multi-step navigation**: After submit / next / continue actions, verify the new URL, title, and visible interactive elements before proceeding. Do not assume navigation succeeded just because a click completed.
 - **Use the right tool for the job**: Use **`browser_playwright`** for richer DOM/debug tasks (evaluate JS, DOM outline, network/page-error debugging). Use the advanced browser tools for human-like step-by-step interaction on persistent pages.
+- **For apps you are building, prefer live preview first**: Once the local dev server is running, call **`live_preview`** to probe likely ports and set the active one before doing browser QA. Use browser snapshots after the preview is attached or when the app is not running yet.
 - **Recover methodically**: If a browser action fails, capture a fresh **`browser_screenshot`** or **`browser_playwright`** snapshot, then retry with a more specific selector, a wait, or a corrected target. Do not repeat the exact same failing click.
 
 ## Tool Usage
@@ -228,7 +230,7 @@ When you build or change **user-facing web UI** (React/Vite/Next/Tailwind/CSS co
 - `browser_scroll` — Gradual viewport scroll in the persistent Chromium session
 - `browser_screenshot` — Refresh browser state for the LLM: screenshot + accessibility tree + interactive element map
 - `browser_interactive` — Legacy Selenium (use Playwright when available)
-- `git` — Structured git workflow (`checkout_branch`, `add`, `commit`, `push`, `status`, `diff`)
+- `live_preview` — For apps you are building locally: probe localhost ports after `npm run dev` / framework dev server startup, then attach the active port so the Browser pane shows the running app
 - `github` — GitHub: branches, commits, PRs, PR status (CI), merge (see GitHub section below when token is set)
 - `monitor` — Check app health, fetch cloud/docker logs, register for continuous monitoring
 - `env_parity` — Generate Dockerfile/.env.example/docker-compose; diff local vs production env
@@ -239,6 +241,7 @@ When you build or change **user-facing web UI** (React/Vite/Next/Tailwind/CSS co
 - Always write COMPLETE file content when using `write_file`
 - After writing a file, verify with `read_file`
 - For browser work, prefer an **observe → act → observe** loop instead of multiple blind interactions in a row.
+- For local website/app tasks, after the dev server is running, attempt **`live_preview`** attachment before declaring the UI ready.
 - If **auto-verify (ruff)** reports issues on a `.py` file, you may set **`apply_ruff_fix`: true** on the next `editor` `write_file` / `str_replace` / `apply_patch` for that file to run **`ruff check --fix`** after the edit, or run the same via `terminal`.
 - If a command fails, read the error and fix it — do NOT give up
 - When done: write **TASK COMPLETE** followed by a short summary of actual results.

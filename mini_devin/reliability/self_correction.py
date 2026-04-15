@@ -384,15 +384,46 @@ class SelfCorrectionEngine:
             )
 
         elif tool_name.startswith("browser_"):
-            action = str(args.get("action") or tool_name).strip()
+            action = str(args.get("action") or tool_name).strip().lower()
+            base = (
+                "First capture a fresh `browser_screenshot` or `browser_playwright` snapshot and inspect "
+                "the screenshot, accessibility tree, console, and interactive elements before retrying. "
+            )
+            if action in ("browser_navigate", "navigate"):
+                return (
+                    "The browser navigation failed. "
+                    + base
+                    + "Verify that the URL is valid and complete, including `https://` when needed. "
+                    + "If a local app is still booting, confirm the dev server is running before navigating again. "
+                    + "If the page may still be loading or redirecting, wait for it to settle and inspect any "
+                    + "console or network errors before repeating `browser_navigate`."
+                )
+            if action in ("browser_click", "click"):
+                return (
+                    "The browser click failed. "
+                    + base
+                    + "Prefer a more specific CSS selector on retry; only use raw coordinates when the target is "
+                    + "visually unambiguous. If a modal, cookie banner, or overlay may be intercepting input, "
+                    + "dismiss that first before repeating the click."
+                )
+            if action in ("browser_type", "type"):
+                return (
+                    "The browser typing action failed. "
+                    + base
+                    + "Retry with a clearer input selector, use `clear_first` if the field already has text, "
+                    + "and use `submit: true` only when Enter should submit the form."
+                )
+            if action in ("browser_scroll", "scroll"):
+                return (
+                    "The browser scroll failed. "
+                    + base
+                    + "Check whether the page is still loading, whether a modal locked scrolling, or whether "
+                    + "the target content is inside a nested scroll container that needs a different interaction."
+                )
             return (
-                "The browser action failed. First capture a fresh `browser_screenshot` or `browser_playwright` "
-                "snapshot and inspect the screenshot, accessibility tree, console, and interactive elements. "
-                "Prefer a more specific CSS selector on retry; only use raw coordinates when the target is "
-                "visually unambiguous. If the page may still be loading, navigate again or wait for the page "
-                "state to settle before retrying. If a modal, cookie banner, or overlay may be intercepting "
-                "input, dismiss that first. For forms, retry with a clearer selector, `clear_first`, or "
-                f"`submit: true` as appropriate before repeating `{action}`."
+                "The browser action failed. "
+                + base
+                + "Retry with a more precise target and only repeat the action after checking what changed on the page."
             )
             
         elif "BLOCKED" in output:
