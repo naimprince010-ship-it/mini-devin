@@ -12,12 +12,14 @@ from typing import Any, Dict, List, Optional
 
 try:
     from github import Github, GithubException
+    from github.Issue import Issue
     from github.Repository import Repository
     from github.PullRequest import PullRequest
     GITHUB_AVAILABLE = True
 except ImportError:
     GITHUB_AVAILABLE = False
     Github = None
+    Issue = None
 
 try:
     from git import Repo, InvalidGitRepositoryError
@@ -36,6 +38,40 @@ def _sanitize_branch_fragment(text: str, max_len: int = 48) -> str:
     s = re.sub(r"[^a-z0-9._-]+", "-", s)
     s = re.sub(r"-+", "-", s).strip("-")
     return (s[:max_len] or "task").strip("-") or "task"
+
+
+def _iter_paginated_items(items: Any, limit: int) -> list[Any]:
+    """Convert a PyGithub PaginatedList into a bounded plain list."""
+    out: list[Any] = []
+    for idx, item in enumerate(items):
+        if idx >= limit:
+            break
+        out.append(item)
+    return out
+
+
+def _serialize_label(label: Any) -> dict[str, Any]:
+    return {
+        "name": getattr(label, "name", ""),
+        "color": getattr(label, "color", ""),
+        "description": getattr(label, "description", None),
+    }
+
+
+def _serialize_issue_comment(comment: Any) -> dict[str, Any]:
+    user = getattr(comment, "user", None)
+    return {
+        "id": getattr(comment, "id", None),
+        "author": getattr(user, "login", None),
+        "body": getattr(comment, "body", ""),
+        "created_at": (
+            comment.created_at.isoformat() if getattr(comment, "created_at", None) else None
+        ),
+        "updated_at": (
+            comment.updated_at.isoformat() if getattr(comment, "updated_at", None) else None
+        ),
+        "html_url": getattr(comment, "html_url", None),
+    }
 
 
 class GitHubIntegration:
@@ -345,12 +381,158 @@ class GitHubIntegration:
             logger.error(f"Failed to get repository info: {e}")
             return {}
 
+    async def get_repository_context(self, issue_limit: int = 20) -> Dict[str, Any]:
+        """Get repository metadata plus labels for issue/PR planning."""
+        try:
+            info = await self.get_repository_info()
+            if not self.repo:
+                return info
+            labels = [_serialize_label(label) for label in _iter_paginated_items(self.repo.get_labels(), 200)]
+            open_pulls = self.repo.get_pulls(state="open").totalCount
+            open_issues = self.repo.get_issues(state="open").totalCount
+            return {
+                **info,
+                "labels": labels,
+                "open_pull_requests": open_pulls,
+                "open_issues_total": open_issues,
+                "suggested_issue_fetch_limit": issue_limit,
+            }
+        except Exception as e:
+            logger.error(f"Failed to get repository context: {e}")
+            return {}
+
+    def _serialize_issue(self, issue: Issue, include_comments: bool = True) -> Dict[str, Any]:
+        comments: list[dict[str, Any]] = []
+        if include_comments:
+            comments = [
+                _serialize_issue_comment(comment)
+                for comment in _iter_paginated_items(issue.get_comments(), 50)
+            ]
+        return {
+            "number": issue.number,
+            "title": issue.title,
+            "state": issue.state,
+            "body": issue.body or "",
+            "html_url": issue.html_url,
+            "author": issue.user.login if issue.user else None,
+            "labels": [_serialize_label(label) for label in issue.labels],
+            "assignees": [assignee.login for assignee in issue.assignees],
+            "comments_count": issue.comments,
+            "comments": comments,
+            "created_at": issue.created_at.isoformat() if issue.created_at else None,
+            "updated_at": issue.updated_at.isoformat() if issue.updated_at else None,
+        }
+
+    async def get_issue(self, issue_number: int, include_comments: bool = True) -> Dict[str, Any]:
+        """Get a single issue with labels and comments."""
+        try:
+            if not self.repo:
+                return {}
+            issue = self.repo.get_issue(number=issue_number)
+            if issue.pull_request is not None:
+                return {}
+            return self._serialize_issue(issue, include_comments=include_comments)
+        except GithubException as e:
+            logger.error(f"Failed to get issue #{issue_number}: {e}")
+            return {}
+
+    async def list_issues(
+        self,
+        state: str = "open",
+        limit: int = 20,
+        include_comments: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """List repository issues for planning/problem selection."""
+        try:
+            if not self.repo:
+                return []
+            issues = self.repo.get_issues(state=state)
+            items: list[dict[str, Any]] = []
+            for issue in issues:
+                if issue.pull_request is not None:
+                    continue
+                items.append(self._serialize_issue(issue, include_comments=include_comments))
+                if len(items) >= limit:
+                    break
+            return items
+        except GithubException as e:
+            logger.error(f"Failed to list issues: {e}")
+            return []
+
+    async def get_pull_request(
+        self,
+        pr_number: int,
+        include_comments: bool = True,
+    ) -> Dict[str, Any]:
+        """Get a pull request with review and comment context."""
+        try:
+            if not self.repo:
+                return {}
+            pr = self.repo.get_pull(pr_number)
+            issue_view = pr.as_issue()
+            comments = []
+            if include_comments:
+                comments = [
+                    _serialize_issue_comment(comment)
+                    for comment in _iter_paginated_items(issue_view.get_comments(), 50)
+                ]
+            return {
+                "number": pr.number,
+                "title": pr.title,
+                "state": pr.state,
+                "body": pr.body or "",
+                "html_url": pr.html_url,
+                "author": pr.user.login if pr.user else None,
+                "head_branch": pr.head.ref,
+                "base_branch": pr.base.ref,
+                "draft": bool(getattr(pr, "draft", False)),
+                "mergeable": pr.mergeable,
+                "mergeable_state": pr.mergeable_state,
+                "labels": [_serialize_label(label) for label in issue_view.labels],
+                "comments_count": issue_view.comments,
+                "comments": comments,
+                "review_status": self._get_review_status(pr),
+                "created_at": pr.created_at.isoformat() if pr.created_at else None,
+                "updated_at": pr.updated_at.isoformat() if pr.updated_at else None,
+            }
+        except GithubException as e:
+            logger.error(f"Failed to get PR #{pr_number}: {e}")
+            return {}
+
+    async def list_pull_requests(self, state: str = "open", limit: int = 20) -> List[Dict[str, Any]]:
+        """List pull requests with high-signal metadata."""
+        try:
+            if not self.repo:
+                return []
+            pulls = self.repo.get_pulls(state=state)
+            items: list[dict[str, Any]] = []
+            for pr in _iter_paginated_items(pulls, limit):
+                items.append(
+                    {
+                        "number": pr.number,
+                        "title": pr.title,
+                        "state": pr.state,
+                        "html_url": pr.html_url,
+                        "author": pr.user.login if pr.user else None,
+                        "head_branch": pr.head.ref,
+                        "base_branch": pr.base.ref,
+                        "draft": bool(getattr(pr, "draft", False)),
+                        "created_at": pr.created_at.isoformat() if pr.created_at else None,
+                        "updated_at": pr.updated_at.isoformat() if pr.updated_at else None,
+                    }
+                )
+            return items
+        except GithubException as e:
+            logger.error(f"Failed to list pull requests: {e}")
+            return []
+
 # Example usage and helper functions
 async def create_automated_pr_workflow(
     hosting: Any,
     task_description: str,
     changes_made: List[str],
     branch_name: Optional[str] = None,
+    linked_issues: Optional[List[int]] = None,
 ) -> Any:
     """Complete automated PR/MR creation workflow (GitHub or GitLab hosting backend)."""
 
@@ -368,19 +550,29 @@ async def create_automated_pr_workflow(
         return None
 
     pr_title = f"Automated: {task_description}"
-    pr_description = f"""
-## Automated Pull Request
-
-**Task:** {task_description}
-
-**Changes Made:**
-{chr(10).join(f"- {change}" for change in changes_made)}
-
-**Generated by:** Plodder AI Assistant
-
----
-*This PR was created automatically by Plodder. Please review the changes before merging.*
-"""
+    pr_lines = [
+        "## Summary",
+        f"- {task_description}",
+        "",
+        "## Changed Files",
+        *[f"- `{change}`" for change in changes_made],
+        "",
+        "## Verification",
+        "- Local verification completed before automated PR creation.",
+        "",
+        "## Notes",
+        "- Generated automatically by Plodder AI Assistant.",
+        "- Please review the changes before merging.",
+    ]
+    if linked_issues:
+        pr_lines.extend(
+            [
+                "",
+                "## Linked Issues",
+                *[f"- Closes #{issue}" for issue in linked_issues],
+            ]
+        )
+    pr_description = "\n".join(pr_lines)
 
     labels_kw: dict[str, Any] = {}
     if hasattr(hosting, "repo") and getattr(hosting, "repo", None) is not None:
