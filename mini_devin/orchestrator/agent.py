@@ -42,6 +42,7 @@ from ..tools.browser import (
     create_fetch_tool,
     create_interactive_tool,
     create_playwright_tool,
+    create_advanced_browser_tools,
     create_citation_store,
 )
 from ..safety.guards import SafetyGuard, SafetyPolicy, SafetyViolation
@@ -199,6 +200,17 @@ When you build or change **user-facing web UI** (React/Vite/Next/Tailwind/CSS co
   observe tool) to capture the relevant route and **check alignment, contrast, and obvious layout issues**
   before claiming the UI is done.
 
+## Browser Strategy
+- **Prefer persistent browser tools for real interaction**: Use **`browser_navigate`**, **`browser_click`**, **`browser_type`**, **`browser_scroll`**, and **`browser_screenshot`** when you need a login/session/cookie state that persists across steps.
+- **Observe before acting**: Start with **`browser_navigate`** or **`browser_screenshot`**, then read the returned screenshot, accessibility tree, console lines, and interactive element list before the next browser action.
+- **Selector first, coordinates second**: Prefer stable CSS selectors for **`browser_click`** / **`browser_type`**. Only fall back to raw `x`/`y` clicks when the element cannot be targeted reliably by selector and the screenshot / accessibility data makes the target unambiguous.
+- **Keep the loop tight**: After each browser action, inspect the new OBSERVATION. Do not issue a chain of blind clicks or types without checking what changed on the page.
+- **Forms and login flows**: Fill one field at a time, then re-check the page if the UI reacts. Use **`clear_first`** when replacing existing values, and use **`submit: true`** on **`browser_type`** when pressing Enter is the natural submit action for a form.
+- **Modal / overlay handling**: If a click is blocked or the target disappears, assume a modal, cookie banner, or overlay may be intercepting input. Capture a fresh observation, look for close/accept/dismiss controls first, and use **`browser_playwright`** when you need Escape, JS inspection, or deeper debugging.
+- **Multi-step navigation**: After submit / next / continue actions, verify the new URL, title, and visible interactive elements before proceeding. Do not assume navigation succeeded just because a click completed.
+- **Use the right tool for the job**: Use **`browser_playwright`** for richer DOM/debug tasks (evaluate JS, DOM outline, network/page-error debugging). Use the advanced browser tools for human-like step-by-step interaction on persistent pages.
+- **Recover methodically**: If a browser action fails, capture a fresh **`browser_screenshot`** or **`browser_playwright`** snapshot, then retry with a more specific selector, a wait, or a corrected target. Do not repeat the exact same failing click.
+
 ## Tool Usage
 - `terminal` — Run shell commands; prefer `python -m pip`, `python -m pytest`, `python -m unittest` per Runtime context. For long installs (`npm install`, `npx create-*`) pass **`timeout_seconds`** up to **300** (default 30 is too short).
 - `editor` with `read_file` — Read a file
@@ -209,7 +221,12 @@ When you build or change **user-facing web UI** (React/Vite/Next/Tailwind/CSS co
 - `editor` with `apply_patch` — Apply a unified diff patch
 - `browser_search` — Search the web
 - `browser_fetch` — Fetch a web page (HTTP; no JS console)
-- `browser_playwright` — **Preferred for UI bugs**: real Chromium, DOM outline, console + network + page errors, screenshots
+- `browser_playwright` — **Preferred for UI bugs / DOM debugging**: real Chromium, DOM outline, console + network + page errors, screenshots, JS evaluation
+- `browser_navigate` — Open a URL in the persistent Chromium session; use this to begin a multi-step browser task
+- `browser_click` — Human-like click with selector-first targeting; use `x`/`y` only as a fallback after inspecting the screenshot / accessibility tree
+- `browser_type` — Human-like typing into a selector in the persistent Chromium session; supports `clear_first` and `submit` for form workflows
+- `browser_scroll` — Gradual viewport scroll in the persistent Chromium session
+- `browser_screenshot` — Refresh browser state for the LLM: screenshot + accessibility tree + interactive element map
 - `browser_interactive` — Legacy Selenium (use Playwright when available)
 - `git` — Structured git workflow (`checkout_branch`, `add`, `commit`, `push`, `status`, `diff`)
 - `github` — GitHub: branches, commits, PRs, PR status (CI), merge (see GitHub section below when token is set)
@@ -221,6 +238,7 @@ When you build or change **user-facing web UI** (React/Vite/Next/Tailwind/CSS co
 - Read a file before editing it (to avoid overwriting changes)
 - Always write COMPLETE file content when using `write_file`
 - After writing a file, verify with `read_file`
+- For browser work, prefer an **observe → act → observe** loop instead of multiple blind interactions in a row.
 - If **auto-verify (ruff)** reports issues on a `.py` file, you may set **`apply_ruff_fix`: true** on the next `editor` `write_file` / `str_replace` / `apply_patch` for that file to run **`ruff check --fix`** after the edit, or run the same via `terminal`.
 - If a command fails, read the error and fix it — do NOT give up
 - When done: write **TASK COMPLETE** followed by a short summary of actual results.
@@ -622,6 +640,21 @@ class Agent:
                 on_browser_event=lambda p: agent._emit_playwright_browser_event(p),
             )
             self.registry.register(browser_pw)
+
+        advanced_browser_names = (
+            "browser_navigate",
+            "browser_click",
+            "browser_type",
+            "browser_scroll",
+            "browser_screenshot",
+        )
+        if any(not self.registry.get(name) for name in advanced_browser_names):
+            agent = self
+            for browser_tool in create_advanced_browser_tools(
+                on_browser_event=lambda p: agent._emit_playwright_browser_event(p),
+            ):
+                if not self.registry.get(browser_tool.name):
+                    self.registry.register(browser_tool)
         
         # Citation store for tracking web references
         if not hasattr(self, "_citation_store"):
@@ -655,6 +688,29 @@ class Agent:
     async def cleanup(self) -> None:
         """Release background resources (file watcher, etc.)."""
         self.stop_workspace_sidecar()
+        seen_sessions: set[int] = set()
+        for tool_name in (
+            "browser_playwright",
+            "browser_navigate",
+            "browser_click",
+            "browser_type",
+            "browser_scroll",
+            "browser_screenshot",
+        ):
+            tool = self.registry.get(tool_name)
+            if tool is None:
+                continue
+            session_obj = getattr(tool, "_session", tool)
+            session_key = id(session_obj)
+            if session_key in seen_sessions:
+                continue
+            seen_sessions.add(session_key)
+            close_fn = getattr(tool, "close", None)
+            if callable(close_fn):
+                try:
+                    await close_fn()
+                except Exception as exc:
+                    self._log(f"browser cleanup skipped for {tool_name}: {exc}")
 
     def bootstrap_ide_experience(self) -> None:
         """
@@ -990,6 +1046,112 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                     "x": {"type": "number"}, "y": {"type": "number"},
                 },
                 "required": ["action"],
+            },
+        })
+
+        schemas.append({
+            "name": "browser_navigate",
+            "description": (
+                "Navigate the persistent Chromium session to a URL, preserving login/session state. "
+                "Use this to start a browser task, then inspect the returned screenshot, accessibility tree, "
+                "and interactive element map before choosing the next action."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Destination URL"},
+                    "wait_until": {
+                        "type": "string",
+                        "description": "Playwright load state: domcontentloaded | load | networkidle",
+                    },
+                },
+                "required": ["url"],
+            },
+        })
+
+        schemas.append({
+            "name": "browser_click",
+            "description": (
+                "Click inside the persistent Chromium session using a CSS selector or x/y coordinates. "
+                "Prefer selectors; use x/y only when the target is visually unambiguous from the latest "
+                "screenshot/accessibility data. Uses human-like mouse movement and returns a fresh screenshot "
+                "plus accessibility tree."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "Preferred CSS selector target for the click",
+                    },
+                    "x": {"type": "number", "description": "Viewport x coordinate"},
+                    "y": {"type": "number", "description": "Viewport y coordinate"},
+                },
+                "required": [],
+            },
+        })
+
+        schemas.append({
+            "name": "browser_type",
+            "description": (
+                "Type text into a selector inside the persistent Chromium session using human-like "
+                "keystroke pacing. Supports optional Enter submit for forms. Use after inspecting the "
+                "latest browser observation and return a fresh screenshot plus accessibility tree."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector for the input element"},
+                    "text": {"type": "string", "description": "Text to enter"},
+                    "clear_first": {
+                        "type": "boolean",
+                        "description": "If true, clear the field before typing",
+                    },
+                    "submit": {
+                        "type": "boolean",
+                        "description": "If true, press Enter after typing to submit the current form",
+                    },
+                },
+                "required": ["selector", "text"],
+            },
+        })
+
+        schemas.append({
+            "name": "browser_scroll",
+            "description": (
+                "Scroll the persistent Chromium page with gradual wheel movement. Returns a fresh "
+                "screenshot plus accessibility tree so you can reassess what became visible."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["up", "down", "top", "bottom"],
+                        "description": "Scroll direction",
+                    },
+                    "amount": {"type": "integer", "description": "Approximate scroll distance in pixels"},
+                },
+                "required": ["direction"],
+            },
+        })
+
+        schemas.append({
+            "name": "browser_screenshot",
+            "description": (
+                "Capture the current page state from the persistent Chromium session, including a "
+                "screenshot, accessibility tree, and interactive element map. Use this when you need a "
+                "fresh observation before clicking, typing, or retrying."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "full_page": {
+                        "type": "boolean",
+                        "description": "If true, capture a full-page screenshot",
+                    },
+                },
+                "required": [],
             },
         })
         
@@ -2231,6 +2393,39 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                         error=err,
                     )
                 return err
+
+            elif name in {
+                "browser_navigate",
+                "browser_click",
+                "browser_type",
+                "browser_scroll",
+                "browser_screenshot",
+            }:
+                result = await tool.execute(arguments)
+                output = result.message or ""
+                if not result.success:
+                    err = result.error or output or f"{name} failed"
+                    if not output.startswith("Error:"):
+                        output = f"Error: {err}"
+                self._append_browser_observation(
+                    name,
+                    output,
+                    error=result.error if not result.success else None,
+                    browser_meta=self._browser_observation_meta(result.data),
+                    plan_step=arguments.get("plan_step"),
+                )
+                if self._artifact_logger:
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    self._artifact_logger.log_tool_call(
+                        call_id=call_id,
+                        tool_name=name,
+                        arguments=arguments,
+                        result=output[:12000],
+                        duration_ms=duration_ms,
+                        success=result.success,
+                        error=result.error if not result.success else None,
+                    )
+                return output
             
             elif name == "github":
                 action = arguments.get("action", "")
@@ -4102,6 +4297,65 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             event,
             flat_extras=flat,
             session_id=self.state.session_id,
+        )
+
+    def _browser_observation_meta(self, payload: Any) -> dict[str, Any]:
+        if payload is None:
+            return {}
+
+        def _read(obj: Any, key: str, default: Any = None) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        elements = _read(payload, "interactive_elements", []) or []
+        return {
+            "action": _read(payload, "action"),
+            "url": _read(payload, "url"),
+            "title": _read(payload, "title"),
+            "detail": _read(payload, "detail"),
+            "has_screenshot": bool(_read(payload, "screenshot_base64")),
+            "interactive_element_count": len(elements),
+            "viewport_width": _read(payload, "viewport_width"),
+            "viewport_height": _read(payload, "viewport_height"),
+            "action_time_ms": _read(payload, "action_time_ms"),
+        }
+
+    def _append_browser_observation(
+        self,
+        tool: str,
+        output: str,
+        *,
+        error: str | None = None,
+        browser_meta: dict[str, Any] | None = None,
+        plan_step: Any = None,
+    ) -> None:
+        preview = (output or "").strip()
+        if len(preview) > 8000:
+            preview = preview[:8000] + "\n…(truncated)…"
+        state_after = self._activity_state.to_meta_snapshot()
+        stream_meta: dict[str, Any] = {"plan_step": plan_step}
+        ctx = self._current_activity_context
+        if ctx and isinstance(ctx.get("activity"), dict):
+            stream_meta["activity"] = {**ctx["activity"], "state_after": state_after}
+        elif ctx:
+            stream_meta.update(ctx)
+            if "activity" not in stream_meta:
+                stream_meta["activity"] = {"state_after": state_after}
+        else:
+            stream_meta["activity"] = {"state_after": state_after}
+        if browser_meta:
+            stream_meta["browser"] = browser_meta
+        self._append_session_event(
+            AgentStreamEvent(
+                kind=AgentEventKind.OBSERVATION,
+                tool_name=tool,
+                exit_code=0 if error is None else 1,
+                output=preview or None,
+                error=error,
+                legacy_type="observe",
+                meta=stream_meta,
+            )
         )
 
     def _workspace_path_set(self) -> set[str]:

@@ -382,6 +382,18 @@ class SelfCorrectionEngine:
                 "The command failed with a non-zero exit code. Read STDERR, fix the root cause "
                 "(wrong path, missing package, syntax), then retry—do not repeat the same failing command."
             )
+
+        elif tool_name.startswith("browser_"):
+            action = str(args.get("action") or tool_name).strip()
+            return (
+                "The browser action failed. First capture a fresh `browser_screenshot` or `browser_playwright` "
+                "snapshot and inspect the screenshot, accessibility tree, console, and interactive elements. "
+                "Prefer a more specific CSS selector on retry; only use raw coordinates when the target is "
+                "visually unambiguous. If the page may still be loading, navigate again or wait for the page "
+                "state to settle before retrying. If a modal, cookie banner, or overlay may be intercepting "
+                "input, dismiss that first. For forms, retry with a clearer selector, `clear_first`, or "
+                f"`submit: true` as appropriate before repeating `{action}`."
+            )
             
         elif "BLOCKED" in output:
              return "This action was blocked by the safety guard. You must find an alternative approach that does not violate safety policies."

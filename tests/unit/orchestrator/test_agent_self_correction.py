@@ -95,6 +95,19 @@ class TestSelfCorrectionEngine:
         hint = engine.get_retry_hint(ErrorType.DEPENDENCY_MISSING, "terminal", {}, "NotFound")
         assert "install" in hint.lower()
 
+    def test_get_retry_hint_browser(self, engine):
+        hint = engine.get_retry_hint(
+            ErrorType.UNKNOWN,
+            "browser_click",
+            {"selector": ".submit"},
+            "Error: browser_click failed: timeout",
+        )
+        low = hint.lower()
+        assert "browser_screenshot" in hint or "browser_playwright" in hint
+        assert "selector" in low
+        assert "coordinates" in low or "raw coordinates" in low
+        assert "submit" in low or "overlay" in low or "modal" in low
+
 
 def test_error_fingerprint_stable_for_same_failure():
     fp1 = error_fingerprint("terminal", "No such file: foo\n", 1)
