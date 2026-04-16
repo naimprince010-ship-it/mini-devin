@@ -226,6 +226,12 @@ def incremental_recovery_hint(
     if tool_name == "terminal" and any(
         k in cmd_l for k in (" npm ", "npm ", "npx ", "yarn ", "pnpm ", "node ", "pnpm", "yarn")
     ):
+        if "package.json" in ol and "enoent" in ol and "install" in cmd_l:
+            return (
+                "**Incremental recovery (Node/npm cwd):** `npm install` is running before `package.json` exists "
+                "or from the wrong folder. Run **`pwd`** and **`ls`**, confirm the directory contains `package.json`, "
+                "or create it first before retrying the install."
+            )
         if (
             "eaddrinuse" in ol
             or "address already in use" in ol

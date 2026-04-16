@@ -201,6 +201,20 @@ def test_incremental_recovery_hint_npm():
     assert "package.json" in low or "node_modules" in low
 
 
+def test_incremental_recovery_hint_npm_missing_package_json():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.COMMAND_FAILED,
+        "npm ERR! enoent Could not read package.json: Error: ENOENT: no such file or directory",
+        last_failed_command="npm install",
+    )
+    low = h.lower()
+    assert "package.json" in low
+    assert "pwd" in low
+    assert "wrong folder" in low or "wrong directory" in low or "create it first" in low
+
+
 def test_incremental_recovery_hint_dev_server_port_conflict():
     h = incremental_recovery_hint(
         "terminal",
