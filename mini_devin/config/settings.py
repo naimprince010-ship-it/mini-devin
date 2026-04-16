@@ -55,9 +55,10 @@ class SafetySettings:
 class LLMSettings:
     """LLM-related settings."""
     
-    model: str = "gpt-4o"
+    model: str = "llama3-70b-8192"
     temperature: float = 0.1
     max_tokens: int = 16384
+    groq_api_key: str | None = None
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
     
@@ -65,16 +66,17 @@ class LLMSettings:
     def from_env(cls) -> "LLMSettings":
         """Load LLM settings from environment variables."""
         return cls(
-            model=os.environ.get("LLM_MODEL", "gpt-4o"),
+            model=os.environ.get("LLM_MODEL", "llama3-70b-8192"),
             temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
             max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "16384")),
+            groq_api_key=os.environ.get("GROQ_API_KEY"),
             openai_api_key=os.environ.get("OPENAI_API_KEY"),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
         )
     
     def has_valid_api_key(self) -> bool:
         """Check if at least one API key is configured."""
-        return bool(self.openai_api_key or self.anthropic_api_key)
+        return bool(self.groq_api_key or self.openai_api_key or self.anthropic_api_key)
 
 
 @dataclass
@@ -192,7 +194,9 @@ class Settings:
         
         # Check LLM API key
         if not self.llm.has_valid_api_key():
-            errors.append("No LLM API key configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY.")
+            errors.append(
+                "No LLM API key configured. Set GROQ_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY."
+            )
         
         # Check browser API keys for browse/interactive modes
         if self.run_mode in (RunMode.BROWSE, RunMode.INTERACTIVE):
