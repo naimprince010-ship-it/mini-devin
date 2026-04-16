@@ -55,7 +55,7 @@ class SafetySettings:
 class LLMSettings:
     """LLM-related settings."""
     
-    model: str = "llama3-70b-8192"
+    model: str = "llama-3.3-70b-versatile"
     temperature: float = 0.1
     max_tokens: int = 16384
     groq_api_key: str | None = None
@@ -66,7 +66,7 @@ class LLMSettings:
     def from_env(cls) -> "LLMSettings":
         """Load LLM settings from environment variables."""
         return cls(
-            model=os.environ.get("LLM_MODEL", "llama3-70b-8192"),
+            model=os.environ.get("LLM_MODEL", "llama-3.3-70b-versatile"),
             temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
             max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "16384")),
             groq_api_key=os.environ.get("GROQ_API_KEY"),

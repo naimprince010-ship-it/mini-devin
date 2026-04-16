@@ -331,12 +331,12 @@ class TestModelRegistry:
             google=GoogleAIConfig(api_key="AIza-x", enabled=True),
             openai=OpenAIConfig(api_key="sk-x", enabled=True),
         )
-        assert registry.get_default_model() == "llama3-70b-8192"
+        assert registry.get_default_model() == "llama-3.3-70b-versatile"
 
     def test_get_default_model_groq_only(self):
         registry = ModelRegistry()
         registry.configure_providers(groq=GroqConfig(api_key="gsk-test", enabled=True))
-        assert registry.get_default_model() == "llama3-70b-8192"
+        assert registry.get_default_model() == "llama-3.3-70b-versatile"
 
     def test_get_default_model_anthropic(self):
         """Test getting default model when only Anthropic is configured."""
@@ -375,8 +375,14 @@ class TestGetLiteLLMModelName:
         assert name == "ollama/llama3.2"
 
     def test_groq_model(self):
-        assert get_litellm_model_name("llama3-70b-8192") == "groq/llama3-70b-8192"
-        assert get_litellm_model_name("groq/llama3-70b-8192") == "groq/llama3-70b-8192"
+        assert get_litellm_model_name("llama-3.3-70b-versatile") == "groq/llama-3.3-70b-versatile"
+        assert get_litellm_model_name("groq/llama-3.3-70b-versatile") == "groq/llama-3.3-70b-versatile"
+        assert get_litellm_model_name("llama3-70b-8192") == "groq/llama-3.3-70b-versatile"
+        assert get_litellm_model_name("groq/llama3-70b-8192") == "groq/llama-3.3-70b-versatile"
+        assert get_litellm_model_name("llama-3.1-8b-instant") == "groq/llama-3.1-8b-instant"
+        assert get_litellm_model_name("mixtral-8x7b-32768") == "groq/mixtral-8x7b-32768"
+        assert get_litellm_model_name("llama3-8b-8192") == "groq/llama-3.1-8b-instant"
+        assert get_litellm_model_name("groq/llama3-8b-8192") == "groq/llama-3.1-8b-instant"
 
     def test_gemini_model(self):
         """Legacy Gemini 1.5 Flash maps to current Google AI Studio default (2.0 Flash)."""

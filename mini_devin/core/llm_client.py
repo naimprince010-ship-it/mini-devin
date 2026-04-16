@@ -15,6 +15,7 @@ from mini_devin.core.providers import (
     Provider,
     get_model_registry,
     get_litellm_model_name,
+    normalize_groq_legacy_model_id,
     AzureConfig,
     GroqConfig,
 )
@@ -64,7 +65,7 @@ except ImportError:
 @dataclass
 class LLMConfig:
     """Configuration for the LLM client."""
-    model: str = "llama3-70b-8192"
+    model: str = "llama-3.3-70b-versatile"
     temperature: float = 0.0
     max_tokens: int = 16384
     api_key: str | None = None
@@ -797,7 +798,7 @@ def create_llm_client(
     Create an LLM client with common defaults.
     
     Args:
-        model: Model ID (e.g., "llama3-70b-8192", "gpt-4o", "groq/llama3-70b-8192", "ollama/llama3.2")
+        model: Model ID (e.g., "llama-3.3-70b-versatile", "gpt-4o", "groq/...", "ollama/llama3.2")
                If None, uses the default model based on configured providers.
         api_key: API key for the provider. If None, uses environment variable.
         temperature: Temperature for generation (0.0 = deterministic)
@@ -812,7 +813,10 @@ def create_llm_client(
         isinstance(model, str) and model.strip().lower() in ("auto", "default", "")
     ):
         model = os.environ.get("LLM_MODEL") or registry.get_default_model()
-    
+
+    if isinstance(model, str):
+        model = normalize_groq_legacy_model_id(model.strip())
+
     model_info = registry.get_model(model)
     if model_info is None and isinstance(model, str) and _is_groq_litellm_model(model):
         suffix = model.split("/", 1)[1]
@@ -885,7 +889,7 @@ def create_llm_client(
     elif provider == Provider.GOOGLE:
         max_tokens = 8192
     elif provider == Provider.GROQ:
-        max_tokens = 8192
+        max_tokens = 16_384
     else:
         max_tokens = 16384
 
