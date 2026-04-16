@@ -14,6 +14,7 @@ import time
 import uuid
 import re
 import inspect
+import shlex
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
@@ -196,7 +197,7 @@ When you build or change **user-facing web UI** (React/Vite/Next/Tailwind/CSS co
   when the project stack supports them, instead of bespoke complex CSS.
 - **State-driven UI**: For lists, dashboards, and forms, implement **loading**, **error**, and **empty**
   states—not only the happy path.
-- **Live preview by default**: If you are building a local web app, do not stop at writing files. Install dependencies if needed, start the dev server in the background, detect the listening port, and attach **`live_preview`** so the app can be inspected while work is in progress.
+- **Live preview by default**: If you are building a local web app, do not stop at writing files. Install dependencies once if needed, start the dev server in the correct sandbox mode, detect the listening port, and attach **`live_preview`** so the app can be inspected while work is in progress.
 - **Visual QA**: After substantive UI edits, use **`browser_playwright`** (or the session’s Playwright
   observe tool) to capture the relevant route and **check alignment, contrast, and obvious layout issues**
   before claiming the UI is done.
@@ -230,7 +231,7 @@ When you build or change **user-facing web UI** (React/Vite/Next/Tailwind/CSS co
 - `browser_scroll` — Gradual viewport scroll in the persistent Chromium session
 - `browser_screenshot` — Refresh browser state for the LLM: screenshot + accessibility tree + interactive element map
 - `browser_interactive` — Legacy Selenium (use Playwright when available)
-- `live_preview` — For apps you are building locally: probe localhost ports after `npm run dev` / framework dev server startup, then attach the active port so the Browser pane shows the running app
+- `live_preview` — For apps you are building locally: probe localhost ports after `npm run dev` / framework dev server startup, then attach the active port so the Browser pane shows the running app. Common fallback ports include `3001`, `3002`, `4173`, `5001`, `5002`, `5173`, and `8000`.
 - `github` — GitHub: branches, commits, PRs, PR status (CI), merge (see GitHub section below when token is set)
 - `monitor` — Check app health, fetch cloud/docker logs, register for continuous monitoring
 - `env_parity` — Generate Dockerfile/.env.example/docker-compose; diff local vs production env
@@ -1719,7 +1720,7 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             if action == "probe":
                 ports = arguments.get("ports")
                 if not isinstance(ports, list) or not ports:
-                    raw = (os.environ.get("LIVE_PREVIEW_PROBE_PORTS") or "5173,3000,8080,4200,8000").strip()
+                    raw = (os.environ.get("LIVE_PREVIEW_PROBE_PORTS") or "5173,3000,3001,3002,4173,4200,5000,5001,5002,8000,8080").strip()
                     ports = []
                     for x in raw.split(","):
                         x = x.strip()
@@ -1728,7 +1729,7 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 try:
                     candidates = [int(p) for p in ports]
                 except (TypeError, ValueError):
-                    candidates = [5173, 3000, 8080]
+                    candidates = [5173, 3000, 3001, 3002, 4173, 5000, 5001, 5002, 8000, 8080]
                 listening = probe_local_ports_sync(candidates)
                 payload: dict[str, Any] = {
                     "listening_ports": listening,
@@ -1885,7 +1886,80 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                     work_dir = arguments.get("working_directory", ".")
                     workdir_ps = None if work_dir in (".", "", None) else work_dir
                     pex = self._get_pex_terminal()
+                    dev_server = bool(
+                        re.search(
+                            r"(?i)\b("
+                            r"npm\s+run\s+(dev|start)|"
+                            r"yarn\s+(dev|start)|"
+                            r"pnpm\s+(dev|start)|"
+                            r"next\s+dev|vite\b|astro\s+dev|parcel\b|"
+                            r"flask\s+run|"
+                            r"python(?:\d+(?:\.\d+)?)?\s+[^;&\n]*\.py\b|"
+                            r"node\s+[^;&\n]*(server|app|index)\.js\b"
+                            r")",
+                            command,
+                        )
+                    )
                     try:
+                        if dev_server and callable(getattr(pex, "run_dev_server_in_workspace", None)):
+                            runner_command = command
+                            if workdir_ps not in (None, ".", ""):
+                                runner_command = f"cd {shlex.quote(str(workdir_ps))} && {command}"
+                            dev_res = await asyncio.to_thread(
+                                pex.run_dev_server_in_workspace,
+                                {},
+                                ["sh", "-c", runner_command],
+                                timeout_sec=timeout_seconds,
+                            )
+                            output_parts = []
+                            if dev_res.get("stdout"):
+                                output_parts.append(f"STDOUT:\n{dev_res['stdout']}")
+                                if on_cmd_output:
+                                    for line in str(dev_res["stdout"]).splitlines():
+                                        on_cmd_output(line)
+                            if dev_res.get("stderr"):
+                                output_parts.append(f"STDERR:\n{dev_res['stderr']}")
+                                if on_cmd_output:
+                                    for line in str(dev_res["stderr"]).splitlines():
+                                        on_cmd_output(f"[stderr] {line}")
+                            if dev_res.get("ok") and int(dev_res.get("port", 0) or 0) > 0:
+                                from ..api.live_preview_state import (
+                                    live_preview_set_port_warning,
+                                    set_session_preview_port,
+                                )
+
+                                started_port = int(dev_res["port"])
+                                ok = await set_session_preview_port(self.state.session_id, started_port)
+                                lp_payload: dict[str, Any]
+                                if ok:
+                                    lp_payload = {
+                                        "ok": True,
+                                        "active_port": started_port,
+                                        "browser_iframe": f"/api/sessions/{self.state.session_id}/live-preview/",
+                                    }
+                                    warning = live_preview_set_port_warning(started_port)
+                                    if warning:
+                                        lp_payload["warning"] = warning
+                                else:
+                                    lp_payload = {
+                                        "ok": False,
+                                        "error": f"Port {started_port} was not reachable for live preview attachment.",
+                                    }
+                                output_parts.append(f"LIVE_PREVIEW:\n{json.dumps(lp_payload, indent=2)}")
+                            exit_code = int(dev_res.get("exit_code", 0) or 0)
+                            output_parts.append(f"Exit code: {exit_code}")
+                            if on_cmd_output:
+                                on_cmd_output(f"Exit code: {exit_code}")
+                            output = "\n".join(output_parts)
+                            _terminal_artifact(output, exit_code == 0, exit_code)
+                            return self._attach_filesystem_observe(
+                                output,
+                                fs_before,
+                                tool="terminal",
+                                exit_code=exit_code,
+                                plan_step=plan_step,
+                            )
+
                         sb_res = await asyncio.to_thread(
                             pex.exec_shell,
                             command,
