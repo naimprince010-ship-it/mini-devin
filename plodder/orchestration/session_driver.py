@@ -894,7 +894,7 @@ class UnifiedSessionDriver:
         if action == "probe":
             ports = args.get("ports")
             if not isinstance(ports, list) or not ports:
-                raw = (os.environ.get("LIVE_PREVIEW_PROBE_PORTS") or "5173,3000,8080,4200,8000").strip()
+                raw = (os.environ.get("LIVE_PREVIEW_PROBE_PORTS") or "5173,3000,3001,3002,4173,4200,5000,5001,5002,8000,8080").strip()
                 ports = []
                 for x in raw.split(","):
                     x = x.strip()
@@ -903,7 +903,7 @@ class UnifiedSessionDriver:
             try:
                 candidates = [int(p) for p in ports]
             except (TypeError, ValueError):
-                candidates = [5173, 3000, 8080]
+                candidates = [5173, 3000, 3001, 3002, 4173, 5000, 5001, 5002, 8000, 8080]
             listening = probe_local_ports_sync(candidates)
             out_probe: dict[str, Any] = {
                 "tool": "live_preview",

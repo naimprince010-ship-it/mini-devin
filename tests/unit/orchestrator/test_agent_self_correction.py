@@ -95,6 +95,29 @@ class TestSelfCorrectionEngine:
         hint = engine.get_retry_hint(ErrorType.DEPENDENCY_MISSING, "terminal", {}, "NotFound")
         assert "install" in hint.lower()
 
+    def test_get_retry_hint_dependency_node_package(self, engine):
+        hint = engine.get_retry_hint(
+            ErrorType.DEPENDENCY_MISSING,
+            "terminal",
+            {"command": "npm install express"},
+            "package.json\nnode_modules missing",
+        )
+        low = hint.lower()
+        assert "npm" in low or "pnpm" in low or "yarn" in low
+        assert "not `pip`" in hint or "not pip" in low
+
+    def test_get_retry_hint_timeout_dev_server(self, engine):
+        hint = engine.get_retry_hint(
+            ErrorType.TIMEOUT,
+            "terminal",
+            {"command": "node server.js"},
+            "Command timed out after 30 seconds",
+        )
+        low = hint.lower()
+        assert "live_preview" in low or "preview" in low
+        assert "sandbox" in low or "detached" in low or "host/process" in low
+        assert "run it in the background using `&`" not in hint
+
     def test_get_retry_hint_browser(self, engine):
         hint = engine.get_retry_hint(
             ErrorType.UNKNOWN,

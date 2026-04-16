@@ -44,7 +44,7 @@ def terminal_recovery_hint(
         or "port is already in use" in text
     ):
         return (
-            "**Hint**: Dev server port conflict — retry on another port like `3001`, `3002`, `4173`, or `5173` "
+            "**Hint**: Dev server port conflict — retry on another port like `3001`, `3002`, `4173`, `5001`, `5002`, `5173`, or `8000` "
             "instead of looping on unavailable port-inspection tools."
         )
 

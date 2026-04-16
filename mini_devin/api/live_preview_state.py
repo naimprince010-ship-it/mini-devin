@@ -18,8 +18,12 @@ _ports: dict[str, int] = {}
 _DEFAULT_ALLOWED: Final[tuple[int, ...]] = (
     3000,
     3001,
+    3002,
     4200,
     5000,
+    5001,
+    5002,
+    4173,
     5173,
     5174,
     8000,

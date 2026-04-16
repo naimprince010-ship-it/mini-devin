@@ -235,7 +235,7 @@ def incremental_recovery_hint(
             return (
                 "**Incremental recovery (dev server port conflict):** The default port is busy. "
                 "Do not get stuck on `lsof`, `netstat`, `ss`, or `fuser` if they are missing. "
-                "Retry the dev server on another port such as `3001`, `3002`, `4173`, or `5173`, "
+                "Retry the dev server on another port such as `3001`, `3002`, `4173`, `5001`, `5002`, `5173`, or `8000`, "
                 "then probe/attach live preview to the new port."
             )
         return (
@@ -383,6 +383,16 @@ class SelfCorrectionEngine:
             return "There is a syntax error in the code you executed or wrote. Please carefully check indentation, brackets, and syntax rules for the language, fix the error, and try again."
             
         elif error_type == ErrorType.DEPENDENCY_MISSING:
+            cmd_l = str(args.get("command", "") or "").lower()
+            out_l = (output or "").lower()
+            if any(k in cmd_l for k in ("npm ", "npx ", "node ", "pnpm ", "yarn ")) or any(
+                k in out_l for k in ("package.json", "node_modules", "npm err", "express", "vite", "next dev")
+            ):
+                return (
+                    "A Node/npm dependency or command is missing. Check that you are in the folder containing "
+                    "`package.json`, inspect `node_modules`, and install the package with `npm` / `pnpm` / `yarn` "
+                    "(not `pip`). Do not switch to Python package installation for a JavaScript dependency."
+                )
             return (
                 "A dependency or command is missing. Use the **Python executable from Runtime context**: "
                 "`<that-python> -m pip install <package>` or `<that-python> -m pytest` / `-m unittest`. "
@@ -400,7 +410,14 @@ class SelfCorrectionEngine:
             return "Permission denied. You may need to change file permissions, use a different directory, or avoid modifying system-protected files."
             
         elif error_type == ErrorType.TIMEOUT:
-            return "The operation timed out. If it's a server, run it in the background using `&` or as a daemon. Otherwise, try a smaller or optimized command."
+            cmd_l = str(args.get("command", "") or "").lower()
+            if any(k in cmd_l for k in ("npm run dev", "yarn dev", "pnpm dev", "next dev", "vite", "node server", "python app.py", "flask run")):
+                return (
+                    "The operation timed out. For dev servers, do not blindly retry with trailing `&` in a one-shot sandbox. "
+                    "Use the host/process sandbox or a detached dev-server runner, retry a fallback port if needed, "
+                    "then attach `live_preview` after the port is actually listening."
+                )
+            return "The operation timed out. Try a smaller or optimized command, or split the work into shorter verification steps."
 
         elif error_type == ErrorType.ENVIRONMENT_MISMATCH:
             return (
