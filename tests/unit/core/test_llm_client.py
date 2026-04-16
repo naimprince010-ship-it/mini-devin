@@ -471,7 +471,7 @@ class TestCreateLLMClient:
         assert client.config.provider == Provider.GROQ
         assert client.config.api_base == "https://api.groq.com/openai/v1"
         assert client.config.timeout == 120
-        assert client.config.max_tokens == 16384
+        assert client.config.max_tokens == 4096
 
 
 class TestLLMClientGeminiCompletion:
