@@ -26,7 +26,7 @@ class TestLLMConfig:
     def test_default_config(self):
         """Test default LLMConfig values."""
         config = LLMConfig()
-        assert config.model == "gpt-4o"
+        assert config.model == "llama3-70b-8192"
         assert config.temperature == 0.0
         assert config.max_tokens == 16384
         assert config.api_key is None
@@ -448,6 +448,29 @@ class TestCreateLLMClient:
         prov._registry = None
         client = create_llm_client(model="gemini/gemini-1.5-flash")
         assert client.config.provider == Provider.GOOGLE
+        assert client.config.max_tokens == 8192
+
+    @patch("mini_devin.core.llm_client.LITELLM_AVAILABLE", True)
+    @patch("mini_devin.core.llm_client.litellm")
+    @patch.dict(
+        os.environ,
+        {
+            "GROQ_API_KEY": "gsk-test",
+            "OPENAI_API_KEY": "",
+            "GEMINI_API_KEY": "",
+            "GOOGLE_API_KEY": "",
+            "LLM_MODEL": "",
+        },
+        clear=True,
+    )
+    def test_create_with_groq_model(self, mock_litellm):
+        import mini_devin.core.providers as prov
+
+        prov._registry = None
+        client = create_llm_client(model="llama3-70b-8192")
+        assert client.config.provider == Provider.GROQ
+        assert client.config.api_base == "https://api.groq.com/openai/v1"
+        assert client.config.timeout == 120
         assert client.config.max_tokens == 8192
 
 

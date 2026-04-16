@@ -1847,6 +1847,11 @@ async def list_artifacts(session_id: str, task_id: str):
 async def list_providers():
     """List available LLM providers."""
     providers = []
+    if (os.getenv("GROQ_API_KEY") or "").strip():
+        providers.append({
+            "id": "groq", "name": "Groq", "configured": True, "enabled": True,
+            "models": ["llama3-70b-8192"],
+        })
     if os.getenv("OPENAI_API_KEY") or _legacy_openai_toggle_env_set():
         providers.append({
             "id": "openai", "name": "OpenAI", "configured": True, "enabled": True,
@@ -1869,6 +1874,19 @@ async def list_providers():
 async def list_models():
     """List available LLM models based on configured API keys."""
     models = []
+    if (os.getenv("GROQ_API_KEY") or "").strip():
+        models.append(
+            {
+                "id": "llama3-70b-8192",
+                "name": "Llama 3 70B (Groq)",
+                "provider": "groq",
+                "context_window": 8192,
+                "supports_tools": True,
+                "supports_vision": False,
+                "max_output_tokens": 8192,
+                "description": "Fast inference on Groq (OpenAI-compatible API)",
+            }
+        )
     if os.getenv("OPENAI_API_KEY") or _legacy_openai_toggle_env_set():
         models.extend([
             {"id": "gpt-4o", "name": "GPT-4o", "provider": "openai",
@@ -1902,9 +1920,9 @@ async def list_models():
     if not models:
         # Fallback defaults so UI always has something to show
         models = [
-            {"id": "gpt-4o", "name": "GPT-4o", "provider": "openai",
-             "context_window": 128000, "supports_tools": True, "supports_vision": True,
-             "max_output_tokens": 16384, "description": "Requires OPENAI_API_KEY"},
+            {"id": "llama3-70b-8192", "name": "Llama 3 70B (Groq)", "provider": "groq",
+             "context_window": 8192, "supports_tools": True, "supports_vision": False,
+             "max_output_tokens": 8192, "description": "Requires GROQ_API_KEY"},
         ]
     return {"models": models}
 
@@ -1919,6 +1937,15 @@ async def get_system_status():
         import shutil
         browser_mode = "local" if shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome") else "unavailable"
 
+    from mini_devin.api.live_preview_state import allowed_ports
+    from mini_devin.sandbox.process_execution_sandbox import use_host_process_terminal_for_tooling
+
+    groq_on = bool((os.getenv("GROQ_API_KEY") or "").strip())
+    openai_on = bool((os.getenv("OPENAI_API_KEY") or "").strip()) or _legacy_openai_toggle_env_set()
+    anthropic_on = bool((os.getenv("ANTHROPIC_API_KEY") or "").strip())
+    gemini_on = bool((os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip())
+    llm_ok = groq_on or openai_on or anthropic_on or gemini_on
+
     return {
         "status": "running",
         "mode": "lightweight",
@@ -1926,10 +1953,30 @@ async def get_system_status():
         "active_sessions": await session_manager.get_active_session_count(),
         "total_tasks_completed": await session_manager.get_total_tasks_completed(),
         "uptime_seconds": session_manager.get_uptime_seconds(),
-        "llm_configured": bool(
-            os.getenv("OPENAI_API_KEY") or _legacy_openai_toggle_env_set() or os.getenv("ANTHROPIC_API_KEY")
-        ),
+        "llm_configured": llm_ok,
         "browser_mode": browser_mode,
+        # Safe booleans for Railway / preview deploy checks (no secret values).
+        "deployment_env": {
+            "groq_api_key_set": groq_on,
+            "openai_api_key_set": bool((os.getenv("OPENAI_API_KEY") or "").strip()),
+            "anthropic_api_key_set": anthropic_on,
+            "gemini_or_google_api_key_set": gemini_on,
+            "database_url_set": bool((os.getenv("DATABASE_URL") or "").strip()),
+            "jwt_secret_set": bool((os.getenv("JWT_SECRET") or "").strip()),
+            "run_mode": (os.getenv("RUN_MODE") or "offline").strip().lower(),
+            "llm_model": (os.getenv("LLM_MODEL") or "").strip() or None,
+            "groq_api_base": (os.getenv("GROQ_API_BASE") or "").strip() or None,
+            "railway_environment_set": bool((os.getenv("RAILWAY_ENVIRONMENT") or "").strip()),
+            "host_process_terminal": use_host_process_terminal_for_tooling(),
+            "live_preview_allowed_port_count": len(allowed_ports()),
+            "live_preview_probe_ports_custom": bool((os.getenv("LIVE_PREVIEW_PROBE_PORTS") or "").strip()),
+            "browserless_configured": bool(
+                (os.getenv("BROWSERLESS_API_KEY") or "").strip() or (os.getenv("BROWSERLESS_WS_URL") or "").strip()
+            ),
+            "tavily_or_serpapi_set": bool(
+                (os.getenv("TAVILY_API_KEY") or "").strip() or (os.getenv("SERPAPI_API_KEY") or "").strip()
+            ),
+        },
     }
 
 

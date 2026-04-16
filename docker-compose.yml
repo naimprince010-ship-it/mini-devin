@@ -59,12 +59,15 @@ services:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-plodder}
       
       # LLM Configuration
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_API_BASE=${GROQ_API_BASE:-https://api.groq.com/openai/v1}
+      - GROQ_ENABLED=${GROQ_ENABLED:-true}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - LLM_MODEL=${LLM_MODEL:-gpt-4o}
+      - LLM_MODEL=${LLM_MODEL:-llama3-70b-8192}
       - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.1}
-      - LLM_MAX_OUTPUT_TOKENS=${LLM_MAX_OUTPUT_TOKENS:-16384}
-      - LLM_TIMEOUT_SEC=${LLM_TIMEOUT_SEC:-300}
+      - LLM_MAX_OUTPUT_TOKENS=${LLM_MAX_OUTPUT_TOKENS:-8192}
+      - LLM_TIMEOUT_SEC=${LLM_TIMEOUT_SEC:-120}
       
       # Browser Search API Keys (optional)
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}

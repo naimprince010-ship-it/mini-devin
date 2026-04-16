@@ -16,6 +16,7 @@ from mini_devin.core.providers import (
     get_model_registry,
     get_litellm_model_name,
     AzureConfig,
+    GroqConfig,
 )
 
 
@@ -23,6 +24,12 @@ def _is_gemini_litellm_model(model_id: str) -> bool:
     """True for Google AI Studio (``gemini/``) and mistaken ``google/gemini`` prefixes (normalized at call time)."""
     m = (model_id or "").strip().lower()
     return m.startswith("gemini/") or m.startswith("vertex_ai/") or m.startswith("google/gemini")
+
+
+def _is_groq_litellm_model(model_id: str) -> bool:
+    """True when the model id is already in LiteLLM's ``groq/...`` form."""
+    m = (model_id or "").strip().lower()
+    return m.startswith("groq/")
 
 
 def _gemini_safety_settings_block_none() -> list[dict[str, str]]:
@@ -57,7 +64,7 @@ except ImportError:
 @dataclass
 class LLMConfig:
     """Configuration for the LLM client."""
-    model: str = "gpt-4o"
+    model: str = "llama3-70b-8192"
     temperature: float = 0.0
     max_tokens: int = 16384
     api_key: str | None = None
@@ -277,6 +284,8 @@ class LLMClient:
             self.config.provider = model_info.provider
         elif isinstance(self.config.model, str) and _is_gemini_litellm_model(self.config.model):
             self.config.provider = Provider.GOOGLE
+        elif isinstance(self.config.model, str) and _is_groq_litellm_model(self.config.model):
+            self.config.provider = Provider.GROQ
 
         provider = self.config.provider
 
@@ -303,6 +312,18 @@ class LLMClient:
                 os.environ["GEMINI_API_KEY"] = self.config.api_key
                 if not (os.environ.get("GOOGLE_API_KEY") or "").strip():
                     os.environ["GOOGLE_API_KEY"] = self.config.api_key
+        elif provider == Provider.GROQ:
+            if self.config.api_key:
+                os.environ["GROQ_API_KEY"] = self.config.api_key
+            gcfg = registry.get_provider_config(Provider.GROQ)
+            default_base = "https://api.groq.com/openai/v1"
+            if not self.config.api_base:
+                if isinstance(gcfg, GroqConfig) and (gcfg.api_base or "").strip():
+                    self.config.api_base = str(gcfg.api_base).rstrip("/")
+                else:
+                    self.config.api_base = (
+                        os.environ.get("GROQ_API_BASE") or default_base
+                    ).rstrip("/")
         else:
             if self.config.api_key and provider is None:
                 os.environ["OPENAI_API_KEY"] = self.config.api_key
@@ -483,6 +504,8 @@ class LLMClient:
             kwargs["client"] = self._custom_client
         if self.config.provider == Provider.GOOGLE and self.config.api_key:
             kwargs["api_key"] = self.config.api_key
+        if self.config.provider == Provider.GROQ and self.config.api_key:
+            kwargs["api_key"] = self.config.api_key
         try:
             response = await acompletion(**kwargs)
         except Exception as e:
@@ -557,6 +580,9 @@ class LLMClient:
              kwargs["client"] = self._custom_client
 
         if self.config.provider == Provider.GOOGLE and self.config.api_key:
+            kwargs["api_key"] = self.config.api_key
+
+        if self.config.provider == Provider.GROQ and self.config.api_key:
             kwargs["api_key"] = self.config.api_key
 
         # Make the API call
@@ -771,7 +797,7 @@ def create_llm_client(
     Create an LLM client with common defaults.
     
     Args:
-        model: Model ID (e.g., "gpt-4o", "claude-3-5-sonnet-20241022", "ollama/llama3.2")
+        model: Model ID (e.g., "llama3-70b-8192", "gpt-4o", "groq/llama3-70b-8192", "ollama/llama3.2")
                If None, uses the default model based on configured providers.
         api_key: API key for the provider. If None, uses environment variable.
         temperature: Temperature for generation (0.0 = deterministic)
@@ -788,10 +814,15 @@ def create_llm_client(
         model = os.environ.get("LLM_MODEL") or registry.get_default_model()
     
     model_info = registry.get_model(model)
+    if model_info is None and isinstance(model, str) and _is_groq_litellm_model(model):
+        suffix = model.split("/", 1)[1]
+        model_info = registry.get_model(suffix)
     if model_info:
         provider = model_info.provider
     elif isinstance(model, str) and _is_gemini_litellm_model(model):
         provider = Provider.GOOGLE
+    elif isinstance(model, str) and _is_groq_litellm_model(model):
+        provider = Provider.GROQ
     else:
         provider = None
 
@@ -806,8 +837,10 @@ def create_llm_client(
             api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         elif provider == Provider.OLLAMA:
             api_key = "ollama"
+        elif provider == Provider.GROQ:
+            api_key = os.environ.get("GROQ_API_KEY")
 
-    if api_key is None and provider != Provider.GOOGLE:
+    if api_key is None and provider is None:
         api_key = os.environ.get("OPENAI_API_KEY")
 
     if isinstance(api_key, str):
@@ -823,10 +856,26 @@ def create_llm_client(
                 "No Gemini API key is set. Add GEMINI_API_KEY=... (or GOOGLE_API_KEY) to the "
                 ".env file in the project root (next to pyproject.toml), save, and restart the API."
             )
+        if provider == Provider.GROQ or (
+            isinstance(model, str) and _is_groq_litellm_model(model)
+        ):
+            raise ValueError(
+                "No Groq API key is set. Add GROQ_API_KEY to the "
+                ".env file in the project root (next to pyproject.toml), save, and restart the API."
+            )
         raise ValueError(
             "No LLM API key is set. For OpenAI models, add OPENAI_API_KEY=sk-... to the "
             ".env file in the project root (next to pyproject.toml), save, and restart the API."
         )
+
+    if api_base is None and provider == Provider.GROQ:
+        gcfg = registry.get_provider_config(Provider.GROQ)
+        if isinstance(gcfg, GroqConfig) and (gcfg.api_base or "").strip():
+            api_base = str(gcfg.api_base).rstrip("/")
+        else:
+            api_base = (os.environ.get("GROQ_API_BASE") or "https://api.groq.com/openai/v1").rstrip(
+                "/"
+            )
 
     max_out_raw = (os.environ.get("LLM_MAX_OUTPUT_TOKENS") or "").strip()
     if max_out_raw.isdigit():
@@ -835,12 +884,17 @@ def create_llm_client(
         max_tokens = model_info.max_output_tokens
     elif provider == Provider.GOOGLE:
         max_tokens = 8192
+    elif provider == Provider.GROQ:
+        max_tokens = 8192
     else:
         max_tokens = 16384
 
     timeout_raw = (os.environ.get("LLM_TIMEOUT_SEC") or "").strip()
     if timeout_raw.isdigit():
         timeout = int(timeout_raw)
+    elif provider == Provider.GROQ:
+        # Groq is low-latency; avoid long client waits on stalls (override with LLM_TIMEOUT_SEC).
+        timeout = 120
     else:
         timeout = 300
 
