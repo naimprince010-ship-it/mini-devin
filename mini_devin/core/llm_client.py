@@ -460,6 +460,13 @@ class LLMClient:
         if raw.isdigit():
             n = int(raw)
             return n if n > 0 else None
+        if self.config.provider == Provider.GROQ:
+            raw_g = (os.environ.get("LLM_MAX_HISTORY_MESSAGES_GROQ") or "").strip()
+            if raw_g.isdigit():
+                ng = int(raw_g)
+                return ng if ng > 0 else None
+            # Groq free tier TPM is tight; smaller windows reduce prompt tokens per request.
+            return 36
         if _is_gemini_litellm_model(self.config.model):
             return 200
         return 80
@@ -597,7 +604,17 @@ class LLMClient:
             if "AuthenticationError" in error_msg or "401" in error_msg:
                 raise RuntimeError(f"LLM Authentication Failed: API Key might be invalid or missing for {model_name}")
             elif "RateLimitError" in error_msg or "429" in error_msg:
-                raise RuntimeError(f"LLM Rate Limit Reached: {error_msg}")
+                hint = ""
+                if self.config.provider == Provider.GROQ or (
+                    isinstance(model_name, str) and model_name.lower().startswith("groq/")
+                ):
+                    hint = (
+                        " Groq free tier: lower per-request size — set LLM_MAX_OUTPUT_TOKENS=2048, "
+                        "LLM_MAX_HISTORY_MESSAGES_GROQ=24, GROQ_MAX_OUTPUT_TOKENS_CAP=4096, enable "
+                        "LLM_CONTEXT_CONDENSER=true, or use LLM_MODEL_OBSERVATION=llama-3.1-8b-instant; see "
+                        "https://console.groq.com/settings/limits"
+                    )
+                raise RuntimeError(f"LLM Rate Limit Reached: {error_msg}{hint}")
             elif "NotFoundError" in error_msg or "404" in error_msg:
                 raise RuntimeError(
                     f"LLM Model Not Found: {model_name}. "
@@ -889,9 +906,15 @@ def create_llm_client(
     elif provider == Provider.GOOGLE:
         max_tokens = 8192
     elif provider == Provider.GROQ:
-        max_tokens = 16_384
+        max_tokens = 4096
     else:
         max_tokens = 16384
+
+    # Groq free-tier TPM: hard ceiling on max output tokens (override via GROQ_MAX_OUTPUT_TOKENS_CAP).
+    if provider == Provider.GROQ:
+        cap_raw = (os.environ.get("GROQ_MAX_OUTPUT_TOKENS_CAP") or "8192").strip()
+        if cap_raw.isdigit() and int(cap_raw) > 0:
+            max_tokens = min(max_tokens, int(cap_raw))
 
     timeout_raw = (os.environ.get("LLM_TIMEOUT_SEC") or "").strip()
     if timeout_raw.isdigit():

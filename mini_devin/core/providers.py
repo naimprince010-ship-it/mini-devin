@@ -182,8 +182,8 @@ GROQ_MODELS = [
         context_window=131_072,
         supports_tools=True,
         supports_vision=False,
-        max_output_tokens=16_384,
-        description="Strong default for coding/agents on Groq free tier (replaces llama3-70b-8192)",
+        max_output_tokens=4096,
+        description="Strong default for coding/agents; 4k cap helps Groq free-tier TPM (~12k/min)",
     ),
     ModelInfo(
         id="llama-3.1-8b-instant",
@@ -192,7 +192,7 @@ GROQ_MODELS = [
         context_window=131_072,
         supports_tools=True,
         supports_vision=False,
-        max_output_tokens=8192,
+        max_output_tokens=4096,
         description="Very fast on Groq; good for observation / light passes (replaces llama3-8b-8192)",
     ),
     ModelInfo(
@@ -202,7 +202,7 @@ GROQ_MODELS = [
         context_window=32_768,
         supports_tools=True,
         supports_vision=False,
-        max_output_tokens=8192,
+        max_output_tokens=4096,
         description="Solid MoE option on Groq free tier",
     ),
 ]

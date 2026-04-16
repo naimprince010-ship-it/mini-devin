@@ -1888,7 +1888,7 @@ async def list_models():
                     "context_window": 131072,
                     "supports_tools": True,
                     "supports_vision": False,
-                    "max_output_tokens": 16384,
+                    "max_output_tokens": 4096,
                     "description": "Recommended for Plodder / coding (Groq deprecations successor)",
                 },
                 {
@@ -1898,7 +1898,7 @@ async def list_models():
                     "context_window": 131072,
                     "supports_tools": True,
                     "supports_vision": False,
-                    "max_output_tokens": 8192,
+                    "max_output_tokens": 4096,
                     "description": "Fast; good for LLM_MODEL_OBSERVATION (replaces llama3-8b-8192)",
                 },
                 {
@@ -1908,7 +1908,7 @@ async def list_models():
                     "context_window": 32768,
                     "supports_tools": True,
                     "supports_vision": False,
-                    "max_output_tokens": 8192,
+                    "max_output_tokens": 4096,
                     "description": "Solid MoE on Groq free tier",
                 },
             ]
@@ -1948,7 +1948,7 @@ async def list_models():
         models = [
             {"id": "llama-3.3-70b-versatile", "name": "Llama 3.3 70B Versatile (Groq)", "provider": "groq",
              "context_window": 131072, "supports_tools": True, "supports_vision": False,
-             "max_output_tokens": 16384, "description": "Requires GROQ_API_KEY"},
+             "max_output_tokens": 4096, "description": "Requires GROQ_API_KEY"},
         ]
     return {"models": models}
 
