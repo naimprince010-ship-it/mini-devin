@@ -2134,7 +2134,11 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                         return f"BLOCKED: {violation.message}. Task moved to BLOCKED state."
                     
                     # Safety check for dependency files
-                    dep_violation = self._check_dependency_safety(file_path)
+                    abs_target = (Path(self.working_directory or ".") / file_path).resolve()
+                    dep_violation = self._check_dependency_safety(
+                        file_path,
+                        change_type="create" if not abs_target.exists() else "bump",
+                    )
                     if dep_violation and dep_violation.blocked:
                         self._update_phase(AgentPhase.BLOCKED)
                         return f"BLOCKED: {dep_violation.message}. Task moved to BLOCKED state."
@@ -3071,9 +3075,9 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             self._log(f"SAFETY VIOLATION: {violation.message}")
         return violation
     
-    def _check_dependency_safety(self, file_path: str) -> SafetyViolation | None:
+    def _check_dependency_safety(self, file_path: str, *, change_type: str = "bump") -> SafetyViolation | None:
         """Check if a dependency change is allowed."""
-        violation = self.safety_guard.check_dependency_change(file_path)
+        violation = self.safety_guard.check_dependency_change(file_path, change_type=change_type)
         if violation:
             self._log(f"SAFETY VIOLATION: {violation.message}")
         return violation
