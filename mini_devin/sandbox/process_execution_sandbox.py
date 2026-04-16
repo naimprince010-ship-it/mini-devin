@@ -357,8 +357,16 @@ class ProcessExecutionSandbox:
         logs_dir.mkdir(parents=True, exist_ok=True)
         settle_s = max(3.0, min(float(timeout_sec or 15), 12.0))
         last_error = ""
+        skipped_busy_ports: list[int] = []
 
         for port in ports:
+            if _port_open(port):
+                skipped_busy_ports.append(port)
+                last_error = (
+                    f"Port {port} is already listening before startup. "
+                    "Treating it as busy and trying the next fallback port."
+                )
+                continue
             cmd = _command_with_port(base, port)
             log_path = logs_dir / f"devserver-{port}-{uuid.uuid4().hex[:8]}.log"
             with log_path.open("ab") as log_f:
@@ -385,6 +393,12 @@ class ProcessExecutionSandbox:
             except OSError:
                 log_text = ""
             if launched:
+                time.sleep(0.2)
+                if proc.poll() is not None:
+                    last_error = log_text[-4000:] if log_text else (
+                        f"Dev server process exited immediately after opening port {port}."
+                    )
+                    continue
                 return {
                     "tool": "sandbox_shell",
                     "ok": True,
@@ -436,8 +450,17 @@ class ProcessExecutionSandbox:
             "timed_out": False,
             "command": base,
             "stdout": "",
-            "stderr": last_error
-            or "Unable to start the dev server on common localhost ports.",
+            "stderr": (
+                (
+                    last_error
+                    + (
+                        f"\nBusy ports skipped: {', '.join(str(p) for p in skipped_busy_ports)}."
+                        if skipped_busy_ports
+                        else ""
+                    )
+                ).strip()
+                or "Unable to start the dev server on common localhost ports."
+            ),
             "stdout_truncated": False,
             "stderr_truncated": False,
         }
