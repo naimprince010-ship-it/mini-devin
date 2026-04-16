@@ -148,7 +148,18 @@ def _runtime_context_block(working_directory: str | None) -> str:
     exe = _sys_for_prompt.executable.replace("\\", "/")
     plat = _sys_for_prompt.platform
     wd = working_directory or "."
-    if plat == "win32":
+    root = Path(wd).resolve()
+    has_package_json = (root / "package.json").is_file()
+    has_python_markers = any(
+        (root / name).exists() for name in ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt")
+    )
+    looks_node_only = has_package_json and not has_python_markers
+    if looks_node_only:
+        test_hint = (
+            "This looks like a Node/JS workspace (`package.json` present, no Python project markers). "
+            "Prefer `npm test`, `npm run build`, or `node <entry>` verification. Do not run `pytest` unless you first confirm Python tests exist."
+        )
+    elif plat == "win32":
         test_hint = (
             f"Use `{exe} -m pytest` or `{exe} -m unittest discover` (not bare `pytest` if it is not on PATH)."
         )
