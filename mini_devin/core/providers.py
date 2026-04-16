@@ -176,14 +176,34 @@ class AzureConfig(ProviderConfig):
 
 GROQ_MODELS = [
     ModelInfo(
-        id="llama3-70b-8192",
-        name="Llama 3 70B (Groq)",
+        id="llama-3.3-70b-versatile",
+        name="Llama 3.3 70B Versatile (Groq)",
         provider=Provider.GROQ,
-        context_window=8192,
+        context_window=131_072,
+        supports_tools=True,
+        supports_vision=False,
+        max_output_tokens=16_384,
+        description="Strong default for coding/agents on Groq free tier (replaces llama3-70b-8192)",
+    ),
+    ModelInfo(
+        id="llama-3.1-8b-instant",
+        name="Llama 3.1 8B Instant (Groq)",
+        provider=Provider.GROQ,
+        context_window=131_072,
         supports_tools=True,
         supports_vision=False,
         max_output_tokens=8192,
-        description="Meta Llama 3 70B via Groq (fast OpenAI-compatible API)",
+        description="Very fast on Groq; good for observation / light passes (replaces llama3-8b-8192)",
+    ),
+    ModelInfo(
+        id="mixtral-8x7b-32768",
+        name="Mixtral 8x7B (Groq)",
+        provider=Provider.GROQ,
+        context_window=32_768,
+        supports_tools=True,
+        supports_vision=False,
+        max_output_tokens=8192,
+        description="Solid MoE option on Groq free tier",
     ),
 ]
 
@@ -485,7 +505,7 @@ class ModelRegistry:
     def get_default_model(self) -> str:
         """Get the default model ID based on configured providers."""
         if self.is_provider_configured(Provider.GROQ):
-            return os.environ.get("DEFAULT_GROQ_MODEL", "llama3-70b-8192")
+            return os.environ.get("DEFAULT_GROQ_MODEL", "llama-3.3-70b-versatile")
         if self.is_provider_configured(Provider.GOOGLE):
             return os.environ.get("DEFAULT_GEMINI_MODEL", "gemini/gemini-2.0-flash")
         if self.is_provider_configured(Provider.OPENAI):
@@ -496,7 +516,7 @@ class ModelRegistry:
             return "azure/gpt-4o"
         if self.is_provider_configured(Provider.OLLAMA):
             return "ollama/llama3.2"
-        return "llama3-70b-8192"
+        return "llama-3.3-70b-versatile"
     
     def to_api_format(self, only_configured: bool = True) -> list[dict[str, Any]]:
         """Convert models to API response format."""
@@ -526,6 +546,23 @@ def get_model_registry() -> ModelRegistry:
         _registry = ModelRegistry()
         _registry.configure_from_env()
     return _registry
+
+
+def normalize_groq_legacy_model_id(model_id: str) -> str:
+    """
+    Map decommissioned GroqCloud IDs to current models.
+
+    See https://console.groq.com/docs/deprecations for official replacement IDs.
+    """
+    key = (model_id or "").strip()
+    if not key:
+        return key
+    low = key.lower()
+    if low in ("llama3-70b-8192", "groq/llama3-70b-8192"):
+        return "llama-3.3-70b-versatile"
+    if low in ("llama3-8b-8192", "groq/llama3-8b-8192"):
+        return "llama-3.1-8b-instant"
+    return key
 
 
 def normalize_gemini_model_id_for_litellm(model_id: str) -> str:
@@ -566,7 +603,7 @@ def get_litellm_model_name(model_id: str, registry: ModelRegistry | None = None)
     Returns:
         Model name in LiteLLM format
     """
-    model_id = normalize_gemini_model_id_for_litellm(model_id)
+    model_id = normalize_groq_legacy_model_id(normalize_gemini_model_id_for_litellm(model_id))
     if registry is None:
         registry = get_model_registry()
     

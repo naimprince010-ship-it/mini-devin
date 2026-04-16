@@ -26,7 +26,7 @@ class TestLLMConfig:
     def test_default_config(self):
         """Test default LLMConfig values."""
         config = LLMConfig()
-        assert config.model == "llama3-70b-8192"
+        assert config.model == "llama-3.3-70b-versatile"
         assert config.temperature == 0.0
         assert config.max_tokens == 16384
         assert config.api_key is None
@@ -467,11 +467,11 @@ class TestCreateLLMClient:
         import mini_devin.core.providers as prov
 
         prov._registry = None
-        client = create_llm_client(model="llama3-70b-8192")
+        client = create_llm_client(model="llama-3.3-70b-versatile")
         assert client.config.provider == Provider.GROQ
         assert client.config.api_base == "https://api.groq.com/openai/v1"
         assert client.config.timeout == 120
-        assert client.config.max_tokens == 8192
+        assert client.config.max_tokens == 16384
 
 
 class TestLLMClientGeminiCompletion:

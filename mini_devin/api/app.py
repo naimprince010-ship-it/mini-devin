@@ -1850,7 +1850,11 @@ async def list_providers():
     if (os.getenv("GROQ_API_KEY") or "").strip():
         providers.append({
             "id": "groq", "name": "Groq", "configured": True, "enabled": True,
-            "models": ["llama3-70b-8192"],
+            "models": [
+                "llama-3.3-70b-versatile",
+                "llama-3.1-8b-instant",
+                "mixtral-8x7b-32768",
+            ],
         })
     if os.getenv("OPENAI_API_KEY") or _legacy_openai_toggle_env_set():
         providers.append({
@@ -1875,17 +1879,39 @@ async def list_models():
     """List available LLM models based on configured API keys."""
     models = []
     if (os.getenv("GROQ_API_KEY") or "").strip():
-        models.append(
-            {
-                "id": "llama3-70b-8192",
-                "name": "Llama 3 70B (Groq)",
-                "provider": "groq",
-                "context_window": 8192,
-                "supports_tools": True,
-                "supports_vision": False,
-                "max_output_tokens": 8192,
-                "description": "Fast inference on Groq (OpenAI-compatible API)",
-            }
+        models.extend(
+            [
+                {
+                    "id": "llama-3.3-70b-versatile",
+                    "name": "Llama 3.3 70B Versatile (Groq)",
+                    "provider": "groq",
+                    "context_window": 131072,
+                    "supports_tools": True,
+                    "supports_vision": False,
+                    "max_output_tokens": 16384,
+                    "description": "Recommended for Plodder / coding (Groq deprecations successor)",
+                },
+                {
+                    "id": "llama-3.1-8b-instant",
+                    "name": "Llama 3.1 8B Instant (Groq)",
+                    "provider": "groq",
+                    "context_window": 131072,
+                    "supports_tools": True,
+                    "supports_vision": False,
+                    "max_output_tokens": 8192,
+                    "description": "Fast; good for LLM_MODEL_OBSERVATION (replaces llama3-8b-8192)",
+                },
+                {
+                    "id": "mixtral-8x7b-32768",
+                    "name": "Mixtral 8x7B (Groq)",
+                    "provider": "groq",
+                    "context_window": 32768,
+                    "supports_tools": True,
+                    "supports_vision": False,
+                    "max_output_tokens": 8192,
+                    "description": "Solid MoE on Groq free tier",
+                },
+            ]
         )
     if os.getenv("OPENAI_API_KEY") or _legacy_openai_toggle_env_set():
         models.extend([
@@ -1920,9 +1946,9 @@ async def list_models():
     if not models:
         # Fallback defaults so UI always has something to show
         models = [
-            {"id": "llama3-70b-8192", "name": "Llama 3 70B (Groq)", "provider": "groq",
-             "context_window": 8192, "supports_tools": True, "supports_vision": False,
-             "max_output_tokens": 8192, "description": "Requires GROQ_API_KEY"},
+            {"id": "llama-3.3-70b-versatile", "name": "Llama 3.3 70B Versatile (Groq)", "provider": "groq",
+             "context_window": 131072, "supports_tools": True, "supports_vision": False,
+             "max_output_tokens": 16384, "description": "Requires GROQ_API_KEY"},
         ]
     return {"models": models}
 
