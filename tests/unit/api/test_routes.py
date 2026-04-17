@@ -99,6 +99,27 @@ class TestProvidersEndpoint:
             for provider in providers:
                 assert "name" in provider or "id" in provider
 
+    def test_ollama_provider_enabled_by_env(self, client, monkeypatch):
+        """Ollama should be listed when explicitly enabled."""
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        monkeypatch.setenv("GOOGLE_API_KEY", "")
+        monkeypatch.setenv("GEMINI_API_KEY", "")
+        monkeypatch.setenv("OLLAMA_ENABLED", "true")
+        monkeypatch.setenv("OLLAMA_API_BASE", "http://68.183.92.70:11434")
+
+        # Reset cached model registry so route sees fresh env in this test.
+        from mini_devin.core import providers as providers_module
+
+        providers_module._registry = None
+
+        response = client.get("/api/providers")
+        assert response.status_code == 200
+        data = response.json()
+        providers = data.get("providers", [])
+        provider_ids = {p.get("id") for p in providers}
+        assert "ollama" in provider_ids
+
 
 class TestSessionsEndpoint:
     """Tests for /sessions endpoints.

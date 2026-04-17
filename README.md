@@ -190,6 +190,8 @@ plodder/
 | `OPENAI_API_KEY` | — | OpenAI API key (required for GPT models) |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key (for Claude models) |
 | `LLM_MODEL` | `gpt-4o` | Default model |
+| `OLLAMA_ENABLED` | `false` | Enable Ollama provider (`true` for local/remote Ollama) |
+| `OLLAMA_API_BASE` | `http://localhost:11434` | Ollama base URL (example: `http://68.183.92.70:11434`) |
 | `GITHUB_TOKEN` | — | For auto-commit/push |
 | `TAVILY_API_KEY` | — | Web search (optional) |
 | `MAX_ITERATIONS` | `50` | Max agent iterations per task |
