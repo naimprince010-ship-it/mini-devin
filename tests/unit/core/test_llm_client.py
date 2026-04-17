@@ -13,6 +13,9 @@ from mini_devin.core.llm_client import (
     LLMResponse,
     LLMClient,
     create_llm_client,
+    _openai_non_system_window_valid,
+    _tail_trim_non_system_openai_safe,
+    coerce_messages_openai_strict,
 )
 from mini_devin.core.providers import Provider
 
@@ -23,7 +26,7 @@ class TestLLMConfig:
     def test_default_config(self):
         """Test default LLMConfig values."""
         config = LLMConfig()
-        assert config.model == "gpt-4o"
+        assert config.model == "llama-3.3-70b-versatile"
         assert config.temperature == 0.0
         assert config.max_tokens == 16384
         assert config.api_key is None
@@ -295,6 +298,86 @@ class TestLLMClient:
 
     @patch("mini_devin.core.llm_client.LITELLM_AVAILABLE", True)
     @patch("mini_devin.core.llm_client.litellm")
+    def test_get_conversation_for_api_trim_does_not_split_tool_batch(self, mock_litellm):
+        """Tail trim must not leave tool rows without their assistant or drop tool replies."""
+        client = LLMClient(
+            LLMConfig(model="gpt-4o", api_key="test", max_history_messages=4)
+        )
+        client.set_system_prompt("S")
+        client.add_user_message("u0")
+        client.add_assistant_message(
+            content=None,
+            tool_calls=[
+                ToolCall(id="call_a", name="t", arguments={}),
+                ToolCall(id="call_b", name="t", arguments={}),
+            ],
+        )
+        client.add_tool_result("call_a", "t", "ra")
+        client.add_tool_result("call_b", "t", "rb")
+        client.add_user_message("u1")
+        api_conv = client.get_conversation_for_api()
+        assert api_conv[0] == {"role": "system", "content": "S"}
+        assert _openai_non_system_window_valid(api_conv[1:])
+        assert api_conv[-1]["role"] == "user"
+        assert api_conv[-1]["content"] == "u1"
+
+    def test_tail_trim_openai_safe_helper(self):
+        """Sanity-check the pure tail trim used by get_conversation_for_api."""
+        a = {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "f", "arguments": "{}"},
+                }
+            ],
+        }
+        t1 = {"role": "tool", "tool_call_id": "c1", "name": "f", "content": "ok"}
+        u = {"role": "user", "content": "hi"}
+        full = [{"role": "user", "content": "old"}, a, t1, u]
+        assert _tail_trim_non_system_openai_safe(full, 2) == [u]
+        assert _tail_trim_non_system_openai_safe(full, 3) == [a, t1, u]
+
+    def test_coerce_messages_openai_strict_trims_jagged_prefix(self):
+        a_bad = {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "x1", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+                {"id": "x2", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+            ],
+        }
+        t1 = {"role": "tool", "tool_call_id": "x1", "name": "t", "content": "only one"}
+        u = {"role": "user", "content": "nudge"}
+        a_ok = {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "y1", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+            ],
+        }
+        t_ok = {"role": "tool", "tool_call_id": "y1", "name": "t", "content": "ok"}
+        msgs = [{"role": "system", "content": "S"}, a_bad, t1, u, a_ok, t_ok]
+        fixed = coerce_messages_openai_strict(msgs)
+        assert fixed[0] == {"role": "system", "content": "S"}
+        assert _openai_non_system_window_valid(fixed[1:])
+        assert fixed[-1] == t_ok
+
+    def test_coerce_messages_strips_trailing_hanging_assistant(self):
+        msgs = [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "g"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "z", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+                ],
+            },
+        ]
+        fixed = coerce_messages_openai_strict(msgs)
+        assert fixed == [{"role": "system", "content": "S"}, {"role": "user", "content": "g"}]
+
+    @patch("mini_devin.core.llm_client.LITELLM_AVAILABLE", True)
+    @patch("mini_devin.core.llm_client.litellm")
     def test_get_usage_stats(self, mock_litellm):
         """Test getting usage statistics."""
         client = LLMClient(LLMConfig(api_key="test"))
@@ -366,6 +449,29 @@ class TestCreateLLMClient:
         client = create_llm_client(model="gemini/gemini-1.5-flash")
         assert client.config.provider == Provider.GOOGLE
         assert client.config.max_tokens == 8192
+
+    @patch("mini_devin.core.llm_client.LITELLM_AVAILABLE", True)
+    @patch("mini_devin.core.llm_client.litellm")
+    @patch.dict(
+        os.environ,
+        {
+            "GROQ_API_KEY": "gsk-test",
+            "OPENAI_API_KEY": "",
+            "GEMINI_API_KEY": "",
+            "GOOGLE_API_KEY": "",
+            "LLM_MODEL": "",
+        },
+        clear=True,
+    )
+    def test_create_with_groq_model(self, mock_litellm):
+        import mini_devin.core.providers as prov
+
+        prov._registry = None
+        client = create_llm_client(model="llama-3.3-70b-versatile")
+        assert client.config.provider == Provider.GROQ
+        assert client.config.api_base == "https://api.groq.com/openai/v1"
+        assert client.config.timeout == 120
+        assert client.config.max_tokens == 4096
 
 
 class TestLLMClientGeminiCompletion:

@@ -13,6 +13,12 @@ from .search import BrowserSearchTool, create_search_tool
 from .fetch import BrowserFetchTool, create_fetch_tool
 from .interactive import BrowserInteractiveTool, create_interactive_tool
 from .playwright_tool import PlaywrightBrowserTool, create_playwright_tool
+from .advanced_tool import (
+    AdvancedBrowserActionTool,
+    AdvancedBrowserSession,
+    BrowserObservation,
+    create_advanced_browser_tools,
+)
 from .citations import CitationStore, Citation, create_citation_store
 
 __all__ = [
@@ -24,6 +30,10 @@ __all__ = [
     "create_interactive_tool",
     "PlaywrightBrowserTool",
     "create_playwright_tool",
+    "AdvancedBrowserActionTool",
+    "AdvancedBrowserSession",
+    "BrowserObservation",
+    "create_advanced_browser_tools",
     "CitationStore",
     "Citation",
     "create_citation_store",

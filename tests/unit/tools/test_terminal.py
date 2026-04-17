@@ -127,6 +127,15 @@ class TestTerminalTool:
         assert result.status == ToolStatus.SUCCESS
         assert "test_value" in result.stdout
 
+    @pytest.mark.asyncio
+    async def test_npm_install_requires_package_json(self, tmp_path):
+        """Guard against npm install in a folder without package.json."""
+        tool = TerminalTool(working_directory=str(tmp_path))
+        result = await tool.execute({"command": "npm install"})
+        assert result.status == ToolStatus.FAILURE
+        assert "package.json" in result.error_message.lower()
+        assert "create `package.json` first" in result.stderr.lower() or "none found" in result.stderr.lower()
+
 
 class TestTerminalToolSafety:
     """Safety-focused tests for TerminalTool."""

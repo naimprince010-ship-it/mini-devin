@@ -14,6 +14,7 @@ import time
 import uuid
 import re
 import inspect
+import shlex
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
@@ -42,6 +43,7 @@ from ..tools.browser import (
     create_fetch_tool,
     create_interactive_tool,
     create_playwright_tool,
+    create_advanced_browser_tools,
     create_citation_store,
 )
 from ..safety.guards import SafetyGuard, SafetyPolicy, SafetyViolation
@@ -146,7 +148,18 @@ def _runtime_context_block(working_directory: str | None) -> str:
     exe = _sys_for_prompt.executable.replace("\\", "/")
     plat = _sys_for_prompt.platform
     wd = working_directory or "."
-    if plat == "win32":
+    root = Path(wd).resolve()
+    has_package_json = (root / "package.json").is_file()
+    has_python_markers = any(
+        (root / name).exists() for name in ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt")
+    )
+    looks_node_only = has_package_json and not has_python_markers
+    if looks_node_only:
+        test_hint = (
+            "This looks like a Node/JS workspace (`package.json` present, no Python project markers). "
+            "Prefer `npm test`, `npm run build`, or `node <entry>` verification. Do not run `pytest` unless you first confirm Python tests exist."
+        )
+    elif plat == "win32":
         test_hint = (
             f"Use `{exe} -m pytest` or `{exe} -m unittest discover` (not bare `pytest` if it is not on PATH)."
         )
@@ -195,9 +208,22 @@ When you build or change **user-facing web UI** (React/Vite/Next/Tailwind/CSS co
   when the project stack supports them, instead of bespoke complex CSS.
 - **State-driven UI**: For lists, dashboards, and forms, implement **loading**, **error**, and **empty**
   states—not only the happy path.
+- **Live preview by default**: If you are building a local web app, do not stop at writing files. Install dependencies once if needed, start the dev server in the correct sandbox mode, detect the listening port, and attach **`live_preview`** so the app can be inspected while work is in progress.
 - **Visual QA**: After substantive UI edits, use **`browser_playwright`** (or the session’s Playwright
   observe tool) to capture the relevant route and **check alignment, contrast, and obvious layout issues**
   before claiming the UI is done.
+
+## Browser Strategy
+- **Prefer persistent browser tools for real interaction**: Use **`browser_navigate`**, **`browser_click`**, **`browser_type`**, **`browser_scroll`**, and **`browser_screenshot`** when you need a login/session/cookie state that persists across steps.
+- **Observe before acting**: Start with **`browser_navigate`** or **`browser_screenshot`**, then read the returned screenshot, accessibility tree, console lines, and interactive element list before the next browser action.
+- **Selector first, coordinates second**: Prefer stable CSS selectors for **`browser_click`** / **`browser_type`**. Only fall back to raw `x`/`y` clicks when the element cannot be targeted reliably by selector and the screenshot / accessibility data makes the target unambiguous.
+- **Keep the loop tight**: After each browser action, inspect the new OBSERVATION. Do not issue a chain of blind clicks or types without checking what changed on the page.
+- **Forms and login flows**: Fill one field at a time, then re-check the page if the UI reacts. Use **`clear_first`** when replacing existing values, and use **`submit: true`** on **`browser_type`** when pressing Enter is the natural submit action for a form.
+- **Modal / overlay handling**: If a click is blocked or the target disappears, assume a modal, cookie banner, or overlay may be intercepting input. Capture a fresh observation, look for close/accept/dismiss controls first, and use **`browser_playwright`** when you need Escape, JS inspection, or deeper debugging.
+- **Multi-step navigation**: After submit / next / continue actions, verify the new URL, title, and visible interactive elements before proceeding. Do not assume navigation succeeded just because a click completed.
+- **Use the right tool for the job**: Use **`browser_playwright`** for richer DOM/debug tasks (evaluate JS, DOM outline, network/page-error debugging). Use the advanced browser tools for human-like step-by-step interaction on persistent pages.
+- **For apps you are building, prefer live preview first**: Once the local dev server is running, call **`live_preview`** to probe likely ports and set the active one before doing browser QA. Use browser snapshots after the preview is attached or when the app is not running yet.
+- **Recover methodically**: If a browser action fails, capture a fresh **`browser_screenshot`** or **`browser_playwright`** snapshot, then retry with a more specific selector, a wait, or a corrected target. Do not repeat the exact same failing click.
 
 ## Tool Usage
 - `terminal` — Run shell commands; prefer `python -m pip`, `python -m pytest`, `python -m unittest` per Runtime context. For long installs (`npm install`, `npx create-*`) pass **`timeout_seconds`** up to **300** (default 30 is too short).
@@ -209,9 +235,14 @@ When you build or change **user-facing web UI** (React/Vite/Next/Tailwind/CSS co
 - `editor` with `apply_patch` — Apply a unified diff patch
 - `browser_search` — Search the web
 - `browser_fetch` — Fetch a web page (HTTP; no JS console)
-- `browser_playwright` — **Preferred for UI bugs**: real Chromium, DOM outline, console + network + page errors, screenshots
+- `browser_playwright` — **Preferred for UI bugs / DOM debugging**: real Chromium, DOM outline, console + network + page errors, screenshots, JS evaluation
+- `browser_navigate` — Open a URL in the persistent Chromium session; use this to begin a multi-step browser task
+- `browser_click` — Human-like click with selector-first targeting; use `x`/`y` only as a fallback after inspecting the screenshot / accessibility tree
+- `browser_type` — Human-like typing into a selector in the persistent Chromium session; supports `clear_first` and `submit` for form workflows
+- `browser_scroll` — Gradual viewport scroll in the persistent Chromium session
+- `browser_screenshot` — Refresh browser state for the LLM: screenshot + accessibility tree + interactive element map
 - `browser_interactive` — Legacy Selenium (use Playwright when available)
-- `git` — Structured git workflow (`checkout_branch`, `add`, `commit`, `push`, `status`, `diff`)
+- `live_preview` — For apps you are building locally: probe localhost ports after `npm run dev` / framework dev server startup, then attach the active port so the Browser pane shows the running app. Common fallback ports include `3001`, `3002`, `4173`, `5001`, `5002`, `5173`, and `8000`.
 - `github` — GitHub: branches, commits, PRs, PR status (CI), merge (see GitHub section below when token is set)
 - `monitor` — Check app health, fetch cloud/docker logs, register for continuous monitoring
 - `env_parity` — Generate Dockerfile/.env.example/docker-compose; diff local vs production env
@@ -221,6 +252,8 @@ When you build or change **user-facing web UI** (React/Vite/Next/Tailwind/CSS co
 - Read a file before editing it (to avoid overwriting changes)
 - Always write COMPLETE file content when using `write_file`
 - After writing a file, verify with `read_file`
+- For browser work, prefer an **observe → act → observe** loop instead of multiple blind interactions in a row.
+- For local website/app tasks, after the dev server is running, attempt **`live_preview`** attachment before declaring the UI ready.
 - If **auto-verify (ruff)** reports issues on a `.py` file, you may set **`apply_ruff_fix`: true** on the next `editor` `write_file` / `str_replace` / `apply_patch` for that file to run **`ruff check --fix`** after the edit, or run the same via `terminal`.
 - If a command fails, read the error and fix it — do NOT give up
 - When done: write **TASK COMPLETE** followed by a short summary of actual results.
@@ -560,14 +593,23 @@ class Agent:
 
     async def _prepare_messages_for_llm_turn(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         from mini_devin.core.context_condenser import condense_chat_messages
+        from mini_devin.core.llm_client import _openai_non_system_window_valid
 
         base = self.llm.get_conversation_for_api()
         if os.environ.get("LLM_CONTEXT_CONDENSER", "true").lower() not in ("0", "false", "no"):
             try:
-                base = await condense_chat_messages(
+                condensed = await condense_chat_messages(
                     base,
                     summarizer=self._get_observation_llm(),
                 )
+                ns = [m for m in condensed if m.get("role") != "system"]
+                if _openai_non_system_window_valid(ns):
+                    base = condensed
+                elif condensed is not base:
+                    self._log(
+                        "Context condenser returned OpenAI-unsafe message ordering; "
+                        "using un-condensed history for this turn."
+                    )
             except Exception as _ce:
                 self._log(f"Context condenser skipped: {_ce}")
         ephemeral = self._workspace_context_ephemeral_messages()
@@ -613,6 +655,21 @@ class Agent:
                 on_browser_event=lambda p: agent._emit_playwright_browser_event(p),
             )
             self.registry.register(browser_pw)
+
+        advanced_browser_names = (
+            "browser_navigate",
+            "browser_click",
+            "browser_type",
+            "browser_scroll",
+            "browser_screenshot",
+        )
+        if any(not self.registry.get(name) for name in advanced_browser_names):
+            agent = self
+            for browser_tool in create_advanced_browser_tools(
+                on_browser_event=lambda p: agent._emit_playwright_browser_event(p),
+            ):
+                if not self.registry.get(browser_tool.name):
+                    self.registry.register(browser_tool)
         
         # Citation store for tracking web references
         if not hasattr(self, "_citation_store"):
@@ -646,6 +703,29 @@ class Agent:
     async def cleanup(self) -> None:
         """Release background resources (file watcher, etc.)."""
         self.stop_workspace_sidecar()
+        seen_sessions: set[int] = set()
+        for tool_name in (
+            "browser_playwright",
+            "browser_navigate",
+            "browser_click",
+            "browser_type",
+            "browser_scroll",
+            "browser_screenshot",
+        ):
+            tool = self.registry.get(tool_name)
+            if tool is None:
+                continue
+            session_obj = getattr(tool, "_session", tool)
+            session_key = id(session_obj)
+            if session_key in seen_sessions:
+                continue
+            seen_sessions.add(session_key)
+            close_fn = getattr(tool, "close", None)
+            if callable(close_fn):
+                try:
+                    await close_fn()
+                except Exception as exc:
+                    self._log(f"browser cleanup skipped for {tool_name}: {exc}")
 
     def bootstrap_ide_experience(self) -> None:
         """
@@ -672,7 +752,22 @@ class Agent:
             "The tree below is refreshed by a background watcher; use **terminal** as your primary "
             "sensor (build, test, git) and **editor** for precise file work. Describe a task when ready."
         )
-        text = greeting + "\n\n## Workspace index (sidecar)\n\n```text\n" + snap + "\n```" + resume_note
+        preview_note = ""
+        if self._should_use_process_execution_terminal():
+            preview_note = (
+                "\n\n**Browser Live Preview**: When you run a dev server (`npm run dev`, Vite, etc.) it "
+                "usually listens on **127.0.0.1**. After it is listening, call the **live_preview** tool: "
+                "`action: probe`, then **`set_active_port`** with one of the reported ports so the **Browser** "
+                "tab iframe loads your app (same-origin proxy through this API)."
+            )
+        text = (
+            greeting
+            + preview_note
+            + "\n\n## Workspace index (sidecar)\n\n```text\n"
+            + snap
+            + "\n```"
+            + resume_note
+        )
         self._append_session_event(
             AgentStreamEvent(
                 kind=AgentEventKind.STATUS,
@@ -709,6 +804,10 @@ class Agent:
         # Terminal tool schema — OS-aware description
         import sys as _sys
         _on_windows = _sys.platform == "win32"
+        _lp_terminal_tail = (
+            " After a dev UI server is running in the background, call **live_preview** "
+            "(`probe`, then `set_active_port`) so the **Browser** tab can show it."
+        )
         if _on_windows:
             _terminal_desc = (
                 "**Primary interface**: run shell commands first to observe the real world "
@@ -727,6 +826,8 @@ class Agent:
                 "Use relative paths (./...) from the workspace. "
                 "Do not use Windows-style paths (C:\\\\, D:\\\\)."
             )
+        if self._should_use_process_execution_terminal():
+            _terminal_desc = _terminal_desc + _lp_terminal_tail
         schemas.append({
             "name": "terminal",
             "description": _terminal_desc,
@@ -962,6 +1063,112 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 "required": ["action"],
             },
         })
+
+        schemas.append({
+            "name": "browser_navigate",
+            "description": (
+                "Navigate the persistent Chromium session to a URL, preserving login/session state. "
+                "Use this to start a browser task, then inspect the returned screenshot, accessibility tree, "
+                "and interactive element map before choosing the next action."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Destination URL"},
+                    "wait_until": {
+                        "type": "string",
+                        "description": "Playwright load state: domcontentloaded | load | networkidle",
+                    },
+                },
+                "required": ["url"],
+            },
+        })
+
+        schemas.append({
+            "name": "browser_click",
+            "description": (
+                "Click inside the persistent Chromium session using a CSS selector or x/y coordinates. "
+                "Prefer selectors; use x/y only when the target is visually unambiguous from the latest "
+                "screenshot/accessibility data. Uses human-like mouse movement and returns a fresh screenshot "
+                "plus accessibility tree."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "Preferred CSS selector target for the click",
+                    },
+                    "x": {"type": "number", "description": "Viewport x coordinate"},
+                    "y": {"type": "number", "description": "Viewport y coordinate"},
+                },
+                "required": [],
+            },
+        })
+
+        schemas.append({
+            "name": "browser_type",
+            "description": (
+                "Type text into a selector inside the persistent Chromium session using human-like "
+                "keystroke pacing. Supports optional Enter submit for forms. Use after inspecting the "
+                "latest browser observation and return a fresh screenshot plus accessibility tree."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector for the input element"},
+                    "text": {"type": "string", "description": "Text to enter"},
+                    "clear_first": {
+                        "type": "boolean",
+                        "description": "If true, clear the field before typing",
+                    },
+                    "submit": {
+                        "type": "boolean",
+                        "description": "If true, press Enter after typing to submit the current form",
+                    },
+                },
+                "required": ["selector", "text"],
+            },
+        })
+
+        schemas.append({
+            "name": "browser_scroll",
+            "description": (
+                "Scroll the persistent Chromium page with gradual wheel movement. Returns a fresh "
+                "screenshot plus accessibility tree so you can reassess what became visible."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["up", "down", "top", "bottom"],
+                        "description": "Scroll direction",
+                    },
+                    "amount": {"type": "integer", "description": "Approximate scroll distance in pixels"},
+                },
+                "required": ["direction"],
+            },
+        })
+
+        schemas.append({
+            "name": "browser_screenshot",
+            "description": (
+                "Capture the current page state from the persistent Chromium session, including a "
+                "screenshot, accessibility tree, and interactive element map. Use this when you need a "
+                "fresh observation before clicking, typing, or retrying."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "full_page": {
+                        "type": "boolean",
+                        "description": "If true, capture a full-page screenshot",
+                    },
+                },
+                "required": [],
+            },
+        })
         
         # Ask-user tool for proactive clarification
         schemas.append({
@@ -1002,7 +1209,13 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 "Detect a local dev server (e.g. Vite on 5173) and register it for the Plodder **Browser** tab Live Preview. "
                 "Use **probe** after `npm run dev` / `vite` in terminal; then **set_active_port** with a listening port. "
                 "The UI reverse-proxies through the API so the iframe is same-origin. "
-                "HMR WebSockets may not tunnel through this proxy—reload still works when files change."
+                "HMR WebSockets may not tunnel through this proxy—reload still works when files change. "
+                "**Not for external sites**: Live Preview cannot open arbitrary public URLs (e.g. user says 'open example.com'). "
+                "Use **browser_playwright** or **browser_fetch** with the full https URL instead. "
+                "On Railway, **PORT** (often 8080) is usually this API — probing it does not load a third-party domain. "
+                "**Host reachability**: The dev server must listen on **127.0.0.1** where this API process can see it "
+                "(e.g. Railway injects `RAILWAY_ENVIRONMENT`, or set `USE_PROCESS_EXECUTION_SANDBOX=1` for a host-side terminal). "
+                "A terminal confined to an isolated one-shot Docker exec typically cannot register those ports here without extra port forwarding."
             ),
             "parameters": {
                 "type": "object",
@@ -1507,6 +1720,8 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         if name == "live_preview":
             from ..api.live_preview_state import (
                 allowed_ports,
+                live_preview_probe_hints,
+                live_preview_set_port_warning,
                 probe_local_ports_sync,
                 set_session_preview_port,
             )
@@ -1516,7 +1731,7 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             if action == "probe":
                 ports = arguments.get("ports")
                 if not isinstance(ports, list) or not ports:
-                    raw = (os.environ.get("LIVE_PREVIEW_PROBE_PORTS") or "5173,3000,8080,4200,8000").strip()
+                    raw = (os.environ.get("LIVE_PREVIEW_PROBE_PORTS") or "5173,3000,3001,3002,4173,4200,5000,5001,5002,8000,8080").strip()
                     ports = []
                     for x in raw.split(","):
                         x = x.strip()
@@ -1525,19 +1740,19 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 try:
                     candidates = [int(p) for p in ports]
                 except (TypeError, ValueError):
-                    candidates = [5173, 3000, 8080]
+                    candidates = [5173, 3000, 3001, 3002, 4173, 5000, 5001, 5002, 8000, 8080]
                 listening = probe_local_ports_sync(candidates)
-                return json.dumps(
-                    {
-                        "listening_ports": listening,
-                        "allowed_ports": sorted(allowed_ports()),
-                        "next_step": (
-                            "Call live_preview with action set_active_port and port=<one of listening_ports> "
-                            "so the user's Browser tab can show Live Preview."
-                        ),
-                    },
-                    indent=2,
-                )
+                payload: dict[str, Any] = {
+                    "listening_ports": listening,
+                    "allowed_ports": sorted(allowed_ports()),
+                    "next_step": (
+                        "Call live_preview with action set_active_port and port=<one of listening_ports> "
+                        "only if that port is **your workspace dev server** (e.g. Vite). "
+                        "Do not use Live Preview to open external domains."
+                    ),
+                }
+                payload.update(live_preview_probe_hints(listening_ports=listening))
+                return json.dumps(payload, indent=2)
             if action == "set_active_port":
                 try:
                     p = int(arguments.get("port", 0))
@@ -1553,14 +1768,15 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                         },
                         indent=2,
                     )
-                return json.dumps(
-                    {
-                        "ok": True,
-                        "active_port": p,
-                        "browser_iframe": f"/api/sessions/{sid}/live-preview/",
-                    },
-                    indent=2,
-                )
+                out_ok: dict[str, Any] = {
+                    "ok": True,
+                    "active_port": p,
+                    "browser_iframe": f"/api/sessions/{sid}/live-preview/",
+                }
+                w = live_preview_set_port_warning(p)
+                if w:
+                    out_ok["warning"] = w
+                return json.dumps(out_ok, indent=2)
             return f"Error: unknown live_preview action '{action}'"
         
         tool = self.registry.get(name)
@@ -1681,7 +1897,80 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                     work_dir = arguments.get("working_directory", ".")
                     workdir_ps = None if work_dir in (".", "", None) else work_dir
                     pex = self._get_pex_terminal()
+                    dev_server = bool(
+                        re.search(
+                            r"(?i)\b("
+                            r"npm\s+run\s+(dev|start)|"
+                            r"yarn\s+(dev|start)|"
+                            r"pnpm\s+(dev|start)|"
+                            r"next\s+dev|vite\b|astro\s+dev|parcel\b|"
+                            r"flask\s+run|"
+                            r"python(?:\d+(?:\.\d+)?)?\s+[^;&\n]*\.py\b|"
+                            r"node\s+[^;&\n]*(server|app|index)\.js\b"
+                            r")",
+                            command,
+                        )
+                    )
                     try:
+                        if dev_server and callable(getattr(pex, "run_dev_server_in_workspace", None)):
+                            runner_command = command
+                            if workdir_ps not in (None, ".", ""):
+                                runner_command = f"cd {shlex.quote(str(workdir_ps))} && {command}"
+                            dev_res = await asyncio.to_thread(
+                                pex.run_dev_server_in_workspace,
+                                {},
+                                ["sh", "-c", runner_command],
+                                timeout_sec=timeout_seconds,
+                            )
+                            output_parts = []
+                            if dev_res.get("stdout"):
+                                output_parts.append(f"STDOUT:\n{dev_res['stdout']}")
+                                if on_cmd_output:
+                                    for line in str(dev_res["stdout"]).splitlines():
+                                        on_cmd_output(line)
+                            if dev_res.get("stderr"):
+                                output_parts.append(f"STDERR:\n{dev_res['stderr']}")
+                                if on_cmd_output:
+                                    for line in str(dev_res["stderr"]).splitlines():
+                                        on_cmd_output(f"[stderr] {line}")
+                            if dev_res.get("ok") and int(dev_res.get("port", 0) or 0) > 0:
+                                from ..api.live_preview_state import (
+                                    live_preview_set_port_warning,
+                                    set_session_preview_port,
+                                )
+
+                                started_port = int(dev_res["port"])
+                                ok = await set_session_preview_port(self.state.session_id, started_port)
+                                lp_payload: dict[str, Any]
+                                if ok:
+                                    lp_payload = {
+                                        "ok": True,
+                                        "active_port": started_port,
+                                        "browser_iframe": f"/api/sessions/{self.state.session_id}/live-preview/",
+                                    }
+                                    warning = live_preview_set_port_warning(started_port)
+                                    if warning:
+                                        lp_payload["warning"] = warning
+                                else:
+                                    lp_payload = {
+                                        "ok": False,
+                                        "error": f"Port {started_port} was not reachable for live preview attachment.",
+                                    }
+                                output_parts.append(f"LIVE_PREVIEW:\n{json.dumps(lp_payload, indent=2)}")
+                            exit_code = int(dev_res.get("exit_code", 0) or 0)
+                            output_parts.append(f"Exit code: {exit_code}")
+                            if on_cmd_output:
+                                on_cmd_output(f"Exit code: {exit_code}")
+                            output = "\n".join(output_parts)
+                            _terminal_artifact(output, exit_code == 0, exit_code)
+                            return self._attach_filesystem_observe(
+                                output,
+                                fs_before,
+                                tool="terminal",
+                                exit_code=exit_code,
+                                plan_step=plan_step,
+                            )
+
                         sb_res = await asyncio.to_thread(
                             pex.exec_shell,
                             command,
@@ -1845,7 +2134,11 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                         return f"BLOCKED: {violation.message}. Task moved to BLOCKED state."
                     
                     # Safety check for dependency files
-                    dep_violation = self._check_dependency_safety(file_path)
+                    abs_target = (Path(self.working_directory or ".") / file_path).resolve()
+                    dep_violation = self._check_dependency_safety(
+                        file_path,
+                        change_type="create" if not abs_target.exists() else "bump",
+                    )
                     if dep_violation and dep_violation.blocked:
                         self._update_phase(AgentPhase.BLOCKED)
                         return f"BLOCKED: {dep_violation.message}. Task moved to BLOCKED state."
@@ -2192,6 +2485,39 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                         error=err,
                     )
                 return err
+
+            elif name in {
+                "browser_navigate",
+                "browser_click",
+                "browser_type",
+                "browser_scroll",
+                "browser_screenshot",
+            }:
+                result = await tool.execute(arguments)
+                output = result.message or ""
+                if not result.success:
+                    err = result.error or output or f"{name} failed"
+                    if not output.startswith("Error:"):
+                        output = f"Error: {err}"
+                self._append_browser_observation(
+                    name,
+                    output,
+                    error=result.error if not result.success else None,
+                    browser_meta=self._browser_observation_meta(result.data),
+                    plan_step=arguments.get("plan_step"),
+                )
+                if self._artifact_logger:
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    self._artifact_logger.log_tool_call(
+                        call_id=call_id,
+                        tool_name=name,
+                        arguments=arguments,
+                        result=output[:12000],
+                        duration_ms=duration_ms,
+                        success=result.success,
+                        error=result.error if not result.success else None,
+                    )
+                return output
             
             elif name == "github":
                 action = arguments.get("action", "")
@@ -2749,9 +3075,9 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             self._log(f"SAFETY VIOLATION: {violation.message}")
         return violation
     
-    def _check_dependency_safety(self, file_path: str) -> SafetyViolation | None:
+    def _check_dependency_safety(self, file_path: str, *, change_type: str = "bump") -> SafetyViolation | None:
         """Check if a dependency change is allowed."""
-        violation = self.safety_guard.check_dependency_change(file_path)
+        violation = self.safety_guard.check_dependency_change(file_path, change_type=change_type)
         if violation:
             self._log(f"SAFETY VIOLATION: {violation.message}")
         return violation
@@ -4063,6 +4389,65 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             event,
             flat_extras=flat,
             session_id=self.state.session_id,
+        )
+
+    def _browser_observation_meta(self, payload: Any) -> dict[str, Any]:
+        if payload is None:
+            return {}
+
+        def _read(obj: Any, key: str, default: Any = None) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        elements = _read(payload, "interactive_elements", []) or []
+        return {
+            "action": _read(payload, "action"),
+            "url": _read(payload, "url"),
+            "title": _read(payload, "title"),
+            "detail": _read(payload, "detail"),
+            "has_screenshot": bool(_read(payload, "screenshot_base64")),
+            "interactive_element_count": len(elements),
+            "viewport_width": _read(payload, "viewport_width"),
+            "viewport_height": _read(payload, "viewport_height"),
+            "action_time_ms": _read(payload, "action_time_ms"),
+        }
+
+    def _append_browser_observation(
+        self,
+        tool: str,
+        output: str,
+        *,
+        error: str | None = None,
+        browser_meta: dict[str, Any] | None = None,
+        plan_step: Any = None,
+    ) -> None:
+        preview = (output or "").strip()
+        if len(preview) > 8000:
+            preview = preview[:8000] + "\n…(truncated)…"
+        state_after = self._activity_state.to_meta_snapshot()
+        stream_meta: dict[str, Any] = {"plan_step": plan_step}
+        ctx = self._current_activity_context
+        if ctx and isinstance(ctx.get("activity"), dict):
+            stream_meta["activity"] = {**ctx["activity"], "state_after": state_after}
+        elif ctx:
+            stream_meta.update(ctx)
+            if "activity" not in stream_meta:
+                stream_meta["activity"] = {"state_after": state_after}
+        else:
+            stream_meta["activity"] = {"state_after": state_after}
+        if browser_meta:
+            stream_meta["browser"] = browser_meta
+        self._append_session_event(
+            AgentStreamEvent(
+                kind=AgentEventKind.OBSERVATION,
+                tool_name=tool,
+                exit_code=0 if error is None else 1,
+                output=preview or None,
+                error=error,
+                legacy_type="observe",
+                meta=stream_meta,
+            )
         )
 
     def _workspace_path_set(self) -> set[str]:

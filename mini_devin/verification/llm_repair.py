@@ -24,7 +24,11 @@ except ImportError:
 
 
 def llm_env_configured() -> bool:
-    if os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"):
+    if (
+        os.environ.get("GROQ_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("ANTHROPIC_API_KEY")
+    ):
         return True
     if os.environ.get("AZURE_API_KEY") and os.environ.get("AZURE_API_BASE"):
         return True

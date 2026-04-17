@@ -268,6 +268,15 @@ class TestSafetyGuardDependencyChecks:
         )
         assert result is None
 
+    def test_dependency_file_create_allowed_by_default(self):
+        """Creating a new dependency manifest should not be blocked."""
+        guard = SafetyGuard()
+        result = guard.check_dependency_change(
+            file_path="package.json",
+            change_type="create",
+        )
+        assert result is None
+
     def test_non_dependency_file_passes(self):
         """Test that non-dependency files pass."""
         guard = SafetyGuard()

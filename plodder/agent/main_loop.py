@@ -133,6 +133,8 @@ class AgentLoopConfig:
     sandbox_timeout_sec: int | None = 120
     inject_logic_plan: bool = True
     include_workspace_tree: bool = True
+    #: API session id for ``live_preview`` (Browser tab iframe); falls back to ``PLODDER_SESSION_ID``.
+    session_id: str | None = None
 
 
 class AgentSessionDriver(UnifiedSessionDriver):
@@ -351,5 +353,6 @@ async def run_agent(goal: str, config: AgentLoopConfig) -> UnifiedSessionResult:
         inject_logic_plan=config.inject_logic_plan,
         documentation_store=config.documentation_store,
         include_workspace_tree=config.include_workspace_tree,
+        session_id=config.session_id,
     )
     return await driver.run(goal)

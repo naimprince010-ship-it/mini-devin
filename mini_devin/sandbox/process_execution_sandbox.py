@@ -9,6 +9,12 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import signal
+import socket
+import subprocess
+import time
+import uuid
 from pathlib import Path
 
 from plodder.sandbox.container_manager import plan_container_run
@@ -28,6 +34,75 @@ def _posix_single_quote(s: str) -> str:
 
 def _argv_to_bash_line(argv: list[str]) -> str:
     return " ".join(_posix_single_quote(a) for a in argv)
+
+
+_DEV_SERVER_PORTS = (3000, 3001, 3002, 4173, 5000, 5001, 5002, 5173, 8000, 8080)
+
+
+def _extract_shell_inner(argv: list[str]) -> str:
+    if len(argv) >= 3 and argv[0] in ("sh", "bash") and argv[1] in ("-c", "-lc"):
+        return str(argv[2])
+    return " ".join(argv)
+
+
+def _strip_trailing_background(command: str) -> str:
+    return re.sub(r"\s*&\s*$", "", (command or "").strip())
+
+
+def _extract_explicit_port(command: str) -> int | None:
+    pats = (
+        r"--port(?:=|\s+)(\d+)",
+        r"(?:^|\s)-p\s+(\d+)",
+        r"\bport\s*=\s*(\d+)",
+        r"PORT\s*=\s*(\d+)",
+        r"FLASK_RUN_PORT\s*=\s*(\d+)",
+    )
+    for pat in pats:
+        m = re.search(pat, command, flags=re.IGNORECASE)
+        if m:
+            try:
+                return int(m.group(1))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _dev_server_port_candidates(command: str) -> list[int]:
+    explicit = _extract_explicit_port(command)
+    out: list[int] = []
+    if explicit is not None:
+        out.append(explicit)
+    for p in _DEV_SERVER_PORTS:
+        if p not in out:
+            out.append(p)
+    return out
+
+
+def _command_with_port(command: str, port: int) -> str:
+    base = _strip_trailing_background(command)
+    low = base.lower()
+    base = re.sub(r"(?i)(--port(?:=|\s+)\d+|(?:^|\s)-p\s+\d+)", " ", base).strip()
+    if re.search(r"(?i)\b(npm|pnpm)\s+run\s+(dev|start)\b", low):
+        return f"PORT={port} {base} -- --port {port}".strip()
+    if re.search(r"(?i)\byarn\s+(dev|start)\b", low):
+        return f"PORT={port} {base} --port {port}".strip()
+    if re.search(r"(?i)\b(next)\s+(dev|start)\b", low):
+        return f"PORT={port} {base} -p {port}".strip()
+    if re.search(r"(?i)\b(vite|astro\s+dev|parcel)\b", low):
+        return f"PORT={port} {base} --port {port}".strip()
+    if re.search(r"(?i)\bflask\s+run\b", low):
+        return f"PORT={port} FLASK_RUN_PORT={port} {base} --port {port}".strip()
+    if re.search(r"(?i)\bpython(?:\d+(?:\.\d+)?)?\b.*\.py\b", low):
+        return f"PORT={port} FLASK_RUN_PORT={port} {base}".strip()
+    return f"PORT={port} {base}".strip()
+
+
+def _port_open(port: int, *, host: str = "127.0.0.1", timeout: float = 0.25) -> bool:
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 class ProcessExecutionSandbox:
@@ -257,6 +332,138 @@ class ProcessExecutionSandbox:
             network=network,
             command_label=cmd_label,
         )
+
+    def run_dev_server_in_workspace(
+        self,
+        files: dict[str, str],
+        argv: list[str],
+        *,
+        language_hint: str | None = None,
+        timeout_sec: int | None = None,
+        network: bool = False,
+    ) -> dict[str, object]:
+        """
+        Start a long-running dev server on the host without waiting for process exit.
+
+        Retries common alternative ports when the default port is busy and returns
+        structured metadata so the session driver can attach live preview.
+        """
+        del language_hint, network  # host process already uses host network / host tooling
+        self._materialize_files(files)
+        inner = _extract_shell_inner(list(argv))
+        base = _strip_trailing_background(inner)
+        ports = _dev_server_port_candidates(base)
+        logs_dir = self._root / ".plodder" / "devservers"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        settle_s = max(3.0, min(float(timeout_sec or 15), 12.0))
+        last_error = ""
+        skipped_busy_ports: list[int] = []
+
+        for port in ports:
+            if _port_open(port):
+                skipped_busy_ports.append(port)
+                last_error = (
+                    f"Port {port} is already listening before startup. "
+                    "Treating it as busy and trying the next fallback port."
+                )
+                continue
+            cmd = _command_with_port(base, port)
+            log_path = logs_dir / f"devserver-{port}-{uuid.uuid4().hex[:8]}.log"
+            with log_path.open("ab") as log_f:
+                proc = subprocess.Popen(
+                    [self._ps._bash, "-lc", cmd],
+                    cwd=str(self._root),
+                    env=self._ps._session_env.copy(),
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_f,
+                    stderr=log_f,
+                    start_new_session=True,
+                )
+            deadline = time.time() + settle_s
+            launched = False
+            while time.time() < deadline:
+                if _port_open(port):
+                    launched = True
+                    break
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.35)
+            try:
+                log_text = log_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                log_text = ""
+            if launched:
+                time.sleep(0.2)
+                if proc.poll() is not None:
+                    last_error = log_text[-4000:] if log_text else (
+                        f"Dev server process exited immediately after opening port {port}."
+                    )
+                    continue
+                return {
+                    "tool": "sandbox_shell",
+                    "ok": True,
+                    "exit_code": 0,
+                    "timed_out": False,
+                    "command": cmd,
+                    "stdout": (
+                        f"Started dev server in background on port {port}.\n"
+                        f"PID: {proc.pid}\n"
+                        f"Log: {log_path.relative_to(self._root).as_posix()}"
+                    ),
+                    "stderr": log_text[-4000:],
+                    "stdout_truncated": False,
+                    "stderr_truncated": len(log_text) > 4000,
+                    "port": port,
+                    "background_pid": proc.pid,
+                    "log_path": log_path.relative_to(self._root).as_posix(),
+                    "detached": True,
+                }
+            last_error = log_text[-4000:] if log_text else f"Dev server did not start on port {port}."
+            if (
+                "eaddrinuse" in last_error.lower()
+                or "address already in use" in last_error.lower()
+                or "port" in last_error.lower() and "in use" in last_error.lower()
+            ):
+                if proc.poll() is None:
+                    try:
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    except Exception:
+                        try:
+                            proc.terminate()
+                        except Exception:
+                            pass
+                continue
+            if proc.poll() is None:
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except Exception:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+            break
+
+        return {
+            "tool": "sandbox_shell",
+            "ok": False,
+            "exit_code": 1,
+            "timed_out": False,
+            "command": base,
+            "stdout": "",
+            "stderr": (
+                (
+                    last_error
+                    + (
+                        f"\nBusy ports skipped: {', '.join(str(p) for p in skipped_busy_ports)}."
+                        if skipped_busy_ports
+                        else ""
+                    )
+                ).strip()
+                or "Unable to start the dev server on common localhost ports."
+            ),
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
 
 
 def use_host_process_terminal_for_tooling() -> bool:

@@ -97,6 +97,12 @@ class PolyglotSystemPrompt:
 6. **Web UI quality**: When shipping screens, prefer **design tokens / Tailwind config** for visuals,
    **shadcn/ui or Radix + Lucide** when idiomatic, explicit **loading / error / empty** states, and
    **browser screenshots** to validate layout before declaring success.
+7. **Local web-app workflow**: When building a website/app, do not stop at code. Install dependencies once,
+   then start the dev server in the right sandbox mode and inspect the running UI. Do not spam `&` retries for
+   long-running servers in a one-shot sandbox. If the default port is busy, retry on common fallbacks such as
+   `5001`, `5002`, `5173`, or `8000` instead of getting stuck on missing shell tools like `lsof`, `netstat`,
+   `ss`, or `fuser`. Always verify the current working directory before rerunning app commands, and after a
+   successful start attach `live_preview`.
 
 ## Polyglot behaviour
 - You may be asked to work in hundreds of languages. If syntax is uncertain, **state assumptions** and prefer
@@ -297,7 +303,7 @@ class UniversalPromptEngine:
 | `fs_write` | `path`, `content` | Create/overwrite a file (creates parent dirs). |
 | `fs_delete` | `path` | Delete a file or empty/non-empty directory tree. |
 | `sandbox_run` | `entry` (required), `language` (optional), `language_key` (optional doc slug), `network` (bool, default false) | Auto-run by extension/hint: Python/JS/TS/Go/Rust (`cargo run` if `Cargo.toml` present), C/C++, **Java** (Maven `package` / Gradle `test` when `pom.xml` / `build.gradle` present, else `javac`), **PHP** (`composer install` when `composer.json` present), **SQL** (`.sql` → `psql -f` when host sets `SANDBOX_SQL_URL` or non-SQLite `DATABASE_URL`; use `network: true` if the DB is not reachable from the container), **C# / F#** (`dotnet new` + run — often needs `network: true` for NuGet). |
-| `sandbox_shell` | `argv` (list of strings), `language_hint` (optional), `network` (bool) | Run a shell command in the sandbox with the workspace snapshot (e.g. `["sh","-c","cd /workspace && npm install"]`). Use `network: true` for installs. |
+| `sandbox_shell` | `argv` (list of strings), `language_hint` (optional), `network` (bool) | Run a shell command in the sandbox with the workspace snapshot (e.g. `["sh","-c","cd /workspace && npm install"]`). Use `network: true` for installs. For dev servers, prefer host-process execution so the server can keep running and be attached to `live_preview`. |
 | `github` | `action` (`create_branch`, `commit`, `create_pr`, `automated_workflow`, `get_pr_status`, `merge_pr`), plus branch/PR fields | GitHub or GitLab: `GITHUB_TOKEN` / GitHub remote, or `GITLAB_TOKEN` + `gitlab.com` / `GITLAB_HOST` / `GITLAB_API_URL`. Use `base_branch` `"default"` for the default branch. `create_pr` supports `draft`, `assignees`, `linked_issues` (GitHub; GitLab skips assignee IDs). Bitbucket is rejected. |
 | `gitleaks` | `extra_args` (optional list of strings) | Run `gitleaks detect` on the workspace root if `gitleaks` is installed on the server. |
 | `search_codebase` | `query` (required), `top_k` (optional, default 8) | **Semantic search** over indexed workspace source (LanceDB at session start). Use for cross-file symbols, configs, or patterns instead of manual `grep` when exploring. |
@@ -308,5 +314,6 @@ class UniversalPromptEngine:
 | `browser_type` | `element_id`, `text`, `submit` (bool, press Enter after fill), same options as `browser_click` | **Hands**: fill input/textarea, optional submit. |
 | `browser_scroll` | `direction` (`up` / `down` / `top` / `bottom`), `pixels` (optional, default 600) | Scroll the viewport. |
 | `browser_close` | (none) | Close the Playwright session (normally automatic at session end). |
+| `live_preview` | `action` (`probe` or `set_active_port`), `ports` (optional list of ints for probe), `port` (int for set_active_port) | **Live Preview iframe** (localhost dev servers only): probe allowed ports on **this host's** `127.0.0.1`, then register **your** Vite/npm listener — **not** for opening arbitrary `https://…` sites (use `playwright_observe` / fetch against the real URL). On Railway, `PORT` often matches this API, not a user domain. Requires `session_id` or `PLODDER_SESSION_ID`. Host `sandbox_shell`; ephemeral Docker does not publish ports here. If the default app port is busy, retry the dev server on `5001`, `5002`, `5173`, `8000`, or other common local ports before probing again. |
 
-**Notes:** `sandbox_*` requires Docker. For `sandbox_shell`, `argv` runs in `/workspace` with **session-persistent cwd and exports** (see `.plodder/shell/session_state.json`). `search_codebase` requires a successful workspace index at session start (see transcript `code_index` phase). Browser tools require Playwright + Chromium (`pip install playwright && playwright install chromium`)."""
+**Notes:** `sandbox_*` may use Docker or the host process sandbox depending on environment. For `sandbox_shell`, `argv` runs in `/workspace` with **session-persistent cwd and exports** (see `.plodder/shell/session_state.json`). Long-running dev servers must run in the host process sandbox if you want `live_preview` to attach. `search_codebase` requires a successful workspace index at session start (see transcript `code_index` phase). Browser tools require Playwright + Chromium (`pip install playwright && playwright install chromium`)."""

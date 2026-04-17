@@ -355,11 +355,25 @@ Output is captured and returned. Long outputs are truncated."""
             working_dir = os.path.join(self.working_directory, working_dir)
         working_dir = os.path.abspath(working_dir)
 
-        # Clearer than npm's error when agents blindly re-run init in an existing JS project
+        cs = input_data.command.strip()
+        pkg_json = os.path.join(working_dir, "package.json")
+
+        # Clearer than npm's error when agents blindly re-run init/install in the wrong JS directory
+        if re.match(r"^\s*npm\s+install(\s|$)", cs) and not os.path.isfile(pkg_json):
+            return TerminalOutput(
+                status=ToolStatus.FAILURE,
+                error_message="package.json not found; create it or switch to the app directory before npm install.",
+                stdout="",
+                stderr=(
+                    f"`npm install` requires `package.json` in the working directory. None found at {pkg_json}. "
+                    "Create `package.json` first or run the command from the folder that contains it."
+                ),
+                exit_code=1,
+                execution_time_ms=0,
+            )
+
         if not _IS_WINDOWS:
-            cs = input_data.command.strip()
             if cs.startswith("npm init") and "-y" in cs:
-                pkg_json = os.path.join(working_dir, "package.json")
                 if os.path.isfile(pkg_json):
                     return TerminalOutput(
                         status=ToolStatus.FAILURE,

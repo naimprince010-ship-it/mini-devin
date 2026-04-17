@@ -490,10 +490,13 @@ class SessionManager:
             }
 
             # Run the agent with the TaskState object — track the asyncio Task for cancellation
-            agent_coro = session.agent.run(task_state)
-            running = asyncio.ensure_future(agent_coro)
-            session._running_task = running
-            final_task_state = await running
+            from plodder.orchestration.session_driver import plodder_session_id_binding
+
+            with plodder_session_id_binding(session_id):
+                agent_coro = session.agent.run(task_state)
+                running = asyncio.ensure_future(agent_coro)
+                session._running_task = running
+                final_task_state = await running
             
             # Check success: only COMPLETED = success, anything else = not success
             success = final_task_state.status == AgentTaskStatus.COMPLETED

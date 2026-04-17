@@ -9,7 +9,10 @@ The model emits strict JSON with ``tool_calls``; the driver executes them agains
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import json
+import os
 import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -30,13 +33,36 @@ from plodder.orchestration.reasoning_loop import (
     goal_suggests_frontend_stack,
     monologue_validation_error,
     parse_driver_turn,
+    shell_argv_suggests_dev_server,
     terminal_failure_followup_hints,
     tool_observation_truncation_limit,
     visual_review_done_gate,
 )
 from plodder.sandbox.stateful_shell_tracker import StatefulShellTracker
+from plodder.sandbox.stream_truncate import truncate_stream
 from plodder.workspace.atomic_editor import atomic_edit
 from plodder.workspace.session_workspace import SessionWorkspace
+
+# API / HTTP session id for ``live_preview`` when ``UnifiedSessionDriver`` is constructed without ``session_id``.
+_plodder_api_session_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "plodder_api_session_id", default=None
+)
+
+
+@contextlib.contextmanager
+def plodder_session_id_binding(session_id: str):
+    """
+    Bind the current asyncio task to an API ``session_id`` so ``UnifiedSessionDriver(..., session_id=None)``
+    still resolves ``live_preview`` to the correct ``/api/sessions/{id}/live-preview/`` registration.
+
+    Used by :class:`mini_devin.sessions.manager.SessionManager` during ``run_task`` (avoids mutating
+    ``os.environ`` when multiple sessions may run concurrently).
+    """
+    token = _plodder_api_session_id.set(session_id)
+    try:
+        yield
+    finally:
+        _plodder_api_session_id.reset(token)
 
 
 ChatMessage = dict[str, Any]
@@ -107,6 +133,7 @@ _BASE_ALLOWED_TOOLS = frozenset(
         "browser_type",
         "browser_scroll",
         "browser_close",
+        "live_preview",
     }
 )
 
@@ -115,6 +142,21 @@ def _truncate(s: str, n: int) -> str:
     if len(s) <= n:
         return s
     return s[: n - 20] + "\n…(truncated)…\n"
+
+
+def _shell_scaffold_operation_cancelled(stdout: str, stderr: str, command: str) -> bool:
+    """
+    npm/create-vite often exits 0 while printing ``Operation cancelled`` when stdin is not a TTY
+    and the target directory already exists (default non-interactive overwrite = no).
+    Treat that as failure so follow-up hints and ``ok: false`` propagate.
+    """
+    blob = ((stdout or "") + "\n" + (stderr or "")).lower()
+    if "operation cancelled" not in blob:
+        return False
+    cmd = (command or "").lower()
+    if any(p in cmd for p in ("create-vite", "create vite", "npm create vite", "@vite/create-vite")):
+        return True
+    return "npx" in cmd and "vite" in cmd
 
 
 class UnifiedSessionDriver:
@@ -140,10 +182,19 @@ class UnifiedSessionDriver:
         enable_stateful_shell: bool = True,
         enforce_think_before_act: bool = True,
         inject_long_context_anchor: bool = True,
+        session_id: str | None = None,
     ) -> None:
         self._llm = llm
         self._ws = workspace
         self._sandbox = sandbox
+        if session_id is not None:
+            raw_sid = session_id
+        else:
+            ctx = _plodder_api_session_id.get()
+            raw_sid = (ctx or "").strip() or None
+            if not raw_sid:
+                raw_sid = os.environ.get("PLODDER_SESSION_ID")
+        self._session_id = (str(raw_sid).strip() if raw_sid else "") or None
         self._engine = engine or UniversalPromptEngine(PolyglotSystemPrompt())
         self._max_rounds = max_rounds
         self._max_tool_calls_per_turn = max_tool_calls_per_turn
@@ -180,6 +231,24 @@ class UnifiedSessionDriver:
         )
         seed_user += REASONING_LOOP_SEED_SUFFIX
         if goal_suggests_frontend_stack(goal):
+            seed_user += (
+                "\n\n## Headless ``sandbox_shell`` (no TTY)\n"
+                "npm / **create-vite** cannot answer interactive prompts. If the target folder may already exist, "
+                "either **`rm -rf <dir>`** then scaffold, or use **`npm create vite@latest <dir> -- --template … "
+                "--overwrite`** (and **`--no-interactive`** when the CLI supports it). "
+                "If you see **Operation cancelled**, do **not** repeat the same bare `npx create-vite …` without "
+                "``--overwrite`` or a clean path.\n"
+                "\n**Install once**: if `node_modules` is already present and `package.json` did not change, do not keep "
+                "rerunning `npm install` / `pnpm install` on every loop.\n"
+                "\n**Persisted shell cwd**: Plodder may prepend **`cd`** from ``.plodder/shell/session_state.json`` "
+                "each ``sandbox_shell`` run. Before ``cd <subdir>``, run **`pwd`** (or ``fs_read`` that JSON). "
+                "If you are **already inside** `<subdir>`, another ``cd <subdir>`` fails — run **``npm run build``** "
+                "etc. without that extra ``cd``.\n"
+                "\n**Long-running dev servers**: choose the correct sandbox mode before starting `npm run dev`, "
+                "`next dev`, `vite`, or `python app.py`. Do **not** spam the same command with trailing `&` after a "
+                "timeout in a one-shot sandbox. If the default port is busy, retry common fallbacks like "
+                "`5001`, `5002`, `5173`, or `8000`, then attach **`live_preview`** once a port is listening.\n"
+            )
             snap = self._host_environment_snapshot_block()
             if snap.strip():
                 seed_user += (
@@ -189,6 +258,16 @@ class UnifiedSessionDriver:
                     + _truncate(snap, 9000)
                     + "\n```\n"
                 )
+            seed_user += (
+                "\n\n## Live Preview (optional; same API as the mini-devin agent)\n"
+                "When a **dev server is listening on this machine’s** ``127.0.0.1`` (typical with **host "
+                "process** ``sandbox_shell``, e.g. Railway without Docker), call **`live_preview`** with "
+                "``action: probe`` (optional ``ports`` list), then **`live_preview`** with ``action: set_active_port`` "
+                "and ``port`` set to a **listening** port from the probe so the **Browser** tab can load the "
+                "proxied iframe. Use **``playwright_observe``** with the same host URL (e.g. ``http://127.0.0.1:5173``). "
+                "**Ephemeral Docker** ``sandbox_shell`` runs cannot publish ports to the host — probe will usually "
+                "return empty; then use a tunnel URL in ``playwright_observe`` or switch to host sandbox.\n"
+            )
         return seed_user
 
     def _host_environment_snapshot_block(self) -> str:
@@ -610,6 +689,8 @@ class UnifiedSessionDriver:
                 return await self._tool_sandbox_run_async(args)
             if name == "sandbox_shell":
                 return await self._tool_sandbox_shell_async(args)
+            if name == "live_preview":
+                return await self._tool_live_preview_async(args)
             if name == "github":
                 from plodder.orchestration.github_tool_dispatch import run_github_tool_for_workspace
 
@@ -782,6 +863,95 @@ class UnifiedSessionDriver:
         )
         return self._sandbox_result_dict("sandbox_run", result)
 
+    async def _tool_live_preview_async(self, args: dict[str, Any]) -> dict[str, Any]:
+        """
+        Register a listening TCP port on **this host's** ``127.0.0.1`` for the session Live Preview iframe.
+
+        Matches :func:`mini_devin.orchestrator.agent.Agent._execute_tool` ``live_preview`` behaviour;
+        requires ``session_id`` (constructor or ``PLODDER_SESSION_ID``).
+        """
+        from mini_devin.api.live_preview_state import (
+            allowed_ports,
+            live_preview_probe_hints,
+            live_preview_set_port_warning,
+            probe_local_ports_sync,
+            set_session_preview_port,
+        )
+
+        sid = self._session_id
+        if not sid:
+            return {
+                "tool": "live_preview",
+                "ok": False,
+                "error": (
+                    "session_id not set — pass ``session_id`` to ``UnifiedSessionDriver`` / ``AgentLoopConfig``, "
+                    "set env ``PLODDER_SESSION_ID``, or run inside ``plodder_session_id_binding(api_session_id)`` "
+                    "(``SessionManager.run_task`` does this automatically)."
+                ),
+            }
+
+        action = str(args.get("action", "probe") or "probe").lower()
+        if action == "probe":
+            ports = args.get("ports")
+            if not isinstance(ports, list) or not ports:
+                raw = (os.environ.get("LIVE_PREVIEW_PROBE_PORTS") or "5173,3000,3001,3002,4173,4200,5000,5001,5002,8000,8080").strip()
+                ports = []
+                for x in raw.split(","):
+                    x = x.strip()
+                    if x.isdigit():
+                        ports.append(int(x))
+            try:
+                candidates = [int(p) for p in ports]
+            except (TypeError, ValueError):
+                candidates = [5173, 3000, 3001, 3002, 4173, 5000, 5001, 5002, 8000, 8080]
+            listening = probe_local_ports_sync(candidates)
+            out_probe: dict[str, Any] = {
+                "tool": "live_preview",
+                "ok": True,
+                "action": "probe",
+                "listening_ports": listening,
+                "allowed_ports": sorted(allowed_ports()),
+                "next_step": (
+                    "If a port is **your workspace dev server** (e.g. Vite), call live_preview with action set_active_port "
+                    "and port=<that int> so the Browser tab iframe can load /api/sessions/<id>/live-preview/. "
+                    "Do not use Live Preview for external domains — use browser_playwright or browser_fetch."
+                ),
+                "note": (
+                    "Ports must accept TCP on 127.0.0.1 on **this** machine. Ephemeral Docker sandbox_shell "
+                    "commands do not expose listener ports here — use host process sandbox, port publish, or a tunnel URL."
+                ),
+            }
+            out_probe.update(live_preview_probe_hints(listening_ports=listening))
+            return out_probe
+
+        if action == "set_active_port":
+            try:
+                p = int(args.get("port", 0))
+            except (TypeError, ValueError):
+                return {"tool": "live_preview", "ok": False, "error": "invalid port", "action": "set_active_port"}
+            ok = await set_session_preview_port(sid, p)
+            if not ok:
+                return {
+                    "tool": "live_preview",
+                    "ok": False,
+                    "action": "set_active_port",
+                    "error": f"Port {p} not allowed or not accepting TCP on 127.0.0.1",
+                    "allowed_ports": sorted(allowed_ports()),
+                }
+            out_set: dict[str, Any] = {
+                "tool": "live_preview",
+                "ok": True,
+                "action": "set_active_port",
+                "active_port": p,
+                "browser_iframe": f"/api/sessions/{sid}/live-preview/",
+            }
+            w = live_preview_set_port_warning(p)
+            if w:
+                out_set["warning"] = w
+            return out_set
+
+        return {"tool": "live_preview", "ok": False, "error": f"unknown live_preview action {action!r}"}
+
     async def _tool_gitleaks_async(self, args: dict[str, Any]) -> dict[str, Any]:
         import shutil
 
@@ -826,8 +996,40 @@ class UnifiedSessionDriver:
         files = self._ws.snapshot_text_files()
         argv_list = list(argv)
         inner = extract_shell_inner(argv_list)
+        dev_server = shell_argv_suggests_dev_server(argv_list)
         if self._runtime_shell_tracker is not None:
             argv_list = self._runtime_shell_tracker.wrap_argv(argv_list)
+        if dev_server:
+            detached_runner = getattr(self._sandbox, "run_dev_server_in_workspace", None)
+            if callable(detached_runner):
+                result = await asyncio.to_thread(
+                    detached_runner,
+                    files,
+                    argv_list,
+                    language_hint=language_hint,
+                    timeout_sec=self._sandbox_timeout_sec,
+                    network=network,
+                )
+                if self._runtime_shell_tracker is not None and inner is not None:
+                    self._runtime_shell_tracker.ingest_user_command(inner)
+                try:
+                    started_port = int(result.get("port", 0))
+                except (TypeError, ValueError, AttributeError):
+                    started_port = 0
+                if result.get("ok") and started_port > 0 and self._session_id:
+                    live_preview = await self._tool_live_preview_async(
+                        {"action": "set_active_port", "port": started_port}
+                    )
+                    result["live_preview"] = live_preview
+                return result
+            return {
+                "tool": "sandbox_shell",
+                "ok": False,
+                "error": (
+                    "This sandbox runs one-shot commands and cannot keep a dev server alive. "
+                    "Use the host process sandbox for `npm run dev` / `python app.py`, then attach `live_preview`."
+                ),
+            }
         result = await asyncio.to_thread(
             self._sandbox.run_shell_in_workspace,
             files,
@@ -842,12 +1044,21 @@ class UnifiedSessionDriver:
 
     @staticmethod
     def _sandbox_result_dict(tool: str, result: SandboxResult) -> dict[str, Any]:
+        raw_out = result.stdout or ""
+        raw_err = result.stderr or ""
+        out, out_was_trunc = truncate_stream(raw_out)
+        err, err_was_trunc = truncate_stream(raw_err)
+        base_ok = result.exit_code == 0 and not result.timed_out
+        if base_ok and _shell_scaffold_operation_cancelled(raw_out, raw_err, result.command):
+            base_ok = False
         return {
             "tool": tool,
-            "ok": result.exit_code == 0 and not result.timed_out,
+            "ok": base_ok,
             "exit_code": result.exit_code,
             "timed_out": result.timed_out,
             "command": result.command,
-            "stdout": _truncate(result.stdout or "", 6000),
-            "stderr": _truncate(result.stderr or "", 6000),
+            "stdout": out,
+            "stderr": err,
+            "stdout_truncated": out_was_trunc,
+            "stderr_truncated": err_was_trunc,
         }

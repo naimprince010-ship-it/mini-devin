@@ -271,6 +271,12 @@ class SafetyGuard:
             for dep_file in self.policy.allowed_dependency_files
         )
         
+        # Allow creating a brand-new dependency manifest (e.g. initial package.json)
+        # without requiring global dependency-bump permission.
+        # Existing dependency-file edits still require explicit allow_dependency_bump.
+        if is_dependency_file and change_type in {"create", "add_initial"}:
+            return None
+
         if is_dependency_file and not self.policy.allow_dependency_bump:
             violation = SafetyViolation(
                 violation_type=ViolationType.DEPENDENCY_BUMP,

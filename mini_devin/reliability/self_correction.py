@@ -186,6 +186,25 @@ def incremental_recovery_hint(
         cmd = (last_failed_command or "").strip() or str(args.get("command", ""))
     cmd_l = cmd.lower()
 
+    if tool_name == "terminal" and (
+        "lsof" in ol and "not found" in ol
+        or "netstat" in ol and "not found" in ol
+        or re.search(r"\bss:\s+command not found\b", ol)
+        or "fuser" in ol and "not found" in ol
+    ):
+        return (
+            "**Incremental recovery (missing port tools):** The environment lacks `lsof`/`netstat`/`ss`/`fuser`. "
+            "Do not loop on shell diagnostics; retry the dev server on a different port and then inspect the "
+            "app or attach live preview once it is running."
+        )
+
+    if tool_name == "terminal" and "no such file" in ol and "cd " in cmd_l:
+        return (
+            "**Incremental recovery (cwd/path):** The working directory may be wrong. "
+            "Run **`pwd`** and **`ls`** first, confirm the target directory exists, then retry the command from the "
+            "correct repo/app folder instead of assuming the previous `cd` still applies."
+        )
+
     # --- Python tests (pytest / unittest) ---------------------------------
     if tool_name == "terminal" and ("pytest" in cmd_l or "py.test" in cmd_l):
         return (
@@ -207,6 +226,24 @@ def incremental_recovery_hint(
     if tool_name == "terminal" and any(
         k in cmd_l for k in (" npm ", "npm ", "npx ", "yarn ", "pnpm ", "node ", "pnpm", "yarn")
     ):
+        if "package.json" in ol and "enoent" in ol and "install" in cmd_l:
+            return (
+                "**Incremental recovery (Node/npm cwd):** `npm install` is running before `package.json` exists "
+                "or from the wrong folder. Run **`pwd`** and **`ls`**, confirm the directory contains `package.json`, "
+                "or create it first before retrying the install."
+            )
+        if (
+            "eaddrinuse" in ol
+            or "address already in use" in ol
+            or "port 3000 is in use" in ol
+            or "port is already in use" in ol
+        ) and any(k in cmd_l for k in ("dev", "start", "next", "vite")):
+            return (
+                "**Incremental recovery (dev server port conflict):** The default port is busy. "
+                "Do not get stuck on `lsof`, `netstat`, `ss`, or `fuser` if they are missing. "
+                "Retry the dev server on another port such as `3001`, `3002`, `4173`, `5001`, `5002`, `5173`, or `8000`, "
+                "then probe/attach live preview to the new port."
+            )
         return (
             "**Incremental recovery (Node/npm):** Inspect `package.json` (`cat package.json` / `head package.json`), "
             "confirm `ls node_modules` (or `ls -la node_modules/<pkg>`), and verify you are in the directory that contains `package.json`."
@@ -227,6 +264,12 @@ def incremental_recovery_hint(
         )
 
     if "file not found" in ol or "no such file" in ol:
+        if "cd " in cmd_l or "cwd" in ol:
+            return (
+                "**Incremental recovery (cwd/path):** The working directory may be wrong. "
+                "Run **`pwd`** and **`ls`** first, confirm the target directory exists, then retry the command from the "
+                "correct repo/app folder instead of assuming the previous `cd` still applies."
+            )
         return (
             "**Incremental recovery:** From workspace root, run **`pwd`**, **`ls`**, or **`find . -maxdepth 3`** "
             "to confirm the path before opening or executing files."
@@ -346,6 +389,16 @@ class SelfCorrectionEngine:
             return "There is a syntax error in the code you executed or wrote. Please carefully check indentation, brackets, and syntax rules for the language, fix the error, and try again."
             
         elif error_type == ErrorType.DEPENDENCY_MISSING:
+            cmd_l = str(args.get("command", "") or "").lower()
+            out_l = (output or "").lower()
+            if any(k in cmd_l for k in ("npm ", "npx ", "node ", "pnpm ", "yarn ")) or any(
+                k in out_l for k in ("package.json", "node_modules", "npm err", "express", "vite", "next dev")
+            ):
+                return (
+                    "A Node/npm dependency or command is missing. Check that you are in the folder containing "
+                    "`package.json`, inspect `node_modules`, and install the package with `npm` / `pnpm` / `yarn` "
+                    "(not `pip`). Do not switch to Python package installation for a JavaScript dependency."
+                )
             return (
                 "A dependency or command is missing. Use the **Python executable from Runtime context**: "
                 "`<that-python> -m pip install <package>` or `<that-python> -m pytest` / `-m unittest`. "
@@ -363,7 +416,14 @@ class SelfCorrectionEngine:
             return "Permission denied. You may need to change file permissions, use a different directory, or avoid modifying system-protected files."
             
         elif error_type == ErrorType.TIMEOUT:
-            return "The operation timed out. If it's a server, run it in the background using `&` or as a daemon. Otherwise, try a smaller or optimized command."
+            cmd_l = str(args.get("command", "") or "").lower()
+            if any(k in cmd_l for k in ("npm run dev", "yarn dev", "pnpm dev", "next dev", "vite", "node server", "python app.py", "flask run")):
+                return (
+                    "The operation timed out. For dev servers, do not blindly retry with trailing `&` in a one-shot sandbox. "
+                    "Use the host/process sandbox or a detached dev-server runner, retry a fallback port if needed, "
+                    "then attach `live_preview` after the port is actually listening."
+                )
+            return "The operation timed out. Try a smaller or optimized command, or split the work into shorter verification steps."
 
         elif error_type == ErrorType.ENVIRONMENT_MISMATCH:
             return (
@@ -381,6 +441,49 @@ class SelfCorrectionEngine:
             return (
                 "The command failed with a non-zero exit code. Read STDERR, fix the root cause "
                 "(wrong path, missing package, syntax), then retry—do not repeat the same failing command."
+            )
+
+        elif tool_name.startswith("browser_"):
+            action = str(args.get("action") or tool_name).strip().lower()
+            base = (
+                "First capture a fresh `browser_screenshot` or `browser_playwright` snapshot and inspect "
+                "the screenshot, accessibility tree, console, and interactive elements before retrying. "
+            )
+            if action in ("browser_navigate", "navigate"):
+                return (
+                    "The browser navigation failed. "
+                    + base
+                    + "Verify that the URL is valid and complete, including `https://` when needed. "
+                    + "If a local app is still booting, confirm the dev server is running before navigating again. "
+                    + "If the page may still be loading or redirecting, wait for it to settle and inspect any "
+                    + "console or network errors before repeating `browser_navigate`."
+                )
+            if action in ("browser_click", "click"):
+                return (
+                    "The browser click failed. "
+                    + base
+                    + "Prefer a more specific CSS selector on retry; only use raw coordinates when the target is "
+                    + "visually unambiguous. If a modal, cookie banner, or overlay may be intercepting input, "
+                    + "dismiss that first before repeating the click."
+                )
+            if action in ("browser_type", "type"):
+                return (
+                    "The browser typing action failed. "
+                    + base
+                    + "Retry with a clearer input selector, use `clear_first` if the field already has text, "
+                    + "and use `submit: true` only when Enter should submit the form."
+                )
+            if action in ("browser_scroll", "scroll"):
+                return (
+                    "The browser scroll failed. "
+                    + base
+                    + "Check whether the page is still loading, whether a modal locked scrolling, or whether "
+                    + "the target content is inside a nested scroll container that needs a different interaction."
+                )
+            return (
+                "The browser action failed. "
+                + base
+                + "Retry with a more precise target and only repeat the action after checking what changed on the page."
             )
             
         elif "BLOCKED" in output:

@@ -460,6 +460,35 @@ def terminal_failure_followup_hints(results: list[dict[str, Any]]) -> str:
                 "This failure pattern matches a **dev server** class command (`npm run dev`, `vite`, …): "
                 "prefer **playwright_observe** (console + network) and interactive **browser_*** tools before the next edit cycle."
             )
+        combined_parts: list[str] = []
+        for key in ("stdout", "stderr", "error"):
+            v = res.get(key)
+            if isinstance(v, str):
+                combined_parts.append(v)
+        blob = "\n".join(combined_parts).lower()
+        cmd_l = cmd.lower()
+        if "operation cancelled" in blob and (
+            "create-vite" in blob
+            or "create vite" in blob
+            or "create-vite" in cmd_l
+            or "create vite" in cmd_l
+            or ("npx" in cmd_l and "vite" in cmd_l)
+        ):
+            lines.append(
+                "**Scaffold (npm / create-vite)**: ``Operation cancelled`` almost always means the "
+                "target directory **already exists and is non-empty** while the sandbox has **no TTY** — "
+                "create-vite will not prompt. Use **`rm -rf <dir>`** then scaffold again, or "
+                "**`npm create vite@latest <dir> -- --template <tpl> --overwrite`** "
+                "(and **`--no-interactive`** when supported). Do not repeat the same bare `npx create-vite …`."
+            )
+        if "no such file or directory" in blob and "cd:" in blob and "cd" in cmd_l:
+            lines.append(
+                "**Shell cwd / nested `cd`**: `cd: … No such file or directory` often means you are **already** "
+                "inside that folder (Plodder persists **`cwd`** in ``.plodder/shell/session_state.json`` and "
+                "prepends `cd` each run). Run **`pwd`** (and **`ls`**) before assuming another **`cd <subdir>`**. "
+                "If `pwd` already ends with `/smoke-ui`, run **`npm install` / `npm run build`** without `cd smoke-ui`, "
+                "or use a **single** correct path from workspace root — do not repeat the same failing `cd` chain."
+            )
         return "\n".join(lines)
     return ""
 

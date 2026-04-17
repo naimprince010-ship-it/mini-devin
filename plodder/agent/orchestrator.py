@@ -91,6 +91,8 @@ def _action_display_name(tool_name: str) -> str:
         return "hands_browser_scroll"
     if tool_name == "browser_close":
         return "browser_close"
+    if tool_name == "live_preview":
+        return "eyes_live_preview"
     return tool_name
 
 

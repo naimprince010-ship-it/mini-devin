@@ -95,6 +95,55 @@ class TestSelfCorrectionEngine:
         hint = engine.get_retry_hint(ErrorType.DEPENDENCY_MISSING, "terminal", {}, "NotFound")
         assert "install" in hint.lower()
 
+    def test_get_retry_hint_dependency_node_package(self, engine):
+        hint = engine.get_retry_hint(
+            ErrorType.DEPENDENCY_MISSING,
+            "terminal",
+            {"command": "npm install express"},
+            "package.json\nnode_modules missing",
+        )
+        low = hint.lower()
+        assert "npm" in low or "pnpm" in low or "yarn" in low
+        assert "not `pip`" in hint or "not pip" in low
+
+    def test_get_retry_hint_timeout_dev_server(self, engine):
+        hint = engine.get_retry_hint(
+            ErrorType.TIMEOUT,
+            "terminal",
+            {"command": "node server.js"},
+            "Command timed out after 30 seconds",
+        )
+        low = hint.lower()
+        assert "live_preview" in low or "preview" in low
+        assert "sandbox" in low or "detached" in low or "host/process" in low
+        assert "run it in the background using `&`" not in hint
+
+    def test_get_retry_hint_browser(self, engine):
+        hint = engine.get_retry_hint(
+            ErrorType.UNKNOWN,
+            "browser_click",
+            {"selector": ".submit"},
+            "Error: browser_click failed: timeout",
+        )
+        low = hint.lower()
+        assert "browser_screenshot" in hint or "browser_playwright" in hint
+        assert "selector" in low
+        assert "coordinates" in low or "raw coordinates" in low
+        assert "submit" in low or "overlay" in low or "modal" in low
+
+    def test_get_retry_hint_browser_navigate(self, engine):
+        hint = engine.get_retry_hint(
+            ErrorType.UNKNOWN,
+            "browser_navigate",
+            {"url": "example.com"},
+            "Error: browser_navigate failed: net::ERR_CONNECTION_REFUSED",
+        )
+        low = hint.lower()
+        assert "browser_screenshot" in hint or "browser_playwright" in hint
+        assert "url" in low
+        assert "https://" in hint or "dev server" in low or "redirect" in low
+        assert "submit: true" not in hint
+
 
 def test_error_fingerprint_stable_for_same_failure():
     fp1 = error_fingerprint("terminal", "No such file: foo\n", 1)
@@ -150,3 +199,58 @@ def test_incremental_recovery_hint_npm():
     )
     low = h.lower()
     assert "package.json" in low or "node_modules" in low
+
+
+def test_incremental_recovery_hint_npm_missing_package_json():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.COMMAND_FAILED,
+        "npm ERR! enoent Could not read package.json: Error: ENOENT: no such file or directory",
+        last_failed_command="npm install",
+    )
+    low = h.lower()
+    assert "package.json" in low
+    assert "pwd" in low
+    assert "wrong folder" in low or "wrong directory" in low or "create it first" in low
+
+
+def test_incremental_recovery_hint_dev_server_port_conflict():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.COMMAND_FAILED,
+        "listen EADDRINUSE: address already in use :::3000",
+        last_failed_command="npm run dev",
+    )
+    low = h.lower()
+    assert "3001" in h or "5173" in h or "4173" in h
+    assert "lsof" in low or "netstat" in low
+    assert "live preview" in low or "preview" in low
+
+
+def test_incremental_recovery_hint_missing_port_tools():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.COMMAND_FAILED,
+        "/bin/bash: line 1: lsof: command not found",
+        last_failed_command="lsof -i :3000",
+    )
+    low = h.lower()
+    assert "lsof" in low
+    assert "different port" in low or "another port" in low
+
+
+def test_incremental_recovery_hint_cwd_mismatch():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.FILE_NOT_FOUND,
+        "/bin/bash: line 8: cd: my-web-app: No such file or directory",
+        last_failed_command="cd my-web-app && npm run dev",
+    )
+    low = h.lower()
+    assert "working directory" in low or "cwd" in low
+    assert "pwd" in low
+    assert "ls" in low

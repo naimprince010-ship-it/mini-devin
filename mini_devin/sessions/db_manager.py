@@ -79,15 +79,18 @@ class DatabaseSessionManager:
         if not agent or not getattr(agent, "llm", None):
             return
         try:
+            from mini_devin.core.llm_client import _tail_trim_non_system_openai_safe
+
             msgs = agent.llm.get_conversation_for_api()
             sys_msgs = [x for x in msgs if x.get("role") == "system"]
             rest = [x for x in msgs if x.get("role") != "system"]
             if len(rest) > 240:
-                rest = rest[-240:]
+                rest = _tail_trim_non_system_openai_safe(rest, 240)
             trimmed = sys_msgs + rest
             payload = json.dumps(trimmed, default=str)
             if len(payload) > 4_000_000:
-                payload = json.dumps((sys_msgs + rest[-80:])[-120:], default=str)
+                rest_compact = _tail_trim_non_system_openai_safe(rest, 80)
+                payload = json.dumps(sys_msgs + rest_compact, default=str)
             wd = getattr(agent, "working_directory", None)
             async with self._session_maker() as db:
                 repo = SessionRepository(db)

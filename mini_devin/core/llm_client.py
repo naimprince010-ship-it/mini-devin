@@ -15,7 +15,9 @@ from mini_devin.core.providers import (
     Provider,
     get_model_registry,
     get_litellm_model_name,
+    normalize_groq_legacy_model_id,
     AzureConfig,
+    GroqConfig,
 )
 
 
@@ -23,6 +25,12 @@ def _is_gemini_litellm_model(model_id: str) -> bool:
     """True for Google AI Studio (``gemini/``) and mistaken ``google/gemini`` prefixes (normalized at call time)."""
     m = (model_id or "").strip().lower()
     return m.startswith("gemini/") or m.startswith("vertex_ai/") or m.startswith("google/gemini")
+
+
+def _is_groq_litellm_model(model_id: str) -> bool:
+    """True when the model id is already in LiteLLM's ``groq/...`` form."""
+    m = (model_id or "").strip().lower()
+    return m.startswith("groq/")
 
 
 def _gemini_safety_settings_block_none() -> list[dict[str, str]]:
@@ -57,7 +65,7 @@ except ImportError:
 @dataclass
 class LLMConfig:
     """Configuration for the LLM client."""
-    model: str = "gpt-4o"
+    model: str = "llama-3.3-70b-versatile"
     temperature: float = 0.0
     max_tokens: int = 16384
     api_key: str | None = None
@@ -125,6 +133,119 @@ class LLMResponse:
     model: str
 
 
+def _tool_call_ids_from_api_assistant_dict(msg: dict[str, Any]) -> set[str]:
+    """Collect OpenAI ``tool_calls[].id`` values from an assistant message dict."""
+    raw = msg.get("tool_calls")
+    if not raw:
+        return set()
+    out: set[str] = set()
+    for tc in raw:
+        if isinstance(tc, dict):
+            tid = tc.get("id")
+            if tid:
+                out.add(str(tid))
+    return out
+
+
+def _openai_non_system_window_valid(msgs: list[dict[str, Any]]) -> bool:
+    """
+    True if ``msgs`` can be sent as a contiguous non-system suffix to OpenAI-style APIs.
+
+    Rejects orphan ``tool`` messages and assistant rows with ``tool_calls`` that are not
+    immediately followed by ``tool`` messages covering every ``tool_call_id``.
+    """
+    if not msgs:
+        return True
+    if msgs[0].get("role") == "tool":
+        return False
+    i = 0
+    n = len(msgs)
+    while i < n:
+        m = msgs[i]
+        role = m.get("role")
+        if role == "assistant" and m.get("tool_calls"):
+            need = _tool_call_ids_from_api_assistant_dict(m)
+            if not need:
+                i += 1
+                continue
+            seen: set[str] = set()
+            i += 1
+            while i < n and msgs[i].get("role") == "tool":
+                tid = msgs[i].get("tool_call_id")
+                if tid is not None and str(tid) in need:
+                    seen.add(str(tid))
+                i += 1
+            if seen != need:
+                return False
+            continue
+        if role == "tool":
+            return False
+        i += 1
+    return True
+
+
+def _strip_trailing_incomplete_assistant_tool_calls(
+    rest: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Remove trailing ``assistant`` rows that still declare ``tool_calls`` but have no
+    following ``tool`` messages (e.g. crashed turn). OpenAI rejects these on the next request.
+    """
+    out = list(rest)
+    while out:
+        lm = out[-1]
+        if lm.get("role") != "assistant" or not lm.get("tool_calls"):
+            break
+        if not _tool_call_ids_from_api_assistant_dict(lm):
+            break
+        out.pop()
+    return out
+
+
+def coerce_messages_openai_strict(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Ensure ``messages`` satisfy OpenAI ordering for ``tool_calls`` / ``tool`` roles.
+
+    Used after optional context condensing or other transforms that might leave a
+    dangling assistant tool-call block.
+    """
+    system_msgs = [dict(m) for m in messages if m.get("role") == "system"]
+    rest = [dict(m) for m in messages if m.get("role") != "system"]
+    rest = _strip_trailing_incomplete_assistant_tool_calls(rest)
+    if _openai_non_system_window_valid(rest):
+        return system_msgs + rest
+    fixed = _tail_trim_non_system_openai_safe(rest, len(rest))
+    if fixed:
+        return system_msgs + fixed
+    rest = _strip_trailing_incomplete_assistant_tool_calls(rest)
+    fixed = _tail_trim_non_system_openai_safe(rest, len(rest))
+    if fixed:
+        return system_msgs + fixed
+    return system_msgs + rest
+
+
+def _tail_trim_non_system_openai_safe(
+    full_rest: list[dict[str, Any]],
+    cap: int,
+) -> list[dict[str, Any]]:
+    """
+    Keep at most ``cap`` messages from the tail of ``full_rest``, adjusting the left edge
+    so the slice never starts with an orphan ``tool`` row or cuts through an assistant
+    ``tool_calls`` block (which would omit required ``tool`` replies and break the API).
+    """
+    if cap <= 0:
+        return []
+    # Even when len(full_rest) <= cap, the whole tail may violate tool/tool_calls ordering
+    # (e.g. corrupt history). Scan from the leftmost allowed start, same as a capped tail.
+    start = max(0, len(full_rest) - cap)
+    while start < len(full_rest):
+        window = full_rest[start:]
+        if _openai_non_system_window_valid(window):
+            return window
+        start += 1
+    return []
+
+
 class LLMClient:
     """
     Client for interacting with LLMs via LiteLLM.
@@ -164,6 +285,8 @@ class LLMClient:
             self.config.provider = model_info.provider
         elif isinstance(self.config.model, str) and _is_gemini_litellm_model(self.config.model):
             self.config.provider = Provider.GOOGLE
+        elif isinstance(self.config.model, str) and _is_groq_litellm_model(self.config.model):
+            self.config.provider = Provider.GROQ
 
         provider = self.config.provider
 
@@ -190,6 +313,18 @@ class LLMClient:
                 os.environ["GEMINI_API_KEY"] = self.config.api_key
                 if not (os.environ.get("GOOGLE_API_KEY") or "").strip():
                     os.environ["GOOGLE_API_KEY"] = self.config.api_key
+        elif provider == Provider.GROQ:
+            if self.config.api_key:
+                os.environ["GROQ_API_KEY"] = self.config.api_key
+            gcfg = registry.get_provider_config(Provider.GROQ)
+            default_base = "https://api.groq.com/openai/v1"
+            if not self.config.api_base:
+                if isinstance(gcfg, GroqConfig) and (gcfg.api_base or "").strip():
+                    self.config.api_base = str(gcfg.api_base).rstrip("/")
+                else:
+                    self.config.api_base = (
+                        os.environ.get("GROQ_API_BASE") or default_base
+                    ).rstrip("/")
         else:
             if self.config.api_key and provider is None:
                 os.environ["OPENAI_API_KEY"] = self.config.api_key
@@ -325,6 +460,13 @@ class LLMClient:
         if raw.isdigit():
             n = int(raw)
             return n if n > 0 else None
+        if self.config.provider == Provider.GROQ:
+            raw_g = (os.environ.get("LLM_MAX_HISTORY_MESSAGES_GROQ") or "").strip()
+            if raw_g.isdigit():
+                ng = int(raw_g)
+                return ng if ng > 0 else None
+            # Groq free tier TPM is tight; smaller windows reduce prompt tokens per request.
+            return 36
         if _is_gemini_litellm_model(self.config.model):
             return 200
         return 80
@@ -338,9 +480,9 @@ class LLMClient:
         system_msgs = [m for m in msgs if m.get("role") == "system"]
         rest = [m for m in msgs if m.get("role") != "system"]
         cap_rest = max(0, limit - len(system_msgs))
-        if len(rest) <= cap_rest:
-            return msgs
-        rest = rest[-cap_rest:]
+        if cap_rest <= 0:
+            return system_msgs
+        rest = _tail_trim_non_system_openai_safe(rest, cap_rest)
         return system_msgs + rest
 
     async def completion_ephemeral(
@@ -357,7 +499,7 @@ class LLMClient:
         model_name = get_litellm_model_name(self.config.model)
         kwargs: dict[str, Any] = {
             "model": model_name,
-            "messages": list(messages),
+            "messages": coerce_messages_openai_strict(list(messages)),
             "temperature": temperature,
             "max_tokens": min(max_tokens, self.config.max_tokens),
             "timeout": self.config.timeout,
@@ -369,6 +511,8 @@ class LLMClient:
         if self._custom_client and self.config.provider == Provider.OPENAI:
             kwargs["client"] = self._custom_client
         if self.config.provider == Provider.GOOGLE and self.config.api_key:
+            kwargs["api_key"] = self.config.api_key
+        if self.config.provider == Provider.GROQ and self.config.api_key:
             kwargs["api_key"] = self.config.api_key
         try:
             response = await acompletion(**kwargs)
@@ -412,6 +556,7 @@ class LLMClient:
             messages = self.get_conversation_for_api()
         if ephemeral_user_messages:
             messages = messages + [dict(m) for m in ephemeral_user_messages]
+        messages = coerce_messages_openai_strict(messages)
 
         model_name = get_litellm_model_name(self.config.model)
         
@@ -445,6 +590,9 @@ class LLMClient:
         if self.config.provider == Provider.GOOGLE and self.config.api_key:
             kwargs["api_key"] = self.config.api_key
 
+        if self.config.provider == Provider.GROQ and self.config.api_key:
+            kwargs["api_key"] = self.config.api_key
+
         # Make the API call
         try:
             print(f"[LLM] Requesting completion: model={model_name}, tools={len(tools) if tools else 0}, stream={stream}")
@@ -456,7 +604,17 @@ class LLMClient:
             if "AuthenticationError" in error_msg or "401" in error_msg:
                 raise RuntimeError(f"LLM Authentication Failed: API Key might be invalid or missing for {model_name}")
             elif "RateLimitError" in error_msg or "429" in error_msg:
-                raise RuntimeError(f"LLM Rate Limit Reached: {error_msg}")
+                hint = ""
+                if self.config.provider == Provider.GROQ or (
+                    isinstance(model_name, str) and model_name.lower().startswith("groq/")
+                ):
+                    hint = (
+                        " Groq free tier: lower per-request size — set LLM_MAX_OUTPUT_TOKENS=2048, "
+                        "LLM_MAX_HISTORY_MESSAGES_GROQ=24, GROQ_MAX_OUTPUT_TOKENS_CAP=4096, enable "
+                        "LLM_CONTEXT_CONDENSER=true, or use LLM_MODEL_OBSERVATION=llama-3.1-8b-instant; see "
+                        "https://console.groq.com/settings/limits"
+                    )
+                raise RuntimeError(f"LLM Rate Limit Reached: {error_msg}{hint}")
             elif "NotFoundError" in error_msg or "404" in error_msg:
                 raise RuntimeError(
                     f"LLM Model Not Found: {model_name}. "
@@ -657,7 +815,7 @@ def create_llm_client(
     Create an LLM client with common defaults.
     
     Args:
-        model: Model ID (e.g., "gpt-4o", "claude-3-5-sonnet-20241022", "ollama/llama3.2")
+        model: Model ID (e.g., "llama-3.3-70b-versatile", "gpt-4o", "groq/...", "ollama/llama3.2")
                If None, uses the default model based on configured providers.
         api_key: API key for the provider. If None, uses environment variable.
         temperature: Temperature for generation (0.0 = deterministic)
@@ -672,12 +830,20 @@ def create_llm_client(
         isinstance(model, str) and model.strip().lower() in ("auto", "default", "")
     ):
         model = os.environ.get("LLM_MODEL") or registry.get_default_model()
-    
+
+    if isinstance(model, str):
+        model = normalize_groq_legacy_model_id(model.strip())
+
     model_info = registry.get_model(model)
+    if model_info is None and isinstance(model, str) and _is_groq_litellm_model(model):
+        suffix = model.split("/", 1)[1]
+        model_info = registry.get_model(suffix)
     if model_info:
         provider = model_info.provider
     elif isinstance(model, str) and _is_gemini_litellm_model(model):
         provider = Provider.GOOGLE
+    elif isinstance(model, str) and _is_groq_litellm_model(model):
+        provider = Provider.GROQ
     else:
         provider = None
 
@@ -692,8 +858,10 @@ def create_llm_client(
             api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         elif provider == Provider.OLLAMA:
             api_key = "ollama"
+        elif provider == Provider.GROQ:
+            api_key = os.environ.get("GROQ_API_KEY")
 
-    if api_key is None and provider != Provider.GOOGLE:
+    if api_key is None and provider is None:
         api_key = os.environ.get("OPENAI_API_KEY")
 
     if isinstance(api_key, str):
@@ -709,10 +877,26 @@ def create_llm_client(
                 "No Gemini API key is set. Add GEMINI_API_KEY=... (or GOOGLE_API_KEY) to the "
                 ".env file in the project root (next to pyproject.toml), save, and restart the API."
             )
+        if provider == Provider.GROQ or (
+            isinstance(model, str) and _is_groq_litellm_model(model)
+        ):
+            raise ValueError(
+                "No Groq API key is set. Add GROQ_API_KEY to the "
+                ".env file in the project root (next to pyproject.toml), save, and restart the API."
+            )
         raise ValueError(
             "No LLM API key is set. For OpenAI models, add OPENAI_API_KEY=sk-... to the "
             ".env file in the project root (next to pyproject.toml), save, and restart the API."
         )
+
+    if api_base is None and provider == Provider.GROQ:
+        gcfg = registry.get_provider_config(Provider.GROQ)
+        if isinstance(gcfg, GroqConfig) and (gcfg.api_base or "").strip():
+            api_base = str(gcfg.api_base).rstrip("/")
+        else:
+            api_base = (os.environ.get("GROQ_API_BASE") or "https://api.groq.com/openai/v1").rstrip(
+                "/"
+            )
 
     max_out_raw = (os.environ.get("LLM_MAX_OUTPUT_TOKENS") or "").strip()
     if max_out_raw.isdigit():
@@ -721,12 +905,23 @@ def create_llm_client(
         max_tokens = model_info.max_output_tokens
     elif provider == Provider.GOOGLE:
         max_tokens = 8192
+    elif provider == Provider.GROQ:
+        max_tokens = 4096
     else:
         max_tokens = 16384
+
+    # Groq free-tier TPM: hard ceiling on max output tokens (override via GROQ_MAX_OUTPUT_TOKENS_CAP).
+    if provider == Provider.GROQ:
+        cap_raw = (os.environ.get("GROQ_MAX_OUTPUT_TOKENS_CAP") or "8192").strip()
+        if cap_raw.isdigit() and int(cap_raw) > 0:
+            max_tokens = min(max_tokens, int(cap_raw))
 
     timeout_raw = (os.environ.get("LLM_TIMEOUT_SEC") or "").strip()
     if timeout_raw.isdigit():
         timeout = int(timeout_raw)
+    elif provider == Provider.GROQ:
+        # Groq is low-latency; avoid long client waits on stalls (override with LLM_TIMEOUT_SEC).
+        timeout = 120
     else:
         timeout = 300
 
