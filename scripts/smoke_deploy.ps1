@@ -58,8 +58,26 @@ Write-Host "    OK providers count: $($j2.providers.Count)"
 
 Write-Host "[3] GET / (SPA)"
 $r3 = Test-Url GET "/"
-if ($r3.Content.Length -lt 100) { throw "index.html suspiciously small" }
-Write-Host "    OK len=$($r3.Content.Length)"
+$rootLooksLikeHtml = ($r3.Content -match '(?i)<!DOCTYPE|<html')
+$rootLooksLikeLightweightJson = $false
+try {
+  $rootJson = $r3.Content | ConvertFrom-Json
+  if ($rootJson.mode -eq "lightweight" -and $rootJson.status -eq "running") {
+    $rootLooksLikeLightweightJson = $true
+  }
+} catch {
+  # ignore JSON parse errors
+}
+if ($rootLooksLikeHtml) {
+  if ($r3.Content.Length -lt 100) { throw "index.html suspiciously small" }
+  Write-Host "    OK SPA len=$($r3.Content.Length)"
+}
+elseif ($rootLooksLikeLightweightJson) {
+  Write-Host "    OK lightweight API root JSON"
+}
+else {
+  throw "Unexpected root response shape"
+}
 
 Write-Host "[4] GET /app (deep link)"
 $r4 = Test-Url GET "/app"
@@ -91,7 +109,7 @@ catch {
 Write-Host "[6] POST /api/sessions (smoke session)"
 $body = @{
   working_directory     = ""
-  model                 = "gpt-4o-mini"
+  model                 = "ollama/llama3"
   max_iterations        = 5
   auto_git_commit       = $false
   git_push              = $false

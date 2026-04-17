@@ -23,9 +23,18 @@ services:
         scope: RUN_TIME
         type: SECRET
         value: "REPLACE_WITH_YOUR_KEY"
+      - key: OPENAI_ENABLED
+        scope: RUN_TIME
+        value: "false"
       - key: LLM_MODEL
         scope: RUN_TIME
-        value: gpt-4o-mini
+        value: ollama/llama3
+      - key: OLLAMA_ENABLED
+        scope: RUN_TIME
+        value: "true"
+      - key: OLLAMA_API_BASE
+        scope: RUN_TIME
+        value: http://68.183.92.70:11434
       - key: PORT
         scope: RUN_TIME
         value: "8000"
