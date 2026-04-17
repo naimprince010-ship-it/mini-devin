@@ -26,6 +26,8 @@ import shutil
 import subprocess
 import hashlib
 
+from mini_devin.core.providers import Provider, get_model_registry
+
 
 def _legacy_openai_toggle_env_set() -> bool:
     """Some deployments used ``Plodder`` / ``MiniDevin`` env vars alongside API keys."""
@@ -1846,74 +1848,54 @@ async def list_artifacts(session_id: str, task_id: str):
 @app.get("/providers")
 async def list_providers():
     """List available LLM providers."""
-    providers = []
-    if (os.getenv("GROQ_API_KEY") or "").strip():
-        providers.append({
-            "id": "groq", "name": "Groq", "configured": True, "enabled": True,
-            "models": [
-                "llama-3.3-70b-versatile",
-                "llama-3.1-8b-instant",
-                "mixtral-8x7b-32768",
-            ],
-        })
-    if os.getenv("OPENAI_API_KEY") or _legacy_openai_toggle_env_set():
-        providers.append({
-            "id": "openai", "name": "OpenAI", "configured": True, "enabled": True,
-            "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
-        })
-    if os.getenv("ANTHROPIC_API_KEY"):
-        providers.append({
-            "id": "anthropic", "name": "Anthropic", "configured": True, "enabled": True,
-            "models": ["claude-3-5-sonnet-latest", "claude-3-haiku-20240307"]
-        })
-    if os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
-        providers.append({
-            "id": "google", "name": "Google", "configured": True, "enabled": True,
-            "models": ["gemini/gemini-2.0-flash", "gemini/gemini-1.5-pro"]
-        })
+    registry = get_model_registry()
+    registry.configure_from_env()
+
+    models_by_provider: dict[str, list[str]] = {}
+    for model in registry.list_models(only_configured=True):
+        pid = model.provider.value
+        models_by_provider.setdefault(pid, []).append(model.id)
+
+    # Backward compatibility for older deployments that enabled OpenAI via legacy env toggle.
+    if _legacy_openai_toggle_env_set() and "openai" not in models_by_provider:
+        models_by_provider["openai"] = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
+
+    provider_names = {
+        Provider.GOOGLE.value: "Google",
+        Provider.OPENAI.value: "OpenAI",
+        Provider.ANTHROPIC.value: "Anthropic",
+        Provider.OLLAMA.value: "Ollama",
+        Provider.AZURE.value: "Azure OpenAI",
+    }
+    provider_order = [
+        Provider.GOOGLE.value,
+        Provider.OPENAI.value,
+        Provider.ANTHROPIC.value,
+        Provider.OLLAMA.value,
+        Provider.AZURE.value,
+    ]
+    providers = [
+        {
+            "id": pid,
+            "name": provider_names.get(pid, pid.title()),
+            "configured": True,
+            "enabled": True,
+            "models": models_by_provider.get(pid, []),
+        }
+        for pid in provider_order
+        if models_by_provider.get(pid)
+    ]
     return {"providers": providers}
 
 @app.get("/api/models")
 @app.get("/models")
 async def list_models():
     """List available LLM models based on configured API keys."""
-    models = []
-    if (os.getenv("GROQ_API_KEY") or "").strip():
-        models.extend(
-            [
-                {
-                    "id": "llama-3.3-70b-versatile",
-                    "name": "Llama 3.3 70B Versatile (Groq)",
-                    "provider": "groq",
-                    "context_window": 131072,
-                    "supports_tools": True,
-                    "supports_vision": False,
-                    "max_output_tokens": 4096,
-                    "description": "Recommended for Plodder / coding (Groq deprecations successor)",
-                },
-                {
-                    "id": "llama-3.1-8b-instant",
-                    "name": "Llama 3.1 8B Instant (Groq)",
-                    "provider": "groq",
-                    "context_window": 131072,
-                    "supports_tools": True,
-                    "supports_vision": False,
-                    "max_output_tokens": 4096,
-                    "description": "Fast; good for LLM_MODEL_OBSERVATION (replaces llama3-8b-8192)",
-                },
-                {
-                    "id": "mixtral-8x7b-32768",
-                    "name": "Mixtral 8x7B (Groq)",
-                    "provider": "groq",
-                    "context_window": 32768,
-                    "supports_tools": True,
-                    "supports_vision": False,
-                    "max_output_tokens": 4096,
-                    "description": "Solid MoE on Groq free tier",
-                },
-            ]
-        )
-    if os.getenv("OPENAI_API_KEY") or _legacy_openai_toggle_env_set():
+    registry = get_model_registry()
+    registry.configure_from_env()
+    models = registry.to_api_format(only_configured=True)
+
+    if _legacy_openai_toggle_env_set() and not any(m.get("provider") == "openai" for m in models):
         models.extend([
             {"id": "gpt-4o", "name": "GPT-4o", "provider": "openai",
              "context_window": 128000, "supports_tools": True, "supports_vision": True,
@@ -1924,24 +1906,6 @@ async def list_models():
             {"id": "gpt-4-turbo", "name": "GPT-4 Turbo", "provider": "openai",
              "context_window": 128000, "supports_tools": True, "supports_vision": True,
              "max_output_tokens": 4096, "description": "Powerful GPT-4 with vision"},
-        ])
-    if os.getenv("ANTHROPIC_API_KEY"):
-        models.extend([
-            {"id": "claude-3-5-sonnet-latest", "name": "Claude 3.5 Sonnet", "provider": "anthropic",
-             "context_window": 200000, "supports_tools": True, "supports_vision": True,
-             "max_output_tokens": 8192, "description": "Best Claude for coding tasks"},
-            {"id": "claude-3-haiku-20240307", "name": "Claude 3 Haiku", "provider": "anthropic",
-             "context_window": 200000, "supports_tools": True, "supports_vision": False,
-             "max_output_tokens": 4096, "description": "Fastest Claude model"},
-        ])
-    if os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
-        models.extend([
-            {"id": "gemini/gemini-2.0-flash", "name": "Gemini 2.0 Flash", "provider": "google",
-             "context_window": 1000000, "supports_tools": True, "supports_vision": True,
-             "max_output_tokens": 8192, "description": "Fast Gemini (recommended; Google AI Studio)"},
-            {"id": "gemini/gemini-1.5-pro", "name": "Gemini 1.5 Pro", "provider": "google",
-             "context_window": 1000000, "supports_tools": True, "supports_vision": True,
-             "max_output_tokens": 8192, "description": "Google's capable 1.5-series model"},
         ])
     if not models:
         # Fallback defaults so UI always has something to show

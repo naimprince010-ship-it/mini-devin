@@ -295,14 +295,14 @@ ANTHROPIC_MODELS = [
 
 OLLAMA_MODELS = [
     ModelInfo(
-        id="ollama/llama3.2",
-        name="Llama 3.2",
+        id="ollama/llama3",
+        name="Llama 3",
         provider=Provider.OLLAMA,
         context_window=128000,
         supports_tools=True,
         supports_vision=False,
         max_output_tokens=4096,
-        description="Meta's Llama 3.2 (local)",
+        description="Meta's Llama 3 (local/remote Ollama)",
     ),
     ModelInfo(
         id="ollama/codellama",
@@ -515,8 +515,8 @@ class ModelRegistry:
         if self.is_provider_configured(Provider.AZURE):
             return "azure/gpt-4o"
         if self.is_provider_configured(Provider.OLLAMA):
-            return "ollama/llama3.2"
-        return "llama-3.3-70b-versatile"
+            return "ollama/llama3"
+        return "gpt-4o"
     
     def to_api_format(self, only_configured: bool = True) -> list[dict[str, Any]]:
         """Convert models to API response format."""
