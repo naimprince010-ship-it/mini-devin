@@ -1,5 +1,5 @@
 # ============================================================
-# Mini-Devin Sandbox Image
+# Plodder sandbox image
 # Python 3.10 + Node.js 18 LTS + common dev tools
 # Non-root user, isolated /workspace
 # ============================================================
@@ -59,8 +59,8 @@ RUN pip install --no-cache-dir \
     pipenv
 
 # ── Git global config ─────────────────────────────────────────
-RUN git config --global user.email "mini-devin@sandbox.local" \
-    && git config --global user.name "Mini-Devin Sandbox" \
+RUN git config --global user.email "plodder@sandbox.local" \
+    && git config --global user.name "Plodder Sandbox" \
     && git config --global init.defaultBranch main \
     && git config --global --add safe.directory /workspace
 
@@ -74,8 +74,8 @@ RUN mkdir -p /workspace && chown sandbox:sandbox /workspace
 
 # Git config for sandbox user too
 USER sandbox
-RUN git config --global user.email "mini-devin@sandbox.local" \
-    && git config --global user.name "Mini-Devin Sandbox" \
+RUN git config --global user.email "plodder@sandbox.local" \
+    && git config --global user.name "Plodder Sandbox" \
     && git config --global init.defaultBranch main \
     && git config --global --add safe.directory /workspace
 

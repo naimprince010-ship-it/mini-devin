@@ -1,5 +1,12 @@
-import { useState, useCallback, useEffect } from 'react';
-import { GitBranch, GitFork, Trash2, RefreshCw, Plus, ExternalLink, Loader2, Check, AlertCircle, Link2, Github, LogOut, User } from 'lucide-react';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import {
+  GitBranch, GitFork, Trash2, RefreshCw, Plus, ExternalLink,
+  Loader2, Check, AlertCircle, Link2, Github, LogOut, User,
+  Play, GitPullRequest, Bug, GitCommit, Key, ChevronDown, ChevronRight, X
+} from 'lucide-react';
+import { getApiBase } from '../config/apiBase';
+import { detailFromJsonBody, readJsonResponse } from '../utils/readResponseJson';
+import { Session } from '../types';
 
 interface GitHubOAuthStatus {
   connected: boolean;
@@ -22,17 +29,22 @@ interface Repo {
   last_synced: string | null;
   status: string;
   has_token: boolean;
-  local_status?: string;
-  current_branch?: string;
+  note?: string;
 }
+
+interface PR { number: number; title: string; state: string; url: string; author: string; head: string; base: string; created_at: string; }
+interface Issue { number: number; title: string; state: string; url: string; author: string; created_at: string; labels: string[]; }
+interface Commit { sha: string; message: string; author: string; date: string; }
 
 interface RepoManagerProps {
   apiBaseUrl?: string;
   sessionId?: string;
   onRepoLinked?: (repoId: string) => void;
+  onOpenInSession?: (localPath: string, repoName: string) => void;
+  onIssueRunStarted?: (session: Session, taskId: string, issueNumber: number, repoName: string) => void;
 }
 
-export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionId, onRepoLinked }: RepoManagerProps) {
+export function RepoManager({ apiBaseUrl = getApiBase(), sessionId, onRepoLinked, onOpenInSession, onIssueRunStarted }: RepoManagerProps) {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,532 +56,625 @@ export function RepoManager({ apiBaseUrl = 'http://localhost:8000/api', sessionI
   const [cloning, setCloning] = useState<string | null>(null);
   const [expandedRepo, setExpandedRepo] = useState<string | null>(null);
   const [githubStatus, setGithubStatus] = useState<GitHubOAuthStatus | null>(null);
-  const [connectingGithub, setConnectingGithub] = useState(false);
-  const [disconnectingGithub, setDisconnectingGithub] = useState(false);
+  const [activeTab, setActiveTab] = useState<Record<string, 'pulls' | 'issues' | 'commits' | 'branches'>>({});
+  const [pulls, setPulls] = useState<Record<string, PR[]>>({});
+  const [issues, setIssues] = useState<Record<string, Issue[]>>({});
+  const [commits, setCommits] = useState<Record<string, Commit[]>>({});
+  const [branches, setBranches] = useState<Record<string, string[]>>({});
+  const [tabLoading, setTabLoading] = useState<string | null>(null);
+  const [showCreatePR, setShowCreatePR] = useState<string | null>(null);
+  const [showCreateIssue, setShowCreateIssue] = useState<string | null>(null);
+  const [showCreateBranch, setShowCreateBranch] = useState<string | null>(null);
+  const [showCreateRepo, setShowCreateRepo] = useState(false);
+  const [showTokenForm, setShowTokenForm] = useState<string | null>(null);
+  const [tokenInput, setTokenInput] = useState('');
+  const [prForm, setPrForm] = useState({ title: '', body: '', head: '', base: '' });
+  const [issueForm, setIssueForm] = useState({ title: '', body: '' });
+  const [branchForm, setBranchForm] = useState({ name: '', from: '' });
+  const [newRepoForm, setNewRepoForm] = useState({ name: '', description: '', private: false, token: '' });
+  const [issueRunBusy, setIssueRunBusy] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [oauthBusy, setOauthBusy] = useState(false);
 
   const loadGitHubStatus = useCallback(async () => {
     try {
-      const token = localStorage.getItem('auth_token');
-      const headers: Record<string, string> = {};
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-      const response = await fetch(`${apiBaseUrl}/github/oauth/status`, { headers });
-      if (response.ok) {
-        const data = await response.json();
-        setGithubStatus(data);
-      }
-    } catch (e) {
-      console.error('Failed to load GitHub status:', e);
-    }
+      const response = await fetch(`${apiBaseUrl}/github/oauth/status`);
+      const { json } = await readJsonResponse<GitHubOAuthStatus>(response);
+      if (response.ok && json) setGithubStatus(json);
+      else setGithubStatus({ connected: false, github_configured: false });
+    } catch { setGithubStatus({ connected: false, github_configured: false }); }
   }, [apiBaseUrl]);
 
-  const handleConnectGitHub = async () => {
-    setConnectingGithub(true);
-    try {
-      const token = localStorage.getItem('auth_token');
-      const headers: Record<string, string> = {};
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-      const response = await fetch(`${apiBaseUrl}/github/oauth/start`, { headers });
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to start GitHub OAuth');
-      }
-      const data = await response.json();
-      window.location.href = data.auth_url;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to connect GitHub');
-      setConnectingGithub(false);
-    }
-  };
-
-  const handleDisconnectGitHub = async () => {
-    if (!confirm('Are you sure you want to disconnect your GitHub account?')) return;
-    
-    setDisconnectingGithub(true);
-    try {
-      const token = localStorage.getItem('auth_token');
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-      const response = await fetch(`${apiBaseUrl}/github/oauth/disconnect`, {
-        method: 'DELETE',
-        headers
-      });
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to disconnect GitHub');
-      }
-      setGithubStatus({ connected: false, github_configured: true });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to disconnect GitHub');
-    } finally {
-      setDisconnectingGithub(false);
-    }
-  };
-
-  useEffect(() => {
-    loadGitHubStatus();
-    
-    const urlParams = new URLSearchParams(window.location.search);
-    const oauthStatus = urlParams.get('github_oauth');
-    if (oauthStatus === 'success') {
-      loadGitHubStatus();
-      window.history.replaceState({}, '', window.location.pathname);
-    } else if (oauthStatus === 'error') {
-      const message = urlParams.get('message') || 'GitHub OAuth failed';
-      setError(message.replace(/\+/g, ' '));
-      window.history.replaceState({}, '', window.location.pathname);
-    }
-  }, [loadGitHubStatus]);
+  useEffect(() => { loadGitHubStatus(); }, [loadGitHubStatus]);
 
   const loadRepos = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const response = await fetch(`${apiBaseUrl}/repos`);
-      if (!response.ok) throw new Error('Failed to load repositories');
-      const data = await response.json();
-      setRepos(data.repos || []);
+      if (response.status === 404 || response.status === 501) { setRepos([]); return; }
+      const { json, text } = await readJsonResponse<{ repos?: Repo[] }>(response);
+      if (!response.ok) throw new Error(detailFromJsonBody(json) || text || 'Failed to load repositories');
+      setRepos(json?.repos || []);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load repositories');
-    } finally {
-      setLoading(false);
-    }
+      console.warn('Repos API unavailable:', e);
+      setRepos([]);
+    } finally { setLoading(false); }
   }, [apiBaseUrl]);
 
+  const applyOAuthTokenToRepos = useCallback(
+    async (accessToken: string) => {
+      const targets = repos.filter(r => !r.has_token);
+      for (const r of targets) {
+        try {
+          const res = await fetch(`${apiBaseUrl}/repos/${r.repo_id}/token`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: accessToken }),
+          });
+          if (!res.ok) continue;
+        } catch {
+          continue;
+        }
+      }
+      await loadRepos();
+    },
+    [apiBaseUrl, repos, loadRepos],
+  );
+
+  const handleGitHubOAuthConnect = useCallback(async () => {
+    setOauthBusy(true);
+    setError(null);
+    try {
+      const start = await fetch(`${apiBaseUrl}/github/oauth/start`);
+      const { json: startJson, text } = await readJsonResponse<{ authorize_url?: string; state?: string }>(start);
+      if (!start.ok) {
+        throw new Error(detailFromJsonBody(startJson) || text || `OAuth start failed (${start.status})`);
+      }
+      const authorizeUrl = startJson?.authorize_url;
+      const state = startJson?.state;
+      if (!authorizeUrl || !state) throw new Error('Invalid OAuth start response');
+
+      // Do not use noopener: the callback page postsMessage to window.opener.
+      const popup = window.open(authorizeUrl, 'github_oauth', 'width=560,height=720');
+      if (!popup) throw new Error('Popup blocked — allow popups for this site');
+
+      const finalize = async (st: string) => {
+        const res = await fetch(`${apiBaseUrl}/github/oauth/result?state=${encodeURIComponent(st)}`);
+        const { json, text: rt } = await readJsonResponse<{ access_token?: string }>(res);
+        if (!res.ok || !json?.access_token) {
+          throw new Error(detailFromJsonBody(json) || rt || 'Could not read OAuth token');
+        }
+        setNewRepoToken(json.access_token);
+        await applyOAuthTokenToRepos(json.access_token);
+        await loadGitHubStatus();
+        try { popup.close(); } catch { /* ignore */ }
+      };
+
+      await new Promise<void>((resolve, reject) => {
+        const timer = window.setTimeout(() => {
+          window.removeEventListener('message', onMsg);
+          reject(new Error('GitHub authorization timed out — try again'));
+        }, 120_000);
+
+        const onMsg = (ev: MessageEvent) => {
+          const d = ev.data;
+          if (!d || typeof d !== 'object') return;
+          if (d.type !== 'github_oauth_done' || d.state !== state) return;
+          window.removeEventListener('message', onMsg);
+          window.clearTimeout(timer);
+          void finalize(String(d.state))
+            .then(() => resolve())
+            .catch(reject);
+        };
+        window.addEventListener('message', onMsg);
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'GitHub OAuth failed');
+    } finally {
+      setOauthBusy(false);
+    }
+  }, [apiBaseUrl, applyOAuthTokenToRepos, loadGitHubStatus]);
+
+  useEffect(() => { loadRepos(); }, [loadRepos]);
+
   useEffect(() => {
-    loadRepos();
-  }, [loadRepos]);
+    const hasPending = repos.some(r => r.status === 'pending');
+    if (hasPending && !pollRef.current) {
+      pollRef.current = setInterval(() => loadRepos(), 3000);
+    } else if (!hasPending && pollRef.current) {
+      clearInterval(pollRef.current); pollRef.current = null;
+    }
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+  }, [repos, loadRepos]);
 
   const handleAddRepo = async () => {
     if (!newRepoUrl.trim()) return;
-    
-    setAdding(true);
-    setError(null);
+    setAdding(true); setError(null);
     try {
       const response = await fetch(`${apiBaseUrl}/repos`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          repo_url: newRepoUrl,
-          github_token: newRepoToken || null,
-          branch: newRepoBranch
-        })
+        body: JSON.stringify({ repo_url: newRepoUrl, github_token: newRepoToken || null, branch: newRepoBranch })
       });
-      
+      const { json, text } = await readJsonResponse<Repo>(response);
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to add repository');
+        throw new Error(detailFromJsonBody(json) || text || `HTTP ${response.status}: Failed to add repository`);
       }
-      
-      const data = await response.json();
-      setRepos(prev => [data, ...prev]);
-      setShowAddForm(false);
-      setNewRepoUrl('');
-      setNewRepoToken('');
-      setNewRepoBranch('main');
-      
-      // Auto-clone after adding
-      handleClone(data.repo_id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to add repository');
-    } finally {
-      setAdding(false);
-    }
+      if (!json || typeof json !== 'object' || !('repo_id' in json)) {
+        throw new Error(text ? 'Server returned invalid data' : 'Server returned empty response (is the API running on port 8000?)');
+      }
+      setRepos(prev => [json as Repo, ...prev]);
+      setShowAddForm(false); setNewRepoUrl(''); setNewRepoToken(''); setNewRepoBranch('main');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to add repository'); }
+    finally { setAdding(false); }
   };
 
   const handleClone = async (repoId: string) => {
     setCloning(repoId);
-    setError(null);
     try {
-      const response = await fetch(`${apiBaseUrl}/repos/${repoId}/clone`, {
-        method: 'POST'
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to clone repository');
-      }
-      
+      await fetch(`${apiBaseUrl}/repos/${repoId}/clone`, { method: 'POST' });
       await loadRepos();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to clone repository');
-    } finally {
-      setCloning(null);
-    }
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to clone'); }
+    finally { setCloning(null); }
   };
 
   const handlePull = async (repoId: string) => {
     setCloning(repoId);
-    setError(null);
     try {
-      const response = await fetch(`${apiBaseUrl}/repos/${repoId}/pull`, {
-        method: 'POST'
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to pull repository');
-      }
-      
+      await fetch(`${apiBaseUrl}/repos/${repoId}/pull`, { method: 'POST' });
       await loadRepos();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to pull repository');
-    } finally {
-      setCloning(null);
-    }
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to pull'); }
+    finally { setCloning(null); }
   };
 
   const handleDelete = async (repoId: string) => {
-    if (!confirm('Are you sure you want to delete this repository?')) return;
-    
+    if (!confirm('Delete this repository?')) return;
     try {
-      const response = await fetch(`${apiBaseUrl}/repos/${repoId}`, {
-        method: 'DELETE'
-      });
-      
-      if (!response.ok) throw new Error('Failed to delete repository');
-      
+      await fetch(`${apiBaseUrl}/repos/${repoId}`, { method: 'DELETE' });
       setRepos(prev => prev.filter(r => r.repo_id !== repoId));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete repository');
-    }
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to delete'); }
   };
 
-  const handleLinkToSession = async (repoId: string) => {
-    if (!sessionId) {
-      setError('No session selected. Create or select a session first.');
-      return;
-    }
-    
+  const handleSetToken = async (repoId: string) => {
+    if (!tokenInput.trim()) return;
     try {
-      const response = await fetch(`${apiBaseUrl}/sessions/${sessionId}/repos`, {
+      await fetch(`${apiBaseUrl}/repos/${repoId}/token`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: tokenInput })
+      });
+      setRepos(prev => prev.map(r => r.repo_id === repoId ? { ...r, has_token: true } : r));
+      setShowTokenForm(null); setTokenInput('');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to set token'); }
+  };
+
+  const loadTab = async (repoId: string, tab: 'pulls' | 'issues' | 'commits' | 'branches') => {
+    setActiveTab(prev => ({ ...prev, [repoId]: tab }));
+    setTabLoading(`${repoId}-${tab}`);
+    try {
+      if (tab === 'pulls') {
+        const r = await fetch(`${apiBaseUrl}/repos/${repoId}/pulls`);
+        const { json, text } = await readJsonResponse<{ pulls?: PR[] }>(r);
+        if (r.ok && json?.pulls) setPulls(prev => ({ ...prev, [repoId]: json.pulls! }));
+        else setError(detailFromJsonBody(json) || text || 'Failed to load pulls');
+      } else if (tab === 'issues') {
+        const r = await fetch(`${apiBaseUrl}/repos/${repoId}/issues`);
+        const { json, text } = await readJsonResponse<{ issues?: Issue[] }>(r);
+        if (r.ok && json?.issues) setIssues(prev => ({ ...prev, [repoId]: json.issues! }));
+        else setError(detailFromJsonBody(json) || text || 'Failed to load issues');
+      } else if (tab === 'commits') {
+        const r = await fetch(`${apiBaseUrl}/repos/${repoId}/commits`);
+        const { json, text } = await readJsonResponse<{ commits?: Commit[] }>(r);
+        if (r.ok && json?.commits) setCommits(prev => ({ ...prev, [repoId]: json.commits! }));
+        else setError(detailFromJsonBody(json) || text || 'Failed to load commits');
+      } else if (tab === 'branches') {
+        const r = await fetch(`${apiBaseUrl}/repos/${repoId}/branches`);
+        const { json, text } = await readJsonResponse<{ branches?: string[] }>(r);
+        if (r.ok && json?.branches) setBranches(prev => ({ ...prev, [repoId]: json.branches! }));
+        else setError(detailFromJsonBody(json) || text || 'Failed to load branches');
+      }
+    } catch { setError('GitHub API failed. Make sure you have added a token.'); }
+    finally { setTabLoading(null); }
+  };
+
+  const handleCreatePR = async (repoId: string) => {
+    try {
+      const r = await fetch(`${apiBaseUrl}/repos/${repoId}/pulls`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(prForm)
+      });
+      const { json, text } = await readJsonResponse<{ detail?: string; url?: string }>(r);
+      if (!r.ok) throw new Error(detailFromJsonBody(json) || text || 'Failed to create PR');
+      if (json?.url) window.open(json.url, '_blank');
+      setShowCreatePR(null); setPrForm({ title: '', body: '', head: '', base: '' });
+      loadTab(repoId, 'pulls');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to create PR'); }
+  };
+
+  const handleCreateIssue = async (repoId: string) => {
+    try {
+      const r = await fetch(`${apiBaseUrl}/repos/${repoId}/issues`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(issueForm)
+      });
+      const { json, text } = await readJsonResponse<{ detail?: string; url?: string }>(r);
+      if (!r.ok) throw new Error(detailFromJsonBody(json) || text || 'Failed to create issue');
+      if (json?.url) window.open(json.url, '_blank');
+      setShowCreateIssue(null); setIssueForm({ title: '', body: '' });
+      loadTab(repoId, 'issues');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to create issue'); }
+  };
+
+  const handleCreateBranch = async (repoId: string) => {
+    const repo = repos.find(r => r.repo_id === repoId);
+    try {
+      const r = await fetch(`${apiBaseUrl}/repos/${repoId}/branches`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branch_name: branchForm.name, from_branch: branchForm.from || repo?.default_branch })
+      });
+      const { json, text } = await readJsonResponse<{ detail?: string }>(r);
+      if (!r.ok) throw new Error(detailFromJsonBody(json) || text || 'Failed to create branch');
+      setShowCreateBranch(null); setBranchForm({ name: '', from: '' });
+      loadTab(repoId, 'branches');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to create branch'); }
+  };
+
+  const handleCreateRepo = async () => {
+    try {
+      const r = await fetch(`${apiBaseUrl}/github/create-repo`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newRepoForm)
+      });
+      const { json, text } = await readJsonResponse<{ detail?: string; repo_url?: string }>(r);
+      if (!r.ok) throw new Error(detailFromJsonBody(json) || text || 'Failed to create repo');
+      if (!json?.repo_url) throw new Error('Server did not return repo_url');
+      setShowCreateRepo(false);
+      setNewRepoForm({ name: '', description: '', private: false, token: '' });
+      // Auto-add the new repo
+      setNewRepoUrl(json.repo_url);
+      setShowAddForm(true);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to create repo'); }
+  };
+
+  const handleRunIssue = async (repoId: string, issue: Issue) => {
+    setIssueRunBusy(`${repoId}-${issue.number}`);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBaseUrl}/repos/${repoId}/issues/${issue.number}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repo_id: repoId, branch: 'main' })
+        body: JSON.stringify({
+          model: 'auto',
+          max_iterations: 80,
+          auto_git_commit: false,
+          git_push: false,
+        }),
       });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to link repository');
+      const { json, text } = await readJsonResponse<{
+        session?: Session;
+        task?: { task_id?: string };
+      }>(response);
+      if (!response.ok || !json?.session || !json?.task?.task_id) {
+        throw new Error(detailFromJsonBody(json) || text || 'Failed to start issue automation');
       }
-      
-      onRepoLinked?.(repoId);
-      setError(null);
+      onIssueRunStarted?.(json.session, json.task.task_id, issue.number, `${issue.number} ${issue.title}`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to link repository');
+      setError(e instanceof Error ? e.message : 'Failed to start issue automation');
+    } finally {
+      setIssueRunBusy(null);
     }
   };
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'cloned':
-        return <Check size={14} className="text-green-400" />;
-      case 'pending':
-        return <AlertCircle size={14} className="text-yellow-400" />;
-      case 'clone_failed':
-        return <AlertCircle size={14} className="text-red-400" />;
-      default:
-        return <GitBranch size={14} className="text-gray-400" />;
-    }
-  };
-
-  const getStatusText = (status: string) => {
-    switch (status) {
-      case 'cloned':
-        return 'Ready';
-      case 'pending':
-        return 'Not cloned';
-      case 'clone_failed':
-        return 'Clone failed';
-      default:
-        return status;
-    }
+  const getStatusBadge = (status: string) => {
+    if (status === 'cloned') return <span className="flex items-center gap-1 px-2 py-0.5 bg-green-900/40 text-green-400 text-xs rounded-full"><Check size={10} /> Ready</span>;
+    if (status === 'pending') return <span className="flex items-center gap-1 px-2 py-0.5 bg-yellow-900/40 text-yellow-400 text-xs rounded-full"><Loader2 size={10} className="animate-spin" /> Cloning...</span>;
+    return <span className="flex items-center gap-1 px-2 py-0.5 bg-red-900/40 text-red-400 text-xs rounded-full"><AlertCircle size={10} /> Failed</span>;
   };
 
   return (
-    <div className="p-4">
-      {/* GitHub OAuth Connection Section */}
-      <div className="mb-6 p-4 bg-gray-800 rounded-lg border border-gray-700">
-        <div className="flex items-center gap-2 mb-3">
-          <Github size={20} className="text-white" />
-          <h3 className="text-sm font-semibold text-white">GitHub Connection</h3>
-        </div>
-        
-        {githubStatus?.connected ? (
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              {githubStatus.github_avatar_url ? (
-                <img 
-                  src={githubStatus.github_avatar_url} 
-                  alt={githubStatus.github_login} 
-                  className="w-10 h-10 rounded-full"
-                />
-              ) : (
-                <div className="w-10 h-10 rounded-full bg-gray-600 flex items-center justify-center">
-                  <User size={20} className="text-gray-400" />
-                </div>
-              )}
-              <div>
-                <p className="text-white font-medium">{githubStatus.github_login}</p>
-                <p className="text-gray-400 text-xs">{githubStatus.github_email || 'Connected via OAuth'}</p>
-              </div>
-            </div>
-            <button
-              onClick={handleDisconnectGitHub}
-              disabled={disconnectingGithub}
-              className="flex items-center gap-2 px-3 py-1.5 bg-red-600/20 hover:bg-red-600/30 text-red-400 rounded-lg text-sm transition-colors"
-            >
-              {disconnectingGithub ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <LogOut size={14} />
-              )}
-              Disconnect
-            </button>
-          </div>
-        ) : (
-          <div>
-            <p className="text-gray-400 text-sm mb-3">
-              Connect your GitHub account to access private repositories and enable automatic authentication.
-            </p>
-            <button
-              onClick={handleConnectGitHub}
-              disabled={connectingGithub || githubStatus?.github_configured === false}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-500 text-white rounded-lg text-sm transition-colors"
-            >
-              {connectingGithub ? (
-                <>
-                  <Loader2 size={16} className="animate-spin" />
-                  Connecting...
-                </>
-              ) : (
-                <>
-                  <Github size={16} />
-                  Connect GitHub Account
-                </>
-              )}
-            </button>
-            {githubStatus?.github_configured === false && (
-              <p className="text-yellow-400 text-xs mt-2">
-                GitHub OAuth is not configured on the server. Contact the administrator.
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-          <GitFork size={20} />
-          Repositories
-        </h2>
+    <div className="p-4 space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-white flex items-center gap-2"><GitFork size={20} /> Repositories</h2>
         <div className="flex items-center gap-2">
-          <button
-            onClick={loadRepos}
-            disabled={loading}
-            className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-gray-700"
-            title="Refresh"
-          >
-            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-          </button>
-          <button
-            onClick={() => setShowAddForm(!showAddForm)}
-            className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-gray-700"
-            title="Add Repository"
-          >
-            <Plus size={16} />
-          </button>
+          <button onClick={() => setShowCreateRepo(true)} className="flex items-center gap-1 px-3 py-1.5 text-xs bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 rounded-lg" title="Create new GitHub repo"><Plus size={12} /> New Repo</button>
+          <button onClick={loadRepos} disabled={loading} className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-gray-700" title="Refresh"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button>
+          <button onClick={() => setShowAddForm(!showAddForm)} className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-gray-700" title="Add Repository"><Plus size={16} /></button>
         </div>
       </div>
 
       {error && (
-        <div className="mb-4 p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-200 text-sm">
-          {error}
-          <button 
-            onClick={() => setError(null)} 
-            className="ml-2 text-red-300 hover:text-red-100"
+        <div className="p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-200 text-sm flex justify-between">
+          <span>{error}</span>
+          <button onClick={() => setError(null)}><X size={14} /></button>
+        </div>
+      )}
+
+      {githubStatus?.github_configured && !githubStatus.connected && (
+        <div className="p-3 bg-gray-800/80 border border-gray-600 rounded-lg flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs text-gray-300">
+            Sign in with GitHub to obtain a token. It will be saved on each repo that does not have a token yet (same as manual key entry).
+          </p>
+          <button
+            type="button"
+            onClick={() => void handleGitHubOAuthConnect()}
+            disabled={oauthBusy}
+            className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 text-white rounded-lg disabled:opacity-50"
           >
-            Dismiss
+            {oauthBusy ? <Loader2 size={14} className="animate-spin" /> : <Github size={14} />}
+            Connect GitHub
           </button>
         </div>
       )}
 
-      {showAddForm && (
-        <div className="mb-4 p-4 bg-gray-700 rounded-lg">
-          <h3 className="text-sm font-medium text-white mb-3">Add GitHub Repository</h3>
-          <div className="space-y-3">
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">Repository URL</label>
-              <input
-                type="text"
-                value={newRepoUrl}
-                onChange={(e) => setNewRepoUrl(e.target.value)}
-                placeholder="https://github.com/owner/repo"
-                className="w-full px-3 py-2 bg-gray-600 text-white rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">GitHub Token (optional, for private repos)</label>
-              <input
-                type="password"
-                value={newRepoToken}
-                onChange={(e) => setNewRepoToken(e.target.value)}
-                placeholder="ghp_xxxxxxxxxxxx"
-                className="w-full px-3 py-2 bg-gray-600 text-white rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">Default Branch</label>
-              <input
-                type="text"
-                value={newRepoBranch}
-                onChange={(e) => setNewRepoBranch(e.target.value)}
-                placeholder="main"
-                className="w-full px-3 py-2 bg-gray-600 text-white rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={handleAddRepo}
-                disabled={adding || !newRepoUrl.trim()}
-                className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white rounded-lg text-sm flex items-center justify-center gap-2"
-              >
-                {adding ? (
-                  <>
-                    <Loader2 size={14} className="animate-spin" />
-                    Adding...
-                  </>
-                ) : (
-                  <>
-                    <Plus size={14} />
-                    Add Repository
-                  </>
-                )}
-              </button>
-              <button
-                onClick={() => setShowAddForm(false)}
-                className="px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg text-sm"
-              >
-                Cancel
-              </button>
-            </div>
+      {/* Create New Repo Modal */}
+      {showCreateRepo && (
+        <div className="p-4 bg-gray-700 rounded-lg space-y-3 border border-purple-500/30">
+          <h3 className="text-sm font-medium text-white flex items-center gap-2"><Github size={14} /> Create New GitHub Repository</h3>
+          <input className="w-full px-3 py-2 bg-gray-600 text-white rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="Repository name" value={newRepoForm.name} onChange={e => setNewRepoForm(p => ({ ...p, name: e.target.value }))} />
+          <input className="w-full px-3 py-2 bg-gray-600 text-white rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="Description (optional)" value={newRepoForm.description} onChange={e => setNewRepoForm(p => ({ ...p, description: e.target.value }))} />
+          <input type="password" className="w-full px-3 py-2 bg-gray-600 text-white rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="GitHub Token (ghp_...)" value={newRepoForm.token} onChange={e => setNewRepoForm(p => ({ ...p, token: e.target.value }))} />
+          <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer"><input type="checkbox" checked={newRepoForm.private} onChange={e => setNewRepoForm(p => ({ ...p, private: e.target.checked }))} /> Private repository</label>
+          <div className="flex gap-2">
+            <button onClick={handleCreateRepo} disabled={!newRepoForm.name || !newRepoForm.token} className="flex-1 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white rounded-lg text-sm">Create Repository</button>
+            <button onClick={() => setShowCreateRepo(false)} className="px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg text-sm">Cancel</button>
           </div>
         </div>
       )}
 
+      {/* Add Existing Repo Form */}
+      {showAddForm && (
+        <div className="p-4 bg-gray-700 rounded-lg space-y-3">
+          <h3 className="text-sm font-medium text-white">Add GitHub Repository</h3>
+          <p className="text-xs text-gray-400">Paste any GitHub repo URL. Public repos clone instantly — no login needed!</p>
+          <input autoFocus type="text" value={newRepoUrl} onChange={e => setNewRepoUrl(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddRepo()}
+            placeholder="https://github.com/your-username/your-repo"
+            className="w-full px-3 py-2 bg-gray-600 text-white rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <input type="password" value={newRepoToken} onChange={e => setNewRepoToken(e.target.value)}
+            placeholder="GitHub Token (optional — needed for PRs/Issues/Branches)"
+            className="w-full px-3 py-2 bg-gray-600 text-white rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <input type="text" value={newRepoBranch} onChange={e => setNewRepoBranch(e.target.value)} placeholder="main"
+            className="w-full px-3 py-2 bg-gray-600 text-white rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <div className="flex gap-2">
+            <button onClick={handleAddRepo} disabled={adding || !newRepoUrl.trim()} className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white rounded-lg text-sm flex items-center justify-center gap-2">
+              {adding ? <><Loader2 size={14} className="animate-spin" /> Adding...</> : <><Plus size={14} /> Add Repository</>}
+            </button>
+            <button onClick={() => setShowAddForm(false)} className="px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg text-sm">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Repo List */}
       <div className="space-y-2">
         {loading && repos.length === 0 ? (
           <p className="text-gray-400 text-sm text-center py-4">Loading repositories...</p>
         ) : repos.length === 0 ? (
-          <p className="text-gray-400 text-sm text-center py-4">No repositories connected. Click + to add one.</p>
+          <div className="text-center py-8 space-y-2">
+            <GitFork size={32} className="mx-auto text-gray-600" />
+            <p className="text-gray-400 text-sm">No repositories connected. Click + to add one.</p>
+            <p className="text-gray-500 text-xs">You can clone any GitHub repo and Plodder will work inside it.</p>
+          </div>
         ) : (
-          repos.map((repo) => (
-            <div
-              key={repo.repo_id}
-              className="bg-gray-700 rounded-lg overflow-hidden"
-            >
-              <div
-                onClick={() => setExpandedRepo(expandedRepo === repo.repo_id ? null : repo.repo_id)}
-                className="p-3 cursor-pointer hover:bg-gray-600 transition-colors"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <GitFork size={16} className="text-gray-400" />
-                    <span className="text-white font-medium">{repo.owner}/{repo.repo_name}</span>
-                    <span className="flex items-center gap-1 px-2 py-0.5 bg-gray-600 text-xs text-gray-300 rounded">
-                      {getStatusIcon(repo.status)}
-                      {getStatusText(repo.status)}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    {repo.status === 'cloned' && sessionId && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleLinkToSession(repo.repo_id); }}
-                        className="p-1.5 text-gray-400 hover:text-blue-400 rounded"
-                        title="Link to current session"
-                      >
-                        <Link2 size={14} />
-                      </button>
-                    )}
-                    {repo.status === 'cloned' && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handlePull(repo.repo_id); }}
-                        disabled={cloning === repo.repo_id}
-                        className="p-1.5 text-gray-400 hover:text-green-400 rounded disabled:opacity-50"
-                        title="Pull latest changes"
-                      >
-                        {cloning === repo.repo_id ? (
-                          <Loader2 size={14} className="animate-spin" />
-                        ) : (
-                          <RefreshCw size={14} />
-                        )}
-                      </button>
-                    )}
-                    {repo.status === 'pending' && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleClone(repo.repo_id); }}
-                        disabled={cloning === repo.repo_id}
-                        className="p-1.5 text-gray-400 hover:text-blue-400 rounded disabled:opacity-50"
-                        title="Clone repository"
-                      >
-                        {cloning === repo.repo_id ? (
-                          <Loader2 size={14} className="animate-spin" />
-                        ) : (
-                          <GitBranch size={14} />
-                        )}
-                      </button>
-                    )}
-                    <a
-                      href={repo.repo_url.replace('.git', '')}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      className="p-1.5 text-gray-400 hover:text-blue-400 rounded"
-                      title="Open on GitHub"
-                    >
-                      <ExternalLink size={14} />
-                    </a>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleDelete(repo.repo_id); }}
-                      className="p-1.5 text-gray-400 hover:text-red-400 rounded"
-                      title="Delete"
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
+          repos.map(repo => (
+            <div key={repo.repo_id} className="bg-gray-800 rounded-xl overflow-hidden border border-gray-700">
+              {/* Repo Header */}
+              <div className="p-3 flex items-center justify-between hover:bg-gray-750 cursor-pointer" onClick={() => setExpandedRepo(expandedRepo === repo.repo_id ? null : repo.repo_id)}>
+                <div className="flex items-center gap-2 min-w-0">
+                  <button onClick={e => { e.stopPropagation(); setExpandedRepo(expandedRepo === repo.repo_id ? null : repo.repo_id); }} className="text-gray-500 hover:text-gray-300">
+                    {expandedRepo === repo.repo_id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  </button>
+                  <GitFork size={14} className="text-gray-400 shrink-0" />
+                  <span className="text-white font-medium text-sm truncate">{repo.owner}/{repo.repo_name}</span>
+                  {getStatusBadge(repo.status)}
+                  {repo.note && <span className="text-xs text-blue-400 truncate">(empty repo)</span>}
                 </div>
-                <p className="text-gray-400 text-xs mt-1">
-                  Branch: {repo.default_branch} | Added: {new Date(repo.created_at).toLocaleDateString()}
-                </p>
+                <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
+                  {/* Token */}
+                  <button onClick={() => { setShowTokenForm(showTokenForm === repo.repo_id ? null : repo.repo_id); setTokenInput(''); }}
+                    className={`p-1.5 rounded ${repo.has_token ? 'text-green-400' : 'text-gray-500 hover:text-yellow-400'}`} title={repo.has_token ? 'Token set — click to update' : 'Add GitHub token for PR/Issue/Branch ops'}>
+                    <Key size={13} />
+                  </button>
+                  {/* Open in session */}
+                  {repo.status === 'cloned' && onOpenInSession && repo.local_path && (
+                    <button onClick={() => onOpenInSession(repo.local_path!, repo.repo_name)} className="p-1.5 text-gray-400 hover:text-green-400 rounded" title="Open in new session"><Play size={13} /></button>
+                  )}
+                  {/* Pull */}
+                  {repo.status === 'cloned' && (
+                    <button onClick={() => handlePull(repo.repo_id)} disabled={cloning === repo.repo_id} className="p-1.5 text-gray-400 hover:text-blue-400 rounded" title="Pull latest">
+                      {cloning === repo.repo_id ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                    </button>
+                  )}
+                  {/* GitHub link */}
+                  <a href={repo.repo_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="p-1.5 text-gray-400 hover:text-blue-400 rounded"><ExternalLink size={13} /></a>
+                  {/* Delete */}
+                  <button onClick={() => handleDelete(repo.repo_id)} className="p-1.5 text-gray-400 hover:text-red-400 rounded"><Trash2 size={13} /></button>
+                </div>
               </div>
 
+              {/* Token Form */}
+              {showTokenForm === repo.repo_id && (
+                <div className="px-4 pb-3 flex gap-2 bg-gray-750 border-t border-gray-700">
+                  <input type="password" value={tokenInput} onChange={e => setTokenInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSetToken(repo.repo_id)}
+                    placeholder="ghp_xxxxxxxxxxxx" className="flex-1 mt-3 px-3 py-1.5 bg-gray-600 text-white rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-yellow-500" autoFocus />
+                  <button onClick={() => handleSetToken(repo.repo_id)} className="mt-3 px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 text-white rounded-lg text-sm">Save</button>
+                </div>
+              )}
+
+              {/* Expanded: GitHub Operations */}
               {expandedRepo === repo.repo_id && (
-                <div className="px-3 pb-3 border-t border-gray-600">
-                  <div className="mt-3 space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-400">Repository ID:</span>
-                      <span className="text-gray-300 font-mono">{repo.repo_id}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-400">Local Path:</span>
-                      <span className="text-gray-300 font-mono text-xs">{repo.local_path || 'Not cloned'}</span>
-                    </div>
-                    {repo.last_synced && (
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Last Synced:</span>
-                        <span className="text-gray-300">{new Date(repo.last_synced).toLocaleString()}</span>
-                      </div>
-                    )}
-                    {repo.has_token && (
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Authentication:</span>
-                        <span className="text-green-400">Token configured</span>
-                      </div>
+                <div className="border-t border-gray-700">
+                  {/* Tabs */}
+                  <div className="flex gap-0 border-b border-gray-700">
+                    {(['branches', 'pulls', 'issues', 'commits'] as const).map(tab => (
+                      <button key={tab} onClick={() => loadTab(repo.repo_id, tab)}
+                        className={`flex-1 flex items-center justify-center gap-1 px-2 py-2 text-xs transition-colors ${activeTab[repo.repo_id] === tab ? 'text-white bg-gray-700 border-b-2 border-blue-500' : 'text-gray-400 hover:text-white hover:bg-gray-750'}`}>
+                        {tab === 'branches' && <GitBranch size={11} />}
+                        {tab === 'pulls' && <GitPullRequest size={11} />}
+                        {tab === 'issues' && <Bug size={11} />}
+                        {tab === 'commits' && <GitCommit size={11} />}
+                        {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="p-3 max-h-72 overflow-y-auto">
+                    {tabLoading?.startsWith(repo.repo_id) ? (
+                      <div className="flex justify-center py-4"><Loader2 size={20} className="animate-spin text-gray-400" /></div>
+                    ) : (
+                      <>
+                        {/* Branches Tab */}
+                        {activeTab[repo.repo_id] === 'branches' && (
+                          <div className="space-y-2">
+                            <div className="flex justify-between items-center mb-2">
+                              <span className="text-xs text-gray-400">{branches[repo.repo_id]?.length || 0} branches</span>
+                              <button onClick={() => setShowCreateBranch(showCreateBranch === repo.repo_id ? null : repo.repo_id)}
+                                className="flex items-center gap-1 text-xs px-2 py-1 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded">
+                                <Plus size={10} /> New Branch
+                              </button>
+                            </div>
+                            {showCreateBranch === repo.repo_id && (
+                              <div className="space-y-2 p-2 bg-gray-700 rounded-lg mb-2">
+                                <input className="w-full px-2 py-1.5 bg-gray-600 text-white rounded text-xs focus:outline-none" placeholder="branch-name" value={branchForm.name} onChange={e => setBranchForm(p => ({ ...p, name: e.target.value }))} />
+                                <input className="w-full px-2 py-1.5 bg-gray-600 text-white rounded text-xs focus:outline-none" placeholder={`from: ${repo.default_branch}`} value={branchForm.from} onChange={e => setBranchForm(p => ({ ...p, from: e.target.value }))} />
+                                <div className="flex gap-2">
+                                  <button onClick={() => handleCreateBranch(repo.repo_id)} disabled={!branchForm.name} className="flex-1 py-1.5 bg-blue-600 text-white rounded text-xs disabled:opacity-50">Create</button>
+                                  <button onClick={() => setShowCreateBranch(null)} className="px-3 py-1.5 bg-gray-600 text-white rounded text-xs">Cancel</button>
+                                </div>
+                              </div>
+                            )}
+                            {(branches[repo.repo_id] || []).map(b => (
+                              <div key={b} className="flex items-center gap-2 py-1.5 px-2 bg-gray-700 rounded-lg">
+                                <GitBranch size={12} className="text-gray-400" />
+                                <span className="text-sm text-white">{b}</span>
+                                {b === repo.default_branch && <span className="ml-auto text-xs text-green-400 bg-green-900/30 px-1.5 py-0.5 rounded">default</span>}
+                              </div>
+                            ))}
+                            {branches[repo.repo_id]?.length === 0 && <p className="text-gray-500 text-xs text-center py-2">No branches found</p>}
+                          </div>
+                        )}
+
+                        {/* Pull Requests Tab */}
+                        {activeTab[repo.repo_id] === 'pulls' && (
+                          <div className="space-y-2">
+                            <div className="flex justify-between items-center mb-2">
+                              <span className="text-xs text-gray-400">{pulls[repo.repo_id]?.length || 0} open PRs</span>
+                              <button onClick={() => setShowCreatePR(showCreatePR === repo.repo_id ? null : repo.repo_id)}
+                                className="flex items-center gap-1 text-xs px-2 py-1 bg-green-600/20 hover:bg-green-600/30 text-green-400 rounded">
+                                <Plus size={10} /> New PR
+                              </button>
+                            </div>
+                            {showCreatePR === repo.repo_id && (
+                              <div className="space-y-2 p-2 bg-gray-700 rounded-lg mb-2">
+                                <input className="w-full px-2 py-1.5 bg-gray-600 text-white rounded text-xs focus:outline-none" placeholder="PR title" value={prForm.title} onChange={e => setPrForm(p => ({ ...p, title: e.target.value }))} />
+                                <div className="flex gap-2">
+                                  <input className="flex-1 px-2 py-1.5 bg-gray-600 text-white rounded text-xs focus:outline-none" placeholder="head branch (feature)" value={prForm.head} onChange={e => setPrForm(p => ({ ...p, head: e.target.value }))} />
+                                  <input className="flex-1 px-2 py-1.5 bg-gray-600 text-white rounded text-xs focus:outline-none" placeholder={`base (${repo.default_branch})`} value={prForm.base} onChange={e => setPrForm(p => ({ ...p, base: e.target.value }))} />
+                                </div>
+                                <textarea className="w-full px-2 py-1.5 bg-gray-600 text-white rounded text-xs focus:outline-none" rows={2} placeholder="Description..." value={prForm.body} onChange={e => setPrForm(p => ({ ...p, body: e.target.value }))} />
+                                <div className="flex gap-2">
+                                  <button onClick={() => handleCreatePR(repo.repo_id)} disabled={!prForm.title || !prForm.head} className="flex-1 py-1.5 bg-green-600 text-white rounded text-xs disabled:opacity-50">Create PR</button>
+                                  <button onClick={() => setShowCreatePR(null)} className="px-3 py-1.5 bg-gray-600 text-white rounded text-xs">Cancel</button>
+                                </div>
+                              </div>
+                            )}
+                            {(pulls[repo.repo_id] || []).map(pr => (
+                              <a key={pr.number} href={pr.url} target="_blank" rel="noopener noreferrer"
+                                className="flex items-start gap-2 py-2 px-2 bg-gray-700 hover:bg-gray-650 rounded-lg group">
+                                <GitPullRequest size={14} className="text-green-400 mt-0.5 shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm text-white truncate group-hover:text-blue-300">#{pr.number} {pr.title}</p>
+                                  <p className="text-xs text-gray-400">{pr.head} → {pr.base} · by {pr.author}</p>
+                                </div>
+                                <ExternalLink size={11} className="text-gray-500 group-hover:text-blue-400 shrink-0 mt-1" />
+                              </a>
+                            ))}
+                            {(pulls[repo.repo_id] === undefined || pulls[repo.repo_id]?.length === 0) && (
+                              <p className="text-gray-500 text-xs text-center py-2">
+                                {pulls[repo.repo_id] === undefined ? 'Could not load PRs — GitHub token required.' : 'No open pull requests'}
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Issues Tab */}
+                        {activeTab[repo.repo_id] === 'issues' && (
+                          <div className="space-y-2">
+                            <div className="flex justify-between items-center mb-2">
+                              <span className="text-xs text-gray-400">{issues[repo.repo_id]?.length || 0} open issues</span>
+                              <button onClick={() => setShowCreateIssue(showCreateIssue === repo.repo_id ? null : repo.repo_id)}
+                                className="flex items-center gap-1 text-xs px-2 py-1 bg-red-600/20 hover:bg-red-600/30 text-red-400 rounded">
+                                <Plus size={10} /> New Issue
+                              </button>
+                            </div>
+                            {showCreateIssue === repo.repo_id && (
+                              <div className="space-y-2 p-2 bg-gray-700 rounded-lg mb-2">
+                                <input className="w-full px-2 py-1.5 bg-gray-600 text-white rounded text-xs focus:outline-none" placeholder="Issue title" value={issueForm.title} onChange={e => setIssueForm(p => ({ ...p, title: e.target.value }))} />
+                                <textarea className="w-full px-2 py-1.5 bg-gray-600 text-white rounded text-xs focus:outline-none" rows={2} placeholder="Description..." value={issueForm.body} onChange={e => setIssueForm(p => ({ ...p, body: e.target.value }))} />
+                                <div className="flex gap-2">
+                                  <button onClick={() => handleCreateIssue(repo.repo_id)} disabled={!issueForm.title} className="flex-1 py-1.5 bg-red-600 text-white rounded text-xs disabled:opacity-50">Create Issue</button>
+                                  <button onClick={() => setShowCreateIssue(null)} className="px-3 py-1.5 bg-gray-600 text-white rounded text-xs">Cancel</button>
+                                </div>
+                              </div>
+                            )}
+                            {(issues[repo.repo_id] || []).map(issue => (
+                              <div key={issue.number} className="flex items-start gap-2 py-2 px-2 bg-gray-700 hover:bg-gray-650 rounded-lg group">
+                                <Bug size={14} className="text-red-400 mt-0.5 shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <a href={issue.url} target="_blank" rel="noopener noreferrer" className="block">
+                                    <p className="text-sm text-white truncate group-hover:text-blue-300">#{issue.number} {issue.title}</p>
+                                  </a>
+                                  <p className="text-xs text-gray-400">by {issue.author} {issue.labels.length > 0 && `· ${issue.labels.join(', ')}`}</p>
+                                </div>
+                                <button
+                                  onClick={() => handleRunIssue(repo.repo_id, issue)}
+                                  disabled={issueRunBusy === `${repo.repo_id}-${issue.number}`}
+                                  className="px-2 py-1 text-[11px] rounded bg-blue-600/20 text-blue-300 hover:bg-blue-600/30 disabled:opacity-50 shrink-0"
+                                  title="Create a new session and let Plodder fix this issue"
+                                >
+                                  {issueRunBusy === `${repo.repo_id}-${issue.number}` ? (
+                                    <span className="inline-flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Starting</span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1"><Play size={11} /> Fix</span>
+                                  )}
+                                </button>
+                                <a href={issue.url} target="_blank" rel="noopener noreferrer" className="text-gray-500 group-hover:text-blue-400 shrink-0 mt-1">
+                                  <ExternalLink size={11} />
+                                </a>
+                              </div>
+                            ))}
+                            {(issues[repo.repo_id] === undefined || issues[repo.repo_id]?.length === 0) && (
+                              <p className="text-gray-500 text-xs text-center py-2">
+                                {issues[repo.repo_id] === undefined ? 'Could not load issues — GitHub token required.' : 'No open issues'}
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Commits Tab */}
+                        {activeTab[repo.repo_id] === 'commits' && (
+                          <div className="space-y-1">
+                            {(commits[repo.repo_id] || []).map(c => (
+                              <div key={c.sha} className="flex items-start gap-2 py-1.5 px-2 bg-gray-700 rounded-lg">
+                                <GitCommit size={12} className="text-gray-400 mt-1 shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm text-white truncate">{c.message}</p>
+                                  <p className="text-xs text-gray-400">{c.sha} · {c.author} · {new Date(c.date).toLocaleDateString()}</p>
+                                </div>
+                              </div>
+                            ))}
+                            {(commits[repo.repo_id] === undefined || commits[repo.repo_id]?.length === 0) && (
+                              <p className="text-gray-500 text-xs text-center py-2">
+                                {commits[repo.repo_id] === undefined ? 'Could not load commits — GitHub token required.' : 'No commits found'}
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                        {!activeTab[repo.repo_id] && (
+                          <p className="text-gray-500 text-xs text-center py-4">Select a tab above to view branches, PRs, issues, or commits.<br />
+                            <span className="text-yellow-400">⚠ GitHub token required</span> for private repos and write operations.</p>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>

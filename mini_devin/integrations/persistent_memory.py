@@ -1,5 +1,5 @@
 """
-Persistent Memory System for Mini-Devin
+Persistent Memory System for Plodder
 Cross-session memory with vector storage and semantic search
 """
 

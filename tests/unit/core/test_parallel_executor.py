@@ -2,7 +2,7 @@
 
 import pytest
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 
 from mini_devin.core.parallel_executor import (
     DependencyType,
@@ -55,8 +55,8 @@ class TestToolCallResult:
             tool_name="terminal",
             success=True,
             result="output",
-            started_at=datetime.utcnow(),
-            completed_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(timezone.utc),
             duration_ms=100,
         )
         assert result.success

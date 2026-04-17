@@ -1,5 +1,5 @@
 """
-Verification Module for Mini-Devin
+Verification Module for Plodder
 
 This module provides verification and recovery capabilities:
 - VerificationRunner: Run verification checks (lint, typecheck, tests)

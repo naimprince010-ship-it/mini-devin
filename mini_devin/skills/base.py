@@ -1,14 +1,14 @@
 """
 Skill Base Classes
 
-This module defines the base classes for skills in Mini-Devin.
+This module defines the base classes for skills in Plodder.
 Skills are reusable, composable procedures that combine multiple
 tool calls into coherent workflows.
 """
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -67,18 +67,18 @@ class SkillStep:
     def start(self) -> None:
         """Mark the step as started."""
         self.status = SkillStatus.RUNNING
-        self.started_at = datetime.utcnow()
+        self.started_at = datetime.now(timezone.utc)
     
     def complete(self, result: Any = None) -> None:
         """Mark the step as completed."""
         self.status = SkillStatus.COMPLETED
-        self.completed_at = datetime.utcnow()
+        self.completed_at = datetime.now(timezone.utc)
         self.result = result
     
     def fail(self, error: str) -> None:
         """Mark the step as failed."""
         self.status = SkillStatus.FAILED
-        self.completed_at = datetime.utcnow()
+        self.completed_at = datetime.now(timezone.utc)
         self.error = error
     
     @property

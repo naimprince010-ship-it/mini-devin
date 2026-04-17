@@ -8,6 +8,7 @@ from mini_devin.core.providers import (
     Provider,
     ModelInfo,
     ProviderConfig,
+    GoogleAIConfig,
     OpenAIConfig,
     AnthropicConfig,
     OllamaConfig,
@@ -16,10 +17,13 @@ from mini_devin.core.providers import (
     get_model_registry,
     get_litellm_model_name,
     get_provider_env_vars,
+    GEMINI_MODELS,
+    GROQ_MODELS,
     OPENAI_MODELS,
     ANTHROPIC_MODELS,
     OLLAMA_MODELS,
     AZURE_MODELS,
+    GroqConfig,
 )
 
 
@@ -28,6 +32,8 @@ class TestProvider:
 
     def test_provider_values(self):
         """Test that all provider values are correct."""
+        assert Provider.GROQ.value == "groq"
+        assert Provider.GOOGLE.value == "google"
         assert Provider.OPENAI.value == "openai"
         assert Provider.ANTHROPIC.value == "anthropic"
         assert Provider.OLLAMA.value == "ollama"
@@ -35,6 +41,8 @@ class TestProvider:
 
     def test_provider_from_string(self):
         """Test creating Provider from string."""
+        assert Provider("groq") == Provider.GROQ
+        assert Provider("google") == Provider.GOOGLE
         assert Provider("openai") == Provider.OPENAI
         assert Provider("anthropic") == Provider.ANTHROPIC
         assert Provider("ollama") == Provider.OLLAMA
@@ -173,10 +181,11 @@ class TestOllamaConfig:
         assert config.is_configured() is True
 
     def test_ollama_config_default_api_base(self):
-        """Test OllamaConfig default API base."""
+        """Test OllamaConfig default API base and Ollama off unless explicitly enabled."""
         with patch.dict(os.environ, {}, clear=True):
             config = OllamaConfig.from_env()
             assert config.api_base == "http://localhost:11434"
+            assert config.enabled is False
 
 
 class TestAzureConfig:
@@ -226,7 +235,14 @@ class TestModelRegistry:
     def test_registry_initialization(self):
         """Test ModelRegistry initializes with all models."""
         registry = ModelRegistry()
-        total_models = len(OPENAI_MODELS) + len(ANTHROPIC_MODELS) + len(OLLAMA_MODELS) + len(AZURE_MODELS)
+        total_models = (
+            len(GROQ_MODELS)
+            + len(GEMINI_MODELS)
+            + len(OPENAI_MODELS)
+            + len(ANTHROPIC_MODELS)
+            + len(OLLAMA_MODELS)
+            + len(AZURE_MODELS)
+        )
         assert len(registry._models) == total_models
 
     def test_get_model(self):
@@ -292,6 +308,36 @@ class TestModelRegistry:
         default = registry.get_default_model()
         assert default == "gpt-4o"
 
+    def test_get_default_model_google(self):
+        """Test default model when only Google / Gemini is configured."""
+        registry = ModelRegistry()
+        registry.configure_providers(google=GoogleAIConfig(api_key="AIza-x", enabled=True))
+        default = registry.get_default_model()
+        assert default == "gemini/gemini-2.0-flash"
+
+    def test_get_default_model_prefers_google_when_both_keys(self):
+        """Gemini is the preferred default when both Google and OpenAI are configured."""
+        registry = ModelRegistry()
+        registry.configure_providers(
+            google=GoogleAIConfig(api_key="AIza-x", enabled=True),
+            openai=OpenAIConfig(api_key="sk-x", enabled=True),
+        )
+        assert registry.get_default_model() == "gemini/gemini-2.0-flash"
+
+    def test_get_default_model_prefers_groq_when_configured(self):
+        registry = ModelRegistry()
+        registry.configure_providers(
+            groq=GroqConfig(api_key="gsk-test", enabled=True),
+            google=GoogleAIConfig(api_key="AIza-x", enabled=True),
+            openai=OpenAIConfig(api_key="sk-x", enabled=True),
+        )
+        assert registry.get_default_model() == "llama-3.3-70b-versatile"
+
+    def test_get_default_model_groq_only(self):
+        registry = ModelRegistry()
+        registry.configure_providers(groq=GroqConfig(api_key="gsk-test", enabled=True))
+        assert registry.get_default_model() == "llama-3.3-70b-versatile"
+
     def test_get_default_model_anthropic(self):
         """Test getting default model when only Anthropic is configured."""
         registry = ModelRegistry()
@@ -328,6 +374,29 @@ class TestGetLiteLLMModelName:
         name = get_litellm_model_name("ollama/llama3.2")
         assert name == "ollama/llama3.2"
 
+    def test_groq_model(self):
+        assert get_litellm_model_name("llama-3.3-70b-versatile") == "groq/llama-3.3-70b-versatile"
+        assert get_litellm_model_name("groq/llama-3.3-70b-versatile") == "groq/llama-3.3-70b-versatile"
+        assert get_litellm_model_name("llama3-70b-8192") == "groq/llama-3.3-70b-versatile"
+        assert get_litellm_model_name("groq/llama3-70b-8192") == "groq/llama-3.3-70b-versatile"
+        assert get_litellm_model_name("llama-3.1-8b-instant") == "groq/llama-3.1-8b-instant"
+        assert get_litellm_model_name("mixtral-8x7b-32768") == "groq/mixtral-8x7b-32768"
+        assert get_litellm_model_name("llama3-8b-8192") == "groq/llama-3.1-8b-instant"
+        assert get_litellm_model_name("groq/llama3-8b-8192") == "groq/llama-3.1-8b-instant"
+
+    def test_gemini_model(self):
+        """Legacy Gemini 1.5 Flash maps to current Google AI Studio default (2.0 Flash)."""
+        name = get_litellm_model_name("gemini/gemini-1.5-flash")
+        assert name == "gemini/gemini-2.0-flash"
+
+    def test_google_prefix_gemini_maps_to_litellm_route(self):
+        """Wrong ``google/`` prefix for AI Studio is normalized to ``gemini/``."""
+        assert get_litellm_model_name("google/gemini-2.0-flash") == "gemini/gemini-2.0-flash"
+
+    def test_gemini_flash_successor_env_override(self):
+        with patch.dict(os.environ, {"GEMINI_FLASH_SUCCESSOR_MODEL": "gemini/gemini-2.5-flash"}):
+            assert get_litellm_model_name("gemini/gemini-1.5-flash") == "gemini/gemini-2.5-flash"
+
     def test_unknown_model(self):
         """Test unknown model returns as-is."""
         name = get_litellm_model_name("unknown-model")
@@ -361,6 +430,18 @@ class TestGetProviderEnvVars:
         assert "AZURE_API_KEY" in env_vars
         assert "AZURE_API_BASE" in env_vars
         assert "AZURE_DEPLOYMENT_NAME" in env_vars
+
+    def test_google_env_vars(self):
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "k1", "GOOGLE_API_KEY": "k2"}):
+            env_vars = get_provider_env_vars(Provider.GOOGLE)
+            assert env_vars["GEMINI_API_KEY"] == "k1"
+            assert env_vars["GOOGLE_API_KEY"] == "k2"
+
+    def test_groq_env_vars(self):
+        with patch.dict(os.environ, {"GROQ_API_KEY": "gk", "GROQ_API_BASE": "https://api.groq.com/openai/v1"}):
+            env_vars = get_provider_env_vars(Provider.GROQ)
+            assert env_vars["GROQ_API_KEY"] == "gk"
+            assert env_vars["GROQ_API_BASE"] == "https://api.groq.com/openai/v1"
 
 
 class TestModelDefinitions:
@@ -397,3 +478,17 @@ class TestModelDefinitions:
             assert model.name is not None
             assert model.provider == Provider.AZURE
             assert model.id.startswith("azure/")
+
+    def test_gemini_models_valid(self):
+        for model in GEMINI_MODELS:
+            assert model.id is not None
+            assert model.name is not None
+            assert model.provider == Provider.GOOGLE
+            assert model.id.startswith("gemini/")
+
+    def test_groq_models_valid(self):
+        for model in GROQ_MODELS:
+            assert model.id is not None
+            assert model.name is not None
+            assert model.provider == Provider.GROQ
+            assert model.context_window > 0

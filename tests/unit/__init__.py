@@ -1,1 +1,1 @@
-"""Unit tests for Mini-Devin."""
+"""Unit tests for Plodder."""

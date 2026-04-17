@@ -63,7 +63,7 @@ class TestSafetyPolicy:
         assert policy.allow_dependency_bump is False
         assert policy.block_force_push is True
         assert policy.block_delete_branch is True
-        assert policy.max_iterations_per_task == 50
+        assert policy.max_iterations_per_task == 200
 
     def test_custom_policy(self):
         """Test custom SafetyPolicy values."""
@@ -268,6 +268,15 @@ class TestSafetyGuardDependencyChecks:
         )
         assert result is None
 
+    def test_dependency_file_create_allowed_by_default(self):
+        """Creating a new dependency manifest should not be blocked."""
+        guard = SafetyGuard()
+        result = guard.check_dependency_change(
+            file_path="package.json",
+            change_type="create",
+        )
+        assert result is None
+
     def test_non_dependency_file_passes(self):
         """Test that non-dependency files pass."""
         guard = SafetyGuard()
@@ -290,7 +299,7 @@ class TestSafetyGuardIterationChecks:
     def test_iteration_exceeds_limit(self):
         """Test that exceeding iteration limit is blocked."""
         guard = SafetyGuard()
-        result = guard.check_iteration_limit(100)
+        result = guard.check_iteration_limit(250)
         assert result is not None
         assert result.violation_type == ViolationType.EXCEED_ITERATION_LIMIT
 

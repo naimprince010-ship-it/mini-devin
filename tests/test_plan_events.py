@@ -12,6 +12,7 @@ class TestPlanEvents(unittest.IsolatedAsyncioTestCase):
         mock_llm = MagicMock()
         mock_llm.complete = AsyncMock()
         mock_llm.get_usage_stats.return_value = {"total_tokens": 100}
+        mock_llm.config.model = "test-model"
         
         # Sequence of responses to simulate planning and step progression
         responses = [

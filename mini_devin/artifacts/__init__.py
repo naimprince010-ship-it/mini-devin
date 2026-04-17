@@ -1,5 +1,5 @@
 """
-Artifacts module for Mini-Devin.
+Artifacts module for Plodder.
 
 Provides logging and persistence of task execution artifacts including
 tool calls, file modifications, token usage, and final diffs.

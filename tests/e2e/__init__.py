@@ -1,1 +1,1 @@
-"""End-to-End Tests for Mini-Devin (Phase 10)."""
+"""End-to-End Tests for Plodder (Phase 10)."""

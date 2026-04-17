@@ -1,12 +1,12 @@
 """
-Tool Interface for Mini-Devin
+Tool Interface for Plodder
 
 This module defines the base interface for all tools and the tool registry.
 Tools are the primary way the agent interacts with the environment.
 """
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Generic, TypeVar
 import asyncio
 import uuid
@@ -154,7 +154,7 @@ class BaseTool(ABC, Generic[TInput, TOutput]):
                     timeout=effective_timeout,
                 )
                 self._call_count += 1
-                self._last_call_time = datetime.utcnow()
+                self._last_call_time = datetime.now(timezone.utc)
                 return result
                 
             except asyncio.TimeoutError:
@@ -276,7 +276,7 @@ class ToolRegistry:
             agent_phase=agent_phase,
             plan_step_id=plan_step_id,
             iteration=iteration,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         
         try:
@@ -284,7 +284,7 @@ class ToolRegistry:
             output = await tool.execute(input_data)
             
             # Update trace
-            trace.completed_at = datetime.utcnow()
+            trace.completed_at = datetime.now(timezone.utc)
             trace.duration_ms = int(
                 (trace.completed_at - trace.started_at).total_seconds() * 1000
             )
@@ -292,7 +292,7 @@ class ToolRegistry:
             trace.success = output.status == ToolStatus.SUCCESS
             
         except ToolExecutionError as e:
-            trace.completed_at = datetime.utcnow()
+            trace.completed_at = datetime.now(timezone.utc)
             trace.duration_ms = int(
                 (trace.completed_at - trace.started_at).total_seconds() * 1000
             )

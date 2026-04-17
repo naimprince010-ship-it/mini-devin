@@ -3,7 +3,13 @@
 import pytest
 from unittest.mock import MagicMock
 
-from mini_devin.reliability.self_correction import SelfCorrectionEngine, ErrorType
+from mini_devin.reliability.self_correction import (
+    SelfCorrectionEngine,
+    ErrorType,
+    error_fingerprint,
+    terminal_sanity_check,
+    incremental_recovery_hint,
+)
 
 class TestSelfCorrectionEngine:
     
@@ -33,6 +39,21 @@ class TestSelfCorrectionEngine:
         
     def test_classify_error_terminal_general_failure(self, engine):
         assert engine.classify_error("terminal", "Something went wrong", 1) == ErrorType.COMMAND_FAILED
+
+    def test_classify_error_terminal_windows_path_on_linux(self, engine):
+        out = (
+            "STDERR:\nThis shell runs on Linux (container/cloud). Windows paths like G:\\ do not exist here.\n"
+            "Exit code: -1"
+        )
+        assert engine.classify_error("terminal", out, -1) == ErrorType.ENVIRONMENT_MISMATCH
+
+    def test_should_retry_environment_mismatch_never(self, engine):
+        assert not engine.should_retry(ErrorType.ENVIRONMENT_MISMATCH, 0)
+        assert not engine.should_retry(ErrorType.ENVIRONMENT_MISMATCH, 2)
+
+    def test_get_retry_hint_environment_mismatch(self, engine):
+        hint = engine.get_retry_hint(ErrorType.ENVIRONMENT_MISMATCH, "terminal", {}, "")
+        assert "drive" in hint.lower() or "workspace" in hint.lower()
 
     def test_classify_error_editor_not_found(self, engine):
         assert engine.classify_error("editor", "Error: File not found", None) == ErrorType.FILE_NOT_FOUND
@@ -73,3 +94,163 @@ class TestSelfCorrectionEngine:
     def test_get_retry_hint_dependency(self, engine):
         hint = engine.get_retry_hint(ErrorType.DEPENDENCY_MISSING, "terminal", {}, "NotFound")
         assert "install" in hint.lower()
+
+    def test_get_retry_hint_dependency_node_package(self, engine):
+        hint = engine.get_retry_hint(
+            ErrorType.DEPENDENCY_MISSING,
+            "terminal",
+            {"command": "npm install express"},
+            "package.json\nnode_modules missing",
+        )
+        low = hint.lower()
+        assert "npm" in low or "pnpm" in low or "yarn" in low
+        assert "not `pip`" in hint or "not pip" in low
+
+    def test_get_retry_hint_timeout_dev_server(self, engine):
+        hint = engine.get_retry_hint(
+            ErrorType.TIMEOUT,
+            "terminal",
+            {"command": "node server.js"},
+            "Command timed out after 30 seconds",
+        )
+        low = hint.lower()
+        assert "live_preview" in low or "preview" in low
+        assert "sandbox" in low or "detached" in low or "host/process" in low
+        assert "run it in the background using `&`" not in hint
+
+    def test_get_retry_hint_browser(self, engine):
+        hint = engine.get_retry_hint(
+            ErrorType.UNKNOWN,
+            "browser_click",
+            {"selector": ".submit"},
+            "Error: browser_click failed: timeout",
+        )
+        low = hint.lower()
+        assert "browser_screenshot" in hint or "browser_playwright" in hint
+        assert "selector" in low
+        assert "coordinates" in low or "raw coordinates" in low
+        assert "submit" in low or "overlay" in low or "modal" in low
+
+    def test_get_retry_hint_browser_navigate(self, engine):
+        hint = engine.get_retry_hint(
+            ErrorType.UNKNOWN,
+            "browser_navigate",
+            {"url": "example.com"},
+            "Error: browser_navigate failed: net::ERR_CONNECTION_REFUSED",
+        )
+        low = hint.lower()
+        assert "browser_screenshot" in hint or "browser_playwright" in hint
+        assert "url" in low
+        assert "https://" in hint or "dev server" in low or "redirect" in low
+        assert "submit: true" not in hint
+
+
+def test_error_fingerprint_stable_for_same_failure():
+    fp1 = error_fingerprint("terminal", "No such file: foo\n", 1)
+    fp2 = error_fingerprint("terminal", "No such file: foo\n", 1)
+    assert fp1 == fp2
+    assert fp1 != error_fingerprint("terminal", "other", 1)
+
+
+def test_terminal_sanity_check_rejects_windows_paths_on_linux():
+    ok, msg = terminal_sanity_check("cat G:\\\\repo\\\\x.py", is_windows=False)
+    assert not ok
+    assert "windows" in msg.lower() or "linux" in msg.lower()
+
+
+def test_terminal_sanity_check_accepts_simple_posix():
+    ok, msg = terminal_sanity_check("ls -la ./src", is_windows=False)
+    assert ok
+    assert msg == ""
+
+
+def test_incremental_recovery_hint_pytest():
+    h = incremental_recovery_hint(
+        "terminal",
+        {"command": "pytest tests/"},
+        ErrorType.COMMAND_FAILED,
+        "collected 0 items",
+        last_failed_command="pytest tests/",
+    )
+    low = h.lower()
+    assert "pytest" in low
+    assert "pythonpath" in low or "sys.path" in low
+    assert "-v" in low or "tb=long" in low or "full-trace" in low
+
+
+def test_incremental_recovery_hint_unittest():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.COMMAND_FAILED,
+        "ERROR",
+        last_failed_command="python -m unittest discover",
+    )
+    assert "unittest" in h.lower()
+
+
+def test_incremental_recovery_hint_npm():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.COMMAND_FAILED,
+        "npm ERR!",
+        last_failed_command="npm test",
+    )
+    low = h.lower()
+    assert "package.json" in low or "node_modules" in low
+
+
+def test_incremental_recovery_hint_npm_missing_package_json():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.COMMAND_FAILED,
+        "npm ERR! enoent Could not read package.json: Error: ENOENT: no such file or directory",
+        last_failed_command="npm install",
+    )
+    low = h.lower()
+    assert "package.json" in low
+    assert "pwd" in low
+    assert "wrong folder" in low or "wrong directory" in low or "create it first" in low
+
+
+def test_incremental_recovery_hint_dev_server_port_conflict():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.COMMAND_FAILED,
+        "listen EADDRINUSE: address already in use :::3000",
+        last_failed_command="npm run dev",
+    )
+    low = h.lower()
+    assert "3001" in h or "5173" in h or "4173" in h
+    assert "lsof" in low or "netstat" in low
+    assert "live preview" in low or "preview" in low
+
+
+def test_incremental_recovery_hint_missing_port_tools():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.COMMAND_FAILED,
+        "/bin/bash: line 1: lsof: command not found",
+        last_failed_command="lsof -i :3000",
+    )
+    low = h.lower()
+    assert "lsof" in low
+    assert "different port" in low or "another port" in low
+
+
+def test_incremental_recovery_hint_cwd_mismatch():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.FILE_NOT_FOUND,
+        "/bin/bash: line 8: cd: my-web-app: No such file or directory",
+        last_failed_command="cd my-web-app && npm run dev",
+    )
+    low = h.lower()
+    assert "working directory" in low or "cwd" in low
+    assert "pwd" in low
+    assert "ls" in low

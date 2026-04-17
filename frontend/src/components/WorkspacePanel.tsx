@@ -1,31 +1,143 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Terminal, FileCode, History, Maximize2, Globe, ExternalLink, Search, X } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { Terminal, FileCode, History, Maximize2, Globe, ExternalLink, Search, X, Brain, Trash2, Copy, Check, Loader2, Wifi, AlertTriangle, ListTree } from 'lucide-react';
 import { MemoryView } from './MemoryView';
 import { FileExplorer } from './FileExplorer';
 import { ToolCallLog } from './ToolCallLog';
 import { FileDiffView } from './FileDiffView';
-import { MonacoEditorPanel } from './MonacoEditorPanel';
+import { MonacoEditorPanel, type AgentRemoteSnapshot } from './MonacoEditorPanel';
+import { ActivityFeed } from './ActivityFeed';
 import { useSessionEvents } from '../contexts/SessionEventsContext';
+import { getApiBase } from '../config/apiBase';
+
+export type WorkspacePanelTab = 'shell' | 'worklog' | 'feed' | 'editor' | 'browser' | 'memory';
 
 interface WorkspacePanelProps {
     sessionId?: string;
+    /** When set with ``onActiveTabChange``, tab selection is controlled by the parent (OpenHands-style shell). */
+    activeTab?: WorkspacePanelTab;
+    onActiveTabChange?: (tab: WorkspacePanelTab) => void;
+    tabBar?: 'internal' | 'external';
+    frameStyle?: 'default' | 'openhands';
+    borderTone?: 'dark' | 'light';
 }
 
-type TabType = 'shell' | 'worklog' | 'editor' | 'browser';
+type TabType = WorkspacePanelTab;
 
-export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => {
-    const [activeTab, setActiveTab] = useState<TabType>('shell');
+export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
+    sessionId,
+    activeTab: controlledTab,
+    onActiveTabChange,
+    tabBar = 'internal',
+    frameStyle = 'default',
+    borderTone = 'dark',
+}) => {
+    const [internalTab, setInternalTab] = useState<WorkspacePanelTab>('shell');
+    const isControlled = controlledTab !== undefined && onActiveTabChange !== undefined;
+    const activeTab = isControlled ? controlledTab : internalTab;
+    const setActiveTab = useCallback(
+        (t: WorkspacePanelTab) => {
+            if (isControlled) onActiveTabChange(t);
+            else setInternalTab(t);
+        },
+        [isControlled, onActiveTabChange],
+    );
     const shellRef = useRef<HTMLDivElement>(null);
     const events = useSessionEvents();
     // Monaco editor state: which file is open
     const [openFile, setOpenFile] = useState<string | null>(null);
+    const [serverRefetchKey, setServerRefetchKey] = useState(0);
+    const lastAtomicRefetchToolId = useRef<string | null>(null);
+    const [livePreviewPort, setLivePreviewPort] = useState<number | null>(null);
+    const [livePreviewRefreshKey, setLivePreviewRefreshKey] = useState(0);
+    const lastAtomicPreviewToolId = useRef<string | null>(null);
+
+    const latestAgentRemote: AgentRemoteSnapshot | null = React.useMemo(() => {
+        if (!openFile) return null;
+        const norm = openFile.replace(/\\/g, '/');
+        const hits = events.fileEdits.filter(f => f.path.replace(/\\/g, '/') === norm);
+        const last = hits[hits.length - 1];
+        if (!last) return null;
+        return {
+            revision: last.timestamp.getTime(),
+            content: last.content,
+            before: last.before,
+        };
+    }, [openFile, events.fileEdits]);
+
+    // Plodder ``atomic_edit`` often completes without full file body on tool_result — refetch from API.
+    useEffect(() => {
+        const done = events.toolCalls.filter(t => t.status === 'completed');
+        const last = done[done.length - 1];
+        if (!last || !openFile) return;
+        if (last.tool !== 'atomic_edit') return;
+        if (last.id === lastAtomicRefetchToolId.current) return;
+        const p = String((last.input?.path as string) || '').replace(/\\/g, '/');
+        if (p !== openFile.replace(/\\/g, '/')) return;
+        lastAtomicRefetchToolId.current = last.id;
+        setServerRefetchKey(k => k + 1);
+    }, [events.toolCalls, openFile]);
+
+    useEffect(() => {
+        lastAtomicRefetchToolId.current = null;
+    }, [openFile]);
+
+    // Live Preview: poll when Browser tab is open (agent registers port via ``live_preview`` tool).
+    useEffect(() => {
+        if (activeTab !== 'browser' || !sessionId) return;
+        let cancelled = false;
+        const poll = async () => {
+            try {
+                const r = await fetch(`${getApiBase()}/sessions/${sessionId}/live-preview/status`);
+                if (!r.ok || cancelled) return;
+                const j = (await r.json()) as { active?: boolean; port?: number | null };
+                if (cancelled) return;
+                if (j.active && typeof j.port === 'number') setLivePreviewPort(j.port);
+                else setLivePreviewPort(null);
+            } catch {
+                /* ignore */
+            }
+        };
+        void poll();
+        const id = window.setInterval(poll, 4000);
+        return () => {
+            cancelled = true;
+            window.clearInterval(id);
+        };
+    }, [activeTab, sessionId]);
+
+    // Reload Live Preview iframe after Plodder ``atomic_edit`` (same pattern as Monaco refetch).
+    useEffect(() => {
+        const done = events.toolCalls.filter(t => t.status === 'completed');
+        const last = done[done.length - 1];
+        if (!last || last.tool !== 'atomic_edit') return;
+        if (last.id === lastAtomicPreviewToolId.current) return;
+        lastAtomicPreviewToolId.current = last.id;
+        setLivePreviewRefreshKey((k) => k + 1);
+    }, [events.toolCalls]);
+
+    // Shell UX state
+    const [shellSearch, setShellSearch] = useState('');
+    const [shellSearchVisible, setShellSearchVisible] = useState(false);
+    const [copied, setCopied] = useState(false);
 
     // Auto-scroll shell when new lines come in
     useEffect(() => {
         if (shellRef.current) {
             shellRef.current.scrollTop = shellRef.current.scrollHeight;
         }
-    }, [events.shellLines]);
+    }, [events.richShellLines]);
+
+    const handleCopyShell = useCallback(() => {
+        const text = events.richShellLines.map(l => l.text).join('\n');
+        navigator.clipboard.writeText(text).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        });
+    }, [events.richShellLines]);
+
+    const filteredShellLines = shellSearch.trim()
+        ? events.richShellLines.filter(l => l.text.toLowerCase().includes(shellSearch.toLowerCase()))
+        : events.richShellLines;
 
     // Switch to worklog when a tool starts
     useEffect(() => {
@@ -60,6 +172,11 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
             badge: events.toolCalls.length > 0 ? events.toolCalls.length : undefined,
         },
         {
+            id: 'feed',
+            label: 'Activity',
+            icon: <ListTree size={13} />,
+        },
+        {
             id: 'editor',
             label: 'IDE',
             icon: <FileCode size={13} />,
@@ -69,73 +186,242 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
             id: 'browser',
             label: 'Browser',
             icon: <Globe size={13} />,
-            badge: events.browserEvents.length > 0 ? events.browserEvents.length : undefined,
+            badge:
+                events.browserEvents.length > 0
+                    ? events.browserEvents.length
+                    : livePreviewPort
+                      ? 1
+                      : undefined,
+        },
+        {
+            id: 'memory',
+            label: 'Memory',
+            icon: <Brain size={13} />,
         },
     ];
 
     const lastBrowserEvent = events.browserEvents[events.browserEvents.length - 1];
-    const currentUrl = lastBrowserEvent?.url || lastBrowserEvent?.query;
+    const lastHttpUrl = [...events.browserEvents].reverse().find(e => e.url?.startsWith('http'))?.url;
+    const currentUrl = lastHttpUrl || lastBrowserEvent?.url || '';
+
+    const browserRowIcon = (t: string) => {
+        if (t === 'search') return <Search size={11} className="text-[#00ff99]" />;
+        if (t === 'console') return <Terminal size={11} className="text-amber-400" />;
+        if (t === 'network') return <Wifi size={11} className="text-sky-400" />;
+        if (t === 'pageerror') return <AlertTriangle size={11} className="text-red-400" />;
+        return <Globe size={11} className="text-[#00ff99]" />;
+    };
+    const browserRowTitle = (t: string) => {
+        if (t === 'navigate') return 'Navigate';
+        if (t === 'search') return 'Search';
+        if (t === 'screenshot') return 'Screenshot';
+        if (t === 'click') return 'Click';
+        if (t === 'console') return 'Console';
+        if (t === 'network') return 'Network';
+        if (t === 'pageerror') return 'Page error';
+        return t;
+    };
+
+    const currentViewLabel = tabs.find((t) => t.id === activeTab)?.label ?? activeTab;
+
+    const outerFrameClass = useMemo(() => {
+        if (frameStyle === 'openhands') {
+            return borderTone === 'dark'
+                ? 'bg-[#25272D] border border-[#525252] rounded-xl h-full w-full flex flex-col overflow-hidden min-h-0'
+                : 'bg-slate-100 border border-slate-300 rounded-xl h-full w-full flex flex-col overflow-hidden min-h-0 shadow-sm';
+        }
+        return 'h-full w-full flex flex-col bg-[#0a0a0a] border-l border-[#262626] min-h-0';
+    }, [frameStyle, borderTone]);
 
     return (
-        <div className="flex-1 flex flex-col bg-[#0a0a0a] border-l border-[#262626]">
-            {/* Tab Header */}
-            <div className="flex items-center justify-between px-3 py-2 border-b border-[#262626] bg-[#111111]">
-                <div className="flex gap-1">
-                    {tabs.map(tab => (
-                        <button
-                            key={tab.id}
-                            onClick={() => setActiveTab(tab.id)}
-                            className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === tab.id
-                                ? 'bg-[#1e1e1e] text-white shadow-sm'
-                                : 'text-[#737373] hover:text-[#a3a3a3] hover:bg-[#1a1a1a]'
-                                }`}
-                        >
-                            <span className={activeTab === tab.id ? 'text-[#00ff99]' : ''}>{tab.icon}</span>
-                            {tab.label}
-                            {tab.badge !== undefined && (
-                                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-[#00ff99] text-[#0f0f0f] text-[9px] font-bold flex items-center justify-center">
-                                    {tab.badge > 9 ? '9+' : tab.badge}
-                                </span>
-                            )}
-                        </button>
-                    ))}
+        <div className={outerFrameClass}>
+            {tabBar === 'internal' ? (
+                <div className="flex items-center justify-between px-3 py-2 border-b border-[#262626] bg-[#111111]">
+                    <div className="flex gap-1">
+                        {tabs.map(tab => (
+                            <button
+                                key={tab.id}
+                                type="button"
+                                onClick={() => setActiveTab(tab.id)}
+                                className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === tab.id
+                                    ? 'bg-[#1e1e1e] text-white shadow-sm'
+                                    : 'text-[#737373] hover:text-[#a3a3a3] hover:bg-[#1a1a1a]'
+                                    }`}
+                            >
+                                <span className={activeTab === tab.id ? 'text-[#00ff99]' : ''}>{tab.icon}</span>
+                                {tab.label}
+                                {tab.badge !== undefined && (
+                                    <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-[#00ff99] text-[#0f0f0f] text-[9px] font-bold flex items-center justify-center">
+                                        {tab.badge > 9 ? '9+' : tab.badge}
+                                    </span>
+                                )}
+                            </button>
+                        ))}
+                    </div>
+                    <button type="button" className="p-1.5 text-[#525252] hover:text-[#a3a3a3] rounded-md hover:bg-[#1a1a1a] transition-colors">
+                        <Maximize2 size={13} />
+                    </button>
                 </div>
-                <button className="p-1.5 text-[#525252] hover:text-[#a3a3a3] rounded-md hover:bg-[#1a1a1a] transition-colors">
-                    <Maximize2 size={13} />
-                </button>
-            </div>
+            ) : (
+                <div
+                    className={`flex flex-shrink-0 flex-row items-center justify-between border-b py-2 px-3 ${borderTone === 'dark' ? 'border-[#474A54]' : 'border-slate-300'}`}
+                >
+                    <span
+                        className={`text-xs font-medium ${borderTone === 'dark' ? 'text-white' : 'text-[#0f172a]'}`}
+                    >
+                        {currentViewLabel}
+                    </span>
+                    <button
+                        type="button"
+                        className={`rounded-md p-1.5 transition-colors ${borderTone === 'dark' ? 'text-[#9299AA] hover:bg-[#474A54] hover:text-white' : 'text-slate-500 hover:bg-slate-200 hover:text-slate-900'}`}
+                        title="Workspace"
+                    >
+                        <Maximize2 size={13} />
+                    </button>
+                </div>
+            )}
 
             {/* Content */}
-            <div className="flex-1 overflow-hidden relative">
+            <div className="flex-1 overflow-hidden relative min-h-0">
 
                 {/* SHELL */}
                 {activeTab === 'shell' && (
-                    <div
-                        ref={shellRef}
-                        className="absolute inset-0 p-4 font-mono text-xs overflow-y-auto bg-[#050505] custom-scrollbar"
-                    >
-                        <div className="text-[#00ff99] mb-3 text-[11px]">
-                            ubuntu@mini-devin:~$ <span className="animate-pulse">_</span>
-                        </div>
-                        {events.shellLines.length === 0 ? (
-                            <div className="text-[#3a3a3a] italic text-[11px]">
-                                Shell output will appear here when the agent runs commands...
+                    <div className="absolute inset-0 flex flex-col bg-[#050505]">
+                        {/* Shell toolbar */}
+                        <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-[#111] bg-[#080808] flex-shrink-0">
+                            {/* Running command indicator */}
+                            <div className="flex-1 min-w-0 flex items-center gap-2">
+                                {events.isRunning && events.runningCommand ? (
+                                    <>
+                                        <Loader2 size={10} className="text-[#00ff99] animate-spin flex-shrink-0" />
+                                        <span className="text-[10px] font-mono text-[#00ff99] truncate">
+                                            {events.runningCommand.length > 60
+                                                ? events.runningCommand.slice(0, 57) + '…'
+                                                : events.runningCommand}
+                                        </span>
+                                    </>
+                                ) : (
+                                    <span className="text-[10px] text-[#3a3a3a] font-mono">
+                                        ubuntu@plodder:~$
+                                    </span>
+                                )}
                             </div>
-                        ) : (
-                            events.shellLines.map((line, i) => (
-                                <div
-                                    key={i}
-                                    className={`leading-5 ${line.startsWith('$')
-                                        ? 'text-[#00ff99]'
-                                        : line.toLowerCase().includes('error') || line.toLowerCase().includes('fail')
-                                            ? 'text-red-400'
-                                            : 'text-[#c0c0c0]'
-                                        }`}
+
+                            {/* Toolbar actions */}
+                            <div className="flex items-center gap-0.5 flex-shrink-0">
+                                <button
+                                    onClick={() => setShellSearchVisible(v => !v)}
+                                    className={`p-1 rounded transition-colors ${shellSearchVisible ? 'text-[#00ff99] bg-[#00ff99]/10' : 'text-[#525252] hover:text-[#a3a3a3] hover:bg-[#1a1a1a]'}`}
+                                    title="Search shell output"
                                 >
-                                    {line}
-                                </div>
-                            ))
+                                    <Search size={11} />
+                                </button>
+                                <button
+                                    onClick={handleCopyShell}
+                                    disabled={events.richShellLines.length === 0}
+                                    className="p-1 rounded text-[#525252] hover:text-[#a3a3a3] hover:bg-[#1a1a1a] transition-colors disabled:opacity-30"
+                                    title="Copy all"
+                                >
+                                    {copied ? <Check size={11} className="text-[#00ff99]" /> : <Copy size={11} />}
+                                </button>
+                                <button
+                                    onClick={() => { events.clearShell?.(); setShellSearch(''); }}
+                                    disabled={events.richShellLines.length === 0}
+                                    className="p-1 rounded text-[#525252] hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-30"
+                                    title="Clear shell"
+                                >
+                                    <Trash2 size={11} />
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Search bar */}
+                        {shellSearchVisible && (
+                            <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#111] bg-[#080808] flex-shrink-0">
+                                <Search size={11} className="text-[#525252] flex-shrink-0" />
+                                <input
+                                    autoFocus
+                                    type="text"
+                                    value={shellSearch}
+                                    onChange={e => setShellSearch(e.target.value)}
+                                    placeholder="Filter shell output..."
+                                    className="flex-1 bg-transparent text-[11px] font-mono text-[#d1d1d1] outline-none placeholder:text-[#3a3a3a]"
+                                />
+                                {shellSearch && (
+                                    <button onClick={() => setShellSearch('')} className="text-[#525252] hover:text-white">
+                                        <X size={11} />
+                                    </button>
+                                )}
+                                {shellSearch && (
+                                    <span className="text-[10px] text-[#525252]">
+                                        {filteredShellLines.length} match{filteredShellLines.length !== 1 ? 'es' : ''}
+                                    </span>
+                                )}
+                            </div>
                         )}
+
+                        {/* Shell output */}
+                        <div
+                            ref={shellRef}
+                            className="flex-1 overflow-y-auto custom-scrollbar p-4 font-mono text-xs"
+                        >
+                            {filteredShellLines.length === 0 && !shellSearch ? (
+                                <div className="text-[#3a3a3a] italic text-[11px]">
+                                    Shell output will appear here when the agent runs commands...
+                                </div>
+                            ) : filteredShellLines.length === 0 && shellSearch ? (
+                                <div className="text-[#3a3a3a] italic text-[11px]">
+                                    No matches for "<span className="text-[#525252]">{shellSearch}</span>"
+                                </div>
+                            ) : (
+                                filteredShellLines.map((line, i) => {
+                                    const ts = new Date(line.ts);
+                                    const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                                    return (
+                                        <div
+                                            key={i}
+                                            className={`flex items-start gap-2 leading-5 group ${
+                                                line.type === 'command'
+                                                    ? 'text-[#00ff99]'
+                                                    : line.type === 'error'
+                                                        ? 'text-red-400'
+                                                        : 'text-[#c0c0c0]'
+                                            }`}
+                                        >
+                                            {/* Timestamp */}
+                                            <span className="flex-shrink-0 text-[9px] text-[#2a2a2a] group-hover:text-[#3a3a3a] transition-colors mt-0.5 select-none w-16 text-right">
+                                                {timeStr}
+                                            </span>
+                                            {/* Line text, with search highlight */}
+                                            <span className="flex-1 break-all">
+                                                {shellSearch ? (
+                                                    (() => {
+                                                        const idx = line.text.toLowerCase().indexOf(shellSearch.toLowerCase());
+                                                        if (idx < 0) return line.text;
+                                                        return (
+                                                            <>
+                                                                {line.text.slice(0, idx)}
+                                                                <mark className="bg-yellow-500/30 text-yellow-200 rounded">
+                                                                    {line.text.slice(idx, idx + shellSearch.length)}
+                                                                </mark>
+                                                                {line.text.slice(idx + shellSearch.length)}
+                                                            </>
+                                                        );
+                                                    })()
+                                                ) : line.text}
+                                            </span>
+                                        </div>
+                                    );
+                                })
+                            )}
+                        </div>
+                    </div>
+                )}
+
+                {/* ACTIVITY FEED — session_events.jsonl */}
+                {activeTab === 'feed' && (
+                    <div className="absolute inset-0 overflow-hidden">
+                        <ActivityFeed sessionId={sessionId} isRunning={events.isRunning} />
                     </div>
                 )}
 
@@ -172,14 +458,30 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
                 {activeTab === 'editor' && (
                     <div className="absolute inset-0 flex flex-col">
                         {openFile && sessionId ? (
-                            // Monaco editor for the selected file
-                            <MonacoEditorPanel
-                                sessionId={sessionId}
-                                filePath={openFile}
-                                initialContent={events.fileEdits.find(f => f.path === openFile)?.content}
-                                onClose={() => setOpenFile(null)}
-                                onSaved={() => { }}
-                            />
+                            <div className="flex h-full min-h-0">
+                                <div className="w-52 flex-shrink-0 border-r border-[#1a1a1a] flex flex-col bg-[#080808] min-h-0">
+                                    <div className="text-[9px] uppercase tracking-wider text-[#525252] px-2 py-1.5 border-b border-[#1a1a1a] flex-shrink-0">
+                                        Workspace
+                                    </div>
+                                    <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+                                        <FileExplorer
+                                            sessionId={sessionId}
+                                            onFileSelect={(path: string) => { setOpenFile(path); }}
+                                        />
+                                    </div>
+                                </div>
+                                <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+                                    <MonacoEditorPanel
+                                        sessionId={sessionId}
+                                        filePath={openFile}
+                                        initialContent={events.fileEdits.find(f => f.path.replace(/\\/g, '/') === openFile.replace(/\\/g, '/'))?.content}
+                                        agentRemote={latestAgentRemote}
+                                        serverRefetchKey={serverRefetchKey}
+                                        onClose={() => setOpenFile(null)}
+                                        onSaved={() => { }}
+                                    />
+                                </div>
+                            </div>
                         ) : events.fileEdits.length > 0 ? (
                             // File diff view when agent has written files
                             <div className="flex flex-col h-full">
@@ -201,23 +503,56 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
                     </div>
                 )}
 
-                {/* BROWSER */}
+                {/* BROWSER — Live Preview (reverse-proxied dev server) + agent browser tool feed */}
                 {activeTab === 'browser' && (
                     <div className="absolute inset-0 flex flex-col bg-[#050505]">
-                        {events.browserEvents.length === 0 ? (
-                            <div className="flex flex-col items-center justify-center h-full text-center p-8 gap-4">
+                        {sessionId && livePreviewPort ? (
+                            <>
+                                <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-[#1a1a1a] bg-[#0d0d0d] flex-shrink-0">
+                                    <span className="text-[10px] font-mono text-[#00ff99]">
+                                        Live Preview · proxied :{livePreviewPort}
+                                    </span>
+                                    <span className="text-[9px] text-[#3a3a3a]">Refreshes on atomic_edit</span>
+                                </div>
+                                <div className="flex-[1.2] min-h-[180px] border-b border-[#1a1a1a] bg-[#111]">
+                                    <iframe
+                                        key={livePreviewRefreshKey}
+                                        title="Live preview"
+                                        className="w-full h-full border-0 bg-white"
+                                        src={`${getApiBase()}/sessions/${sessionId}/live-preview/?_=${livePreviewRefreshKey}`}
+                                        sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
+                                        referrerPolicy="no-referrer"
+                                    />
+                                </div>
+                            </>
+                        ) : null}
+
+                        {events.browserEvents.length === 0 && !livePreviewPort ? (
+                            <div className="flex flex-col items-center justify-center flex-1 text-center p-8 gap-4 max-w-sm mx-auto">
                                 <Globe size={48} className="text-[#2a2a2a]" />
-                                <div>
+                                <div className="space-y-2">
                                     <p className="text-[#525252] text-sm font-medium">Browser</p>
-                                    <p className="text-[#3a3a3a] text-xs mt-1">
-                                        Web browser activity will be visible here when the agent browses the internet.
+                                    <p className="text-[#3a3a3a] text-xs leading-relaxed">
+                                        <span className="text-[#525252] font-mono">live_preview</span> (probe → set_active_port) registers a{' '}
+                                        <strong className="text-[#737373]">workspace dev server</strong> on this host (e.g. Vite) for the iframe — not public URLs you type in chat.
+                                        External sites appear via <span className="text-[#525252] font-mono">browser_playwright</span> /{' '}
+                                        <span className="text-[#525252] font-mono">browser_fetch</span> in the log below.
+                                    </p>
+                                    <p className="text-[#3a3a3a] text-xs leading-relaxed">
+                                        While a task is running, searches, fetches, and Playwright steps appear here as the agent uses{' '}
+                                        <span className="text-[#525252] font-mono">browser_search</span>,{' '}
+                                        <span className="text-[#525252] font-mono">browser_fetch</span>, or{' '}
+                                        <span className="text-[#525252] font-mono">browser_playwright</span>.
+                                    </p>
+                                    <p className="text-[#3a3a3a] text-[11px] leading-relaxed border-t border-[#1a1a1a] pt-3">
+                                        This feed is not saved: if you reload the page or open a session restored from history, the Browser tab starts empty even though the chat summary may mention web work.
                                     </p>
                                 </div>
                             </div>
-                        ) : (
+                        ) : events.browserEvents.length > 0 ? (
                             <>
                                 {/* URL Bar */}
-                                <div className="flex items-center gap-2 px-3 py-2 border-b border-[#1a1a1a] bg-[#0d0d0d]">
+                                <div className="flex items-center gap-2 px-3 py-2 border-b border-[#1a1a1a] bg-[#0d0d0d] flex-shrink-0">
                                     <div className="w-2 h-2 rounded-full bg-[#00ff99] animate-pulse flex-shrink-0" />
                                     <div className="flex-1 flex items-center gap-2 px-3 py-1.5 bg-[#111111] border border-[#1e1e1e] rounded-lg">
                                         {lastBrowserEvent?.type === 'search' ? (
@@ -238,7 +573,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
                                 </div>
 
                                 {/* Screenshot or activity log */}
-                                <div className="flex-1 overflow-y-auto custom-scrollbar">
+                                <div className={`overflow-y-auto custom-scrollbar ${livePreviewPort ? 'flex-1 max-h-[40%]' : 'flex-1'}`}>
                                     {lastBrowserEvent?.screenshotBase64 ? (
                                         <div className="flex items-center justify-center p-4">
                                             <img
@@ -253,15 +588,26 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
                                             {[...events.browserEvents].reverse().map((ev, i) => (
                                                 <div key={ev.id} className={`flex items-start gap-2.5 p-2.5 rounded-lg border ${i === 0 ? 'bg-[#0d1a0d] border-[#00ff99]/15' : 'bg-[#0d0d0d] border-[#1a1a1a]'}`}>
                                                     <div className="flex-shrink-0 mt-0.5">
-                                                        {ev.type === 'search' ? <Search size={11} className="text-[#00ff99]" /> : <Globe size={11} className="text-[#00ff99]" />}
+                                                        {browserRowIcon(ev.type)}
                                                     </div>
                                                     <div className="flex-1 min-w-0">
                                                         <p className="text-[10px] font-bold uppercase tracking-wider text-[#525252] mb-0.5">
-                                                            {ev.type === 'navigate' ? 'Navigate' : ev.type === 'search' ? 'Search' : ev.type === 'screenshot' ? 'Screenshot' : ev.type}
+                                                            {browserRowTitle(ev.type)}
                                                         </p>
-                                                        <p className="text-[11px] text-[#a3a3a3] truncate font-mono">
-                                                            {ev.url || ev.query || '—'}
-                                                        </p>
+                                                        {(ev.type === 'console' || ev.type === 'pageerror' || ev.type === 'network') && ev.query ? (
+                                                            <>
+                                                                {ev.url ? (
+                                                                    <p className="text-[10px] text-[#525252] font-mono truncate mb-1" title={ev.url}>{ev.url}</p>
+                                                                ) : null}
+                                                                <p className="text-[11px] text-[#a3a3a3] font-mono whitespace-pre-wrap break-words max-h-28 overflow-y-auto custom-scrollbar leading-relaxed">
+                                                                    {ev.query}
+                                                                </p>
+                                                            </>
+                                                        ) : (
+                                                            <p className="text-[11px] text-[#a3a3a3] truncate font-mono">
+                                                                {ev.url || ev.query || '—'}
+                                                            </p>
+                                                        )}
                                                     </div>
                                                     <span className="text-[9px] text-[#3a3a3a] flex-shrink-0">
                                                         {ev.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -272,7 +618,23 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({ sessionId }) => 
                                     )}
                                 </div>
                             </>
-                        )}
+                        ) : livePreviewPort ? (
+                            <div className="flex-1 flex items-center justify-center text-[#3a3a3a] text-[11px] px-6 text-center">
+                                No browser tool events yet. Live Preview is active above.
+                            </div>
+                        ) : null}
+                    </div>
+                )}
+
+                {/* MEMORY */}
+                {activeTab === 'memory' && sessionId && (
+                    <div className="absolute inset-0 overflow-y-auto custom-scrollbar p-4">
+                        <MemoryView sessionId={sessionId} />
+                    </div>
+                )}
+                {activeTab === 'memory' && !sessionId && (
+                    <div className="absolute inset-0 flex items-center justify-center text-[#3a3a3a] text-xs italic">
+                        Select a session to view memory.
                     </div>
                 )}
             </div>

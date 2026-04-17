@@ -1,5 +1,5 @@
 """
-Artifact Logger for Mini-Devin
+Artifact Logger for Plodder
 
 Records and persists task execution artifacts including tool calls,
 file modifications, commands executed, token usage, and final diffs.

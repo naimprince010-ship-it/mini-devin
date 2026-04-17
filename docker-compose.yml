@@ -1,20 +1,40 @@
 version: '3.8'
 
 services:
+  # Frontend (React + Vite)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+    container_name: plodder-frontend
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    ports:
+      - "3000:80"
+    depends_on:
+      - plodder
+    networks:
+      - plodder-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   # PostgreSQL Database
   postgres:
     image: postgres:16-alpine
-    container_name: mini-devin-db
+    container_name: plodder-db
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-      - POSTGRES_DB=${POSTGRES_DB:-minidevin}
+      - POSTGRES_DB=${POSTGRES_DB:-plodder}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     networks:
-      - mini-devin-network
+      - plodder-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -22,23 +42,26 @@ services:
       retries: 5
       start_period: 10s
 
-  mini-devin:
+  plodder:
     build:
       context: .
       dockerfile: Dockerfile
       args:
         USER_ID: ${USER_ID:-1000}
         GROUP_ID: ${GROUP_ID:-1000}
-        USERNAME: ${SANDBOX_USER:-minidevin}
-    container_name: mini-devin-agent
+        USERNAME: ${SANDBOX_USER:-plodder}
+    container_name: plodder-agent
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       # Database Configuration
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-minidevin}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-plodder}
       
       # LLM Configuration
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_API_BASE=${GROQ_API_BASE:-https://api.groq.com/openai/v1}
+      - GROQ_ENABLED=${GROQ_ENABLED:-true}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://host.docker.internal:11434}
@@ -47,8 +70,10 @@ services:
       - AZURE_API_BASE=${AZURE_API_BASE:-}
       - AZURE_API_VERSION=${AZURE_API_VERSION:-2024-02-15-preview}
       - AZURE_DEPLOYMENT_NAME=${AZURE_DEPLOYMENT_NAME:-}
-      - LLM_MODEL=${LLM_MODEL:-gpt-4o}
+      - LLM_MODEL=${LLM_MODEL:-llama-3.3-70b-versatile}
       - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.1}
+      - LLM_MAX_OUTPUT_TOKENS=${LLM_MAX_OUTPUT_TOKENS:-4096}
+      - LLM_TIMEOUT_SEC=${LLM_TIMEOUT_SEC:-120}
       
       # Browser Search API Keys (optional)
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
@@ -58,7 +83,7 @@ services:
       - RUN_MODE=${RUN_MODE:-offline}
       
       # Safety Configuration
-      - MAX_ITERATIONS=${MAX_ITERATIONS:-50}
+      - MAX_ITERATIONS=${MAX_ITERATIONS:-100}
       - MAX_REPAIR_ITERATIONS=${MAX_REPAIR_ITERATIONS:-3}
       - ALLOW_DEPENDENCY_BUMP=${ALLOW_DEPENDENCY_BUMP:-false}
       - MAX_LINES_EDIT=${MAX_LINES_EDIT:-300}
@@ -121,7 +146,7 @@ services:
         hard: 512
     # Network configuration
     networks:
-      - mini-devin-network
+      - plodder-network
     # Health check
     healthcheck:
       test: ["CMD", "python3", "-c", "print('healthy')"]
@@ -133,7 +158,7 @@ services:
   # Optional: Selenium Grid for interactive browser mode
   selenium:
     image: selenium/standalone-chrome:latest
-    container_name: mini-devin-selenium
+    container_name: plodder-selenium
     environment:
       - SE_NODE_MAX_SESSIONS=2
       - SE_NODE_SESSION_TIMEOUT=300
@@ -142,12 +167,12 @@ services:
       - "7900:7900"  # VNC viewer
     shm_size: 2gb
     networks:
-      - mini-devin-network
+      - plodder-network
     profiles:
       - interactive  # Only start with --profile interactive
 
 networks:
-  mini-devin-network:
+  plodder-network:
     driver: bridge
 
 volumes:

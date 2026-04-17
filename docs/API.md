@@ -1,6 +1,6 @@
-# Mini-Devin API Documentation
+# Plodder API Documentation
 
-This document describes the REST and WebSocket APIs provided by Mini-Devin's FastAPI backend.
+This document describes the REST and WebSocket APIs provided by Plodder's FastAPI backend.
 
 ## Base URL
 
@@ -10,7 +10,7 @@ http://localhost:8000
 
 ## Authentication
 
-Mini-Devin supports two authentication methods:
+Plodder supports two authentication methods:
 
 ### JWT Token Authentication
 

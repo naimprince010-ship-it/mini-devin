@@ -8,7 +8,7 @@ This skill adds a new dependency to a project by:
 4. Verifying the installation
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from ..base import Skill, SkillContext, SkillResult, SkillParameter, SkillStatus
@@ -71,7 +71,7 @@ class AddDependencySkill(Skill):
             success=False,
             message="",
             status=SkillStatus.RUNNING,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         
         package_name = kwargs["package_name"]
@@ -141,7 +141,7 @@ class AddDependencySkill(Skill):
             result.status = SkillStatus.FAILED
             result.error = str(e)
         
-        result.completed_at = datetime.utcnow()
+        result.completed_at = datetime.now(timezone.utc)
         result.steps = self.get_steps()
         return result
     

@@ -31,12 +31,14 @@ class SessionRepository:
         model: str = "gpt-4o",
         max_iterations: int = 50,
         session_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ) -> SessionModel:
         """Create a new session."""
         session_id = session_id or str(uuid.uuid4())[:8]
         db_session = SessionModel(
             id=session_id,
             working_directory=working_directory,
+            workspace_id=workspace_id,
             model=model,
             max_iterations=max_iterations,
             status=SessionStatus.IDLE,
@@ -91,6 +93,38 @@ class SessionRepository:
             update(SessionModel)
             .where(SessionModel.id == session_id)
             .values(**values)
+        )
+        return result.rowcount > 0
+
+    async def update_model(self, session_id: str, model: str) -> bool:
+        """Persist primary LLM model id (e.g. ``gpt-4o``, ``auto``, ``gemini/gemini-2.0-flash``)."""
+        result = await self.session.execute(
+            update(SessionModel)
+            .where(SessionModel.id == session_id)
+            .values(
+                model=model,
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        return result.rowcount > 0
+
+    async def update_persistence(
+        self,
+        session_id: str,
+        *,
+        conversation_json: Optional[str] = None,
+        working_directory: Optional[str] = None,
+    ) -> bool:
+        """Persist conversation and/or resolved workspace path for cross-restart recovery."""
+        values: dict = {"updated_at": datetime.now(timezone.utc)}
+        if conversation_json is not None:
+            values["conversation_json"] = conversation_json
+        if working_directory is not None:
+            values["working_directory"] = working_directory
+        if conversation_json is None and working_directory is None:
+            return False
+        result = await self.session.execute(
+            update(SessionModel).where(SessionModel.id == session_id).values(**values)
         )
         return result.rowcount > 0
 

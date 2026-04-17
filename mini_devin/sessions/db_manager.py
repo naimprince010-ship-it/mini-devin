@@ -1,13 +1,18 @@
 """
-Database-backed Session Manager for Mini-Devin
+Database-backed Session Manager for Plodder
 
 This module provides persistent session management using PostgreSQL.
 It wraps the existing SessionManager functionality while adding database persistence.
 """
 
 import asyncio
+import json
+import os
+import sys
+import time as time_module
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,8 +29,7 @@ from ..database.repository import (
     ArtifactRepository,
 )
 from ..database.config import get_session_maker
-from ..orchestrator.agent import Agent
-from ..api.websocket import ConnectionManager
+from ..api.websocket import ConnectionManager, MessageType, WebSocketMessage
 from .manager import SessionStatus, TaskStatus, TaskResult, Task, Session
 from ..schemas.state import TaskState, TaskGoal, TaskStatus as AgentTaskStatus
 
@@ -46,8 +50,8 @@ class DatabaseSessionManager:
         self.artifacts_base_dir = Path(artifacts_base_dir)
         self.max_concurrent_sessions = max_concurrent_sessions
         
-        # In-memory agent instances (not persisted)
-        self._agents: dict[str, Agent] = {}
+        # In-memory agent instances (not persisted); Agent loaded lazily (see create_session / run_task)
+        self._agents: dict[str, Any] = {}
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}  # Track asyncio Tasks for cancellation
         self._session_titles: dict[str, str] = {}  # Cache titles in-memory
@@ -61,6 +65,56 @@ class DatabaseSessionManager:
         
         # Locks for thread safety
         self._session_lock = asyncio.Lock()
+
+    def _resolve_workspace_for_db_session(self, db_session: SessionModel) -> str:
+        from .workspace_paths import resolve_session_workspace_directory
+
+        return resolve_session_workspace_directory(
+            getattr(db_session, "workspace_id", None),
+            db_session.working_directory,
+        )
+
+    async def _persist_agent_conversation(self, session_id: str, agent: Any) -> None:
+        """Write LLM messages + current workspace path to the DB (Railway-friendly)."""
+        if not agent or not getattr(agent, "llm", None):
+            return
+        try:
+            from mini_devin.core.llm_client import _tail_trim_non_system_openai_safe
+
+            msgs = agent.llm.get_conversation_for_api()
+            sys_msgs = [x for x in msgs if x.get("role") == "system"]
+            rest = [x for x in msgs if x.get("role") != "system"]
+            if len(rest) > 240:
+                rest = _tail_trim_non_system_openai_safe(rest, 240)
+            trimmed = sys_msgs + rest
+            payload = json.dumps(trimmed, default=str)
+            if len(payload) > 4_000_000:
+                rest_compact = _tail_trim_non_system_openai_safe(rest, 80)
+                payload = json.dumps(sys_msgs + rest_compact, default=str)
+            wd = getattr(agent, "working_directory", None)
+            async with self._session_maker() as db:
+                repo = SessionRepository(db)
+                await repo.update_persistence(
+                    session_id,
+                    conversation_json=payload,
+                    working_directory=str(wd) if wd else None,
+                )
+                await db.commit()
+        except Exception as e:
+            print(f"[Session] persist conversation/workspace: {e}")
+
+    async def get_stored_conversation_messages(self, session_id: str) -> list[dict[str, Any]]:
+        """Load persisted chat messages when the in-memory agent is gone."""
+        async with self._session_maker() as db:
+            repo = SessionRepository(db)
+            row = await repo.get(session_id)
+            if not row or not getattr(row, "conversation_json", None):
+                return []
+            try:
+                data = json.loads(row.conversation_json)
+                return data if isinstance(data, list) else []
+            except json.JSONDecodeError:
+                return []
     
     async def _get_db_session(self) -> AsyncSession:
         """Get a database session."""
@@ -70,9 +124,12 @@ class DatabaseSessionManager:
         self,
         working_directory: str = ".",
         model: str = "gpt-4o",
-        max_iterations: int = 50,
+        max_iterations: int = int(os.environ.get("DEFAULT_MAX_ITERATIONS", "200")),
         session_id: str | None = None,
+        workspace_id: str | None = None,
         use_sandbox: bool = False,
+        auto_git_commit: bool = False,
+        git_push: bool = False,
     ) -> Session:
         """Create a new agent session with database persistence."""
         async with self._session_lock:
@@ -90,6 +147,7 @@ class DatabaseSessionManager:
                     model=model,
                     max_iterations=max_iterations,
                     session_id=session_id,
+                    workspace_id=workspace_id,
                 )
                 await db.commit()
                 
@@ -103,19 +161,30 @@ class DatabaseSessionManager:
                 sandbox = None
                 if use_sandbox:
                     try:
-                        from ..sandbox.docker_sandbox import create_sandbox
-                        sandbox = create_sandbox(repo_path=working_directory)
+                        from ..sandbox.factory import create_execution_sandbox
+
+                        sandbox = create_execution_sandbox(repo_path=working_directory)
                     except Exception as e:
                         print(f"[Session] Sandbox creation failed, running without sandbox: {e}")
-                
+
+                from ..orchestrator.agent import Agent
+
                 agent = Agent(
                     llm_client=llm_client,
                     working_directory=working_directory,
                     max_iterations=max_iterations,
                     use_sandbox=use_sandbox,
+                    auto_git_commit=auto_git_commit,
+                    git_push=git_push,
+                    session_id=session_id,
                 )
                 if sandbox:
                     agent._sandbox = sandbox
+
+                try:
+                    agent.bootstrap_ide_experience()
+                except Exception as _boot_e:
+                    print(f"[Session] bootstrap_ide_experience: {_boot_e}")
                 
                 self._agents[session_id] = agent
                 self._cancel_events[session_id] = asyncio.Event()
@@ -128,8 +197,40 @@ class DatabaseSessionManager:
                     max_iterations=max_iterations,
                     agent=agent,
                     cancel_event=self._cancel_events[session_id],
+                    workspace_id=workspace_id,
                 )
-    
+
+    async def set_session_model(self, session_id: str, model: str) -> tuple[bool, str | None]:
+        """
+        Update stored session model and swap the in-memory agent LLM when loaded.
+
+        Returns ``(True, None)`` on success, or ``(False, error_message)``.
+        """
+        stored = (model or "auto").strip() or "auto"
+        async with self._session_lock:
+            async with self._session_maker() as db:
+                repo = SessionRepository(db)
+                row = await repo.get(session_id)
+                if not row:
+                    return False, "Session not found"
+                if row.status == DBSessionStatus.RUNNING:
+                    return (
+                        False,
+                        "Cannot change model while a task is running. Wait for it to finish or stop the agent.",
+                    )
+                ok = await repo.update_model(session_id, stored)
+                if not ok:
+                    return False, "Session not found"
+                await db.commit()
+
+            agent = self._agents.get(session_id)
+            if agent:
+                try:
+                    agent.set_primary_llm_model(stored)
+                except Exception as e:
+                    return False, str(e)
+        return True, None
+
     async def get_session(self, session_id: str) -> Session | None:
         """Get a session by ID."""
         async with self._session_maker() as db:
@@ -187,6 +288,12 @@ class DatabaseSessionManager:
                 repo = SessionRepository(db)
                 result = await repo.delete(session_id)
                 await db.commit()
+                try:
+                    from ..api.live_preview_state import clear_session_preview_port
+
+                    await clear_session_preview_port(session_id)
+                except Exception:
+                    pass
                 return result
     
     async def create_task(
@@ -241,8 +348,8 @@ class DatabaseSessionManager:
         # Inject into the LLM conversation history so the next LLM call sees it
         try:
             if hasattr(agent, 'llm') and agent.llm and hasattr(agent.llm, 'conversation'):
-                from ..core.llm_client import Message
-                agent.llm.conversation.append(Message(role='user', content=f'[User follow-up]: {message}'))
+                from ..core.llm_client import LLMMessage
+                agent.llm.conversation.append(LLMMessage(role='user', content=f'[User follow-up]: {message}'))
         except Exception as e:
             print(f'inject_followup error: {e}')
 
@@ -284,12 +391,14 @@ class DatabaseSessionManager:
                 "session_id": session_id,
                 "container_id": existing.container_id,
                 "status": existing.status.value,
+                "backend": getattr(existing, "backend", "docker"),
             }
 
         try:
-            from ..sandbox.docker_sandbox import create_sandbox
+            from ..sandbox.factory import create_execution_sandbox
+
             working_dir = session.working_directory or "."
-            sandbox = create_sandbox(repo_path=working_dir)
+            sandbox = create_execution_sandbox(repo_path=working_dir)
             ok = await sandbox.start()
             if ok:
                 self._sandboxes[session_id] = sandbox
@@ -303,6 +412,7 @@ class DatabaseSessionManager:
                     "session_id": session_id,
                     "container_id": sandbox.container_id,
                     "status": sandbox.status.value,
+                    "backend": getattr(sandbox, "backend", "docker"),
                 }
             else:
                 return {"started": False, "error": "Docker failed to start the container"}
@@ -390,14 +500,24 @@ class DatabaseSessionManager:
                     raise ValueError(f"Session {session_id} not found")
                 
                 from ..core.llm_client import create_llm_client
+                from ..orchestrator.agent import Agent
+
                 llm_client = create_llm_client(model=db_session.model)
-                
+
+                resolved_wd = self._resolve_workspace_for_db_session(db_session)
                 agent = Agent(
                     llm_client=llm_client,
-                    working_directory=db_session.working_directory,
+                    working_directory=resolved_wd,
                     max_iterations=db_session.max_iterations,
+                    session_id=session_id,
                 )
-                
+                raw_conv = getattr(db_session, "conversation_json", None)
+                if raw_conv:
+                    try:
+                        agent.llm.replace_conversation_from_api_messages(json.loads(raw_conv))
+                    except Exception as _h:
+                        print(f"[Session] hydrate conversation for {session_id}: {_h}")
+
                 self._agents[session_id] = agent
                 self._cancel_events[session_id] = asyncio.Event()
         
@@ -429,13 +549,15 @@ class DatabaseSessionManager:
             ws_dir = Path(db_task.description and agent.working_directory or ".")
             if agent.working_directory:
                 ws_dir = Path(agent.working_directory)
-            dep_cmds = []
+            # Cross-platform: use the same interpreter as the API (Windows-safe, no bash-only redirects).
+            _py = sys.executable.replace('"', '\\"')
+            dep_cmds: list[str] = []
             if (ws_dir / "requirements.txt").exists():
-                dep_cmds.append("pip install -r requirements.txt")
+                dep_cmds.append(f'"{_py}" -m pip install -r requirements.txt')
             if (ws_dir / "pyproject.toml").exists() and not (ws_dir / "requirements.txt").exists():
-                dep_cmds.append("pip install -e . 2>/dev/null || true")
+                dep_cmds.append(f'"{_py}" -m pip install -e .')
             if (ws_dir / "package.json").exists():
-                dep_cmds.append("npm install --prefer-offline 2>/dev/null || true")
+                dep_cmds.append("npm install --prefer-offline")
             if dep_cmds and connection_manager:
                 await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
                     type=MessageType.TOOL_OUTPUT,
@@ -465,6 +587,9 @@ class DatabaseSessionManager:
             # Lock for serialized database updates in background tasks
             update_lock = asyncio.Lock()
 
+            # Throttle token_usage events (was: every token → heavy UI + DB churn)
+            _last_usage_sent_at = {"t": 0.0}
+
             # Create callback for streaming updates
             async def on_update(update_type: str, data: dict[str, Any]) -> None:
                 if not connection_manager:
@@ -492,14 +617,27 @@ class DatabaseSessionManager:
                         await connection_manager.send_tokens(
                             session_id, task_id, data.get("content", "")
                         )
-                        # Also emit accumulated token usage
-                        if agent and hasattr(agent, 'llm') and agent.llm:
-                            usage = agent.llm.get_usage_stats()
-                            await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
-                                type=MessageType.TOKEN_USAGE,
-                                data=usage,
-                                task_id=task_id,
-                            ))
+                        now_m = time_module.monotonic()
+                        if now_m - _last_usage_sent_at["t"] >= 1.0:
+                            _last_usage_sent_at["t"] = now_m
+                            if agent and hasattr(agent, 'llm') and agent.llm:
+                                usage = agent.llm.get_usage_stats()
+                                await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
+                                    type=MessageType.TOKEN_USAGE,
+                                    data=usage,
+                                    task_id=task_id,
+                                ))
+                    elif update_type == "thinking":
+                        content = data.get("content", "")
+                        if content:
+                            await connection_manager.broadcast_to_session(
+                                session_id,
+                                WebSocketMessage(
+                                    type=SimpleNamespace(value="thinking"),
+                                    data={"content": content},
+                                    task_id=task_id,
+                                ),
+                            )
                     elif update_type == "tool_output":
                         # Shell live streaming — emit a token-style line for the Shell tab
                         line = data.get("line", "")
@@ -509,10 +647,26 @@ class DatabaseSessionManager:
                                 data={"line": line},
                                 task_id=task_id,
                             ))
-                    
+                    elif update_type == "browser_event":
+                        await connection_manager.send_browser_event(
+                            session_id,
+                            task_id,
+                            data.get("event_type", "other"),
+                            data.get("url"),
+                            data.get("query"),
+                            data.get("screenshot_base64"),
+                        )
+                    elif update_type == "file_changed":
+                        await connection_manager.send_file_changed(
+                            session_id,
+                            task_id,
+                            data.get("path", ""),
+                            data.get("content", ""),
+                        )
+
                     # Update iteration and status in database with locking
-                    # Skip for tokens to reduce database pressure during streaming
-                    if update_type != "tokens":
+                    # Skip for high-frequency stream events (and large file_changed payloads)
+                    if update_type not in ("tokens", "thinking", "tool_output", "file_changed"):
                         iteration = agent.state.iteration if agent and hasattr(agent, 'state') else 0
                         async with update_lock:
                             async with self._session_maker() as db:
@@ -535,27 +689,63 @@ class DatabaseSessionManager:
                 status=AgentTaskStatus.PENDING,
             )
 
-            # Set up callbacks on the agent instance
+            # Set up callbacks on the agent instance.
+            # IMPORTANT: The callbacks are called from synchronous context inside the agent,
+            # so we use asyncio.ensure_future() to schedule the async on_update coroutine.
+            def _fire(coro):
+                """Schedule an async coroutine from a sync lambda context."""
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.ensure_future(coro)
+                    else:
+                        loop.run_until_complete(coro)
+                except Exception:
+                    pass
+
             agent.callbacks = {
-                "on_message": lambda token, is_token=False: on_update("tokens", {"content": token}),
-                "on_tool_start": lambda name, args: on_update("tool_started", {"tool": name, "input": args}),
-                "on_tool_result": lambda name, args, output, duration: on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration}),
-                "on_phase_change": lambda phase: on_update("phase_changed", {"phase": phase}),
-                    # on_clarification_needed callback: emit WS event so UI can show modal
-                    "on_clarification_needed": lambda question: asyncio.ensure_future(
-                        connection_manager.broadcast_to_session(session_id, WebSocketMessage(
-                            type=MessageType.CLARIFICATION_NEEDED,
-                            data={"question": question},
-                            task_id=task_id,
-                        ))
-                    ) if connection_manager else None,
-                    # Plan events
-                    "on_plan_created": lambda steps: on_update("plan_created", {"steps": steps}),
-                "on_step_started": lambda idx, text: on_update("step_started", {"index": idx, "text": text}),
-                "on_step_completed": lambda idx, text: on_update("step_completed", {"index": idx, "text": text}),
-                "on_iteration": lambda iteration, max_iter: on_update("iteration", {"iteration": iteration, "max": max_iter}),
+                "on_message": lambda token, is_token=False: _fire(
+                    on_update("tokens" if is_token else "thinking", {"content": token})
+                ),
+                "on_tool_start": lambda name, args: _fire(on_update("tool_started", {"tool": name, "input": args})),
+                "on_tool_result": lambda name, args, output, duration: _fire(on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration})),
+                "on_phase_change": lambda phase: _fire(on_update("phase_changed", {"phase": phase})),
+                # on_clarification_needed: emit WS event so UI can show modal
+                # payload is now a dict with {question, options, context} or a plain string
+                "on_clarification_needed": lambda payload: asyncio.ensure_future(
+                    connection_manager.broadcast_to_session(session_id, WebSocketMessage(
+                        type=MessageType.CLARIFICATION_NEEDED,
+                        data=payload if isinstance(payload, dict) else {"question": payload, "options": [], "context": ""},
+                        task_id=task_id,
+                    ))
+                ) if connection_manager else None,
+                # Shell live streaming with timestamp
+                "on_command_start": lambda cmd: _fire(on_update("tool_output", {
+                    "line": f"$ {cmd}",
+                    "type": "command",
+                    "ts": __import__("time").time(),
+                })),
+                # Plan events
+                "on_plan_created": lambda steps: _fire(on_update("plan_created", {"steps": steps})),
+                "on_step_started": lambda idx, text="": _fire(on_update("step_started", {"index": idx, "text": text})),
+                "on_step_completed": lambda idx, text="": _fire(on_update("step_completed", {"index": idx, "text": text})),
+                "on_iteration": lambda iteration, max_iter: _fire(on_update("iteration", {"iteration": iteration, "max": max_iter})),
                 # Shell live streaming: each stdout line becomes a tool_output event
-                "on_command_output": lambda line: on_update("tool_output", {"line": line}),
+                "on_command_output": lambda line: _fire(on_update("tool_output", {
+                    "line": line,
+                    "type": "output",
+                    "ts": __import__("time").time(),
+                })),
+                "on_browser_event": lambda payload: _fire(on_update(
+                    "browser_event",
+                    payload if isinstance(payload, dict) else {"event_type": "other"},
+                )),
+                "on_file_changed": lambda path, content=None: _fire(
+                    on_update(
+                        "file_changed",
+                        {"path": path, "content": content if content is not None else ""},
+                    )
+                ),
             }
 
             # Run the agent — track asyncio.Task for cancellation
@@ -691,6 +881,13 @@ class DatabaseSessionManager:
                 summary=f"Task failed: {e}",
                 duration_seconds=(datetime.now(timezone.utc) - start_time).total_seconds(),
             )
+        finally:
+            ag = self._agents.get(session_id)
+            if ag:
+                try:
+                    await self._persist_agent_conversation(session_id, ag)
+                except Exception:
+                    pass
     
     async def cancel_task(self, session_id: str, task_id: str) -> bool:
         """Cancel a running task."""
@@ -806,7 +1003,7 @@ class DatabaseSessionManager:
             if not db_session:
                 raise ValueError(f"Session {session_id} not found")
             
-            base_path = Path(db_session.working_directory).resolve()
+            base_path = Path(self._resolve_workspace_for_db_session(db_session)).resolve()
             target_path = (base_path / directory).resolve()
             
             # Security check: ensure target_path is within base_path
@@ -892,9 +1089,10 @@ class DatabaseSessionManager:
             DBSessionStatus.TERMINATED: SessionStatus.STOPPED,
         }
         
+        resolved_wd = self._resolve_workspace_for_db_session(db_session)
         session = Session(
             session_id=db_session.id,
-            working_directory=db_session.working_directory,
+            working_directory=resolved_wd,
             model=db_session.model,
             max_iterations=db_session.max_iterations,
             status=status_map.get(db_session.status, SessionStatus.IDLE),
@@ -903,6 +1101,7 @@ class DatabaseSessionManager:
             total_tasks=len(db_session.tasks) if db_session.tasks else 0,
             agent=self._agents.get(db_session.id),
             cancel_event=self._cancel_events.get(db_session.id),
+            workspace_id=getattr(db_session, "workspace_id", None),
         )
         
         # Add tasks

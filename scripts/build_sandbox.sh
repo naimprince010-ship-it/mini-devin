@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# build_sandbox.sh — Build the Mini-Devin sandbox Docker image
+# build_sandbox.sh — Build the Plodder sandbox Docker image
 # Run this once before using the sandbox feature.
 #
 # Usage:
@@ -12,12 +12,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-IMAGE_NAME="mini-devin-sandbox:latest"
+IMAGE_NAME="plodder-sandbox:latest"
 DOCKERFILE="$REPO_ROOT/Dockerfile.sandbox"
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
-echo "║   Mini-Devin Sandbox Image Builder       ║"
+echo "║   Plodder Sandbox Image Builder          ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 echo "→ Dockerfile : $DOCKERFILE"

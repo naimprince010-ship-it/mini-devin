@@ -1,5 +1,5 @@
 """
-Conversation Memory for Mini-Devin Agent
+Conversation Memory for Plodder Agent
 
 This module provides long-term memory across sessions for learning from past tasks.
 It stores:

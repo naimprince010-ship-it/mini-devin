@@ -1,0 +1,28 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Frontend: Vite dev (then open Simple Browser → http://127.0.0.1:5173/app )",
+      "type": "npm",
+      "script": "dev",
+      "options": { "cwd": "${workspaceFolder}/frontend" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "focus": true }
+    },
+    {
+      "label": "Frontend: Vite preview (run npm run build in frontend first)",
+      "type": "npm",
+      "script": "preview",
+      "options": { "cwd": "${workspaceFolder}/frontend" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "focus": true }
+    },
+    {
+      "label": "Railway: probe public URL (/api/health, /, /app)",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${workspaceFolder}/scripts/check_railway_public.ps1\"",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "focus": true }
+    }
+  ]
+}

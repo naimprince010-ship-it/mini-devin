@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "description": "Fixed regression scenarios run on every PR (CI job: eval). Maps to pytest nodes in test_eval_contracts.py.",
+  "scenarios": [
+    { "id": "git-url-https", "pytest": "tests/eval/test_eval_contracts.py::test_is_git_remote_url_detects_common_forms" },
+    { "id": "git-token-inject", "pytest": "tests/eval/test_eval_contracts.py::test_git_clone_url_injects_github_token" },
+    { "id": "db-url-asyncpg", "pytest": "tests/eval/test_eval_contracts.py::test_normalize_database_url_for_asyncpg" },
+    { "id": "git-init-workspace", "pytest": "tests/eval/test_eval_contracts.py::test_init_git_workspace_initializes_repo" },
+    { "id": "health-dual", "pytest": "tests/eval/test_eval_contracts.py::test_health_endpoints_respond" },
+    { "id": "ws-message-types", "pytest": "tests/eval/test_eval_contracts.py::test_websocket_message_type_has_core_kinds" },
+    { "id": "rate-limit", "pytest": "tests/eval/test_eval_contracts.py::test_rate_limit_allows_fresh_keys" },
+    { "id": "api-404", "pytest": "tests/eval/test_eval_contracts.py::test_invalid_api_path_404" },
+    { "id": "root-docs", "pytest": "tests/eval/test_eval_contracts.py::test_root_or_docs_accessible" },
+    { "id": "cors-preflight", "pytest": "tests/eval/test_eval_contracts.py::test_cors_options_on_api_preflight" },
+    { "id": "package-version", "pytest": "tests/eval/test_eval_contracts.py::test_package_version_string" },
+    { "id": "agent-task-status", "pytest": "tests/eval/test_eval_contracts.py::test_agent_task_status_enum_importable" },
+    { "id": "safety-guards", "pytest": "tests/eval/test_eval_contracts.py::test_safety_guards_module_loads" },
+    { "id": "editor-tool", "pytest": "tests/eval/test_eval_contracts.py::test_editor_tool_module_loads" },
+    { "id": "terminal-tool", "pytest": "tests/eval/test_eval_contracts.py::test_terminal_tool_module_loads" },
+    { "id": "provider-enum", "pytest": "tests/eval/test_eval_contracts.py::test_llm_provider_enum" }
+  ]
+}

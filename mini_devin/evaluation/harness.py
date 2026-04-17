@@ -1,5 +1,5 @@
 """
-Evaluation Harness for Mini-Devin
+Evaluation Harness for Plodder
 
 This module provides SWE-bench style evaluation with:
 - Task execution in isolated containers

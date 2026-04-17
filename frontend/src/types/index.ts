@@ -5,10 +5,13 @@ export interface Session {
   created_at: string;
   status: string;
   working_directory: string;
+  /** Stable disk folder under PLODDER_AGENT_WORKSPACE_ROOT (managed sessions only). */
+  workspace_id?: string | null;
   current_task: string | null;
   iteration: number;
   total_tasks: number;
   title?: string;
+  model?: string;
 }
 
 export interface Task {
@@ -38,11 +41,26 @@ export interface CreateSessionRequest {
   working_directory: string;
   model: string;
   max_iterations: number;
+  auto_git_commit?: boolean;
+  git_push?: boolean;
 }
 
 export interface CreateTaskRequest {
   description: string;
   acceptance_criteria: string[];
+}
+
+/** One row from workspace `.plodder/session_events.jsonl` (activity feed API). */
+export interface ActivityFeedEvent {
+  ts?: string;
+  type?: string;
+  [key: string]: unknown;
+}
+
+export interface ActivityFeedResponse {
+  session_id: string;
+  events: ActivityFeedEvent[];
+  total: number;
 }
 
 // WebSocket Message Types

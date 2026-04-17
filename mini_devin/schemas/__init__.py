@@ -1,7 +1,7 @@
 """
-Mini-Devin Schemas
+Plodder Schemas
 
-This package contains all Pydantic schemas for the Mini-Devin agent:
+This package contains all Pydantic schemas for the Plodder agent:
 - tools: Tool input/output schemas (Terminal, Editor, Browser)
 - state: Agent and task state schemas
 - verification: Verification and done signal schemas
@@ -107,6 +107,7 @@ from .verification import (
     CompletionCriteria,
     # Pre-built suites
     create_python_verification_suite,
+    create_auto_verification_suite,
     create_javascript_verification_suite,
     create_git_verification_suite,
 )
@@ -204,6 +205,7 @@ __all__ = [
     "CompletionCriteria",
     # Pre-built suites
     "create_python_verification_suite",
+    "create_auto_verification_suite",
     "create_javascript_verification_suite",
     "create_git_verification_suite",
 ]

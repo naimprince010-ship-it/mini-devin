@@ -1,5 +1,5 @@
 """
-Safety Module for Mini-Devin
+Safety Module for Plodder
 
 This module provides safety hardening to prevent dangerous operations:
 - Block deleting more than 1 file in one operation

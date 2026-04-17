@@ -1,5 +1,5 @@
 """
-Benchmark Suite for Mini-Devin
+Benchmark Suite for Plodder
 
 This module provides benchmark management for:
 - Predefined task collections

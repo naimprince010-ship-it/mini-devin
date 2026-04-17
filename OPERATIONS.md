@@ -1,6 +1,6 @@
-# Mini-Devin Operations Guide
+# Plodder Operations Guide
 
-This document provides comprehensive instructions for running and maintaining Mini-Devin, an autonomous AI software engineer agent.
+This document provides comprehensive instructions for running and maintaining Plodder, an autonomous AI software engineer agent.
 
 ## Table of Contents
 
@@ -28,7 +28,7 @@ This document provides comprehensive instructions for running and maintaining Mi
 
 ```bash
 # Clone and enter the project
-cd /path/to/mini-devin
+cd /path/to/plodder
 
 # Install dependencies
 poetry install
@@ -40,18 +40,18 @@ cp .env.example .env
 nano .env
 ```
 
-### Running Mini-Devin
+### Running Plodder
 
 **CLI Mode:**
 ```bash
 # Basic task execution
-poetry run mini-devin run "Fix the failing test in tests/test_api.py" --dir ./my-project
+poetry run plodder run "Fix the failing test in tests/test_api.py" --dir ./my-project
 
 # Interactive mode
-poetry run mini-devin interactive --dir ./my-project
+poetry run plodder interactive --dir ./my-project
 
 # With specific run mode
-RUN_MODE=browse poetry run mini-devin run "Research and implement a caching solution" --dir ./my-project
+RUN_MODE=browse poetry run plodder run "Research and implement a caching solution" --dir ./my-project
 ```
 
 **Docker Mode:**
@@ -60,7 +60,7 @@ RUN_MODE=browse poetry run mini-devin run "Research and implement a caching solu
 docker-compose up -d
 
 # Run a task
-docker-compose exec mini-devin mini-devin run "Your task here"
+docker-compose exec plodder plodder run "Your task here"
 
 # With interactive browser (Selenium)
 docker-compose --profile interactive up -d
@@ -70,7 +70,7 @@ docker-compose --profile interactive up -d
 
 ## Run Modes
 
-Mini-Devin supports three run modes that control which tools are available:
+Plodder supports three run modes that control which tools are available:
 
 ### Offline Mode (Default)
 
@@ -196,7 +196,7 @@ All configuration is done through environment variables. Copy `.env.example` to 
 docker-compose up -d --build
 
 # View logs
-docker-compose logs -f mini-devin
+docker-compose logs -f plodder
 
 # Stop
 docker-compose down
@@ -233,11 +233,11 @@ MEMORY_LIMIT=4G    # Memory limit
 
 ## Sandbox Security (Phase 6D)
 
-Mini-Devin runs in a security-hardened Docker sandbox with the following protections:
+Plodder runs in a security-hardened Docker sandbox with the following protections:
 
 ### Non-Root User
 
-By default, the container runs as a non-root user (`minidevin` with UID/GID 1000) to prevent privilege escalation attacks.
+By default, the container runs as a non-root user (`plodder` with UID/GID 1000) to prevent privilege escalation attacks.
 
 ```bash
 # Customize user ID to match host user (for file permissions)
@@ -309,7 +309,7 @@ All security settings can be configured via environment variables:
 
 ## Safety Features
 
-Mini-Devin includes multiple safety mechanisms to prevent dangerous operations.
+Plodder includes multiple safety mechanisms to prevent dangerous operations.
 
 ### Hard Blocks
 
@@ -450,7 +450,7 @@ export RUN_MODE=offline
 **Solutions:**
 ```bash
 # Check logs
-docker-compose logs mini-devin
+docker-compose logs plodder
 
 # Rebuild
 docker-compose build --no-cache
@@ -496,7 +496,7 @@ find runs/ -type d -mtime +7 -exec rm -rf {} +
 rm -rf runs/*
 ```
 
-### Updating Mini-Devin
+### Updating Plodder
 
 ```bash
 # Pull latest changes
@@ -514,7 +514,7 @@ docker-compose build --no-cache
 **Backup:**
 ```bash
 # Backup runs
-tar -czvf mini-devin-runs-backup.tar.gz runs/
+tar -czvf plodder-runs-backup.tar.gz runs/
 
 # Backup configuration
 cp .env .env.backup
@@ -523,7 +523,7 @@ cp .env .env.backup
 **Restore:**
 ```bash
 # Restore runs
-tar -xzvf mini-devin-runs-backup.tar.gz
+tar -xzvf plodder-runs-backup.tar.gz
 
 # Restore configuration
 cp .env.backup .env
@@ -532,8 +532,8 @@ cp .env.backup .env
 ### Health Checks
 
 ```bash
-# Check if Mini-Devin is healthy
-docker-compose exec mini-devin python -c "import mini_devin; print('OK')"
+# Check if Plodder is healthy
+docker-compose exec plodder python -c "import mini_devin; print('OK')"
 
 # Check Selenium (if using interactive mode)
 curl http://localhost:4444/status
@@ -564,7 +564,7 @@ For better performance:
 
 ## End-to-End Testing
 
-Mini-Devin includes a comprehensive end-to-end test suite that validates all components work together correctly.
+Plodder includes a comprehensive end-to-end test suite that validates all components work together correctly.
 
 ### Running E2E Tests Locally
 
@@ -630,12 +630,12 @@ When E2E tests run in CI, the test report is uploaded as an artifact:
 ## Appendix: CLI Reference
 
 ```
-mini-devin - Autonomous AI Software Engineer Agent
+plodder - Autonomous AI Software Engineer Agent
 
 Usage:
-  mini-devin run <task> [options]     Run a task
-  mini-devin interactive [options]    Start interactive mode
-  mini-devin version                  Show version
+  plodder run <task> [options]     Run a task
+  plodder interactive [options]    Start interactive mode
+  plodder version                  Show version
 
 Options:
   --dir PATH          Working directory (default: current directory)

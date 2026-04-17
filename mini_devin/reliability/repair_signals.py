@@ -1,5 +1,5 @@
 """
-Repair Signals Module for Mini-Devin
+Repair Signals Module for Plodder
 
 This module classifies failures and provides repair strategies:
 - Classify failures into categories (lint, type, test, runtime)

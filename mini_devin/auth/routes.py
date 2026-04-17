@@ -1,4 +1,4 @@
-"""Authentication routes for Mini-Devin."""
+"""Authentication routes for Plodder."""
 
 from datetime import timedelta
 
@@ -8,6 +8,8 @@ from ..database.config import get_session
 from ..database.models import UserModel
 from .service import AuthService, ACCESS_TOKEN_EXPIRE_MINUTES
 from .dependencies import get_current_user
+from .enterprise_deps import RequirePermission
+from ..enterprise.rbac import Permission
 from .schemas import (
     UserCreate,
     UserLogin,
@@ -115,7 +117,7 @@ async def change_password(
 @router.post("/api-keys", response_model=APIKeyCreatedResponse, status_code=status.HTTP_201_CREATED)
 async def create_api_key(
     key_data: APIKeyCreate,
-    current_user: UserModel = Depends(get_current_user),
+    current_user: UserModel = Depends(RequirePermission(Permission.MANAGE_API_KEYS)),
 ):
     """Create a new API key."""
     async for db in get_session():
@@ -138,7 +140,7 @@ async def create_api_key(
 
 
 @router.get("/api-keys", response_model=list[APIKeyResponse])
-async def list_api_keys(current_user: UserModel = Depends(get_current_user)):
+async def list_api_keys(current_user: UserModel = Depends(RequirePermission(Permission.MANAGE_API_KEYS))):
     """List all API keys for the current user."""
     async for db in get_session():
         auth_service = AuthService(db)
@@ -154,7 +156,7 @@ async def list_api_keys(current_user: UserModel = Depends(get_current_user)):
 @router.delete("/api-keys/{api_key_id}")
 async def revoke_api_key(
     api_key_id: str,
-    current_user: UserModel = Depends(get_current_user),
+    current_user: UserModel = Depends(RequirePermission(Permission.MANAGE_API_KEYS)),
 ):
     """Revoke an API key."""
     async for db in get_session():

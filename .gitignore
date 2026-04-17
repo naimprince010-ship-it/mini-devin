@@ -1,3 +1,10 @@
+# Test/demo files created during development
+buggy_code.py
+test_buggy_code.py
+calculator.py
+test_calculator.py
+send_task.py
+
 # Python
 __pycache__/
 *.py[cod]
@@ -50,9 +57,31 @@ htmlcov/
 runs/
 /artifacts/
 
+# Training exports (may contain session content; keep only .gitkeep in repo)
+data/training_logs/*.jsonl
+data/training_exports/*.jsonl
+
+# Project memory (per-project JSON on disk)
+data/project_memory/
+
+# Generated project plans (LLM output)
+data/project_plans/
+
+# Plodder local vector store (LanceDB)
+data/plodder_lance/
+
+# Local scratch / duplicate app tree (not part of main repo)
+plloder-work/
+
+# OpenHands upstream (cloned locally for reference; not tracked)
+OpenHands/
+
 # Database
 *.db
 *.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
 
 # OS
 .DS_Store

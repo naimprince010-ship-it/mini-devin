@@ -1,5 +1,5 @@
 """
-Settings Configuration for Mini-Devin
+Settings Configuration for Plodder
 
 This module provides centralized settings management with:
 - Environment variable loading
@@ -18,7 +18,7 @@ from .run_modes import RunMode, get_run_mode_config, RunModeConfig
 class SafetySettings:
     """Safety-related settings."""
     
-    max_iterations: int = 50
+    max_iterations: int = 100
     max_repair_iterations: int = 3
     allow_dependency_bump: bool = False
     max_lines_edit: int = 300
@@ -43,7 +43,7 @@ class SafetySettings:
     def from_env(cls) -> "SafetySettings":
         """Load safety settings from environment variables."""
         return cls(
-            max_iterations=int(os.environ.get("MAX_ITERATIONS", "50")),
+            max_iterations=int(os.environ.get("MAX_ITERATIONS", "100")),
             max_repair_iterations=int(os.environ.get("MAX_REPAIR_ITERATIONS", "3")),
             allow_dependency_bump=os.environ.get("ALLOW_DEPENDENCY_BUMP", "false").lower() == "true",
             max_lines_edit=int(os.environ.get("MAX_LINES_EDIT", "300")),
@@ -55,9 +55,10 @@ class SafetySettings:
 class LLMSettings:
     """LLM-related settings."""
     
-    model: str = "gpt-4o"
+    model: str = "llama-3.3-70b-versatile"
     temperature: float = 0.1
-    max_tokens: int = 4096
+    max_tokens: int = 16384
+    groq_api_key: str | None = None
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
     
@@ -65,16 +66,17 @@ class LLMSettings:
     def from_env(cls) -> "LLMSettings":
         """Load LLM settings from environment variables."""
         return cls(
-            model=os.environ.get("LLM_MODEL", "gpt-4o"),
+            model=os.environ.get("LLM_MODEL", "llama-3.3-70b-versatile"),
             temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
-            max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "4096")),
+            max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "16384")),
+            groq_api_key=os.environ.get("GROQ_API_KEY"),
             openai_api_key=os.environ.get("OPENAI_API_KEY"),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
         )
     
     def has_valid_api_key(self) -> bool:
         """Check if at least one API key is configured."""
-        return bool(self.openai_api_key or self.anthropic_api_key)
+        return bool(self.groq_api_key or self.openai_api_key or self.anthropic_api_key)
 
 
 @dataclass
@@ -142,7 +144,7 @@ class E2ESettings:
 @dataclass
 class Settings:
     """
-    Centralized settings for Mini-Devin.
+    Centralized settings for Plodder.
     
     Combines all setting categories and provides validation.
     """
@@ -192,7 +194,9 @@ class Settings:
         
         # Check LLM API key
         if not self.llm.has_valid_api_key():
-            errors.append("No LLM API key configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY.")
+            errors.append(
+                "No LLM API key configured. Set GROQ_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY."
+            )
         
         # Check browser API keys for browse/interactive modes
         if self.run_mode in (RunMode.BROWSE, RunMode.INTERACTIVE):

@@ -1,10 +1,10 @@
-# Mini-Devin Architecture
+# Plodder Architecture
 
-This document provides a detailed overview of Mini-Devin's system architecture, component interactions, and design decisions.
+This document provides a detailed overview of Plodder's system architecture, component interactions, and design decisions.
 
 ## System Overview
 
-Mini-Devin is an autonomous AI software engineer agent that uses Large Language Models (LLMs) to understand tasks and execute them using a set of tools. The system is designed with safety, reliability, and extensibility as core principles.
+Plodder is an autonomous AI software engineer agent that uses Large Language Models (LLMs) to understand tasks and execute them using a set of tools. The system is designed with safety, reliability, and extensibility as core principles.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -74,7 +74,11 @@ Mini-Devin is an autonomous AI software engineer agent that uses Large Language 
 
 ### 1. Agent Runtime
 
-The Agent Runtime is the heart of Mini-Devin, responsible for orchestrating task execution.
+The Agent Runtime is the heart of Plodder, responsible for orchestrating task execution.
+
+#### Event-driven backbone (`mini_devin/backbone/`)
+
+An **optional** OpenHands-style layer adds typed Actions/Observations (Pydantic), a central `EventStream`, append-only `AgentStateStore`, pluggable `BaseRuntime` implementations (`LocalRuntime`, `DockerRuntime`), and `mini_devin/backbone/controller.py` (`AgentController`, `AgentHostRuntime`). :meth:`~mini_devin.orchestrator.agent.Agent.run_simple` calls :meth:`~mini_devin.orchestrator.agent.Agent._async_setup_backbone` so tool calls publish actions and await observations; :meth:`~mini_devin.orchestrator.agent.Agent.run` wraps the main loop in ``try``/``finally`` when ``PLODDER_BACKBONE_FOR_RUN`` is truthy so teardown always runs. Full sandbox parity uses ``AgentHostRuntime`` (delegates to ``_execute_tool`` with ``_inline_backbone=True``). ``DockerRuntime`` maps ``GenericToolAction`` with ``tool_name=terminal`` to the same ``docker run`` path as ``CmdRunAction``.
 
 #### Agent Loop (`mini_devin/orchestrator/agent.py`)
 

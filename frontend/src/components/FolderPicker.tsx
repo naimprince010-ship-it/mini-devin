@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { getApiBase } from '../config/apiBase';
 import { FolderOpen, Folder, ChevronRight, X, Check, ArrowLeft, Loader2 } from 'lucide-react';
 
 interface DirEntry {
@@ -28,7 +29,7 @@ export function FolderPicker({ value, onChange }: FolderPickerProps) {
         setLoading(true);
         setError('');
         try {
-            const res = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
+            const res = await fetch(`${getApiBase()}/browse?path=${encodeURIComponent(path)}`);
             if (!res.ok) throw new Error('Cannot open this folder');
             const json: BrowseResult = await res.json();
             setData(json);
@@ -64,7 +65,7 @@ export function FolderPicker({ value, onChange }: FolderPickerProps) {
                     value={value}
                     onChange={(e) => onChange(e.target.value)}
                     className="flex-1 px-3 py-2.5 bg-[#0a0a0a] text-white text-sm rounded-lg border border-[#262626] focus:border-[#00ff99]/40 focus:outline-none transition-colors placeholder-[#525252] font-mono"
-                    placeholder="/path/to/repo"
+                    placeholder="Empty = fresh workspace · or paste https://github.com/org/repo to auto-clone"
                 />
                 <button
                     type="button"

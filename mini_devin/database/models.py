@@ -1,4 +1,4 @@
-"""SQLAlchemy models for Mini-Devin persistence."""
+"""SQLAlchemy models for Plodder persistence."""
 
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
@@ -109,6 +109,10 @@ class SessionModel(Base):
     id = Column(String(36), primary_key=True)
     user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     working_directory = Column(String(1024), nullable=False, default=".")
+    # Stable id for on-disk workspace under PLODDER_AGENT_WORKSPACE_ROOT (survives Railway redeploys when DB + volume match).
+    workspace_id = Column(String(64), nullable=True, unique=True, index=True)
+    # Serialized agent chat (OpenAI-style message dicts) for history after process restart.
+    conversation_json = Column(Text, nullable=True)
     model = Column(String(128), nullable=False, default="gpt-4o")
     max_iterations = Column(Integer, nullable=False, default=50)
     status = Column(Enum(SessionStatus), nullable=False, default=SessionStatus.IDLE)
@@ -121,15 +125,23 @@ class SessionModel(Base):
     tasks = relationship("TaskModel", back_populates="session", cascade="all, delete-orphan")
 
     def to_dict(self) -> dict:
-        """Convert to dictionary."""
+        """Convert to dictionary.
+
+        NOTE: Does NOT access lazy-loaded relationships (e.g. tasks) to avoid
+        MissingGreenlet errors when used outside an async greenlet context.
+        Use eager loading (selectinload) in queries if you need related data.
+        """
+        # Only access tasks if already eagerly loaded (present in __dict__)
+        tasks_list = self.__dict__.get("tasks")
         return {
             "session_id": self.id,
             "working_directory": self.working_directory,
+            "workspace_id": getattr(self, "workspace_id", None),
             "model": self.model,
             "max_iterations": self.max_iterations,
             "status": self.status.value if self.status else "idle",
             "iteration": self.iteration,
-            "total_tasks": len(self.tasks) if self.tasks else 0,
+            "total_tasks": len(tasks_list) if tasks_list is not None else 0,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

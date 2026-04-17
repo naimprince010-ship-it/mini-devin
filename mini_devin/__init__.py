@@ -1,108 +1,14 @@
 """
-Mini-Devin: An Autonomous AI Software Engineer Agent
+Plodder: An autonomous AI software engineer agent (terminal, editor, browser tools).
 
-Mini-Devin is an AI agent that can autonomously solve software engineering tasks
-by using tools to interact with a terminal, code editor, and web browser.
+This package root stays **minimal on import**: loading `schemas` + `core` (LiteLLM, etc.)
+on every `import mini_devin.*` used to delay or OOM API cold starts (Railway 502).
 
-Core Components:
-- schemas: Pydantic schemas for tools, state, and verification
-- core: Base tool interface and registry
-- tools: Tool implementations (terminal, editor, browser)
-- memory: Memory and context management
-- orchestrator: Agent orchestration and planning
-- sandbox: Execution sandbox and isolation
-
-Usage:
-    from mini_devin import AgentState, TaskState, ToolRegistry
-    from mini_devin.core import BaseTool, register_tool
+Import what you need explicitly, for example:
+  ``from mini_devin.schemas.state import AgentState, TaskState``
+  ``from mini_devin.core.tool_interface import ToolRegistry, get_global_registry``
 """
 
 __version__ = "0.1.0"
 
-from .schemas import (
-    # Tool schemas
-    ToolStatus,
-    TerminalInput,
-    TerminalOutput,
-    EditorAction,
-    ReadFileInput,
-    ReadFileOutput,
-    WriteFileInput,
-    WriteFileOutput,
-    SearchInput,
-    SearchOutput,
-    BrowserAction,
-    SearchWebInput,
-    SearchWebOutput,
-    FetchPageInput,
-    FetchPageOutput,
-    # State schemas
-    TaskStatus,
-    TaskType,
-    TaskState,
-    TaskGoal,
-    TaskConstraints,
-    AgentState,
-    AgentPhase,
-    PlanState,
-    PlanStep,
-    WorkingMemory,
-    # Verification schemas
-    VerificationCheck,
-    VerificationResult,
-    DoneSignal,
-    CompletionCriteria,
-)
-
-from .core import (
-    BaseTool,
-    ToolRegistry,
-    ToolPolicy,
-    ToolExecutionError,
-    get_global_registry,
-    register_tool,
-)
-
-__all__ = [
-    # Version
-    "__version__",
-    # Tool schemas
-    "ToolStatus",
-    "TerminalInput",
-    "TerminalOutput",
-    "EditorAction",
-    "ReadFileInput",
-    "ReadFileOutput",
-    "WriteFileInput",
-    "WriteFileOutput",
-    "SearchInput",
-    "SearchOutput",
-    "BrowserAction",
-    "SearchWebInput",
-    "SearchWebOutput",
-    "FetchPageInput",
-    "FetchPageOutput",
-    # State schemas
-    "TaskStatus",
-    "TaskType",
-    "TaskState",
-    "TaskGoal",
-    "TaskConstraints",
-    "AgentState",
-    "AgentPhase",
-    "PlanState",
-    "PlanStep",
-    "WorkingMemory",
-    # Verification schemas
-    "VerificationCheck",
-    "VerificationResult",
-    "DoneSignal",
-    "CompletionCriteria",
-    # Core
-    "BaseTool",
-    "ToolRegistry",
-    "ToolPolicy",
-    "ToolExecutionError",
-    "get_global_registry",
-    "register_tool",
-]
+__all__ = ["__version__"]

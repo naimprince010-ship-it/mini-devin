@@ -1,5 +1,5 @@
 """
-Integration tests for Mini-Devin Agent.
+Integration tests for Plodder Agent.
 
 These tests validate that all components work together correctly
 in real-world scenarios without mocking the core functionality.
@@ -100,13 +100,13 @@ class TestToolsIntegration:
         
         with tempfile.TemporaryDirectory() as tmpdir:
             test_file = Path(tmpdir) / "test.txt"
-            test_file.write_text("Hello, Mini-Devin!")
+            test_file.write_text("Hello, Plodder!")
             
             editor = create_editor_tool(working_directory=tmpdir)
             input_data = ReadFileInput(path=str(test_file))
             result = await editor.execute(input_data)
             
-            assert "Hello, Mini-Devin!" in result.content
+            assert "Hello, Plodder!" in result.content
 
     @pytest.mark.asyncio
     async def test_editor_write_file(self):
@@ -119,12 +119,12 @@ class TestToolsIntegration:
             editor = create_editor_tool(working_directory=tmpdir)
             input_data = WriteFileInput(
                 path=str(test_file),
-                content="New content from Mini-Devin",
+                content="New content from Plodder",
             )
             await editor._execute(input_data)
             
             assert test_file.exists()
-            assert test_file.read_text() == "New content from Mini-Devin"
+            assert test_file.read_text() == "New content from Plodder"
 
 
 class TestMemoryIntegration:
@@ -360,12 +360,12 @@ class TestEndToEndScenarios:
             
             input_data = WriteFileInput(
                 path=str(test_file),
-                content="Created by Mini-Devin agent!",
+                content="Created by Plodder agent!",
             )
             await editor._execute(input_data)
             
             assert test_file.exists()
-            assert "Created by Mini-Devin agent!" in test_file.read_text()
+            assert "Created by Plodder agent!" in test_file.read_text()
 
     @pytest.mark.asyncio
     async def test_agent_can_run_command(self):
@@ -374,11 +374,11 @@ class TestEndToEndScenarios:
         
         with tempfile.TemporaryDirectory() as tmpdir:
             terminal = create_terminal_tool(working_directory=tmpdir)
-            input_data = TerminalInput(command="echo 'Hello from Mini-Devin'")
+            input_data = TerminalInput(command="echo 'Hello from Plodder'")
             result = await terminal.execute(input_data)
             
             assert result.status.value == "success"
-            assert "Hello from Mini-Devin" in result.stdout
+            assert "Hello from Plodder" in result.stdout
 
     @pytest.mark.asyncio
     async def test_agent_memory_persistence(self):

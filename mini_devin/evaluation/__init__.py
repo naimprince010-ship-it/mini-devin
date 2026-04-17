@@ -1,5 +1,5 @@
 """
-Evaluation Module for Mini-Devin
+Evaluation Module for Plodder
 
 This module provides SWE-bench style evaluation for:
 - Task validation and scoring

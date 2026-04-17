@@ -1,5 +1,5 @@
 """
-Docker Sandbox for Mini-Devin
+Docker Sandbox for Plodder
 
 This module implements Docker-based sandboxing for safe code execution:
 - Isolated container environment
@@ -16,9 +16,19 @@ import asyncio
 import json
 import os
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
+
+from mini_devin.sandbox.shell_text import strip_ansi
+from mini_devin.sandbox.stateful_exec import (
+    build_stateful_bash_script,
+    maybe_append_exports,
+    noninteractive_export_block,
+    posix_paths_for_docker_workspace,
+    shell_state_dir,
+)
 
 
 class SandboxStatus(str, Enum):
@@ -40,7 +50,7 @@ class SecurityLevel(str, Enum):
 class SandboxConfig:
     """Configuration for the Docker sandbox."""
     # Image settings — built from Dockerfile.sandbox
-    image: str = "mini-devin-sandbox:latest"
+    image: str = "plodder-sandbox:latest"
     
     # Resource limits
     memory_limit: str = "2g"
@@ -95,6 +105,7 @@ class SandboxResult:
     exit_code: int
     duration_ms: int
     timed_out: bool = False
+    streamed_live: bool = False
 
 
 class DockerSandbox:
@@ -108,6 +119,8 @@ class DockerSandbox:
     
     Without access to the host filesystem or network (optionally).
     """
+
+    backend = "docker"
     
     def __init__(
         self,
@@ -119,7 +132,45 @@ class DockerSandbox:
         self.container_id: str | None = None
         self.status = SandboxStatus.CREATED
         self.sandbox_id = str(uuid.uuid4())[:8]
-    
+
+    def _resolve_container_workdir(self, working_dir: str | None) -> str:
+        """Map agent-supplied paths to a directory inside the container (repo is mounted at workspace_path)."""
+        ws = self.config.workspace_path
+        base = ws.rstrip("/")
+        if working_dir is None:
+            return ws
+        wd = str(working_dir).strip().replace("\\", "/")
+        if wd in (".", ""):
+            return ws
+        rp = self.repo_path.replace("\\", "/")
+        if os.path.isabs(wd):
+            wd_abs = os.path.abspath(wd).replace("\\", "/")
+            if wd_abs.startswith(rp):
+                rel = os.path.relpath(wd_abs, self.repo_path).replace("\\", "/")
+                if rel in (".", ""):
+                    return ws
+                candidate = f"{base}/{rel}"
+            else:
+                candidate = ws
+        else:
+            candidate = f"{base}/{wd}".replace("//", "/")
+        host_candidate = self._host_path_for_container_workdir(candidate)
+        if os.path.isdir(host_candidate):
+            return candidate
+        return ws
+
+    def _host_path_for_container_workdir(self, container_wd: str) -> str:
+        """Inverse of mount: workspace_path -> repo_path, subdirs preserved."""
+        ws = self.config.workspace_path
+        base = ws.rstrip("/")
+        cw = container_wd.replace("\\", "/")
+        if cw.rstrip("/") == base or cw == ws:
+            return self.repo_path
+        if cw.startswith(base + "/"):
+            rel = cw[len(base) + 1 :]
+            return os.path.normpath(os.path.join(self.repo_path, rel))
+        return self.repo_path
+
     def _validate_mount_path(self, host_path: str) -> bool:
         """Validate that a mount path is in the allowlist."""
         if not self.config.mount_allowlist:
@@ -168,7 +219,7 @@ class DockerSandbox:
             # Build docker run command
             cmd_parts = [
                 "docker", "run", "-d",
-                "--name", f"mini-devin-{self.sandbox_id}",
+                "--name", f"plodder-{self.sandbox_id}",
                 "-w", self.config.workspace_path,
                 "--memory", self.config.memory_limit,
                 "--cpus", str(self.config.cpu_limit),
@@ -293,6 +344,7 @@ class DockerSandbox:
         command: str,
         timeout: int | None = None,
         working_dir: str | None = None,
+        on_output_line: Callable[[str], None] | None = None,
     ) -> SandboxResult:
         """
         Execute a command in the sandbox.
@@ -314,49 +366,132 @@ class DockerSandbox:
             )
         
         timeout = timeout or self.config.timeout_seconds
-        work_dir = working_dir or self.config.workspace_path
-        
-        start_time = datetime.utcnow()
-        
+        work_dir = self._resolve_container_workdir(working_dir)
+
+        cmd_stripped = command.strip()
+        if cmd_stripped.startswith("npm init") and "-y" in cmd_stripped:
+            host_pkg = os.path.join(self._host_path_for_container_workdir(work_dir), "package.json")
+            if os.path.isfile(host_pkg):
+                return SandboxResult(
+                    stdout="",
+                    stderr=(
+                        f"`package.json` already exists at {host_pkg}. "
+                        "Do not run `npm init -y` in this directory; edit the existing manifest "
+                        "or create a new subfolder first."
+                    ),
+                    exit_code=1,
+                    duration_ms=0,
+                )
+
+        start_time = datetime.now(timezone.utc)
+
         try:
-            # Build docker exec command
+            maybe_append_exports(self.repo_path, cmd_stripped)
+            ws, cf, ef = posix_paths_for_docker_workspace()
+            inner_script = build_stateful_bash_script(
+                noninteractive_export_block() + cmd_stripped,
+                workspace_posix=ws,
+                cwd_file_posix=cf,
+                env_file_posix=ef,
+                clamp_under_workspace=False,
+            )
+            helper = shell_state_dir(self.repo_path) / "docker_run_inner.sh"
+            helper.write_text(inner_script + "\n", encoding="utf-8", newline="\n")
+
             cmd_parts = [
-                "docker", "exec",
-                "-w", work_dir,
+                "docker",
+                "exec",
+                "-w",
+                work_dir,
                 self.container_id,
-                "sh", "-c", command,
+                "sh",
+                "/workspace/.mini_devin/_shell/docker_run_inner.sh",
             ]
-            
+
             process = await asyncio.create_subprocess_exec(
                 *cmd_parts,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            
+
+            timed_out = False
+            streamed_live = bool(on_output_line)
+
+            async def _drain(
+                reader: asyncio.StreamReader | None,
+                chunks: list[bytes],
+                prefix: str,
+            ) -> None:
+                if reader is None:
+                    return
+                while True:
+                    line = await reader.readline()
+                    if not line:
+                        break
+                    chunks.append(line)
+                    if on_output_line:
+                        text = strip_ansi(line.decode("utf-8", errors="replace").rstrip("\r\n"))
+                        if text:
+                            on_output_line(f"{prefix}{text}" if prefix else text)
+
+            out_parts: list[bytes] = []
+            err_parts: list[bytes] = []
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=timeout,
-                )
-                timed_out = False
+                if on_output_line:
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            _drain(process.stdout, out_parts, ""),
+                            _drain(process.stderr, err_parts, "[stderr] "),
+                        ),
+                        timeout=timeout,
+                    )
+                    rc = await process.wait()
+                else:
+                    stdout, stderr = await asyncio.wait_for(
+                        process.communicate(),
+                        timeout=timeout,
+                    )
+                    out_parts = [stdout] if stdout else []
+                    err_parts = [stderr] if stderr else []
+                    rc = process.returncode or 0
             except asyncio.TimeoutError:
-                process.kill()
-                stdout, stderr = b"", b"Command timed out"
                 timed_out = True
-            
-            end_time = datetime.utcnow()
+                process.kill()
+                try:
+                    await process.wait()
+                except Exception:
+                    pass
+                out_b = b"".join(out_parts)
+                err_b = b"".join(err_parts)
+                end_time = datetime.now(timezone.utc)
+                duration_ms = int((end_time - start_time).total_seconds() * 1000)
+                return SandboxResult(
+                    stdout=strip_ansi(out_b.decode("utf-8", errors="replace")),
+                    stderr=strip_ansi(
+                        (err_b.decode("utf-8", errors="replace") or "Command timed out")
+                    ),
+                    exit_code=-1,
+                    duration_ms=duration_ms,
+                    timed_out=True,
+                    streamed_live=streamed_live,
+                )
+
+            end_time = datetime.now(timezone.utc)
             duration_ms = int((end_time - start_time).total_seconds() * 1000)
-            
+            out_b = b"".join(out_parts)
+            err_b = b"".join(err_parts)
+
             return SandboxResult(
-                stdout=stdout.decode("utf-8", errors="replace"),
-                stderr=stderr.decode("utf-8", errors="replace"),
-                exit_code=process.returncode or 0,
+                stdout=strip_ansi(out_b.decode("utf-8", errors="replace")),
+                stderr=strip_ansi(err_b.decode("utf-8", errors="replace")),
+                exit_code=int(rc) if rc is not None else 0,
                 duration_ms=duration_ms,
                 timed_out=timed_out,
+                streamed_live=streamed_live,
             )
             
         except Exception as e:
-            end_time = datetime.utcnow()
+            end_time = datetime.now(timezone.utc)
             duration_ms = int((end_time - start_time).total_seconds() * 1000)
             
             return SandboxResult(
@@ -364,6 +499,7 @@ class DockerSandbox:
                 stderr=str(e),
                 exit_code=-1,
                 duration_ms=duration_ms,
+                streamed_live=False,
             )
     
     async def read_file(self, path: str) -> str | None:
@@ -375,7 +511,7 @@ class DockerSandbox:
     
     async def write_file(self, path: str, content: str) -> bool:
         """Write a file in the sandbox."""
-        result = await self.execute(f"cat > {path} << 'MINI_DEVIN_EOF'\n{content}\nMINI_DEVIN_EOF")
+        result = await self.execute(f"cat > {path} << 'PLODDER_EOF'\n{content}\nPLODDER_EOF")
         return result.exit_code == 0
     
     async def file_exists(self, path: str) -> bool:
@@ -416,7 +552,7 @@ class DockerSandbox:
 
 
 # Dockerfile content for the sandbox image with security hardening
-DOCKERFILE_CONTENT = '''# Mini-Devin Sandbox Image (Hardened)
+DOCKERFILE_CONTENT = '''# Plodder Sandbox Image (Hardened)
 FROM ubuntu:22.04
 
 # Avoid prompts during package installation
@@ -472,15 +608,15 @@ RUN groupadd -g ${GROUP_ID} sandbox && \\
 RUN mkdir -p /workspace && chown sandbox:sandbox /workspace
 
 # Set up git config for both root and sandbox user
-RUN git config --global user.email "mini-devin@example.com" && \\
-    git config --global user.name "Mini-Devin" && \\
+RUN git config --global user.email "plodder@example.com" && \\
+    git config --global user.name "Plodder" && \\
     git config --global init.defaultBranch main && \\
     git config --global --add safe.directory /workspace
 
 # Set up git config for sandbox user
 USER sandbox
-RUN git config --global user.email "mini-devin@example.com" && \\
-    git config --global user.name "Mini-Devin" && \\
+RUN git config --global user.email "plodder@example.com" && \\
+    git config --global user.name "Plodder" && \\
     git config --global init.defaultBranch main && \\
     git config --global --add safe.directory /workspace
 USER root
@@ -564,7 +700,7 @@ def generate_dockerfile(output_path: str = "Dockerfile") -> str:
 
 async def build_sandbox_image(
     dockerfile_path: str = "Dockerfile.sandbox",
-    image_name: str = "mini-devin-sandbox:latest",
+    image_name: str = "plodder-sandbox:latest",
     build_context: str = ".",
 ) -> bool:
     """Build the sandbox Docker image from Dockerfile.sandbox."""
@@ -618,7 +754,7 @@ async def build_sandbox_from_repo(repo_root: str | None = None) -> bool:
     dockerfile = str(pathlib.Path(repo_root) / "Dockerfile.sandbox")
     return await build_sandbox_image(
         dockerfile_path=dockerfile,
-        image_name="mini-devin-sandbox:latest",
+        image_name="plodder-sandbox:latest",
         build_context=repo_root,
     )
 

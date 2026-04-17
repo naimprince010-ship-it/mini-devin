@@ -1,9 +1,10 @@
 """
-Deployment Integration for Mini-Devin
+Deployment Integration for Plodder
 Supports Vercel, Railway, and other deployment platforms
 """
 
 import os
+import re
 import asyncio
 import json
 import subprocess
@@ -287,17 +288,83 @@ class VercelDeployment:
             return []
     
     async def setup_project(self, project_name: str, project_type: str) -> Dict[str, Any]:
-        """Setup Vercel project"""
+        """Create (or resolve) a Vercel project via the REST API."""
         try:
-            # This would involve creating a new project via Vercel API
-            # For now, return a placeholder
-            return {
-                'success': True,
-                'project_id': f'vercel-project-{project_name}',
-                'message': 'Project setup completed'
+            if not self.token:
+                return {'success': False, 'error': 'VERCEL_TOKEN not configured'}
+
+            import httpx
+
+            slug = re.sub(r"[^a-z0-9-]+", "-", (project_name or "project").lower()).strip("-")[
+                :100
+            ] or "project"
+            params: Dict[str, Any] = {}
+            if self.team_id:
+                params["teamId"] = self.team_id
+
+            framework_map: Dict[str, str | None] = {
+                "next": "nextjs",
+                "nextjs": "nextjs",
+                "react": "create-react-app",
+                "vue": "vue",
+                "nuxt": "nuxtjs",
+                "svelte": "svelte",
+                "remix": "remix",
+                "astro": "astro",
+                "static": None,
+                "auto": None,
             }
-            
+            pt = (project_type or "auto").lower()
+            fw = framework_map.get(pt)
+
+            body: Dict[str, Any] = {"name": slug}
+            if fw:
+                body["framework"] = fw
+
+            headers = {"Authorization": f"Bearer {self.token}"}
+
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.post(
+                    "https://api.vercel.com/v9/projects",
+                    headers=headers,
+                    params=params,
+                    json=body,
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    return {
+                        "success": True,
+                        "project_id": data.get("id"),
+                        "name": data.get("name", slug),
+                        "message": "Project created",
+                    }
+                if r.status_code in (409, 400):
+                    r2 = await client.get(
+                        f"https://api.vercel.com/v9/projects/{slug}",
+                        headers=headers,
+                        params=params,
+                    )
+                    if r2.status_code == 200:
+                        data = r2.json()
+                        return {
+                            "success": True,
+                            "project_id": data.get("id"),
+                            "name": data.get("name", slug),
+                            "message": "Project already exists; using existing",
+                        }
+                err_text = (
+                    r.text[:800]
+                    if r.text
+                    else getattr(r, "reason_phrase", None) or str(r.status_code)
+                )
+                return {
+                    "success": False,
+                    "error": err_text,
+                    "status_code": r.status_code,
+                }
+
         except Exception as e:
+            logger.error("Vercel setup_project failed: %s", e)
             return {'success': False, 'error': str(e)}
     
     async def _check_vercel_cli(self) -> bool:

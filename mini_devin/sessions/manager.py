@@ -1,5 +1,5 @@
 """
-Session Manager for Mini-Devin
+Session Manager for Plodder
 
 This module provides multi-session support for:
 - Creating and managing agent sessions
@@ -8,17 +8,23 @@ This module provides multi-session support for:
 - Resource management and cleanup
 """
 
+from __future__ import annotations
+
 import asyncio
+import os
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
-from dataclasses import dataclass, field
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 
-from ..orchestrator.agent import Agent
-from ..api.websocket import ConnectionManager
+from ..api.websocket import ConnectionManager, MessageType, WebSocketMessage
 from ..schemas.state import TaskState, TaskGoal, TaskStatus as AgentTaskStatus
+
+if TYPE_CHECKING:
+    from ..orchestrator.agent import Agent
 
 
 class SessionStatus(str, Enum):
@@ -87,6 +93,9 @@ class Session:
     
     # Agent instance
     agent: Agent | None = None
+
+    # Stable workspace folder name under PLODDER_AGENT_WORKSPACE_ROOT (None = legacy path-only session).
+    workspace_id: str | None = None
     
     # Cancellation
     cancel_event: asyncio.Event | None = None
@@ -127,7 +136,7 @@ class SessionManager:
         self,
         working_directory: str = ".",
         model: str = "gpt-4o",
-        max_iterations: int = 50,
+        max_iterations: int = int(os.environ.get("DEFAULT_MAX_ITERATIONS", "200")),
     ) -> Session:
         """
         Create a new agent session.
@@ -150,13 +159,20 @@ class SessionManager:
             from ..core.llm_client import create_llm_client
             llm_client = create_llm_client(model=model)
             
-            # Create agent
+            # Create agent (lazy import keeps API process startup fast on Railway)
+            from ..orchestrator.agent import Agent
+
             agent = Agent(
                 llm_client=llm_client,
                 working_directory=working_directory,
                 max_iterations=max_iterations,
+                session_id=session_id,
             )
-            
+            try:
+                agent.bootstrap_ide_experience()
+            except Exception as _boot_e:
+                print(f"[Session] bootstrap_ide_experience: {_boot_e}")
+
             session = Session(
                 session_id=session_id,
                 working_directory=working_directory,
@@ -345,6 +361,32 @@ class SessionManager:
                     await connection_manager.send_tokens(
                         session_id, task_id, data.get("content", "")
                     )
+                elif update_type == "thinking":
+                    c = data.get("content", "")
+                    if c:
+                        await connection_manager.broadcast_to_session(
+                            session_id,
+                            WebSocketMessage(
+                                type=SimpleNamespace(value="thinking"),
+                                data={"content": c},
+                                task_id=task_id,
+                            ),
+                        )
+                elif update_type == "tool_output":
+                    line = data.get("line", "")
+                    if line:
+                        await connection_manager.broadcast_to_session(
+                            session_id,
+                            WebSocketMessage(
+                                type=MessageType.TOOL_OUTPUT,
+                                data={
+                                    "line": line,
+                                    "type": data.get("type", "output"),
+                                    "ts": data.get("ts"),
+                                },
+                                task_id=task_id,
+                            ),
+                        )
                 elif update_type == "plan_created":
                     steps = data.get("steps", [])
                     if steps:
@@ -379,7 +421,8 @@ class SessionManager:
                     )
                 elif update_type == "file_changed":
                     await connection_manager.send_file_changed(
-                        session_id, task_id,
+                        session_id,
+                        task_id,
                         data.get("path", ""),
                         data.get("content", ""),
                     )
@@ -400,7 +443,9 @@ class SessionManager:
 
             # Set up callbacks on the agent instance
             session.agent.callbacks = {
-                "on_message": lambda token, is_token=False: asyncio.create_task(on_update("tokens", {"content": token})) if is_token else None,
+                "on_message": lambda token, is_token=False: asyncio.create_task(
+                    on_update("tokens" if is_token else "thinking", {"content": token})
+                ),
                 "on_tool_start": lambda name, args: asyncio.create_task(on_update("tool_started", {"tool": name, "input": args})),
                 "on_tool_result": lambda name, args, output, duration: asyncio.create_task(on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration})),
                 "on_phase_change": lambda phase: asyncio.create_task(on_update("phase_changed", {"phase": phase})),
@@ -408,13 +453,50 @@ class SessionManager:
                 "on_step_started": lambda idx, text="": asyncio.create_task(on_update("step_started", {"index": idx, "text": text})),
                 "on_step_completed": lambda idx, text="": asyncio.create_task(on_update("step_completed", {"index": idx, "text": text})),
                 "on_iteration": lambda iter_n, max_n: asyncio.create_task(on_update("iteration", {"iteration": iter_n, "max": max_n})),
+                "on_browser_event": lambda payload: asyncio.create_task(on_update(
+                    "browser_event",
+                    payload if isinstance(payload, dict) else {"event_type": "other"},
+                )),
+                "on_clarification_needed": lambda payload: asyncio.ensure_future(
+                    connection_manager.broadcast_to_session(
+                        session_id,
+                        WebSocketMessage(
+                            type=MessageType.CLARIFICATION_NEEDED,
+                            data=payload if isinstance(payload, dict) else {"question": payload, "options": [], "context": ""},
+                            task_id=task_id,
+                        ),
+                    )
+                )
+                if connection_manager
+                else None,
+                "on_command_start": lambda cmd: asyncio.create_task(
+                    on_update(
+                        "tool_output",
+                        {"line": f"$ {cmd}", "type": "command", "ts": __import__("time").time()},
+                    )
+                ),
+                "on_command_output": lambda line: asyncio.create_task(
+                    on_update(
+                        "tool_output",
+                        {"line": line, "type": "output", "ts": __import__("time").time()},
+                    )
+                ),
+                "on_file_changed": lambda path, content=None: asyncio.create_task(
+                    on_update(
+                        "file_changed",
+                        {"path": path, "content": content if content is not None else ""},
+                    )
+                ),
             }
 
             # Run the agent with the TaskState object — track the asyncio Task for cancellation
-            agent_coro = session.agent.run(task_state)
-            running = asyncio.ensure_future(agent_coro)
-            session._running_task = running
-            final_task_state = await running
+            from plodder.orchestration.session_driver import plodder_session_id_binding
+
+            with plodder_session_id_binding(session_id):
+                agent_coro = session.agent.run(task_state)
+                running = asyncio.ensure_future(agent_coro)
+                session._running_task = running
+                final_task_state = await running
             
             # Check success: only COMPLETED = success, anything else = not success
             success = final_task_state.status == AgentTaskStatus.COMPLETED

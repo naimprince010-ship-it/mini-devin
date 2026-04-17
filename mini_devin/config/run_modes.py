@@ -1,5 +1,5 @@
 """
-Run Modes Configuration for Mini-Devin
+Run Modes Configuration for Plodder
 
 This module defines the different run modes and their capabilities:
 - offline: Terminal + Editor only (no web access)
@@ -13,7 +13,7 @@ from typing import Any
 
 
 class RunMode(str, Enum):
-    """Available run modes for Mini-Devin."""
+    """Available run modes for Plodder."""
     
     OFFLINE = "offline"
     """Terminal and Editor tools only. No web access."""

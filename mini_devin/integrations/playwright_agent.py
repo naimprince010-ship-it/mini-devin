@@ -1,5 +1,5 @@
 """
-Enhanced Playwright Agent for Mini-Devin
+Enhanced Playwright Agent for Plodder
 Full web automation capabilities with intelligent interaction
 """
 

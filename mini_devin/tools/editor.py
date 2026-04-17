@@ -1,5 +1,5 @@
 """
-Editor Tool for Mini-Devin
+Editor Tool for Plodder
 
 This module implements the code editor tool that allows the agent to
 read, write, search, and modify files in the codebase.
@@ -14,12 +14,15 @@ from datetime import datetime
 from typing import Any
 
 from ..core.tool_interface import BaseTool, ToolPolicy
+from .host_paths import resolve_for_editor
 from ..schemas.tools import (
     EditorAction,
     ReadFileInput,
     ReadFileOutput,
     WriteFileInput,
     WriteFileOutput,
+    StrReplaceInput,
+    StrReplaceOutput,
     ApplyPatchInput,
     ApplyPatchOutput,
     SearchInput,
@@ -83,12 +86,27 @@ Use this tool for all file operations during development."""
     @property
     def output_schema(self) -> type[ReadFileOutput]:
         return ReadFileOutput
+
+    def validate_input(self, input_data: Any) -> Any:
+        """
+        Preserve multi-action payloads for internal dispatch.
+
+        The base tool validation coerces inputs to ``input_schema``. Since this
+        tool supports multiple actions, coercing every dict into ``ReadFileInput``
+        would incorrectly route ``write_file``/``search``/etc. to read_file.
+        """
+        if isinstance(
+            input_data,
+            (ReadFileInput, WriteFileInput, ApplyPatchInput, SearchInput, ListDirectoryInput),
+        ):
+            return input_data
+        if isinstance(input_data, dict):
+            return input_data
+        return super().validate_input(input_data)
     
     def _resolve_path(self, path: str) -> str:
-        """Resolve a path relative to working directory."""
-        if os.path.isabs(path):
-            return path
-        return os.path.abspath(os.path.join(self.working_directory, path))
+        """Resolve a path relative to working directory (remap Windows drives on Linux)."""
+        return resolve_for_editor(path, self.working_directory)
     
     def _detect_language(self, path: str) -> str | None:
         """Detect programming language from file extension."""
@@ -230,6 +248,68 @@ Use this tool for all file operations during development."""
                 execution_time_ms=int((time.time() - start_time) * 1000),
             )
     
+    async def _str_replace(self, input_data: StrReplaceInput) -> StrReplaceOutput:
+        """
+        Replace an exact string in a file — token-efficient alternative to apply_patch.
+        The old_str must be unique in the file (unless allow_multiple=True).
+        """
+        start_time = time.time()
+        path = self._resolve_path(input_data.path)
+
+        if not os.path.exists(path):
+            return StrReplaceOutput(
+                status=ToolStatus.FAILURE,
+                error_message=f"File not found: {path}",
+                replacements_made=0,
+                path=path,
+                execution_time_ms=int((time.time() - start_time) * 1000),
+            )
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            count = content.count(input_data.old_str)
+            if count == 0:
+                return StrReplaceOutput(
+                    status=ToolStatus.FAILURE,
+                    error_message=f"old_str not found in file: {path!r}",
+                    replacements_made=0,
+                    path=path,
+                    execution_time_ms=int((time.time() - start_time) * 1000),
+                )
+            if count > 1 and not input_data.allow_multiple:
+                return StrReplaceOutput(
+                    status=ToolStatus.FAILURE,
+                    error_message=(
+                        f"old_str appears {count} times in {path!r}. "
+                        "Add more context to make it unique, or set allow_multiple=true."
+                    ),
+                    replacements_made=0,
+                    path=path,
+                    execution_time_ms=int((time.time() - start_time) * 1000),
+                )
+
+            new_content = content.replace(input_data.old_str, input_data.new_str)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+
+            return StrReplaceOutput(
+                status=ToolStatus.SUCCESS,
+                replacements_made=count if input_data.allow_multiple else 1,
+                path=path,
+                execution_time_ms=int((time.time() - start_time) * 1000),
+            )
+
+        except Exception as e:
+            return StrReplaceOutput(
+                status=ToolStatus.FAILURE,
+                error_message=str(e),
+                replacements_made=0,
+                path=path,
+                execution_time_ms=int((time.time() - start_time) * 1000),
+            )
+
     async def _apply_patch(self, input_data: ApplyPatchInput) -> ApplyPatchOutput:
         """Apply a unified diff patch to a file."""
         start_time = time.time()
@@ -615,6 +695,8 @@ Use this tool for all file operations during development."""
             return await self._read_file(input_data)
         elif isinstance(input_data, WriteFileInput):
             return await self._write_file(input_data)
+        elif isinstance(input_data, StrReplaceInput):
+            return await self._str_replace(input_data)
         elif isinstance(input_data, ApplyPatchInput):
             return await self._apply_patch(input_data)
         elif isinstance(input_data, SearchInput):
@@ -629,13 +711,15 @@ Use this tool for all file operations during development."""
                     return await self._read_file(ReadFileInput(**input_data))
                 elif action == EditorAction.WRITE_FILE:
                     return await self._write_file(WriteFileInput(**input_data))
+                elif action == EditorAction.STR_REPLACE:
+                    return await self._str_replace(StrReplaceInput(**input_data))
                 elif action == EditorAction.APPLY_PATCH:
                     return await self._apply_patch(ApplyPatchInput(**input_data))
                 elif action == EditorAction.SEARCH:
                     return await self._search(SearchInput(**input_data))
                 elif action == EditorAction.LIST_DIRECTORY:
                     return await self._list_directory(ListDirectoryInput(**input_data))
-            
+
             raise ValueError(f"Unknown input type: {type(input_data)}")
 
 

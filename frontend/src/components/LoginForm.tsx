@@ -54,7 +54,7 @@ export function LoginForm() {
     <div className="min-h-screen flex items-center justify-center bg-gray-900 px-4">
       <div className="max-w-md w-full">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-white mb-2">Mini-Devin</h1>
+          <h1 className="text-3xl font-bold text-white mb-2">Plodder</h1>
           <p className="text-gray-400">Autonomous AI Software Engineer</p>
         </div>
 

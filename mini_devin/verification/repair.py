@@ -1,5 +1,5 @@
 """
-Repair Loop for Mini-Devin
+Repair Loop for Plodder
 
 This module implements bounded repair loops that automatically attempt
 to fix issues found during verification, with a maximum number of
@@ -7,7 +7,7 @@ iterations before escalating to the user.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Callable, Awaitable
 
@@ -142,7 +142,7 @@ class RepairLoop:
         Returns:
             RepairResult with the outcome of the repair loop
         """
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc)
         attempts: list[RepairAttempt] = []
         checkpoint_id = f"repair_start_{task_id}"
         
@@ -169,7 +169,7 @@ class RepairLoop:
                 all_issues_fixed=True,
                 remaining_issues=[],
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
             )
         
         # Repair loop
@@ -177,7 +177,7 @@ class RepairLoop:
             if self.verbose:
                 print(f"[Repair] Iteration {iteration}/{self.max_iterations}")
             
-            attempt_started = datetime.utcnow()
+            attempt_started = datetime.now(timezone.utc)
             
             # Get failed checks
             failed_checks = [
@@ -222,7 +222,7 @@ class RepairLoop:
             attempt = RepairAttempt(
                 attempt_number=iteration,
                 started_at=attempt_started,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
                 action_taken=action_taken,
                 files_modified=files_modified,
                 status=RepairStatus.SUCCESS if verification_result.passed else RepairStatus.FAILED,
@@ -245,7 +245,7 @@ class RepairLoop:
                     all_issues_fixed=True,
                     remaining_issues=[],
                     started_at=started_at,
-                    completed_at=datetime.utcnow(),
+                    completed_at=datetime.now(timezone.utc),
                 )
         
         # Max iterations reached - escalate
@@ -267,7 +267,7 @@ class RepairLoop:
             all_issues_fixed=False,
             remaining_issues=remaining_issues,
             started_at=started_at,
-            completed_at=datetime.utcnow(),
+            completed_at=datetime.now(timezone.utc),
         )
     
     async def _attempt_repairs(
@@ -331,11 +331,11 @@ class RepairLoop:
         
         Useful for targeted repairs of specific issues.
         """
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc)
         attempts: list[RepairAttempt] = []
         
         for iteration in range(1, max_attempts + 1):
-            attempt_started = datetime.utcnow()
+            attempt_started = datetime.now(timezone.utc)
             
             try:
                 success, action, files = await repair_fn([check], iteration)
@@ -343,7 +343,7 @@ class RepairLoop:
                 attempts.append(RepairAttempt(
                     attempt_number=iteration,
                     started_at=attempt_started,
-                    completed_at=datetime.utcnow(),
+                    completed_at=datetime.now(timezone.utc),
                     action_taken=f"Error: {e}",
                     status=RepairStatus.FAILED,
                     error_message=str(e),
@@ -353,7 +353,7 @@ class RepairLoop:
             attempts.append(RepairAttempt(
                 attempt_number=iteration,
                 started_at=attempt_started,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
                 action_taken=action,
                 files_modified=files,
                 status=RepairStatus.SUCCESS if success else RepairStatus.FAILED,
@@ -367,7 +367,7 @@ class RepairLoop:
                     total_attempts=iteration,
                     all_issues_fixed=True,
                     started_at=started_at,
-                    completed_at=datetime.utcnow(),
+                    completed_at=datetime.now(timezone.utc),
                 )
         
         return RepairResult(
@@ -378,63 +378,73 @@ class RepairLoop:
             all_issues_fixed=False,
             remaining_issues=[f"{check.check_id}: {check.message}"],
             started_at=started_at,
-            completed_at=datetime.utcnow(),
+            completed_at=datetime.now(timezone.utc),
         )
 
 
-# Pre-built repair functions
+# Pre-built repair functions (require working directory for tools + path safety)
 
-async def lint_repair_function(
-    failed_checks: list[CheckResult],
-    iteration: int,
-) -> tuple[bool, str, list[str]]:
-    """
-    Attempt to auto-fix lint issues.
-    
-    This is a placeholder - in practice, this would call the LLM
-    to fix the specific lint errors.
-    """
-    # Extract lint errors from check output
-    errors = []
+
+def _collect_check_output(failed_checks: list[CheckResult]) -> str:
+    parts: list[str] = []
     for check in failed_checks:
+        parts.append(f"=== {check.check_id} ({check.check_type.value}) ===")
+        if check.message:
+            parts.append(check.message)
         if check.stdout:
-            errors.append(check.stdout)
+            parts.append(check.stdout)
         if check.stderr:
-            errors.append(check.stderr)
-    
-    # In a real implementation, this would:
-    # 1. Parse the lint errors
-    # 2. Call the LLM to generate fixes
-    # 3. Apply the fixes
-    # 4. Return success/failure
-    
-    return False, f"Lint repair attempted (iteration {iteration})", []
+            parts.append(check.stderr)
+    return "\n".join(parts)
 
 
-async def test_repair_function(
-    failed_checks: list[CheckResult],
-    iteration: int,
-) -> tuple[bool, str, list[str]]:
-    """
-    Attempt to fix failing tests.
-    
-    This is a placeholder - in practice, this would call the LLM
-    to analyze test failures and fix the code.
-    """
-    # Extract test failures from check output
-    failures = []
-    for check in failed_checks:
-        if check.stdout:
-            failures.append(check.stdout)
-    
-    # In a real implementation, this would:
-    # 1. Parse the test failures
-    # 2. Identify the failing tests and error messages
-    # 3. Call the LLM to analyze and fix
-    # 4. Apply the fixes
-    # 5. Return success/failure
-    
-    return False, f"Test repair attempted (iteration {iteration})", []
+def make_lint_repair_function(working_directory: str) -> RepairFunction:
+    """Ruff autofix when available; otherwise LLM search/replace from lint output."""
+
+    async def lint_repair_function(
+        failed_checks: list[CheckResult],
+        iteration: int,
+    ) -> tuple[bool, str, list[str]]:
+        from .llm_repair import try_ruff_autofix, run_verification_llm_repair
+
+        blob = _collect_check_output(failed_checks)
+        actions: list[str] = []
+
+        ran, ruff_msg = await try_ruff_autofix(working_directory)
+        if ran:
+            actions.append(ruff_msg)
+            if iteration == 1:
+                return True, f"iteration {iteration}: " + " | ".join(actions), []
+
+        ok, llm_msg, files = await run_verification_llm_repair(
+            working_directory, "lint", blob
+        )
+        actions.append(llm_msg)
+        if ok and files:
+            return True, f"iteration {iteration}: " + " | ".join(actions), files
+        if ran and iteration > 1:
+            return True, f"iteration {iteration}: " + " | ".join(actions), []
+        return False, f"iteration {iteration}: " + " | ".join(actions), []
+
+    return lint_repair_function
+
+
+def make_test_repair_function(working_directory: str) -> RepairFunction:
+    """LLM search/replace driven by failing test / command output."""
+
+    async def test_repair_function(
+        failed_checks: list[CheckResult],
+        iteration: int,
+    ) -> tuple[bool, str, list[str]]:
+        from .llm_repair import run_verification_llm_repair
+
+        blob = _collect_check_output(failed_checks)
+        ok, msg, files = await run_verification_llm_repair(
+            working_directory, "tests", blob
+        )
+        return ok, f"iteration {iteration}: {msg}", files
+
+    return test_repair_function
 
 
 def create_repair_loop(
@@ -456,8 +466,8 @@ def create_repair_loop(
         verbose=verbose,
     )
     
-    # Register default repair functions
-    repair_loop.register_repair_function("lint", lint_repair_function)
-    repair_loop.register_repair_function("unit_tests", test_repair_function)
+    # Register default repair functions (cwd-scoped for ruff + safe file edits)
+    repair_loop.register_repair_function("lint", make_lint_repair_function(working_directory))
+    repair_loop.register_repair_function("unit_tests", make_test_repair_function(working_directory))
     
     return repair_loop

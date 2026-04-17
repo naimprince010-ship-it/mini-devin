@@ -1,5 +1,5 @@
 """
-Citation Storage for Mini-Devin
+Citation Storage for Plodder
 
 This module provides citation management for fetched web pages:
 - Store citations with metadata
@@ -11,7 +11,7 @@ This module provides citation management for fetched web pages:
 import hashlib
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +23,7 @@ class Citation:
     url: str
     title: str
     snippet: str
-    accessed_at: datetime = field(default_factory=datetime.utcnow)
+    accessed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     author: str | None = None
     published_date: str | None = None
     source_type: str = "web"  # web, api, document
@@ -52,7 +52,7 @@ class Citation:
         if isinstance(accessed_at, str):
             accessed_at = datetime.fromisoformat(accessed_at)
         elif accessed_at is None:
-            accessed_at = datetime.utcnow()
+            accessed_at = datetime.now(timezone.utc)
         
         return cls(
             citation_id=data["citation_id"],
@@ -246,7 +246,7 @@ class CitationStore:
         """Export citations as JSON."""
         data = {
             "citations": [c.to_dict() for c in self._citations.values()],
-            "exported_at": datetime.utcnow().isoformat(),
+            "exported_at": datetime.now(timezone.utc).isoformat(),
         }
         return json.dumps(data, indent=2)
     
@@ -294,7 +294,7 @@ class CitationStore:
         data = {
             "citations": [c.to_dict() for c in self._citations.values()],
             "next_id": self._next_id,
-            "saved_at": datetime.utcnow().isoformat(),
+            "saved_at": datetime.now(timezone.utc).isoformat(),
         }
         
         with open(self._storage_path, "w") as f:

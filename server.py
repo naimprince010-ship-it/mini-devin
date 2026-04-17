@@ -1,5 +1,5 @@
 """
-Mini-Devin API Server v5.6
+Plodder API Server v5.6
 Phase 34: Better Error Handling
 Phase 35: Task History & Export
 Phase 36: Multi-Model Support (OpenAI, Anthropic, Ollama)
@@ -198,6 +198,8 @@ def setup_logging() -> logging.Logger:
 
 # Initialize logger
 logger = setup_logging()
+
+from mini_devin.integrations.github_api import execute_github_api, get_github_error_suggestions
 
 # ============================================================================
 # Phase 45: Prometheus Metrics
@@ -435,10 +437,18 @@ security = HTTPBearer(auto_error=False)
 # Rate limiting storage (in-memory, use Redis for production scaling)
 rate_limit_storage: Dict[str, List[float]] = defaultdict(list)
 
-DB_PATH = os.environ.get("MINI_DEVIN_DB_PATH", "/root/mini-devin/mini_devin.db")
-WORKSPACE_DIR = os.environ.get("MINI_DEVIN_WORKSPACE", "/root/mini-devin/workspace")
-UPLOADS_DIR = os.environ.get("MINI_DEVIN_UPLOADS", "/root/mini-devin/uploads")
-MEMORY_DIR = os.environ.get("MINI_DEVIN_MEMORY", "/root/mini-devin/memory")
+DB_PATH = os.environ.get("PLODDER_DB_PATH") or os.environ.get(
+    "MINI_DEVIN_DB_PATH", "/root/plodder/plodder.db"
+)
+WORKSPACE_DIR = os.environ.get("PLODDER_WORKSPACE") or os.environ.get(
+    "MINI_DEVIN_WORKSPACE", "/root/plodder/workspace"
+)
+UPLOADS_DIR = os.environ.get("PLODDER_UPLOADS") or os.environ.get(
+    "MINI_DEVIN_UPLOADS", "/root/plodder/uploads"
+)
+MEMORY_DIR = os.environ.get("PLODDER_MEMORY") or os.environ.get(
+    "MINI_DEVIN_MEMORY", "/root/plodder/memory"
+)
 
 # ============================================================================
 # Phase 43: Database Connection Pooling Configuration
@@ -1278,7 +1288,7 @@ class CreateGitHubRepoRequest(BaseModel):
     github_token: str = Field(..., description="GitHub Personal Access Token with repo creation permissions")
     auto_init: bool = Field(default=True, description="Initialize with README")
 
-REPOS_DIR = os.environ.get("MINI_DEVIN_REPOS", "/root/mini-devin/repos")
+REPOS_DIR = os.environ.get("PLODDER_REPOS") or os.environ.get("MINI_DEVIN_REPOS", "/root/plodder/repos")
 
 DANGEROUS_COMMANDS = [
     "rm -rf /", "rm -rf /*", "mkfs", "dd if=", ":(){", "fork bomb",
@@ -1614,101 +1624,6 @@ def get_repo_info_for_session(session_id: str) -> Optional[dict]:
     finally:
         if conn:
             conn.close()
-
-def get_github_error_suggestions(status_code: int, error_message: str) -> List[str]:
-    """Get actionable suggestions based on GitHub API error."""
-    suggestions = []
-    error_lower = error_message.lower()
-    
-    if status_code == 401:
-        suggestions.append("Check if your GitHub token is valid and not expired")
-        suggestions.append("Generate a new token at github.com/settings/tokens")
-    elif status_code == 403:
-        if "rate limit" in error_lower:
-            suggestions.append("GitHub API rate limit exceeded. Wait a few minutes and try again")
-            suggestions.append("Consider using a token with higher rate limits")
-        elif "abuse" in error_lower:
-            suggestions.append("GitHub abuse detection triggered. Wait and retry with smaller requests")
-        else:
-            suggestions.append("Check if your token has the required permissions/scopes")
-            suggestions.append("For Actions: enable 'actions:read' scope")
-            suggestions.append("For PRs/Issues: enable 'repo' scope")
-            suggestions.append("For fine-grained tokens: grant access to this specific repository")
-    elif status_code == 404:
-        suggestions.append("Check if the repository exists and is accessible")
-        suggestions.append("Verify the owner/repo name is correct")
-        suggestions.append("For private repos: ensure your token has access")
-    elif status_code == 422:
-        suggestions.append("Check the request parameters are valid")
-        if "branch" in error_lower:
-            suggestions.append("Verify the branch name exists")
-        if "already exists" in error_lower:
-            suggestions.append("The resource already exists")
-    
-    return suggestions
-
-def execute_github_api(method: str, endpoint: str, token: str, data: Optional[dict] = None, max_retries: int = 3) -> tuple[bool, dict]:
-    """Execute GitHub API request with retry logic and better error handling."""
-    import httpx
-    import time
-    
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28"
-    }
-    
-    last_error = None
-    for attempt in range(max_retries):
-        try:
-            with httpx.Client(timeout=30.0) as client:
-                url = f"https://api.github.com{endpoint}"
-                if method == "GET":
-                    response = client.get(url, headers=headers)
-                elif method == "POST":
-                    response = client.post(url, headers=headers, json=data or {})
-                elif method == "PATCH":
-                    response = client.patch(url, headers=headers, json=data or {})
-                elif method == "PUT":
-                    response = client.put(url, headers=headers, json=data or {})
-                elif method == "DELETE":
-                    response = client.delete(url, headers=headers)
-                else:
-                    return False, {"error": f"Unknown method: {method}"}
-                
-                if response.status_code in [200, 201, 204]:
-                    if response.status_code == 204:
-                        return True, {"message": "Success"}
-                    return True, response.json()
-                elif response.status_code == 429 or (response.status_code == 403 and "rate limit" in response.text.lower()):
-                    retry_after = int(response.headers.get("Retry-After", 60))
-                    if attempt < max_retries - 1:
-                        time.sleep(min(retry_after, 30))
-                        continue
-                elif response.status_code >= 500 and attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
-                
-                error_data = response.json() if response.text else {"message": "Unknown error"}
-                error_msg = error_data.get("message", str(error_data))
-                suggestions = get_github_error_suggestions(response.status_code, error_msg)
-                return False, {
-                    "error": error_msg, 
-                    "status_code": response.status_code,
-                    "suggestions": suggestions
-                }
-        except httpx.TimeoutException:
-            last_error = "GitHub API request timed out"
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-                continue
-        except Exception as e:
-            last_error = str(e)
-            if attempt < max_retries - 1:
-                time.sleep(1)
-                continue
-    
-    return False, {"error": last_error or "Request failed after retries"}
 
 # Feature 1: PR Creation Tool
 def execute_create_pr(owner: str, repo: str, title: str, head: str, base: str, body: str, token: str) -> ToolResult:
@@ -2552,7 +2467,7 @@ def post_github_review(owner: str, repo: str, pr_number: int, token: str, review
     
     # Build review body
     review_body = f"## Code Review Summary\n\n{review_result.summary}\n\n"
-    review_body += f"*Analyzed by Mini-Devin using {review_result.model_used}*"
+    review_body += f"*Analyzed by Plodder using {review_result.model_used}*"
     
     # Create the review
     data = {
@@ -2755,7 +2670,7 @@ def get_session_memory(session_id: str) -> str:
     except:
         return ""
 
-SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer. You MUST use tools to accomplish tasks - do not just describe what you would do.
+SYSTEM_PROMPT = """You are Plodder, an autonomous AI software engineer. You MUST use tools to accomplish tasks - do not just describe what you would do.
 
 ## CRITICAL RULES
 
@@ -4160,7 +4075,7 @@ async def execute_agent_task(session_id: str, task_id: str, description: str, mo
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Phase 45: Use structured logging for startup
-    logger.info("Starting Mini-Devin API v5.4", extra={"version": "5.4.0"})
+    logger.info("Starting Plodder API v5.4", extra={"version": "5.4.0"})
     logger.info("Features: Tool Execution, SQLite Storage, WebSocket, Multi-Model, File Upload, Agent Memory, Export, Background Task Queue, Monitoring")
     
     init_db()
@@ -4214,9 +4129,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Phase 44: Stop background task queue gracefully
     logger.info("Stopping background task queue...")
     await queue.stop()
-    logger.info("Shutting down Mini-Devin API...")
+    logger.info("Shutting down Plodder API...")
 
-app = FastAPI(title="Mini-Devin API", version="5.4.0", description="Autonomous AI Software Engineer with Multi-Model Support, File Upload, Agent Memory, Export, and Monitoring", lifespan=lifespan)
+app = FastAPI(title="Plodder API", version="5.4.0", description="Autonomous AI Software Engineer with Multi-Model Support, File Upload, Agent Memory, Export, and Monitoring", lifespan=lifespan)
 
 # Phase 45: Add request logging middleware (before CORS)
 app.add_middleware(RequestLoggingMiddleware)
@@ -4236,7 +4151,7 @@ def get_configured_providers():
 async def root():
     providers = get_configured_providers()
     return {
-        "name": "Mini-Devin API",
+        "name": "Plodder API",
         "version": "5.0.0",
         "status": "running",
         "mode": "full-agent" if providers else "limited",
@@ -10582,7 +10497,7 @@ async def api_github_security_alerts(repo_id: int):
 # ============================================================================
 
 # Enhanced System Prompt with Planning and PR Workflow
-ENHANCED_SYSTEM_PROMPT = """You are Mini-Devin, an autonomous AI software engineer. You MUST use tools to accomplish tasks - do not just describe what you would do.
+ENHANCED_SYSTEM_PROMPT = """You are Plodder, an autonomous AI software engineer. You MUST use tools to accomplish tasks - do not just describe what you would do.
 
 ## CRITICAL RULES
 

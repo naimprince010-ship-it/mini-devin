@@ -1,7 +1,7 @@
 """
 Test Scenarios for Acceptance Testing
 
-This module defines test scenarios that Mini-Devin must pass:
+This module defines test scenarios that Plodder must pass:
 1. Fix failing test
 2. Add small feature + test
 3. Refactor + update tests

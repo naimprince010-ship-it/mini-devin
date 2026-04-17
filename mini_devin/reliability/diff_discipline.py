@@ -1,5 +1,5 @@
 """
-Diff Discipline Module for Mini-Devin
+Diff Discipline Module for Plodder
 
 This module enforces smaller, focused patches:
 - Analyze diff size and complexity

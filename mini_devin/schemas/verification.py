@@ -1,5 +1,5 @@
 """
-Verification Schemas for Mini-Devin
+Verification Schemas for Plodder
 
 This module defines the Pydantic schemas for verification and "done" signals:
 - VerificationCheck: Individual checks that must pass
@@ -7,8 +7,11 @@ This module defines the Pydantic schemas for verification and "done" signals:
 - DoneSignal: Signals that indicate task completion
 """
 
+import json
+import os
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -299,17 +302,38 @@ class CompletionCriteria(BaseModel):
 # =============================================================================
 
 
+def _has_discoverable_python_tests(root: Path) -> bool:
+    """Heuristic: pytest would find tests (avoid exit code 5 / failures when no tests exist)."""
+    tests_dir = root / "tests"
+    if tests_dir.is_dir():
+        for p in tests_dir.rglob("*.py"):
+            if p.is_file() and (p.name.startswith("test_") or p.name.endswith("_test.py")):
+                return True
+    for p in root.glob("test_*.py"):
+        if p.is_file():
+            return True
+    return False
+
+
 def create_python_verification_suite(
     project_path: str,
     test_command: str = "pytest",
     lint_command: str = "ruff check .",
     typecheck_command: str = "mypy .",
+    *,
+    block_on_tests_only_if_discovered: bool = False,
 ) -> VerificationSuite:
     """Create a standard verification suite for Python projects."""
+    root = Path(project_path)
+    noop = 'python -c "import sys; sys.exit(0)"'
+    tests_ok = _has_discoverable_python_tests(root) if block_on_tests_only_if_discovered else True
+    test_cmd = test_command if tests_ok else noop
+    test_severity = CheckSeverity.BLOCKING if tests_ok else CheckSeverity.WARNING
+    lint_sev = CheckSeverity.BLOCKING if _env_truthy("VERIFICATION_BLOCKING_LINT") else CheckSeverity.WARNING
     return VerificationSuite(
         suite_id="python_standard",
         name="Python Standard Verification",
-        description="Standard checks for Python projects",
+        description="Standard checks for Python projects; lint is WARNING unless VERIFICATION_BLOCKING_LINT=1",
         checks=[
             VerificationCheck(
                 check_id="lint",
@@ -318,7 +342,7 @@ def create_python_verification_suite(
                 description="Run linter to check code style",
                 command=lint_command,
                 working_directory=project_path,
-                severity=CheckSeverity.BLOCKING,
+                severity=lint_sev,
             ),
             VerificationCheck(
                 check_id="typecheck",
@@ -334,9 +358,139 @@ def create_python_verification_suite(
                 check_type=CheckType.UNIT_TESTS,
                 name="Unit Tests",
                 description="Run unit tests",
-                command=test_command,
+                command=test_cmd,
                 working_directory=project_path,
-                severity=CheckSeverity.BLOCKING,
+                severity=test_severity,
+                timeout_seconds=600,
+            ),
+        ],
+    )
+
+
+def _looks_like_node_frontend(root: Path) -> bool:
+    """Prefer npm-based verification for typical JS/TS app roots even if requirements.txt exists."""
+    if not (root / "package.json").exists():
+        return False
+    markers = (
+        "next.config.js",
+        "next.config.mjs",
+        "next.config.ts",
+        "vite.config.ts",
+        "vite.config.mjs",
+        "vite.config.js",
+        "angular.json",
+        "nuxt.config.ts",
+        "nuxt.config.js",
+    )
+    return any((root / m).exists() for m in markers)
+
+
+def create_auto_verification_suite(project_path: str) -> VerificationSuite:
+    """
+    Pick a verification suite from the repo layout.
+
+    Next.js / Vite / plain Node projects were incorrectly verified with the Python
+    suite (pytest/ruff), which always failed the **tests** check and triggered rollback.
+    """
+    root = Path(project_path)
+    has_pkg = (root / "package.json").exists()
+    py_markers = (
+        (root / "pyproject.toml").exists()
+        or (root / "setup.py").exists()
+        or (root / "setup.cfg").exists()
+        or (root / "requirements.txt").exists()
+    )
+    # Strong Python tree: many modules at repo root (heuristic)
+    py_files = list(root.glob("*.py"))
+    strong_python = py_markers or len(py_files) >= 3
+
+    if has_pkg and (not strong_python or _looks_like_node_frontend(root)):
+        return _create_node_verification_suite(str(root))
+
+    return create_python_verification_suite(
+        str(root),
+        block_on_tests_only_if_discovered=True,
+    )
+
+
+def _env_truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _create_node_verification_suite(project_path: str) -> VerificationSuite:
+    """npm-based checks; do not block completion on missing test/lint scripts.
+
+    ``npm run lint`` is WARNING by default: agent-generated or partial trees often fail ESLint
+    while still being useful; blocking lint used to roll back the whole task (bad UX).
+    Set ``VERIFICATION_BLOCKING_LINT=1`` to treat lint failures like CI (rollback on fail).
+    """
+    scripts: dict[str, Any] = {}
+    try:
+        pkg = Path(project_path) / "package.json"
+        if pkg.exists():
+            scripts = json.loads(pkg.read_text(encoding="utf-8")).get("scripts") or {}
+    except Exception:
+        scripts = {}
+
+    noop = 'node -e "process.exit(0)"'
+
+    if "lint" in scripts:
+        lint_cmd = "npm run lint"
+        lint_severity = (
+            CheckSeverity.BLOCKING if _env_truthy("VERIFICATION_BLOCKING_LINT") else CheckSeverity.WARNING
+        )
+    else:
+        lint_cmd = noop
+        lint_severity = CheckSeverity.WARNING
+
+    if "build" in scripts:
+        build_cmd = "npm run build"
+        build_severity = CheckSeverity.BLOCKING
+    else:
+        build_cmd = noop
+        build_severity = CheckSeverity.WARNING
+
+    if "test" in scripts:
+        test_cmd = "npm test"
+        test_severity = CheckSeverity.BLOCKING
+    else:
+        test_cmd = noop
+        test_severity = CheckSeverity.WARNING
+
+    return VerificationSuite(
+        suite_id="node_auto",
+        name="Node / frontend auto verification",
+        description="Lint/build/test via npm when scripts exist; missing scripts non-blocking; "
+        "lint is WARNING unless VERIFICATION_BLOCKING_LINT=1",
+        checks=[
+            VerificationCheck(
+                check_id="lint",
+                check_type=CheckType.LINT,
+                name="Lint",
+                description="ESLint (if configured)",
+                command=lint_cmd,
+                working_directory=project_path,
+                severity=lint_severity,
+                timeout_seconds=600,
+            ),
+            VerificationCheck(
+                check_id="build",
+                check_type=CheckType.BUILD,
+                name="Build",
+                description="Production build (if configured)",
+                command=build_cmd,
+                working_directory=project_path,
+                severity=build_severity,
+                timeout_seconds=900,
+            ),
+            VerificationCheck(
+                check_id="tests",
+                check_type=CheckType.UNIT_TESTS,
+                name="Unit tests",
+                description="npm test when a test script exists",
+                command=test_cmd,
+                working_directory=project_path,
+                severity=test_severity,
                 timeout_seconds=600,
             ),
         ],

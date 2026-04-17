@@ -53,13 +53,13 @@ class TestEditorTool:
         """Test resolving absolute path."""
         tool = EditorTool(working_directory="/tmp")
         resolved = tool._resolve_path("/home/user/file.txt")
-        assert resolved == "/home/user/file.txt"
+        assert resolved == str(Path("/home/user/file.txt").resolve())
 
     def test_resolve_path_relative(self):
         """Test resolving relative path."""
         tool = EditorTool(working_directory="/tmp")
         resolved = tool._resolve_path("file.txt")
-        assert resolved == "/tmp/file.txt"
+        assert resolved == str(Path("/tmp/file.txt").resolve())
 
     def test_detect_language_python(self):
         """Test language detection for Python files."""

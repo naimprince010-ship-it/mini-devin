@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { UploadedFile } from '../types';
 import { useApi } from '../hooks/useApi';
 import { Upload, Trash2, Download, Loader2 } from 'lucide-react';
+import { getApiBase } from '../config/apiBase';
 
 interface FileUploadProps {
   sessionId: string;
@@ -148,7 +149,7 @@ export function FileUpload({ sessionId, onFileUploaded }: FileUploadProps) {
               </div>
               <div className="flex items-center gap-1">
                 <a
-                  href={`${import.meta.env.VITE_API_URL || ''}/api/sessions/${sessionId}/files/${file.file_id}`}
+                  href={`${getApiBase()}/sessions/${sessionId}/files/${file.file_id}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="p-1.5 text-gray-400 hover:text-blue-400 rounded"

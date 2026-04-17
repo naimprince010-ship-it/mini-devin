@@ -1,14 +1,14 @@
 """
-Self-Audit Skill for Mini-Devin
+Self-Audit Skill for Plodder
 
-This skill scans the Mini-Devin repository to identify:
+This skill scans the Plodder repository to identify:
 1. Technical debt (TODOs, complex functions, missing docs)
 2. Missing features or enhancement opportunities
 3. Potential bugs or edge cases
 4. Consistency issues across the codebase
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 import os
 
@@ -16,7 +16,7 @@ from ..base import Skill, SkillContext, SkillResult, SkillParameter, SkillStatus
 
 class SelfAuditSkill(Skill):
     """
-    Skill for proactive self-auditing of the Mini-Devin codebase.
+    Skill for proactive self-auditing of the Plodder codebase.
     """
     
     name = "self_audit"
@@ -52,7 +52,7 @@ class SelfAuditSkill(Skill):
             success=False,
             message="",
             status=SkillStatus.RUNNING,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         
         focus_area = kwargs.get("focus_area", "mini_devin")
@@ -129,6 +129,6 @@ class SelfAuditSkill(Skill):
             result.status = SkillStatus.FAILED
             result.error = str(e)
             
-        result.completed_at = datetime.utcnow()
+        result.completed_at = datetime.now(timezone.utc)
         result.steps = self.get_steps()
         return result

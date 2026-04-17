@@ -1,12 +1,12 @@
 """
-Stop Conditions for Mini-Devin
+Stop Conditions for Plodder
 
 This module defines strong STOP and BLOCKED conditions that halt agent execution.
 These conditions ensure safe operation and prevent runaway behavior.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -73,7 +73,7 @@ class StopCondition:
     details: dict[str, Any] = field(default_factory=dict)
     recoverable: bool = False
     requires_user_action: bool = False
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for logging."""
@@ -119,7 +119,7 @@ class StopConditionChecker:
     
     def start(self) -> None:
         """Start tracking execution time."""
-        self._start_time = datetime.utcnow()
+        self._start_time = datetime.now(timezone.utc)
         self._iteration_count = 0
         self._repair_iteration_count = 0
         self._consecutive_errors = 0
@@ -186,7 +186,7 @@ class StopConditionChecker:
         if self._start_time is None:
             return None
         
-        elapsed = (datetime.utcnow() - self._start_time).total_seconds()
+        elapsed = (datetime.now(timezone.utc) - self._start_time).total_seconds()
         
         if elapsed >= self.timeout_seconds:
             return StopCondition(
@@ -409,7 +409,7 @@ class StopConditionChecker:
         """Get current status of the checker."""
         elapsed = 0.0
         if self._start_time:
-            elapsed = (datetime.utcnow() - self._start_time).total_seconds()
+            elapsed = (datetime.now(timezone.utc) - self._start_time).total_seconds()
         
         return {
             "iteration_count": self._iteration_count,

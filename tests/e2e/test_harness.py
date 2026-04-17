@@ -1,7 +1,7 @@
 """
-End-to-End Test Harness for Mini-Devin (Phase 10).
+End-to-End Test Harness for Plodder (Phase 10).
 
-This module provides a test harness for running real tasks through Mini-Devin
+This module provides a test harness for running real tasks through Plodder
 and validating that all components work together correctly.
 """
 
@@ -171,7 +171,7 @@ class TestSuiteResult:
 
 class E2ETestHarness:
     """
-    End-to-End Test Harness for Mini-Devin.
+    End-to-End Test Harness for Plodder.
     
     Runs real tasks through the agent and validates results.
     """
@@ -223,23 +223,15 @@ class E2ETestHarness:
         
         try:
             from mini_devin.orchestrator.agent import Agent
-            from mini_devin.config.settings import AgentGatesSettings
             from mini_devin.schemas.state import TaskState, TaskGoal, TaskStatus
             from mini_devin.llm.client import create_llm_client
             import uuid
-            
-            gates = AgentGatesSettings(
-                planning_required=gates_enabled,
-                review_required=gates_enabled,
-                use_llm_planning=False,
-            )
             
             llm = create_llm_client()
             
             agent = Agent(
                 llm_client=llm,
                 working_directory=workspace_dir,
-                gates_settings=gates,
                 max_iterations=20,
                 verbose=self.verbose,
             )

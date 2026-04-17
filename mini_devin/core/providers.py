@@ -1,7 +1,9 @@
 """
-Multi-Model Provider Support for Mini-Devin (Phase 12).
+Multi-Model Provider Support for Plodder (Phase 12).
 
 This module provides support for multiple LLM providers:
+- Groq (OpenAI-compatible API, LiteLLM ``groq/...`` models — fast inference)
+- Google Gemini (via LiteLLM, e.g. ``gemini/gemini-2.0-flash`` for Google AI Studio)
 - OpenAI (GPT-4, GPT-4o, GPT-3.5)
 - Anthropic (Claude 3.5, Claude 3)
 - Ollama (local models)
@@ -16,6 +18,8 @@ from typing import Any
 
 class Provider(str, Enum):
     """Supported LLM providers."""
+    GROQ = "groq"
+    GOOGLE = "google"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     OLLAMA = "ollama"
@@ -46,6 +50,47 @@ class ProviderConfig:
     def is_configured(self) -> bool:
         """Check if the provider is properly configured."""
         return self.enabled and self.api_key is not None
+
+
+@dataclass
+class GroqConfig(ProviderConfig):
+    """Groq Cloud (OpenAI-compatible REST API; LiteLLM ``groq/<model_id>``)."""
+
+    provider: Provider = field(default=Provider.GROQ, init=False)
+
+    @classmethod
+    def from_env(cls) -> "GroqConfig":
+        return cls(
+            api_key=os.environ.get("GROQ_API_KEY"),
+            api_base=os.environ.get("GROQ_API_BASE", "https://api.groq.com/openai/v1"),
+            enabled=os.environ.get("GROQ_ENABLED", "true").lower() == "true",
+        )
+
+    def is_configured(self) -> bool:
+        key = (self.api_key or "").strip()
+        if not key or key.upper() == "YOUR_KEY_HERE":
+            return False
+        return self.enabled
+
+
+@dataclass
+class GoogleAIConfig(ProviderConfig):
+    """Google AI Studio / Gemini (LiteLLM ``gemini/...`` models)."""
+
+    provider: Provider = field(default=Provider.GOOGLE, init=False)
+
+    @classmethod
+    def from_env(cls) -> "GoogleAIConfig":
+        return cls(
+            api_key=os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"),
+            enabled=os.environ.get("GOOGLE_AI_ENABLED", "true").lower() == "true",
+        )
+
+    def is_configured(self) -> bool:
+        key = (self.api_key or "").strip()
+        if not key or key.upper() == "YOUR_KEY_HERE":
+            return False
+        return self.enabled
 
 
 @dataclass
@@ -91,7 +136,9 @@ class OllamaConfig(ProviderConfig):
         """Load configuration from environment variables."""
         return cls(
             api_base=os.environ.get("OLLAMA_API_BASE", "http://localhost:11434"),
-            enabled=os.environ.get("OLLAMA_ENABLED", "true").lower() == "true",
+            # Default off: without this, machines without OPENAI_API_KEY would pick Ollama and
+            # fail on localhost:11434 when Ollama is not installed/running.
+            enabled=os.environ.get("OLLAMA_ENABLED", "false").lower() == "true",
         )
     
     def is_configured(self) -> bool:
@@ -127,6 +174,39 @@ class AzureConfig(ProviderConfig):
         )
 
 
+GROQ_MODELS = [
+    ModelInfo(
+        id="llama-3.3-70b-versatile",
+        name="Llama 3.3 70B Versatile (Groq)",
+        provider=Provider.GROQ,
+        context_window=131_072,
+        supports_tools=True,
+        supports_vision=False,
+        max_output_tokens=4096,
+        description="Strong default for coding/agents; 4k cap helps Groq free-tier TPM (~12k/min)",
+    ),
+    ModelInfo(
+        id="llama-3.1-8b-instant",
+        name="Llama 3.1 8B Instant (Groq)",
+        provider=Provider.GROQ,
+        context_window=131_072,
+        supports_tools=True,
+        supports_vision=False,
+        max_output_tokens=4096,
+        description="Very fast on Groq; good for observation / light passes (replaces llama3-8b-8192)",
+    ),
+    ModelInfo(
+        id="mixtral-8x7b-32768",
+        name="Mixtral 8x7B (Groq)",
+        provider=Provider.GROQ,
+        context_window=32_768,
+        supports_tools=True,
+        supports_vision=False,
+        max_output_tokens=4096,
+        description="Solid MoE option on Groq free tier",
+    ),
+]
+
 OPENAI_MODELS = [
     ModelInfo(
         id="gpt-4o",
@@ -135,7 +215,7 @@ OPENAI_MODELS = [
         context_window=128000,
         supports_tools=True,
         supports_vision=True,
-        max_output_tokens=4096,
+        max_output_tokens=16384,
         description="Most capable GPT-4 model with vision support",
     ),
     ModelInfo(
@@ -215,14 +295,14 @@ ANTHROPIC_MODELS = [
 
 OLLAMA_MODELS = [
     ModelInfo(
-        id="ollama/llama3.2",
-        name="Llama 3.2",
+        id="ollama/llama3",
+        name="Llama 3",
         provider=Provider.OLLAMA,
         context_window=128000,
         supports_tools=True,
         supports_vision=False,
         max_output_tokens=4096,
-        description="Meta's Llama 3.2 (local)",
+        description="Meta's Llama 3 (local/remote Ollama)",
     ),
     ModelInfo(
         id="ollama/codellama",
@@ -266,6 +346,19 @@ OLLAMA_MODELS = [
     ),
 ]
 
+GEMINI_MODELS = [
+    ModelInfo(
+        id="gemini/gemini-2.0-flash",
+        name="Gemini 2.0 Flash",
+        provider=Provider.GOOGLE,
+        context_window=1_000_000,
+        supports_tools=True,
+        supports_vision=True,
+        max_output_tokens=8192,
+        description="Fast Gemini 2.0 (Google AI Studio; LiteLLM ``gemini/`` route)",
+    ),
+]
+
 AZURE_MODELS = [
     ModelInfo(
         id="azure/gpt-4o",
@@ -274,7 +367,7 @@ AZURE_MODELS = [
         context_window=128000,
         supports_tools=True,
         supports_vision=True,
-        max_output_tokens=4096,
+        max_output_tokens=16384,
         description="GPT-4o on Azure OpenAI",
     ),
     ModelInfo(
@@ -315,17 +408,30 @@ class ModelRegistry:
         self._models: dict[str, ModelInfo] = {}
         self._providers: dict[Provider, ProviderConfig] = {}
         
-        for model in OPENAI_MODELS + ANTHROPIC_MODELS + OLLAMA_MODELS + AZURE_MODELS:
+        for model in (
+            GROQ_MODELS
+            + GEMINI_MODELS
+            + OPENAI_MODELS
+            + ANTHROPIC_MODELS
+            + OLLAMA_MODELS
+            + AZURE_MODELS
+        ):
             self._models[model.id] = model
     
     def configure_providers(
         self,
+        groq: GroqConfig | None = None,
+        google: GoogleAIConfig | None = None,
         openai: OpenAIConfig | None = None,
         anthropic: AnthropicConfig | None = None,
         ollama: OllamaConfig | None = None,
         azure: AzureConfig | None = None,
     ) -> None:
         """Configure providers with their settings."""
+        if groq:
+            self._providers[Provider.GROQ] = groq
+        if google:
+            self._providers[Provider.GOOGLE] = google
         if openai:
             self._providers[Provider.OPENAI] = openai
         if anthropic:
@@ -337,6 +443,8 @@ class ModelRegistry:
     
     def configure_from_env(self) -> None:
         """Configure all providers from environment variables."""
+        self._providers[Provider.GROQ] = GroqConfig.from_env()
+        self._providers[Provider.GOOGLE] = GoogleAIConfig.from_env()
         self._providers[Provider.OPENAI] = OpenAIConfig.from_env()
         self._providers[Provider.ANTHROPIC] = AnthropicConfig.from_env()
         self._providers[Provider.OLLAMA] = OllamaConfig.from_env()
@@ -396,6 +504,10 @@ class ModelRegistry:
     
     def get_default_model(self) -> str:
         """Get the default model ID based on configured providers."""
+        if self.is_provider_configured(Provider.GROQ):
+            return os.environ.get("DEFAULT_GROQ_MODEL", "llama-3.3-70b-versatile")
+        if self.is_provider_configured(Provider.GOOGLE):
+            return os.environ.get("DEFAULT_GEMINI_MODEL", "gemini/gemini-2.0-flash")
         if self.is_provider_configured(Provider.OPENAI):
             return "gpt-4o"
         if self.is_provider_configured(Provider.ANTHROPIC):
@@ -403,7 +515,7 @@ class ModelRegistry:
         if self.is_provider_configured(Provider.AZURE):
             return "azure/gpt-4o"
         if self.is_provider_configured(Provider.OLLAMA):
-            return "ollama/llama3.2"
+            return "ollama/llama3"
         return "gpt-4o"
     
     def to_api_format(self, only_configured: bool = True) -> list[dict[str, Any]]:
@@ -436,6 +548,50 @@ def get_model_registry() -> ModelRegistry:
     return _registry
 
 
+def normalize_groq_legacy_model_id(model_id: str) -> str:
+    """
+    Map decommissioned GroqCloud IDs to current models.
+
+    See https://console.groq.com/docs/deprecations for official replacement IDs.
+    """
+    key = (model_id or "").strip()
+    if not key:
+        return key
+    low = key.lower()
+    if low in ("llama3-70b-8192", "groq/llama3-70b-8192"):
+        return "llama-3.3-70b-versatile"
+    if low in ("llama3-8b-8192", "groq/llama3-8b-8192"):
+        return "llama-3.1-8b-instant"
+    return key
+
+
+def normalize_gemini_model_id_for_litellm(model_id: str) -> str:
+    """
+    Map legacy or wrong-prefix Gemini IDs to a model string Google AI Studio + LiteLLM accept.
+
+    LiteLLM uses the ``gemini/`` prefix for API-key (Google AI Studio) access — not ``google/``.
+    Unversioned ``gemini-1.5-flash`` often returns HTTP 404 from Google; the default successor is
+    ``gemini/gemini-2.0-flash``. Override with ``GEMINI_FLASH_SUCCESSOR_MODEL``.
+    """
+    key = (model_id or "").strip()
+    if not key:
+        return key
+    low = key.lower()
+    successor = (os.environ.get("GEMINI_FLASH_SUCCESSOR_MODEL") or "gemini/gemini-2.0-flash").strip()
+    legacy_flash = frozenset(
+        {
+            "gemini/gemini-1.5-flash",
+            "google/gemini-1.5-flash",
+            "gemini-1.5-flash",
+        }
+    )
+    if low in legacy_flash:
+        return successor
+    if low.startswith("google/gemini"):
+        return "gemini/" + key.split("/", 1)[1]
+    return key
+
+
 def get_litellm_model_name(model_id: str, registry: ModelRegistry | None = None) -> str:
     """
     Convert a model ID to the format expected by LiteLLM.
@@ -447,13 +603,22 @@ def get_litellm_model_name(model_id: str, registry: ModelRegistry | None = None)
     Returns:
         Model name in LiteLLM format
     """
+    model_id = normalize_groq_legacy_model_id(normalize_gemini_model_id_for_litellm(model_id))
     if registry is None:
         registry = get_model_registry()
     
     model = registry.get_model(model_id)
     if model is None:
         return model_id
-    
+
+    if model.provider == Provider.GROQ:
+        if model_id.lower().startswith("groq/"):
+            return model_id
+        return f"groq/{model_id}"
+
+    if model.provider == Provider.GOOGLE:
+        return model_id
+
     if model.provider == Provider.ANTHROPIC:
         return model_id
     
@@ -471,6 +636,16 @@ def get_litellm_model_name(model_id: str, registry: ModelRegistry | None = None)
 
 def get_provider_env_vars(provider: Provider) -> dict[str, str | None]:
     """Get environment variables for a provider."""
+    if provider == Provider.GROQ:
+        return {
+            "GROQ_API_KEY": os.environ.get("GROQ_API_KEY"),
+            "GROQ_API_BASE": os.environ.get("GROQ_API_BASE"),
+        }
+    if provider == Provider.GOOGLE:
+        return {
+            "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY"),
+            "GOOGLE_API_KEY": os.environ.get("GOOGLE_API_KEY"),
+        }
     if provider == Provider.OPENAI:
         return {
             "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY"),

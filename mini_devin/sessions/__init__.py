@@ -1,5 +1,5 @@
 """
-Sessions Module for Mini-Devin
+Sessions Module for Plodder
 
 This module provides multi-session support for:
 - Concurrent task execution

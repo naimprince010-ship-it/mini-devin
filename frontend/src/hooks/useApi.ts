@@ -12,20 +12,34 @@ import {
   Memory,
   ExportResponse,
 } from '../types';
+import { fetchWithTimeout, isAbortError } from '../utils/fetchWithTimeout';
+import { getApiBase } from '../config/apiBase';
 
-const API_BASE = import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : '/api';
+const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
 
-async function fetchApi<T>(
-  endpoint: string,
-  options: RequestInit = {}
-): Promise<T> {
-  const response = await fetch(`${API_BASE}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  });
+type FetchApiOptions = RequestInit & { timeoutMs?: number };
+
+async function fetchApi<T>(endpoint: string, options: FetchApiOptions = {}): Promise<T> {
+  const { timeoutMs = DEFAULT_FETCH_TIMEOUT_MS, ...rest } = options;
+  const apiBase = getApiBase();
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(`${apiBase}${endpoint}`, {
+      ...rest,
+      timeoutMs,
+      headers: {
+        'Content-Type': 'application/json',
+        ...rest.headers,
+      },
+    });
+  } catch (e) {
+    if (isAbortError(e)) {
+      throw new Error(
+        `Request timed out after ${timeoutMs / 1000}s. Start the backend (port 8000) or check VITE_API_URL.`
+      );
+    }
+    throw e;
+  }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
@@ -35,6 +49,27 @@ async function fetchApi<T>(
   return response.json();
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Cold uvicorn / --reload and brief proxy gaps often recover within a few seconds. */
+function isTransientFetchFailure(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const m = e.message.toLowerCase();
+  return (
+    m.includes('timed out') ||
+    m.includes('failed to fetch') ||
+    m.includes('networkerror') ||
+    m.includes('network request failed') ||
+    m.includes('load failed')
+  );
+}
+
+const PROVIDERS_FETCH_TIMEOUT_MS = 45_000;
+const PROVIDERS_LOAD_ATTEMPTS = 3;
+const PROVIDERS_RETRY_GAP_MS = 1_000;
+
 export function useApi() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,13 +77,16 @@ export function useApi() {
   const clearError = useCallback(() => setError(null), []);
 
   // Sessions
-  const createSession = useCallback(async (data: CreateSessionRequest): Promise<Session> => {
+  const createSession = useCallback(
+    async (data: CreateSessionRequest, opts?: { timeoutMs?: number }): Promise<Session> => {
     setLoading(true);
     setError(null);
     try {
       const result = await fetchApi<Session>('/sessions', {
         method: 'POST',
         body: JSON.stringify(data),
+        // Modal may git-clone (long); quick-create uses opts.timeoutMs (short).
+        timeoutMs: opts?.timeoutMs ?? 300_000,
       });
       return result;
     } catch (e) {
@@ -80,6 +118,22 @@ export function useApi() {
       return await fetchApi<Session>(`/sessions/${sessionId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to get session');
+      throw e;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const patchSession = useCallback(async (sessionId: string, body: { model: string }): Promise<Session> => {
+    setLoading(true);
+    setError(null);
+    try {
+      return await fetchApi<Session>(`/sessions/${sessionId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update session');
       throw e;
     } finally {
       setLoading(false);
@@ -269,8 +323,21 @@ export function useApi() {
     setLoading(true);
     setError(null);
     try {
-      const result = await fetchApi<{ providers: Provider[] }>('/providers');
-      return result.providers;
+      for (let attempt = 0; attempt < PROVIDERS_LOAD_ATTEMPTS; attempt++) {
+        try {
+          const result = await fetchApi<{ providers: Provider[] }>('/providers', {
+            timeoutMs: PROVIDERS_FETCH_TIMEOUT_MS,
+          });
+          return result.providers;
+        } catch (e) {
+          if (attempt < PROVIDERS_LOAD_ATTEMPTS - 1 && isTransientFetchFailure(e)) {
+            await sleep(PROVIDERS_RETRY_GAP_MS);
+            continue;
+          }
+          throw e;
+        }
+      }
+      throw new Error('Failed to list providers');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to list providers');
       throw e;
@@ -285,7 +352,7 @@ export function useApi() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const response = await fetch(`${API_BASE}/sessions/${sessionId}/files`, {
+      const response = await fetch(`${getApiBase()}/sessions/${sessionId}/files`, {
         method: 'POST',
         body: formData,
       });
@@ -313,6 +380,14 @@ export function useApi() {
       throw e;
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const getSessionHistory = useCallback(async (sessionId: string): Promise<{ messages: Array<{role: string; content: string; tool_calls?: any[]}>, total: number }> => {
+    try {
+      return await fetchApi(`/sessions/${sessionId}/history`);
+    } catch {
+      return { messages: [], total: 0 };
     }
   }, []);
 
@@ -421,6 +496,7 @@ export function useApi() {
     createSession,
     listSessions,
     getSession,
+    patchSession,
     deleteSession,
     stopSession,
     // Tasks
@@ -442,6 +518,7 @@ export function useApi() {
     uploadFile,
     listFiles,
     listWorkspaceFiles,
+    getSessionHistory,
     deleteFile,
     // Memory
     listMemories,

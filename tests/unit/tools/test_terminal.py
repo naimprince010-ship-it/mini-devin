@@ -3,6 +3,10 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 import asyncio
+import sys
+import tempfile
+import textwrap
+import os
 
 from mini_devin.tools.terminal import TerminalTool, create_terminal_tool
 from mini_devin.schemas.tools import ToolStatus, TerminalInput
@@ -67,8 +71,8 @@ class TestTerminalTool:
     @pytest.mark.asyncio
     async def test_execute_simple_command(self):
         """Test executing a simple command."""
-        tool = TerminalTool(working_directory="/tmp")
-        result = await tool.execute({"command": "echo 'hello world'"})
+        tool = TerminalTool(working_directory=tempfile.gettempdir())
+        result = await tool.execute({"command": f"{sys.executable} -c \"print('hello world')\""})
         assert result.status == ToolStatus.SUCCESS
         assert "hello world" in result.stdout
 
@@ -83,44 +87,54 @@ class TestTerminalTool:
     async def test_execute_with_timeout(self):
         """Test command execution with timeout."""
         tool = TerminalTool()
-        result = await tool.execute({"command": "sleep 10", "timeout_seconds": 1})
+        result = await tool.execute({"command": f"{sys.executable} -c \"import time; time.sleep(10)\"", "timeout_seconds": 1})
         assert result.status == ToolStatus.TIMEOUT
 
     @pytest.mark.asyncio
     async def test_execute_returns_exit_code(self):
         """Test that exit code is captured."""
         tool = TerminalTool()
-        result = await tool.execute({"command": "true"})
+        result = await tool.execute({"command": f"{sys.executable} -c \"pass\""})
         assert result.exit_code == 0
 
     @pytest.mark.asyncio
     async def test_execute_captures_stderr(self):
         """Test that stderr is captured."""
         tool = TerminalTool()
-        result = await tool.execute({"command": "ls /nonexistent_directory_12345"})
+        result = await tool.execute({"command": f"{sys.executable} -c \"import sys; sys.stderr.write('error')\""})
         assert result.stderr != ""
 
     @pytest.mark.asyncio
     async def test_execute_with_working_directory(self):
         """Test executing command in specific directory."""
         tool = TerminalTool()
+        tmp_dir = tempfile.gettempdir()
         result = await tool.execute({
-            "command": "pwd",
-            "working_directory": "/tmp"
+            "command": f"{sys.executable} -c \"import os; print(os.getcwd())\"",
+            "working_directory": tmp_dir
         })
         assert result.status == ToolStatus.SUCCESS
-        assert "/tmp" in result.stdout
+        assert os.path.basename(tmp_dir).lower() in result.stdout.lower()
 
     @pytest.mark.asyncio
     async def test_execute_with_env_vars(self):
         """Test executing command with environment variables."""
         tool = TerminalTool()
         result = await tool.execute({
-            "command": "echo $TEST_VAR",
+            "command": f"{sys.executable} -c \"import os; print(os.environ.get('TEST_VAR'))\"",
             "env_vars": {"TEST_VAR": "test_value"}
         })
         assert result.status == ToolStatus.SUCCESS
         assert "test_value" in result.stdout
+
+    @pytest.mark.asyncio
+    async def test_npm_install_requires_package_json(self, tmp_path):
+        """Guard against npm install in a folder without package.json."""
+        tool = TerminalTool(working_directory=str(tmp_path))
+        result = await tool.execute({"command": "npm install"})
+        assert result.status == ToolStatus.FAILURE
+        assert "package.json" in result.error_message.lower()
+        assert "create `package.json` first" in result.stderr.lower() or "none found" in result.stderr.lower()
 
 
 class TestTerminalToolSafety:

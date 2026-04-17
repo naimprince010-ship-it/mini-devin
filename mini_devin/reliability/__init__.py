@@ -1,5 +1,5 @@
 """
-Reliability Module for Mini-Devin
+Reliability Module for Plodder
 
 This module provides reliability improvements for Phase 3.6:
 - Minimal reproduction: Extract exact failing test/error and focus fix

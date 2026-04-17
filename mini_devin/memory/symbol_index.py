@@ -5,11 +5,14 @@ This module provides structural indexing of code using tree-sitter for AST parsi
 It extracts symbols (functions, classes, methods, variables) and their relationships.
 """
 
+import importlib.util
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+
+from .tree_sitter_symbols import extract_symbols_ast
 
 
 class SymbolType(str, Enum):
@@ -95,10 +98,13 @@ class SymbolIndex:
         self._tree_sitter_available = self._check_tree_sitter()
     
     def _check_tree_sitter(self) -> bool:
-        """Check if tree-sitter is available."""
+        """True when tree-sitter core and at least one language grammar are importable."""
         try:
-            import importlib.util
-            return importlib.util.find_spec("tree_sitter") is not None
+            if importlib.util.find_spec("tree_sitter") is None:
+                return False
+            return importlib.util.find_spec("tree_sitter_python") is not None or importlib.util.find_spec(
+                "tree_sitter_typescript"
+            ) is not None
         except ImportError:
             return False
     
@@ -194,10 +200,34 @@ class SymbolIndex:
         return ext_map.get(path.suffix.lower())
     
     def _index_with_tree_sitter(self, path: Path, content: str, language: str) -> list[Symbol]:
-        """Index using tree-sitter AST parsing."""
-        # For now, fall back to regex since tree-sitter requires language-specific parsers
-        # In production, you would load the appropriate language parser
-        return self._index_with_regex(path, content, language)
+        """Index using tree-sitter AST when grammars are installed; else regex."""
+        try:
+            rel = str(path.relative_to(self.workspace_path) if path.is_relative_to(self.workspace_path) else path)
+        except ValueError:
+            rel = str(path)
+        extracted = extract_symbols_ast(rel, content, language)
+        if not extracted:
+            return self._index_with_regex(path, content, language)
+        symbols: list[Symbol] = []
+        for e in extracted:
+            if e.kind == "class":
+                st = SymbolType.CLASS
+            elif e.kind == "method":
+                st = SymbolType.METHOD
+            else:
+                st = SymbolType.FUNCTION
+            symbols.append(
+                Symbol(
+                    name=e.name,
+                    symbol_type=st,
+                    location=SymbolLocation(rel, e.start_line, e.end_line),
+                    signature=e.signature,
+                    docstring="",
+                    parent=e.parent,
+                    language=e.language,
+                )
+            )
+        return symbols
     
     def _index_with_regex(self, path: Path, content: str, language: str) -> list[Symbol]:
         """Index using regex patterns (fallback when tree-sitter unavailable)."""

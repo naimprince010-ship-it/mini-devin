@@ -1,16 +1,23 @@
 import React, { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { Session, Task, WebSocketMessage } from '../types';
 import { useApi } from '../hooks/useApi';
-import { useWebSocket } from '../hooks/useWebSocket';
-import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target, Coins, HelpCircle, X, DollarSign } from 'lucide-react';
+import { useSessionStream } from '../hooks/useSessionStream';
+import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target, Coins, HelpCircle, X, DollarSign, Cpu, Download, FolderOpen } from 'lucide-react';
 import { StreamingOutput } from './StreamingOutput';
 import { useSessionEvents } from '../contexts/SessionEventsContext';
 import { PlanStepsView } from './PlanStepsView';
 import { useToast } from './Toast';
+import { ExportButtons } from './ExportButtons';
+import { getApiBase } from '../config/apiBase';
+import { ModelSelector } from './ModelSelector';
 
 interface TaskPanelProps {
   session: Session;
   onTitleUpdated?: (title: string) => void;
+  /** After PATCH /sessions/:id (e.g. model switch), parent refreshes session state. */
+  onSessionUpdated?: (session: Session) => void;
+  /** When ``embedded``, session title and repo path are shown in ``SessionWorkspaceShell`` (OpenHands-style). */
+  workspaceChrome?: 'default' | 'embedded';
 }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -46,11 +53,21 @@ function calcEstimatedCost(promptTokens: number, completionTokens: number): stri
   return `$${cost.toFixed(3)}`;
 }
 
-export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
+export function TaskPanel({
+  session,
+  onTitleUpdated,
+  onSessionUpdated,
+  workspaceChrome = 'default',
+}: TaskPanelProps) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskDescription, setTaskDescription] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
+  const [monologueContent, setMonologueContent] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  /** Which task row shows live / restored stream (must be state so reload re-renders). */
+  const [streamTaskId, setStreamTaskId] = useState<string | null>(null);
+  const [showExport, setShowExport] = useState(false);
+  const [modelBusy, setModelBusy] = useState(false);
   const currentTaskIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const toolCallIdMapRef = useRef<Map<string, string>>(new Map()); // ws tool -> context id
@@ -68,6 +85,16 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     try {
       const data = await api.listTasks(session.session_id);
       setTasks(data);
+      const running = data.find((t) => t.status === 'running');
+      const newest = data.length > 0 ? data[0] : undefined;
+      const id = running?.task_id || newest?.task_id || null;
+      if (id) {
+        currentTaskIdRef.current = id;
+        setStreamTaskId(id);
+      } else {
+        currentTaskIdRef.current = null;
+        setStreamTaskId(null);
+      }
     } catch (e) {
       console.error('Failed to load tasks:', e);
     }
@@ -83,6 +110,14 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
         setStreamingContent(prev => prev + (data.content as string || ''));
         break;
 
+      case 'thinking': {
+        const chunk = (data.content as string) || '';
+        if (chunk) {
+          setMonologueContent((prev) => prev + chunk);
+        }
+        break;
+      }
+
       case 'token_usage':
         if (data.total_tokens !== undefined) {
           events.onTokenUsage({
@@ -93,22 +128,46 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
         }
         break;
 
-      case 'clarification_needed':
-        setClarificationQuestion(data.question as string || 'The agent needs clarification.');
-        events.onClarificationNeeded(data.question as string || '');
+      case 'clarification_needed': {
+        const question = (data.question as string) || 'The agent needs clarification.';
+        const options = (data.options as string[]) || [];
+        const context = (data.context as string) || '';
+        setClarificationQuestion(question);
+        events.onClarificationFull({ question, options, context });
         break;
+      }
 
       case 'response':
         setIsStreaming(true);
         setStreamingContent(prev => prev + (message.content || data.content as string || ''));
         break;
 
-      case 'task_started':
+      case 'task_started': {
+        const tid = message.task_id || '';
+        if (tid) {
+          setStreamTaskId(tid);
+          currentTaskIdRef.current = tid;
+          // Client adds an optimistic row with id `task-<timestamp>`; server uses DB UUID.
+          // Without this remap, streamTaskId !== task.task_id and the UI shows "loading" forever.
+          setTasks((prev) => {
+            const rev = [...prev].map((t, i) => ({ t, i })).reverse();
+            const hit = rev.find(
+              ({ t }) => t.status === 'running' && t.task_id.startsWith('task-') && t.task_id !== tid,
+            );
+            if (!hit) return prev;
+            const next = [...prev];
+            next[hit.i] = { ...hit.t, task_id: tid };
+            return next;
+          });
+        }
         setIsStreaming(true);
         setStreamingContent('');
+        setMonologueContent('');
         setClarificationQuestion(null);
+        setClarificationAnswer('');
         events.onTaskStarted();
         break;
+      }
 
       case 'phase_changed': {
         const phase = (data.phase as string || '').toLowerCase();
@@ -229,10 +288,16 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
         break;
 
       case 'tool_output': {
-        // Shell live streaming — add line to shell output in WorkspacePanel
+        // Shell live streaming — add structured line to shell output
         const line = data.line as string | undefined;
         if (line) {
-          events.onShellLine?.(line);
+          const lineType = (data.type as string) || (line.startsWith('$') ? 'command' : 'output');
+          const isError = /error|fail|traceback/i.test(line);
+          events.onRichShellLine?.({
+            text: line,
+            type: (lineType === 'command' ? 'command' : isError ? 'error' : 'output') as 'command' | 'output' | 'error',
+            ts: typeof data.ts === 'number' ? (data.ts as number) * 1000 : Date.now(),
+          });
         }
         break;
       }
@@ -243,15 +308,38 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const { isConnected, sendMessage } = useWebSocket({
+  const { isConnected, sendMessage, transport } = useSessionStream({
     sessionId: session.session_id,
     onMessage: handleWebSocketMessage,
   });
 
   useEffect(() => {
     loadTasks();
-    setStreamingContent('');
     events.resetForSession();
+    setIsStreaming(false);
+    setMonologueContent('');
+    // Restore LLM conversation when agent is still in server memory (do not clear first — avoids flash)
+    api.getSessionHistory(session.session_id).then(hist => {
+      if (hist.total > 0) {
+        const lines: string[] = [];
+        for (const msg of hist.messages) {
+          if (msg.role === 'user' && msg.content) {
+            lines.push(`**[You]:** ${msg.content}`);
+          } else if (msg.role === 'assistant' && msg.content) {
+            lines.push(msg.content);
+          }
+        }
+        if (lines.length > 0) {
+          setStreamingContent(lines.join('\n\n---\n\n') + '\n\n_— Session restored from history —_');
+        } else {
+          setStreamingContent('');
+        }
+      } else {
+        setStreamingContent('');
+      }
+    }).catch(() => {
+      setStreamingContent('');
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.session_id]);
 
@@ -259,16 +347,44 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [streamingContent, tasks]);
+  }, [streamingContent, monologueContent, tasks]);
 
   const handleSubmitTask = async () => {
-    if (!taskDescription.trim()) return;
+    const desc = taskDescription.trim();
+    if (!desc) return;
 
-    // If agent is running, send as follow-up via WebSocket
+    // If agent is running, send as follow-up
     if (isStreaming) {
-      sendMessage(taskDescription);
-      setStreamingContent(prev => prev + `\n\n**[You]:** ${taskDescription}\n`);
+      const ok = await sendMessage(desc);
+      if (!ok) {
+        toast.error(
+          'Message not sent',
+          transport === 'sse'
+            ? 'Could not POST follow-up to the server. Check the network and try again.'
+            : 'WebSocket is not ready. Wait for the green connection dot, then try again.',
+        );
+        return;
+      }
+      setStreamingContent(prev => prev + `\n\n**[You]:** ${desc}\n`);
       setTaskDescription('');
+      return;
+    }
+
+    if (!isConnected) {
+      toast.error(
+        'Agent offline',
+        'Not connected to the server. Refresh the page or wait a few seconds and retry.',
+      );
+      return;
+    }
+    const ok = await sendMessage(desc);
+    if (!ok) {
+      toast.error(
+        'Message not sent',
+        transport === 'sse'
+          ? 'Could not start the task via API. Check the network and try again.'
+          : 'Connection closed before send. Wait for reconnect or refresh, then try again.',
+      );
       return;
     }
 
@@ -276,7 +392,7 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     const mockTask: Task = {
       task_id: newTaskId,
       session_id: session.session_id,
-      description: taskDescription,
+      description: desc,
       status: 'running',
       created_at: new Date().toISOString(),
       started_at: new Date().toISOString(),
@@ -286,11 +402,11 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     };
 
     currentTaskIdRef.current = newTaskId;
+    setStreamTaskId(newTaskId);
     setTasks(prev => [...prev, mockTask]);
     setTaskDescription('');
     setStreamingContent('');
     setIsStreaming(true);
-    sendMessage(taskDescription);
   };
 
   const handleStop = async () => {
@@ -301,14 +417,14 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     toast.error('Agent stopped', 'The agent was interrupted.');
   };
 
-  const handleAnswerClarification = async () => {
-    if (!clarificationAnswer.trim() || isSubmittingAnswer) return;
+  const submitAnswer = async (answer: string) => {
+    if (!answer.trim() || isSubmittingAnswer) return;
     setIsSubmittingAnswer(true);
     try {
-      const response = await fetch(`/api/sessions/${session.session_id}/answer`, {
+      const response = await fetch(`${getApiBase()}/sessions/${session.session_id}/answer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ answer: clarificationAnswer })
+        body: JSON.stringify({ answer })
       });
       if (response.ok) {
         toast.success('Answer sent', 'The agent will now resume.');
@@ -325,41 +441,161 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
     }
   };
 
+  const handleAnswerClarification = () => submitAnswer(clarificationAnswer);
+  const handleOptionSelect = (option: string) => submitAnswer(option);
+
   const currentPhase = events.phase;
   const phaseLabel = currentPhase ? (PHASE_LABELS[currentPhase] || currentPhase) : null;
 
+  const sessionModel = (session.model || 'auto').trim() || 'auto';
+
+  const handleModelPick = async (modelId: string) => {
+    if (modelId === sessionModel || modelBusy) return;
+    if (isStreaming) {
+      toast.error('Model switch', 'Wait until the agent finishes or stop it, then change model.');
+      return;
+    }
+    setModelBusy(true);
+    try {
+      const updated = await api.patchSession(session.session_id, { model: modelId });
+      onSessionUpdated?.(updated);
+      toast.success(
+        'Model updated',
+        updated.model?.toLowerCase() === 'auto'
+          ? 'Using Auto (server picks from your API keys).'
+          : `Using ${updated.model}.`,
+      );
+    } catch (e) {
+      toast.error('Could not switch model', e instanceof Error ? e.message : 'Unknown error');
+    } finally {
+      setModelBusy(false);
+    }
+  };
+
   return (
-    <div className="flex flex-col h-full bg-[#0f0f0f]">
+    <div className="flex h-full min-h-0 w-full min-w-0 flex-col bg-[#0f0f0f]">
       {/* Header */}
       <div className="px-6 py-4 border-b border-[#262626] bg-[#0f0f0f]/80 backdrop-blur-md sticky top-0 z-10">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-sm font-semibold text-white">Current Session</h2>
-            <div className="flex items-center gap-2 mt-1">
-              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-[#00ff99] shadow-[0_0_6px_#00ff99]' : 'bg-red-500'}`} />
-              <span className="text-[10px] uppercase tracking-wider text-[#a3a3a3] font-bold">
-                {isConnected ? (isStreaming ? 'Agent Running' : 'Active Agent') : 'Agent Offline'}
+        <div className="flex items-center justify-between gap-3">
+          {workspaceChrome === 'embedded' ? (
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+              <div className={`h-2 w-2 flex-shrink-0 rounded-full ${isConnected ? 'bg-[#00ff99] shadow-[0_0_6px_#00ff99]' : 'bg-red-500'}`} />
+              <span className="text-[10px] font-bold uppercase tracking-wider text-[#a3a3a3]">
+                {isConnected
+                  ? (isStreaming ? 'Agent running' : 'Connected')
+                  : 'Agent offline'}
+                {isConnected && transport === 'sse' && (
+                  <span className="font-normal text-[#525252]"> · SSE</span>
+                )}
               </span>
+              <span className="text-[#2a2a2a]">·</span>
+              <div className="flex items-center gap-1 text-[10px] text-[#525252]">
+                <Cpu size={9} />
+                <span
+                  className={
+                    sessionModel.toLowerCase() === 'auto' ? 'font-semibold text-[#3399ff]' : ''
+                  }
+                >
+                  {sessionModel.toLowerCase() === 'auto' ? 'Auto' : sessionModel}
+                </span>
+              </div>
             </div>
-          </div>
-
-          {/* Phase + Iteration chips (only show when streaming) */}
-          {isStreaming && (
-            <div className="flex items-center gap-2">
-              {events.iteration > 0 && (
-                <div className="px-2 py-0.5 rounded-full bg-[#1a1a1a] border border-[#262626] text-[10px] text-[#a3a3a3]">
-                  iter {events.iteration}/{events.maxIterations}
-                </div>
-              )}
-              {phaseLabel && (
-                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#00ff99]/10 border border-[#00ff99]/25">
-                  <span className={`w-1.5 h-1.5 rounded-full ${clarificationQuestion ? 'bg-yellow-400' : 'bg-[#00ff99] animate-pulse'}`} />
-                  <span className={`text-[10px] font-bold uppercase tracking-widest ${clarificationQuestion ? 'text-yellow-400' : 'text-[#00ff99]'}`}>
-                    {clarificationQuestion ? 'Waiting for User' : phaseLabel}
+          ) : (
+            <div>
+              <h2 className="max-w-[200px] truncate text-sm font-semibold text-white">
+                {session.title || 'Current Session'}
+              </h2>
+              <div className="mt-1 flex items-center gap-2">
+                <div className={`h-2 w-2 rounded-full ${isConnected ? 'bg-[#00ff99] shadow-[0_0_6px_#00ff99]' : 'bg-red-500'}`} />
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[#a3a3a3]">
+                  {isConnected
+                    ? (isStreaming ? 'Agent Running' : 'Active Agent')
+                    : 'Agent Offline'}
+                  {isConnected && transport === 'sse' && (
+                    <span className="font-normal text-[#525252]"> · SSE</span>
+                  )}
+                </span>
+                <span className="text-[#2a2a2a]">·</span>
+                <div className="flex items-center gap-1 text-[10px] text-[#525252]">
+                  <Cpu size={9} />
+                  <span
+                    className={
+                      sessionModel.toLowerCase() === 'auto' ? 'font-semibold text-[#3399ff]' : ''
+                    }
+                  >
+                    {sessionModel.toLowerCase() === 'auto' ? 'Auto' : sessionModel}
                   </span>
                 </div>
+                {session.working_directory && (
+                  <>
+                    <span className="text-[#2a2a2a]">·</span>
+                    <div className="flex items-center gap-1 text-[10px] text-[#525252]" title={session.working_directory}>
+                      <FolderOpen size={9} />
+                      <span className="max-w-[120px] truncate font-mono">
+                        {session.working_directory.split(/[\\/]/).slice(-2).join('/')}
+                      </span>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="flex flex-shrink-0 items-center gap-2">
+            {/* Export button */}
+            <div className="relative">
+              <button
+                onClick={() => setShowExport(p => !p)}
+                className="p-1.5 rounded-lg text-[#525252] hover:text-[#a3a3a3] hover:bg-[#1a1a1a] transition-colors"
+                title="Export conversation"
+              >
+                <Download size={14} />
+              </button>
+              {showExport && (
+                <div className="absolute right-0 top-full mt-1 bg-[#111111] border border-[#262626] rounded-xl shadow-2xl p-3 z-50 min-w-[160px]">
+                  <p className="text-[10px] uppercase tracking-wider text-[#525252] mb-2 font-bold">Export As</p>
+                  <ExportButtons sessionId={session.session_id} />
+                </div>
               )}
             </div>
+
+            {/* Phase + Iteration chips (only show when streaming) */}
+            {isStreaming && (
+              <div className="flex items-center gap-2">
+                {events.iteration > 0 && (
+                  <div className="px-2 py-0.5 rounded-full bg-[#1a1a1a] border border-[#262626] text-[10px] text-[#a3a3a3]">
+                    iter {events.iteration}/{events.maxIterations}
+                  </div>
+                )}
+                {phaseLabel && (
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#00ff99]/10 border border-[#00ff99]/25">
+                    <span className={`w-1.5 h-1.5 rounded-full ${clarificationQuestion ? 'bg-yellow-400' : 'bg-[#00ff99] animate-pulse'}`} />
+                    <span className={`text-[10px] font-bold uppercase tracking-widest ${clarificationQuestion ? 'text-yellow-400' : 'text-[#00ff99]'}`}>
+                      {clarificationQuestion ? 'Waiting for User' : phaseLabel}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* LLM switch (chat) — PATCH /sessions/:id */}
+        <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-[#525252] font-bold shrink-0">
+            Chat model
+          </span>
+          <div className="flex-1 min-w-0 max-w-md">
+            <ModelSelector
+              includeAutoOption
+              value={sessionModel}
+              onChange={handleModelPick}
+              disabled={isStreaming || modelBusy}
+              className="text-left"
+            />
+          </div>
+          {modelBusy && (
+            <span className="text-[10px] text-[#737373]">Saving…</span>
           )}
         </div>
 
@@ -483,9 +719,14 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
                 </div>
                 <div className="space-y-3 flex-1">
                   <div className="text-sm leading-relaxed text-[#d1d1d1] whitespace-pre-wrap">
-                    {task.task_id === currentTaskIdRef.current && isStreaming ? (
+                    {(() => {
+                      const liveHere =
+                        streamTaskId !== null &&
+                        task.task_id === streamTaskId &&
+                        (isStreaming || streamingContent.length > 0);
+                      if (liveHere) {
+                        return (
                       <div className="space-y-3">
-                        {/* Inline tool call card (last running tool) */}
                         {events.toolCalls.length > 0 && (() => {
                           const last = events.toolCalls[events.toolCalls.length - 1];
                           if (last.status === 'running') return (
@@ -499,19 +740,34 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
                           );
                           return null;
                         })()}
-                        <StreamingOutput content={streamingContent} isStreaming={isStreaming} />
-                      </div>
-                    ) : (
-                      <div>
-                        {task.summary ? (
-                          <StreamingOutput content={task.summary} isStreaming={false} />
-                        ) : (
-                          <div className="p-4 bg-[#1a1a1a]/30 rounded-xl border border-[#262626] italic text-[#a3a3a3]">
-                            Agent response is loading...
+                        {monologueContent.length > 0 && (
+                          <div className="text-xs text-[#8a8a8a] whitespace-pre-wrap border-l-2 border-[#404040] pl-3 py-2 font-mono bg-[#080808] rounded-r-md max-h-40 overflow-y-auto custom-scrollbar">
+                            <span className="text-[10px] uppercase tracking-wider text-[#525252] block mb-1">
+                              Internal monologue
+                            </span>
+                            {monologueContent}
                           </div>
                         )}
+                        <StreamingOutput content={streamingContent} isStreaming={isStreaming} />
                       </div>
-                    )}
+                        );
+                      }
+                      if (task.summary) {
+                        return <StreamingOutput content={task.summary} isStreaming={false} />;
+                      }
+                      if (task.status === 'running' && !task.summary) {
+                        return (
+                          <div className="p-4 bg-[#1a1a1a]/30 rounded-xl border border-[#262626] italic text-[#a3a3a3]">
+                            Agent response is loading… reconnect if this stays empty (server may have restarted).
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className="p-4 bg-[#1a1a1a]/30 rounded-xl border border-[#262626] text-[#737373] text-sm">
+                          No transcript stored for this task.
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {task.error_message && (
@@ -550,7 +806,7 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
               }
             }}
             placeholder={isStreaming ? 'Send a follow-up message to the agent...' : 'Type a task for the agent...'}
-            className={`w-full bg-[#121212] border rounded-[20px] px-5 py-4 pr-24 text-sm focus:outline-none transition-colors resize-none placeholder-[#737373] min-h-[56px] max-h-40 custom-scrollbar ${isStreaming
+            className={`w-full bg-[#121212] text-[#f0f0f0] caret-[#00ff99] border rounded-[20px] px-5 py-4 pr-24 text-sm focus:outline-none transition-colors resize-none placeholder-[#737373] min-h-[56px] max-h-40 custom-scrollbar ${isStreaming
               ? 'border-[#00ff99]/20 focus:border-[#00ff99]/40'
               : 'border-[#262626] focus:border-[#00ff99]/50'
               }`}
@@ -589,64 +845,108 @@ export function TaskPanel({ session, onTitleUpdated }: TaskPanelProps) {
       </div>
 
       {/* Clarification Modal Overlay */}
-      {clarificationQuestion && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-6 animate-in fade-in duration-200">
-          <div className="bg-[#121212] border border-yellow-500/30 shadow-2xl rounded-2xl w-full max-w-lg overflow-hidden flex flex-col">
-            <div className="px-5 py-4 border-b border-[#262626] flex justify-between items-center bg-yellow-500/5">
-              <div className="flex items-center gap-2 text-yellow-500">
-                <HelpCircle size={18} />
-                <h3 className="font-semibold text-sm tracking-wide">Agent Needs Clarification</h3>
+      {clarificationQuestion && (() => {
+        const cl = events.clarification;
+        const options = cl?.options || [];
+        const context = cl?.context || '';
+        return (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-6 animate-in fade-in duration-200">
+            <div className="bg-[#121212] border border-yellow-500/30 shadow-2xl rounded-2xl w-full max-w-lg overflow-hidden flex flex-col">
+              {/* Header */}
+              <div className="px-5 py-4 border-b border-[#262626] flex justify-between items-center bg-yellow-500/5">
+                <div className="flex items-center gap-2 text-yellow-500">
+                  <HelpCircle size={18} />
+                  <h3 className="font-semibold text-sm tracking-wide">Agent Needs Your Input</h3>
+                </div>
+                <button
+                  onClick={() => { setClarificationQuestion(null); events.dismissClarification(); }}
+                  className="text-[#737373] hover:text-white transition-colors"
+                  title="Dismiss — agent will make its best guess"
+                >
+                  <X size={16} />
+                </button>
               </div>
-              <button
-                onClick={() => { setClarificationQuestion(null); events.dismissClarification(); }}
-                className="text-[#737373] hover:text-white transition-colors"
-                title="Dismiss (Agent will guess)"
-              >
-                <X size={16} />
-              </button>
-            </div>
 
-            <div className="p-6 flex-1 overflow-y-auto">
-              <p className="text-[#d1d1d1] text-sm leading-relaxed whitespace-pre-wrap font-medium">
-                {clarificationQuestion}
-              </p>
+              <div className="p-6 flex-1 overflow-y-auto space-y-4">
+                {/* Question */}
+                <p className="text-[#d1d1d1] text-sm leading-relaxed whitespace-pre-wrap font-medium">
+                  {clarificationQuestion}
+                </p>
 
-              <div className="mt-6 space-y-2">
-                <label className="text-[10px] uppercase tracking-wider text-[#737373] font-bold">Your Answer</label>
-                <textarea
-                  autoFocus
-                  value={clarificationAnswer}
-                  onChange={e => setClarificationAnswer(e.target.value)}
-                  placeholder="Type your answer here..."
-                  className="w-full bg-[#0f0f0f] border border-[#262626] focus:border-yellow-500/50 rounded-xl px-4 py-3 text-sm text-white resize-none h-24 custom-scrollbar outline-none transition-colors"
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleAnswerClarification();
-                    }
-                  }}
-                />
+                {/* Optional context block */}
+                {context && (
+                  <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-4 py-3 text-xs text-[#a3a3a3] leading-relaxed">
+                    {context}
+                  </div>
+                )}
+
+                {/* Clickable option buttons (A/B/C style) */}
+                {options.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-[10px] uppercase tracking-wider text-[#737373] font-bold">
+                      Choose an option:
+                    </p>
+                    {options.map((opt, idx) => {
+                      const letter = String.fromCharCode(65 + idx); // A, B, C …
+                      return (
+                        <button
+                          key={idx}
+                          onClick={() => handleOptionSelect(opt)}
+                          disabled={isSubmittingAnswer}
+                          className="w-full flex items-start gap-3 px-4 py-3 bg-[#1a1a1a] hover:bg-yellow-500/10 border border-[#2a2a2a] hover:border-yellow-500/40 rounded-xl text-left transition-all group disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <span className="flex-shrink-0 w-6 h-6 rounded-full bg-yellow-500/20 text-yellow-400 text-[11px] font-bold flex items-center justify-center group-hover:bg-yellow-500/30 transition-colors">
+                            {letter}
+                          </span>
+                          <span className="text-sm text-[#d1d1d1] group-hover:text-white transition-colors leading-snug">
+                            {opt}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Free-text answer area */}
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-wider text-[#737373] font-bold">
+                    {options.length > 0 ? 'Or type a custom answer:' : 'Your Answer'}
+                  </label>
+                  <textarea
+                    autoFocus={options.length === 0}
+                    value={clarificationAnswer}
+                    onChange={e => setClarificationAnswer(e.target.value)}
+                    placeholder={options.length > 0 ? 'Type a custom answer...' : 'Type your answer here...'}
+                    className="w-full bg-[#0f0f0f] border border-[#262626] focus:border-yellow-500/50 rounded-xl px-4 py-3 text-sm text-white resize-none h-20 custom-scrollbar outline-none transition-colors"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleAnswerClarification();
+                      }
+                    }}
+                  />
+                </div>
               </div>
-            </div>
 
-            <div className="p-4 border-t border-[#262626] bg-[#0f0f0f]/50 flex justify-end gap-3">
-              <button
-                onClick={() => { setClarificationQuestion(null); events.dismissClarification(); }}
-                className="px-4 py-2 text-xs font-semibold text-[#a3a3a3] hover:text-white transition-colors"
-              >
-                Ignore
-              </button>
-              <button
-                onClick={handleAnswerClarification}
-                disabled={!clarificationAnswer.trim() || isSubmittingAnswer}
-                className="px-5 py-2 text-xs font-bold rounded-lg bg-yellow-500 text-black hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {isSubmittingAnswer ? 'Sending...' : 'Send Answer'}
-              </button>
+              <div className="p-4 border-t border-[#262626] bg-[#0f0f0f]/50 flex justify-end gap-3">
+                <button
+                  onClick={() => { setClarificationQuestion(null); events.dismissClarification(); }}
+                  className="px-4 py-2 text-xs font-semibold text-[#a3a3a3] hover:text-white transition-colors"
+                >
+                  Ignore
+                </button>
+                <button
+                  onClick={handleAnswerClarification}
+                  disabled={!clarificationAnswer.trim() || isSubmittingAnswer}
+                  className="px-5 py-2 text-xs font-bold rounded-lg bg-yellow-500 text-black hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isSubmittingAnswer ? 'Sending...' : 'Send Answer'}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

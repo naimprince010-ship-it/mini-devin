@@ -1,5 +1,5 @@
 """
-Configuration Module for Mini-Devin
+Configuration Module for Plodder
 
 This module provides configuration management including:
 - Run modes (offline, browse, interactive)

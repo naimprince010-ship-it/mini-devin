@@ -1,4 +1,4 @@
-"""Authentication service for Mini-Devin."""
+"""Authentication service for Plodder."""
 
 import os
 import secrets

@@ -1,20 +1,27 @@
-import { useState } from 'react';
-import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Session } from './types';
 import { SessionList } from './components/SessionList';
-import { TaskPanel } from './components/TaskPanel';
-import { WorkspacePanel } from './components/WorkspacePanel';
+import { SessionWorkspaceShell } from './components/SessionWorkspaceShell';
 import { LoginForm } from './components/LoginForm';
 import { UserMenu } from './components/UserMenu';
 import { SkillsManager } from './components/SkillsManager';
 import { RepoManager } from './components/RepoManager';
 import { PRReview } from './components/PRReview';
+import MonitorPanel from './components/MonitorPanel';
+import EnvParityPanel from './components/EnvParityPanel';
+import UITestPanel from './components/UITestPanel';
+import ProjectPlannerPanel from './components/ProjectPlannerPanel';
+import { BenchmarkPanel } from './components/BenchmarkPanel';
 import { ProviderSelector } from './components/ProviderSelector';
 import { FolderPicker } from './components/FolderPicker';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { useAuth } from './contexts/AuthContext';
+import { useTheme } from './contexts/ThemeContext';
 import { SessionEventsProvider, useSessionEvents } from './contexts/SessionEventsContext';
 import { useApi } from './hooks/useApi';
-import { ToastContainer, useToastState } from './components/Toast';
+import { getApiBase } from './config/apiBase';
+import { ToastContainer, useToastState, useToast } from './components/Toast';
 import {
   Bot,
   Github,
@@ -29,39 +36,67 @@ import {
   Cpu,
   Target,
   Zap,
+  Sun,
+  Moon,
+  Menu,
+  Activity,
+  Container,
+  TestTube2,
+  FolderKanban,
+  FlaskConical,
 } from 'lucide-react';
 
-type TabType = 'sessions' | 'skills' | 'repos' | 'reviews';
+type TabType = 'sessions' | 'skills' | 'repos' | 'reviews' | 'monitor' | 'env_parity' | 'ui_test' | 'projects' | 'benchmark';
 
 function NewSessionModal({
   onClose,
   onCreated,
+  initialWorkingDir = '',
 }: {
   onClose: () => void;
   onCreated: (session: Session) => void;
+  initialWorkingDir?: string;
 }) {
-  const [workingDir, setWorkingDir] = useState('.');
+  const [workingDir, setWorkingDir] = useState(initialWorkingDir);
+  /** Default: Auto — server picks best model from configured API keys (same idea as Cursor). */
+  const [modelMode, setModelMode] = useState<'auto' | 'manual'>('auto');
   const [provider, setProvider] = useState('openai');
   const [model, setModel] = useState('gpt-4o-mini');
   const [maxIterations, setMaxIterations] = useState(50);
   const [acceptanceCriteria, setAcceptanceCriteria] = useState('');
+  const [autoGitCommit, setAutoGitCommit] = useState(false);
+  const [gitPush, setGitPush] = useState(false);
   const api = useApi();
   const events = useSessionEvents();
+  const toast = useToast();
 
   const handleCreate = async () => {
     try {
       const session = await api.createSession({
         working_directory: workingDir,
-        model,
+        model: modelMode === 'auto' ? 'auto' : model,
         max_iterations: maxIterations,
+        auto_git_commit: autoGitCommit,
+        git_push: gitPush,
       });
       if (acceptanceCriteria.trim()) {
         events.setAcceptanceCriteria(acceptanceCriteria.trim());
       }
+      const wd = workingDir.trim();
+      const looksLikeGitRemote =
+        /^https?:\/\//i.test(wd) || wd.startsWith('git@');
+      toast.success(
+        'Session ready',
+        looksLikeGitRemote
+          ? 'Repository cloned on the server — agent can use the terminal like a local IDE.'
+          : 'Agent workspace is set. Send a task to start.',
+      );
       onCreated(session);
       onClose();
     } catch (e) {
       console.error('Failed to create session:', e);
+      const msg = e instanceof Error ? e.message : 'Failed to create session';
+      toast.error('Could not create session', msg);
     }
   };
 
@@ -91,22 +126,55 @@ function NewSessionModal({
             <label className="flex items-center gap-1.5 text-xs font-medium text-[#a3a3a3] mb-2">
               <Cpu size={12} className="text-yellow-500/70" />
               Working Directory
+              <span className="ml-auto max-w-[140px] text-right text-[10px] text-[#525252] font-normal leading-tight">
+                GitHub URL = auto-clone on server (Cursor-style)
+              </span>
             </label>
             <FolderPicker value={workingDir} onChange={setWorkingDir} />
           </div>
 
-          {/* Model */}
+          {/* Model — default Auto; optional manual pick */}
           <div>
             <label className="flex items-center gap-1.5 text-xs font-medium text-[#a3a3a3] mb-2">
               <Cpu size={12} />
               Model
             </label>
-            <ProviderSelector
-              selectedProvider={provider}
-              selectedModel={model}
-              onProviderChange={setProvider}
-              onModelChange={setModel}
-            />
+            <div className="flex rounded-lg border border-[#262626] p-0.5 bg-[#0a0a0a] gap-0.5 mb-2">
+              <button
+                type="button"
+                onClick={() => setModelMode('auto')}
+                className={`flex-1 py-2 px-2 rounded-md text-xs font-semibold transition-colors ${
+                  modelMode === 'auto'
+                    ? 'bg-[#1a1a1a] text-[#3399ff] border border-[#3399ff]/35'
+                    : 'text-[#737373] hover:text-white'
+                }`}
+              >
+                Auto
+              </button>
+              <button
+                type="button"
+                onClick={() => setModelMode('manual')}
+                className={`flex-1 py-2 px-2 rounded-md text-xs font-semibold transition-colors ${
+                  modelMode === 'manual'
+                    ? 'bg-[#1a1a1a] text-white border border-[#404040]'
+                    : 'text-[#737373] hover:text-white'
+                }`}
+              >
+                Choose model…
+              </button>
+            </div>
+            {modelMode === 'auto' ? (
+              <p className="text-[10px] text-[#525252] leading-relaxed">
+                Uses the best available model from your keys (OpenAI first, then Anthropic, Azure, Ollama). No need to pick a provider.
+              </p>
+            ) : (
+              <ProviderSelector
+                selectedProvider={provider}
+                selectedModel={model}
+                onProviderChange={setProvider}
+                onModelChange={setModel}
+              />
+            )}
           </div>
 
           {/* Acceptance Criteria */}
@@ -144,6 +212,34 @@ function NewSessionModal({
               <span>100</span>
             </div>
           </div>
+
+          {/* Git Options */}
+          <div className="space-y-2 pt-1 border-t border-[#1a1a1a]">
+            <label className="flex items-center gap-1.5 text-xs font-medium text-[#a3a3a3]">
+              <Github size={12} />
+              Git Options
+            </label>
+            <label className="flex items-center gap-2.5 cursor-pointer group">
+              <div
+                onClick={() => setAutoGitCommit(v => !v)}
+                className={`relative w-8 h-4 rounded-full transition-colors ${autoGitCommit ? 'bg-[#00ff99]' : 'bg-[#262626]'}`}
+              >
+                <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${autoGitCommit ? 'translate-x-4' : ''}`} />
+              </div>
+              <span className="text-xs text-[#a3a3a3] group-hover:text-white transition-colors">Auto git commit on task complete</span>
+            </label>
+            {autoGitCommit && (
+              <label className="flex items-center gap-2.5 cursor-pointer group ml-2">
+                <div
+                  onClick={() => setGitPush(v => !v)}
+                  className={`relative w-8 h-4 rounded-full transition-colors ${gitPush ? 'bg-[#00ff99]' : 'bg-[#262626]'}`}
+                >
+                  <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${gitPush ? 'translate-x-4' : ''}`} />
+                </div>
+                <span className="text-xs text-[#a3a3a3] group-hover:text-white transition-colors">Push to remote after commit</span>
+              </label>
+            )}
+          </div>
         </div>
 
         {/* Footer */}
@@ -167,14 +263,78 @@ function NewSessionModal({
   );
 }
 
+const LAST_SESSION_KEY = 'plodder:last-session-id';
+
 function App() {
   const { user, loading } = useAuth();
+  const { theme, toggleTheme, isDark } = useTheme();
+  const navigate = useNavigate();
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [showLogin, setShowLogin] = useState(false);
   const { toasts, dismiss } = useToastState();
   const [showNewSession, setShowNewSession] = useState(false);
+  const [newSessionInitialDir, setNewSessionInitialDir] = useState('');
   const [activeTab, setActiveTab] = useState<TabType>('sessions');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  /** Increment after a session is created so SessionList refetches immediately */
+  const [sessionListRefresh, setSessionListRefresh] = useState(0);
+  const [quickSessionBusy, setQuickSessionBusy] = useState(false);
+  const quickSessionLock = useRef(false);
   const api = useApi();
+  const toast = useToast();
+
+  const handleQuickNewSession = useCallback(async () => {
+    if (quickSessionLock.current) return;
+    quickSessionLock.current = true;
+    setQuickSessionBusy(true);
+    try {
+      const session = await api.createSession(
+        {
+          working_directory: '',
+          model: 'auto',
+          max_iterations: 50,
+          auto_git_commit: false,
+          git_push: false,
+        },
+        { timeoutMs: 60_000 },
+      );
+      toast.success(
+        'Session ready',
+        'Auto model · fresh workspace. Type a task below to start.',
+      );
+      setSelectedSession(session);
+      localStorage.setItem(LAST_SESSION_KEY, session.session_id);
+      setActiveTab('sessions');
+      setSidebarOpen(false);
+      setSessionListRefresh((n) => n + 1);
+    } catch (e) {
+      console.error('Quick new session failed:', e);
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      const hint =
+        /timed out/i.test(msg)
+          ? ' Is the API running on port 8000? (poetry run uvicorn mini_devin.api.app:app --reload)'
+          : '';
+      toast.error('Could not create session', msg + hint);
+    } finally {
+      quickSessionLock.current = false;
+      setQuickSessionBusy(false);
+    }
+  }, [api, toast]);
+
+  // Restore last selected session from localStorage on mount
+  useEffect(() => {
+    const savedId =
+      localStorage.getItem(LAST_SESSION_KEY) ?? localStorage.getItem('mini-devin:last-session-id');
+    if (savedId && !selectedSession) {
+      api.getSession(savedId)
+        .then(s => { if (s) setSelectedSession(s); })
+        .catch(() => {
+          localStorage.removeItem(LAST_SESSION_KEY);
+          localStorage.removeItem('mini-devin:last-session-id');
+        });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSelfEvolve = async () => {
     try {
@@ -186,6 +346,10 @@ function App() {
     }
   };
 
+  const handleSessionUpdated = (s: Session) => {
+    setSelectedSession(s);
+  };
+
   // Real-time title from WebSocket (session_title_updated)
   const handleTitleUpdated = (title: string) => {
     setSelectedSession(prev => prev ? { ...prev, title } : prev);
@@ -193,7 +357,7 @@ function App() {
 
   if (loading) {
     return (
-      <div className="h-screen flex items-center justify-center bg-[#0f0f0f]">
+      <div className="flex min-h-0 h-dvh items-center justify-center bg-[#0f0f0f]">
         <Loader2 className="animate-spin text-[#00ff99]" size={48} />
       </div>
     );
@@ -208,33 +372,80 @@ function App() {
     { id: 'skills', icon: <Wrench size={18} />, label: 'Skills' },
     { id: 'repos', icon: <GitFork size={18} />, label: 'Repos' },
     { id: 'reviews', icon: <GitPullRequest size={18} />, label: 'Reviews' },
+    { id: 'monitor', icon: <Activity size={18} />, label: 'Monitor' },
+    { id: 'env_parity', icon: <Container size={18} />, label: 'Env Parity' },
+    { id: 'ui_test', icon: <TestTube2 size={18} />, label: 'UI Tests' },
+    { id: 'projects', icon: <FolderKanban size={18} />, label: 'Projects' },
+    { id: 'benchmark', icon: <FlaskConical size={18} />, label: 'Benchmark' },
   ];
 
-  const apiBase = import.meta.env.VITE_API_URL
-    ? `${import.meta.env.VITE_API_URL}/api`
-    : 'http://localhost:8000/api';
+  const apiBase = getApiBase();
+
+  const accentColor = isDark ? '#00ff99' : '#00aa66';
+  const bgPrimary = isDark ? 'bg-[#0f0f0f]' : 'bg-[#f5f5f5]';
+  const bgSidebar = isDark ? 'bg-[#111111]' : 'bg-white';
+  const borderColor = isDark ? 'border-[#1a1a1a]' : 'border-[#e5e5e5]';
+  const textPrimary = isDark ? 'text-white' : 'text-[#0f0f0f]';
+  const textMuted = isDark ? 'text-[#737373]' : 'text-[#737373]';
+  const bgHover = isDark ? 'hover:bg-[#1a1a1a]/50' : 'hover:bg-[#f0f0f0]';
+  const bgActive = isDark ? 'bg-[#1a1a1a]' : 'bg-[#ebebeb]';
 
   return (
     <SessionEventsProvider>
       {showNewSession && (
         <NewSessionModal
-          onClose={() => setShowNewSession(false)}
+          onClose={() => { setShowNewSession(false); setNewSessionInitialDir(''); }}
+          initialWorkingDir={newSessionInitialDir}
           onCreated={(session) => {
             setSelectedSession(session);
+            localStorage.setItem(LAST_SESSION_KEY, session.session_id);
             setActiveTab('sessions');
+            setSidebarOpen(false);
+            setSessionListRefresh((n) => n + 1);
           }}
         />
       )}
 
-      <div className="h-screen flex bg-[#0f0f0f] text-white overflow-hidden">
-        {/* Left Sidebar */}
-        <aside className="w-[220px] flex flex-col bg-[#111111] border-r border-[#1a1a1a] flex-shrink-0">
-          {/* Logo */}
-          <div className="p-4 flex items-center gap-2.5 mb-2">
-            <div className="w-7 h-7 rounded-lg bg-[#00ff99]/10 border border-[#00ff99]/20 flex items-center justify-center">
-              <Bot className="text-[#00ff99]" size={16} />
-            </div>
-            <h1 className="font-bold text-sm tracking-tight text-white">Mini-Devin</h1>
+      {/* Mobile overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      <div
+        className={`flex min-h-0 h-dvh max-h-dvh flex-row ${bgPrimary} ${textPrimary} overflow-hidden pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)]`}
+      >
+        {/* Left Sidebar — hidden on mobile, slide-in on toggle */}
+        <aside
+          className={`
+            fixed md:relative z-50 md:z-auto
+            w-[220px] flex flex-col flex-shrink-0
+            ${bgSidebar} border-r ${borderColor}
+            h-full
+            transition-transform duration-300 ease-in-out
+            ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+          `}
+        >
+          {/* Logo + close button (mobile) */}
+          <div className="p-4 flex items-center justify-between mb-2">
+            <button
+              onClick={() => navigate('/')}
+              className="flex items-center gap-2.5 hover:opacity-80 transition-opacity"
+              title="Back to home"
+            >
+              <div className="w-7 h-7 rounded-lg bg-[#00ff99]/10 border border-[#00ff99]/20 flex items-center justify-center">
+                <Bot style={{ color: accentColor }} size={16} />
+              </div>
+              <h1 className={`font-bold text-sm tracking-tight ${textPrimary}`}>Plodder</h1>
+            </button>
+            <button
+              className={`md:hidden p-1 rounded-lg ${textMuted} ${bgHover} transition-colors`}
+              onClick={() => setSidebarOpen(false)}
+            >
+              <X size={16} />
+            </button>
           </div>
 
           {/* Nav */}
@@ -242,20 +453,22 @@ function App() {
             {navItems.map(item => (
               <button
                 key={item.id}
-                onClick={() => setActiveTab(item.id)}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === item.id
-                  ? 'bg-[#1a1a1a] text-white'
-                  : 'text-[#737373] hover:text-white hover:bg-[#1a1a1a]/50'
-                  }`}
+                onClick={() => { setActiveTab(item.id); setSidebarOpen(false); }}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  activeTab === item.id
+                    ? `${bgActive} ${textPrimary}`
+                    : `${textMuted} ${bgHover} hover:${textPrimary}`
+                }`}
               >
-                <span className={activeTab === item.id ? 'text-[#00ff99]' : ''}>{item.icon}</span>
+                <span style={activeTab === item.id ? { color: accentColor } : {}}>{item.icon}</span>
                 {item.label}
               </button>
             ))}
             <button
               onClick={handleSelfEvolve}
               disabled={api.loading}
-              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-[#00ff99] hover:bg-[#00ff99]/10 transition-colors mt-2"
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium hover:bg-[#00ff99]/10 transition-colors mt-2"
+              style={{ color: accentColor }}
             >
               <Zap size={18} fill="currentColor" fillOpacity={0.2} />
               Self-Evolve
@@ -264,21 +477,36 @@ function App() {
 
           {/* Sessions list */}
           {activeTab === 'sessions' && (
-            <div className="flex-1 mt-4 px-2 overflow-y-auto min-h-0 border-t border-[#1a1a1a] pt-4 custom-scrollbar">
+            <div className={`flex-1 mt-4 px-2 overflow-y-auto min-h-0 border-t ${borderColor} pt-4 custom-scrollbar`}>
               <SessionList
-                onSelectSession={setSelectedSession}
+                refreshTrigger={sessionListRefresh}
+                onSelectSession={(s) => {
+                  setSelectedSession(s);
+                  localStorage.setItem(LAST_SESSION_KEY, s.session_id);
+                  setSidebarOpen(false);
+                }}
                 selectedSessionId={selectedSession?.session_id}
-                onNewSession={() => setShowNewSession(true)}
+                onQuickNewSession={handleQuickNewSession}
+                onCustomNewSession={() => setShowNewSession(true)}
+                quickCreateBusy={quickSessionBusy}
               />
             </div>
           )}
 
           {/* Bottom links */}
-          <div className="p-2 border-t border-[#1a1a1a] space-y-0.5">
+          <div className={`p-2 border-t ${borderColor} space-y-0.5`}>
+            {/* Theme toggle */}
+            <button
+              onClick={toggleTheme}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm ${textMuted} ${bgHover} transition-colors`}
+            >
+              {isDark ? <Sun size={16} /> : <Moon size={16} />}
+              {isDark ? 'Light Mode' : 'Dark Mode'}
+            </button>
             <a
               href="/docs"
               target="_blank"
-              className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#737373] hover:text-white hover:bg-[#1a1a1a]/50 transition-colors"
+              className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm ${textMuted} ${bgHover} transition-colors`}
             >
               <BookOpen size={16} />
               API Docs
@@ -286,7 +514,7 @@ function App() {
             <a
               href="https://github.com"
               target="_blank"
-              className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#737373] hover:text-white hover:bg-[#1a1a1a]/50 transition-colors"
+              className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm ${textMuted} ${bgHover} transition-colors`}
             >
               <Github size={16} />
               View Source
@@ -297,7 +525,7 @@ function App() {
               ) : (
                 <button
                   onClick={() => setShowLogin(true)}
-                  className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium bg-[#1a1a1a] hover:bg-[#262626] transition-colors text-[#a3a3a3]"
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium ${bgActive} hover:${isDark ? 'bg-[#262626]' : 'bg-[#e0e0e0]'} transition-colors ${textMuted}`}
                 >
                   <LogIn size={16} />
                   Sign In
@@ -308,54 +536,121 @@ function App() {
         </aside>
 
         {/* Main Area */}
-        <div className="flex-1 flex overflow-hidden">
-          {activeTab === 'sessions' && selectedSession ? (
-            <PanelGroup direction="horizontal">
-              <Panel defaultSize={45} minSize={30}>
-                <div className="h-full flex flex-col bg-[#0f0f0f] relative overflow-hidden">
-                  <TaskPanel session={selectedSession} onTitleUpdated={handleTitleUpdated} />
-                </div>
-              </Panel>
-
-              <PanelResizeHandle className="w-px bg-[#1a1a1a] hover:bg-[#00ff99]/30 transition-colors cursor-col-resize" />
-
-              <Panel minSize={30}>
-                <WorkspacePanel sessionId={selectedSession.session_id} />
-              </Panel>
-            </PanelGroup>
-          ) : (
-            <div className="flex-1 flex flex-col overflow-hidden">
-              {activeTab === 'sessions' ? (
-                <div className="flex-1 flex flex-col items-center justify-center gap-6 text-center p-8">
-                  <div className="w-16 h-16 rounded-2xl bg-[#00ff99]/5 border border-[#00ff99]/10 flex items-center justify-center">
-                    <Bot size={32} className="text-[#00ff99]/40" />
-                  </div>
-                  <div className="space-y-2">
-                    <h2 className="text-xl font-bold tracking-tight">Welcome to Mini-Devin</h2>
-                    <p className="text-[#737373] text-sm leading-relaxed max-w-xs">
-                      Start a new session to work with your AI agent, or select an existing one from the sidebar.
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setShowNewSession(true)}
-                    className="px-6 py-3 bg-[#00ff99] text-[#0f0f0f] font-semibold text-sm rounded-xl hover:bg-[#00e589] transition-colors"
-                  >
-                    + New Session
-                  </button>
-                </div>
-              ) : activeTab === 'skills' ? (
-                <SkillsManager apiBaseUrl={apiBase} />
-              ) : activeTab === 'repos' ? (
-                <RepoManager
-                  apiBaseUrl={apiBase}
-                  sessionId={selectedSession?.session_id}
-                  onRepoLinked={() => { }}
-                />
-              ) : (
-                <PRReview apiBaseUrl={apiBase} />
-              )}
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+          {/* Mobile top bar */}
+          <div className={`flex items-center gap-3 px-4 py-3 border-b ${borderColor} md:hidden flex-shrink-0`}>
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className={`p-2 rounded-lg ${textMuted} ${bgHover} transition-colors`}
+            >
+              <Menu size={18} />
+            </button>
+            <div className="flex items-center gap-2">
+              <Bot style={{ color: accentColor }} size={16} />
+              <span className={`font-bold text-sm ${textPrimary}`}>Plodder</span>
             </div>
-          )}
+            {selectedSession && (
+              <span className={`ml-auto text-xs ${textMuted} truncate max-w-[140px]`}>
+                {selectedSession.title || 'Session'}
+              </span>
+            )}
+          </div>
+
+          {/* Content — min-w-0 so flex row children can shrink; session view must flex-1 to fill width */}
+          <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+            {activeTab === 'sessions' && selectedSession ? (
+              <div
+                className={`flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden ${bgPrimary}`}
+              >
+                <SessionWorkspaceShell
+                  session={selectedSession}
+                  isDark={isDark}
+                  onTitleUpdated={handleTitleUpdated}
+                  onSessionUpdated={handleSessionUpdated}
+                />
+              </div>
+            ) : (
+              <div className="flex-1 flex flex-col overflow-hidden">
+                {activeTab === 'sessions' ? (
+                  <div className="flex-1 flex flex-col items-center justify-center gap-6 text-center p-8">
+                    <div className="w-16 h-16 rounded-2xl bg-[#00ff99]/5 border border-[#00ff99]/10 flex items-center justify-center">
+                      <Bot size={32} style={{ color: accentColor, opacity: 0.4 }} />
+                    </div>
+                    <div className="space-y-2">
+                      <h2 className={`text-xl font-bold tracking-tight ${textPrimary}`}>Welcome to Plodder</h2>
+                      <p className={`${textMuted} text-sm leading-relaxed max-w-xs`}>
+                        Start a new session to work with your AI agent, or select an existing one from the sidebar.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={quickSessionBusy}
+                      onClick={() => void handleQuickNewSession()}
+                      className="px-6 py-3 font-semibold text-sm rounded-xl transition-colors disabled:opacity-50"
+                      style={{ backgroundColor: accentColor, color: '#0f0f0f' }}
+                    >
+                      {quickSessionBusy ? 'Starting…' : '+ New Session'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowNewSession(true)}
+                      className={`text-xs ${textMuted} hover:text-white underline-offset-2 hover:underline`}
+                    >
+                      Git URL, custom model, or git options…
+                    </button>
+                  </div>
+                ) : activeTab === 'skills' ? (
+                  <ErrorBoundary>
+                    <SkillsManager apiBaseUrl={apiBase} />
+                  </ErrorBoundary>
+                ) : activeTab === 'repos' ? (
+                  <ErrorBoundary>
+                    <RepoManager
+                      apiBaseUrl={apiBase}
+                      sessionId={selectedSession?.session_id}
+                      onRepoLinked={() => { }}
+                      onOpenInSession={(localPath, repoName) => {
+                        setNewSessionInitialDir(localPath);
+                        setShowNewSession(true);
+                        setActiveTab('sessions');
+                      }}
+                      onIssueRunStarted={(session) => {
+                        setSelectedSession(session);
+                        localStorage.setItem(LAST_SESSION_KEY, session.session_id);
+                        setActiveTab('sessions');
+                        setSidebarOpen(false);
+                        setSessionListRefresh((n) => n + 1);
+                      }}
+                    />
+                  </ErrorBoundary>
+                ) : activeTab === 'monitor' ? (
+                  <ErrorBoundary>
+                    <MonitorPanel />
+                  </ErrorBoundary>
+                ) : activeTab === 'env_parity' ? (
+                  <ErrorBoundary>
+                    <EnvParityPanel />
+                  </ErrorBoundary>
+                ) : activeTab === 'ui_test' ? (
+                  <ErrorBoundary>
+                    <UITestPanel />
+                  </ErrorBoundary>
+                ) : activeTab === 'projects' ? (
+                  <ErrorBoundary>
+                    <ProjectPlannerPanel />
+                  </ErrorBoundary>
+                ) : activeTab === 'benchmark' ? (
+                  <ErrorBoundary>
+                    <BenchmarkPanel />
+                  </ErrorBoundary>
+                ) : (
+                  <ErrorBoundary>
+                    <PRReview apiBaseUrl={apiBase} />
+                  </ErrorBoundary>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
       <ToastContainer toasts={toasts} onDismiss={dismiss} />

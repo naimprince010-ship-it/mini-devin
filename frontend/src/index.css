@@ -10,9 +10,32 @@
   --text-muted: #737373;
 }
 
+/* Light mode overrides */
+html.light-mode {
+  --bg-primary: #f5f5f5;
+  --bg-sidebar: #ffffff;
+  --bg-surface: #e8e8e8;
+  --accent-green: #00aa66;
+  --status-orange: #cc7700;
+  --border-color: #d4d4d4;
+  --text-primary: #0f0f0f;
+  --text-secondary: #525252;
+  --text-muted: #737373;
+}
+
+html.light-mode body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+#root {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
 
 body {
   margin: 0;
@@ -55,6 +78,14 @@ code {
 
 .devin-border {
   border-color: var(--border-color);
+}
+
+/* Monaco — highlight region after agent / atomic_edit sync */
+.monaco-editor .plodder-agent-edit-highlight {
+  background-color: rgba(0, 255, 153, 0.1) !important;
+}
+.monaco-editor .plodder-agent-edit-margin {
+  border-left: 3px solid rgba(0, 255, 153, 0.65) !important;
 }
 
 .devin-active-tab {

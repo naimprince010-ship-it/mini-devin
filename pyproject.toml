@@ -1,12 +1,13 @@
 [tool.poetry]
-name = "mini-devin"
-version = "0.1.0"
-description = "An autonomous AI software engineer agent with access to Terminal, Code Editor, and Web Browser"
-authors = ["Mini-Devin Team"]
+name = "plodder"
+version = "0.2.0"
+description = "Plodder — autonomous AI software engineer (terminal, editor, browser, Plodder core libraries)"
+authors = ["Plodder"]
 readme = "README.md"
-packages = [{include = "mini_devin"}]
+packages = [{include = "mini_devin"}, {include = "plodder"}]
 
 [tool.poetry.scripts]
+plodder = "mini_devin.cli:main"
 mini-devin = "mini_devin.cli:main"
 
 [tool.poetry.dependencies]
@@ -16,11 +17,13 @@ litellm = "^1.0.0"
 httpx = ">=0.27.0"
 playwright = "^1.40.0"
 tree-sitter = "^0.20.0"
+tree-sitter-python = "^0.21.0"
+tree-sitter-typescript = "^0.21.0"
 pexpect = "^4.9.0"
 docker = "^7.0.0"
 sqlalchemy = "^2.0.0"
 python-dotenv = "^1.0.0"
-rich = "^13.7.0"
+rich = "^14.0.0"
 typer = ">=0.15.1"
 fastapi = {extras = ["standard"], version = "^0.124.4"}
 uvicorn = "^0.38.0"
@@ -37,6 +40,15 @@ bcrypt = "^5.0.0"
 aiosqlite = "^0.22.1"
 PyGithub = "^2.3.0"
 GitPython = "^3.1.40"
+slowapi = "^0.1.9"
+lancedb = ">=0.29.0"
+watchdog = ">=4.0.0"
+e2b = {version = "^2.9.0", optional = true}
+basedpyright = {version = "^1.28.0", optional = true}
+
+[tool.poetry.extras]
+sandbox-e2b = ["e2b"]
+lsp-python = ["basedpyright"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"

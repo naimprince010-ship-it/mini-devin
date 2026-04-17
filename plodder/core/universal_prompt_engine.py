@@ -1,0 +1,319 @@
+"""
+Universal Prompt Engine — language-agnostic pseudo-logic before syntax.
+
+Flow: intent → PseudoLogicPlan (structures, algorithms, flow) → then target syntax.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Literal
+
+
+@dataclass
+class DataStructureChoice:
+    """Named structure with role in the solution (language-agnostic)."""
+
+    name: str
+    role: str
+    complexity_notes: str = ""
+
+
+@dataclass
+class AlgorithmSketch:
+    """High-level algorithmic intent without host-language syntax."""
+
+    name: str
+    paradigm: Literal["sequential", "divide_conquer", "greedy", "dp", "graph", "event_driven", "other"]
+    steps: list[str]
+    invariants: list[str] = field(default_factory=list)
+    edge_cases: list[str] = field(default_factory=list)
+
+
+@dataclass
+class PseudoLogicPlan:
+    """
+    Universal logic artifact produced *before* any concrete language is chosen.
+
+    Downstream agents compile this plan into a specific language's syntax,
+    tests, and sandbox commands.
+    """
+
+    goal: str
+    constraints: list[str]
+    data_structures: list[DataStructureChoice]
+    algorithms: list[AlgorithmSketch]
+    control_flow_mermaid: str = ""
+    modularity_boundaries: list[str] = field(default_factory=list)
+    memory_and_lifecycle_notes: str = ""
+    type_safety_strategy: str = ""
+
+    def to_markdown_brief(self) -> str:
+        """Dense representation for injection into LLM context."""
+        lines: list[str] = [f"## Goal\n{self.goal}", "## Constraints"] + [f"- {c}" for c in self.constraints]
+        lines.append("## Data structures")
+        for ds in self.data_structures:
+            lines.append(f"- **{ds.name}**: {ds.role}" + (f" ({ds.complexity_notes})" if ds.complexity_notes else ""))
+        lines.append("## Algorithms")
+        for alg in self.algorithms:
+            lines.append(f"### {alg.name} ({alg.paradigm})")
+            lines.extend(f"1. {s}" for s in alg.steps)
+            if alg.invariants:
+                lines.append("_Invariants:_ " + "; ".join(alg.invariants))
+            if alg.edge_cases:
+                lines.append("_Edge cases:_ " + "; ".join(alg.edge_cases))
+        if self.control_flow_mermaid.strip():
+            lines.append("## Control flow (Mermaid)\n```mermaid\n" + self.control_flow_mermaid.strip() + "\n```")
+        if self.modularity_boundaries:
+            lines.append("## Module boundaries")
+            lines.extend(f"- {m}" for m in self.modularity_boundaries)
+        if self.memory_and_lifecycle_notes:
+            lines.append(f"## Memory / lifecycle\n{self.memory_and_lifecycle_notes}")
+        if self.type_safety_strategy:
+            lines.append(f"## Type-safety strategy\n{self.type_safety_strategy}")
+        return "\n\n".join(lines)
+
+
+@dataclass
+class PolyglotSystemPrompt:
+    """
+    High-level compiler-architect persona: types, memory, modularity first.
+    """
+
+    product_name: str = "Plodder"
+
+    def base_instruction(self) -> str:
+        return f"""You are {self.product_name}, a senior **compiler-minded software architect** and polyglot engineer.
+
+## Prime directives
+1. **Universal logic first**: Before emitting code in *any* language, mentally produce a Pseudo-Logic Plan:
+   explicit data structures, algorithm steps, invariants, edge cases, and control flow (Mermaid when helpful).
+2. **Type safety**: Prefer explicit types, narrow contracts, and validation at boundaries. If the language lacks
+   static types, emulate them with schemas, assertions, or tests.
+3. **Memory & resources**: For managed runtimes, avoid leaks and unbounded retention. For native/unsafe tiers,
+   call out ownership, lifetimes, RAII, or manual free discipline *before* coding.
+4. **Modularity**: Small composable units, clear interfaces, dependency injection where idiomatic, minimal public API.
+5. **Evidence over claims**: After code, specify how to verify (tests, property checks, sandbox runs).
+6. **Web UI quality**: When shipping screens, prefer **design tokens / Tailwind config** for visuals,
+   **shadcn/ui or Radix + Lucide** when idiomatic, explicit **loading / error / empty** states, and
+   **browser screenshots** to validate layout before declaring success.
+7. **Local web-app workflow**: When building a website/app, do not stop at code. Install dependencies once,
+   then start the dev server in the right sandbox mode and inspect the running UI. Do not spam `&` retries for
+   long-running servers in a one-shot sandbox. If the default port is busy, retry on common fallbacks such as
+   `5001`, `5002`, `5173`, or `8000` instead of getting stuck on missing shell tools like `lsof`, `netstat`,
+   `ss`, or `fuser`. Always verify the current working directory before rerunning app commands, and after a
+   successful start attach `live_preview`.
+
+## Polyglot behaviour
+- You may be asked to work in hundreds of languages. If syntax is uncertain, **state assumptions** and prefer
+  conservative, idiomatic patterns for that ecosystem.
+- When a language is unfamiliar, request or use retrieved documentation snippets (RAG) and treat them as authoritative
+  for syntax and style until contradicted by specs.
+
+## Output shape (unless user overrides)
+1. **Pseudo-Logic Plan** (bullets + optional Mermaid).
+2. **Language choice** + rationale (if not fixed).
+3. **Code** (minimal complete units).
+4. **Verification** (commands or test outline).
+"""
+
+
+class UniversalPromptEngine:
+    """
+    Builds prompts and optional structured plans for the polyglot agent loop.
+
+    Typical integration:
+    - ``build_planner_messages(goal)`` → LLM returns JSON/text → parse into ``PseudoLogicPlan``.
+    - ``build_coder_messages(plan, target_language)`` → LLM emits code + tests.
+    """
+
+    def __init__(self, persona: PolyglotSystemPrompt | None = None) -> None:
+        self.persona = persona or PolyglotSystemPrompt()
+
+    def system_messages(self) -> list[dict[str, Any]]:
+        """Chat-style messages for models that support multi-system turns."""
+        return [{"role": "system", "content": self.persona.base_instruction()}]
+
+    def planner_user_prompt(self, goal: str, extra_context: str = "") -> str:
+        return (
+            f"Task:\n{goal.strip()}\n\n"
+            f"{extra_context.strip()}\n\n"
+            "Respond with a **Pseudo-Logic Plan** only (no code yet): "
+            "data structures with roles, algorithm(s) with steps and invariants, edge cases, "
+            "optional Mermaid for control flow, module boundaries, memory/lifecycle notes, type-safety strategy."
+        )
+
+    def planner_json_user_prompt(self, goal: str, extra_context: str = "") -> str:
+        """Ask for machine-parseable JSON (used by the orchestration loop)."""
+        schema = (
+            '{"goal": str, "constraints": [str], '
+            '"data_structures": [{"name": str, "role": str, "complexity_notes": str}], '
+            '"algorithms": [{"name": str, "paradigm": "sequential|divide_conquer|greedy|dp|graph|event_driven|other", '
+            '"steps": [str], "invariants": [str], "edge_cases": [str]}], '
+            '"control_flow_mermaid": str, "modularity_boundaries": [str], '
+            '"memory_and_lifecycle_notes": str, "type_safety_strategy": str}'
+        )
+        return (
+            f"Task:\n{goal.strip()}\n\n{extra_context.strip()}\n\n"
+            f"Return **only** a single JSON object (no markdown) matching this shape:\n{schema}\n"
+            "Use empty strings or empty arrays where unknown."
+        )
+
+    def coder_user_prompt(
+        self,
+        plan: PseudoLogicPlan,
+        target_language: str,
+        task_hint: str = "",
+        *,
+        retrieved_context: str | None = None,
+    ) -> str:
+        body = plan.to_markdown_brief()
+        hint = f"\n\nAdditional hint:\n{task_hint}" if task_hint.strip() else ""
+        rag = ""
+        if retrieved_context and retrieved_context.strip():
+            rag = "\n\n## Retrieved documentation (trust for syntax & idioms)\n" + retrieved_context.strip()
+        return (
+            f"Target language: **{target_language}**\n\n"
+            f"Compile the following universal plan into idiomatic, modular, well-typed code, "
+            f"plus minimal tests or a verification command.{hint}{rag}\n\n{body}"
+        )
+
+    def language_docs_retrieval_block(
+        self,
+        store: Any,
+        *,
+        user_task: str,
+        language_display: str | None = None,
+        language_key: str | None = None,
+        n_results: int = 8,
+        max_chars: int = 8000,
+    ) -> str:
+        """
+        Query Plodder's Lance ``DocumentationStore`` for cheat-sheet chunks.
+
+        Typical wiring::
+
+            store = DocumentationStore(docs_dir=\"docs/languages\")
+            ctx = engine.language_docs_retrieval_block(
+                store,
+                user_task=\"Implement a small CLI parser\",
+                language_display=\"Rust\",
+                language_key=\"rust\",
+            )
+            prompt = engine.coder_user_prompt(plan, \"rust\", retrieved_context=ctx)
+
+        ``language_key`` should match YAML ``language_key`` from ``scripts/prepare_docs.py``.
+        """
+        fmt = getattr(store, "format_retrieval_block_for_language", None)
+        if not callable(fmt):
+            return ""
+        return fmt(
+            user_task,
+            language_display=language_display,
+            language_key=language_key,
+            n_results=n_results,
+            max_chars=max_chars,
+        )
+
+    def execution_feedback_block(
+        self,
+        *,
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+        command: str,
+    ) -> str:
+        """Format sandbox output for the self-healing loop."""
+        return (
+            "## Execution feedback (sandbox)\n"
+            f"- **Command**: `{command}`\n"
+            f"- **Exit code**: {exit_code}\n"
+            "### STDOUT\n```\n" + (stdout or "(empty)") + "\n```\n"
+            "### STDERR\n```\n" + (stderr or "(empty)") + "\n```\n"
+            "Analyze failures, map stack traces to your modules, propose a minimal fix, then restate tests."
+        )
+
+    def repair_user_prompt(
+        self,
+        plan: PseudoLogicPlan,
+        *,
+        target_language: str,
+        prior_code: str,
+        execution_feedback_md: str,
+        attempt: int,
+    ) -> str:
+        """Prompt for a sandbox repair pass (stderr-driven) while keeping the pseudo-logic contract."""
+        return (
+            f"## Repair attempt {attempt}\n"
+            f"Target language: **{target_language}**\n\n"
+            "The last run failed in the sandbox. Produce a **minimal Repair Plan** in 2–4 bullets, "
+            "then output **only** the full corrected program as plain text (no markdown fences).\n\n"
+            "### Original pseudo-logic (do not contradict)\n"
+            + plan.to_markdown_brief()
+            + "\n\n"
+            + execution_feedback_md
+            + "\n\n### Code to fix\n```text\n"
+            + prior_code
+            + "\n```\n"
+        )
+
+    def session_unified_driver_contract(self) -> str:
+        """
+        JSON-only tool loop contract for ``UnifiedSessionDriver``.
+
+        The model must pick filesystem vs sandbox actions from execution feedback.
+        """
+        return (
+            "## Response contract (strict JSON only)\n"
+            "Every assistant message must be **one** JSON object, no markdown fences, no prose:\n"
+            "```\n"
+            "{\n"
+            '  "status": "continue" | "done",\n'
+            '  "rationale": "1-3 sentences: what you will do or why you stop",\n'
+            '  "sub_goal": "required with terminal/fs_write/fs_delete/atomic_edit/sandbox_run/browser_click/browser_type: concrete sub-goal",\n'
+            '  "risk_assessment": "required: what could fail; never assume paths exist without listing/reading first",\n'
+            '  "expected_outcome": "required: what you expect to observe next (stdout, files, diagnostics)",\n'
+            '  "observe": "optional: one sentence on last tool output",\n'
+            '  "think": "optional: one sentence linking observation to next action",\n'
+            '  "act_summary": "optional: short phrase naming tools you will call",\n'
+            '  "tool_calls": [\n'
+            '    {"name": "<tool>", "args": { ... }}\n'
+            "  ]\n"
+            "}\n"
+            "```\n"
+            "- If ``status`` is ``done``, set ``tool_calls`` to ``[]``; ``sub_goal`` / ``risk_assessment`` / "
+            "``expected_outcome`` may be empty strings.\n"
+            "- If ``continue`` and any tool is ``sandbox_shell``, ``sandbox_run``, ``atomic_edit``, ``fs_write``, "
+            "``fs_delete``, ``browser_click``, or ``browser_type``, all three monologue fields are **mandatory** "
+            "(each meaningful, ≥12 characters).\n"
+            "- If ``continue``, emit one or more tool calls; you will receive structured results next turn.\n"
+            "- Use **relative paths** from the workspace root (POSIX ``/``); confirm paths with ``fs_list`` / "
+            "``fs_read`` before mutating.\n"
+            "- After stderr names a file/line, prefer ``fs_read`` that path, then a minimal ``atomic_edit``.\n"
+        )
+
+    def session_unified_tools_catalog(self) -> str:
+        """Human-readable tool reference injected into the system prompt."""
+        return """## Tools (names and args)
+
+| name | args | description |
+|------|------|-------------|
+| `fs_list` | `path` (optional, default `.`) | List files and subdirs under `path`. |
+| `fs_read` | `path` | Read a UTF-8 text file. |
+| `fs_write` | `path`, `content` | Create/overwrite a file (creates parent dirs). |
+| `fs_delete` | `path` | Delete a file or empty/non-empty directory tree. |
+| `sandbox_run` | `entry` (required), `language` (optional), `language_key` (optional doc slug), `network` (bool, default false) | Auto-run by extension/hint: Python/JS/TS/Go/Rust (`cargo run` if `Cargo.toml` present), C/C++, **Java** (Maven `package` / Gradle `test` when `pom.xml` / `build.gradle` present, else `javac`), **PHP** (`composer install` when `composer.json` present), **SQL** (`.sql` → `psql -f` when host sets `SANDBOX_SQL_URL` or non-SQLite `DATABASE_URL`; use `network: true` if the DB is not reachable from the container), **C# / F#** (`dotnet new` + run — often needs `network: true` for NuGet). |
+| `sandbox_shell` | `argv` (list of strings), `language_hint` (optional), `network` (bool) | Run a shell command in the sandbox with the workspace snapshot (e.g. `["sh","-c","cd /workspace && npm install"]`). Use `network: true` for installs. For dev servers, prefer host-process execution so the server can keep running and be attached to `live_preview`. |
+| `github` | `action` (`create_branch`, `commit`, `create_pr`, `automated_workflow`, `get_pr_status`, `merge_pr`), plus branch/PR fields | GitHub or GitLab: `GITHUB_TOKEN` / GitHub remote, or `GITLAB_TOKEN` + `gitlab.com` / `GITLAB_HOST` / `GITLAB_API_URL`. Use `base_branch` `"default"` for the default branch. `create_pr` supports `draft`, `assignees`, `linked_issues` (GitHub; GitLab skips assignee IDs). Bitbucket is rejected. |
+| `gitleaks` | `extra_args` (optional list of strings) | Run `gitleaks detect` on the workspace root if `gitleaks` is installed on the server. |
+| `search_codebase` | `query` (required), `top_k` (optional, default 8) | **Semantic search** over indexed workspace source (LanceDB at session start). Use for cross-file symbols, configs, or patterns instead of manual `grep` when exploring. |
+| `atomic_edit` | `path`, `mode` (``str_replace`` or ``write_full``), `old_string`+`new_string` (replace) or `content` (full write) | **Hands**: read-verify-write in one step; prefer over raw `fs_write` for surgical edits. |
+| `lsp_check` | `path`, `content` (optional in-memory buffer) | **Eyes (code)**: Pyright/tsc/syntax diagnostics on disk or snapshot text. |
+| `playwright_observe` | `url` (optional; omit to stay on the current tab after the first load), `wait_ms`, `capture_console` (default true), `include_accessibility` (default true), `max_interactive_elements` (10–200, default 120), `full_page_screenshot` (bool), `viewport_width` / `viewport_height` (optional; e.g. **375×812** mobile + **1440×900** desktop for visual audits) | **Browser agent (observe)**: persistent Chromium; PNG + **accessibility tree** + **`interactive_elements`** (`p1`…, bounding boxes, `data-plodder-id` on the page). With console on: **page_errors** + **network_failures** (HTTP ≥400). Blank tab defaults to `http://127.0.0.1:5173`. After UI edits, capture **two** widths when auditing responsiveness. |
+| `browser_click` | `element_id` (e.g. `p12` or `12` from last observe), `verify` (default true → nested `post_action_observe`), `verify_include_screenshot` (default false), `post_wait_ms`, plus same observe toggles as above for the verify pass | **Hands**: scroll-into-view + click on the grounded element. |
+| `browser_type` | `element_id`, `text`, `submit` (bool, press Enter after fill), same options as `browser_click` | **Hands**: fill input/textarea, optional submit. |
+| `browser_scroll` | `direction` (`up` / `down` / `top` / `bottom`), `pixels` (optional, default 600) | Scroll the viewport. |
+| `browser_close` | (none) | Close the Playwright session (normally automatic at session end). |
+| `live_preview` | `action` (`probe` or `set_active_port`), `ports` (optional list of ints for probe), `port` (int for set_active_port) | **Live Preview iframe** (localhost dev servers only): probe allowed ports on **this host's** `127.0.0.1`, then register **your** Vite/npm listener — **not** for opening arbitrary `https://…` sites (use `playwright_observe` / fetch against the real URL). On Railway, `PORT` often matches this API, not a user domain. Requires `session_id` or `PLODDER_SESSION_ID`. Host `sandbox_shell`; ephemeral Docker does not publish ports here. If the default app port is busy, retry the dev server on `5001`, `5002`, `5173`, `8000`, or other common local ports before probing again. |
+
+**Notes:** `sandbox_*` may use Docker or the host process sandbox depending on environment. For `sandbox_shell`, `argv` runs in `/workspace` with **session-persistent cwd and exports** (see `.plodder/shell/session_state.json`). Long-running dev servers must run in the host process sandbox if you want `live_preview` to attach. `search_codebase` requires a successful workspace index at session start (see transcript `code_index` phase). Browser tools require Playwright + Chromium (`pip install playwright && playwright install chromium`)."""

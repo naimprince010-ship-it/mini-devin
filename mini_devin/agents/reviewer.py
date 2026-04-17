@@ -1,5 +1,5 @@
 """
-Reviewer Agent for Mini-Devin
+Reviewer Agent for Plodder
 
 This module implements a reviewer agent that critiques diffs and proposes
 smaller, more focused patches. It helps improve diff discipline and reduce
@@ -222,7 +222,7 @@ class ReviewFeedback:
         return "\n".join(lines)
 
 
-REVIEWER_SYSTEM_PROMPT = """You are a code reviewer agent for Mini-Devin. Your job is to review diffs and provide constructive feedback.
+REVIEWER_SYSTEM_PROMPT = """You are a code reviewer agent for Plodder. Your job is to review diffs and provide constructive feedback.
 
 ## Your Responsibilities
 1. Identify potential bugs, security issues, and logic errors

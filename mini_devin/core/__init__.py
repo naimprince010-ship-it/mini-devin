@@ -1,7 +1,7 @@
 """
-Mini-Devin Core
+Plodder Core
 
-This package contains core infrastructure for the Mini-Devin agent:
+This package contains core infrastructure for the Plodder agent:
 - tool_interface: Base tool interface and registry
 - llm_client: LLM client wrapper using LiteLLM
 """

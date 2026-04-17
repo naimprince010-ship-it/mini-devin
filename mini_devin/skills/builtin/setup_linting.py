@@ -8,7 +8,7 @@ This skill sets up linting for a project by:
 4. Setting up pre-commit hooks
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from ..base import Skill, SkillContext, SkillResult, SkillParameter, SkillStatus
@@ -71,7 +71,7 @@ class SetupLintingSkill(Skill):
             success=False,
             message="",
             status=SkillStatus.RUNNING,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         
         project_type = kwargs.get("project_type")
@@ -151,7 +151,7 @@ class SetupLintingSkill(Skill):
             result.status = SkillStatus.FAILED
             result.error = str(e)
         
-        result.completed_at = datetime.utcnow()
+        result.completed_at = datetime.now(timezone.utc)
         result.steps = self.get_steps()
         return result
     
