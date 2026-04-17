@@ -128,6 +128,18 @@ async def browse_directory(path: str = "."):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/github/oauth/status")
+async def github_oauth_status():
+    """Mock endpoint to prevent frontend 'Failed to fetch' error."""
+    return {"connected": False, "github_configured": False}
+
+
+@app.get("/api/repos")
+async def get_repos():
+    """Mock endpoint to prevent frontend 'Failed to fetch' error."""
+    return {"repos": []}
+
+
 @app.get("/api/sessions")
 @app.get("/sessions")
 async def list_sessions():

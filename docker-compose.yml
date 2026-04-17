@@ -41,6 +41,12 @@ services:
       # LLM Configuration
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://host.docker.internal:11434}
+      - OLLAMA_ENABLED=${OLLAMA_ENABLED:-true}
+      - AZURE_API_KEY=${AZURE_API_KEY:-}
+      - AZURE_API_BASE=${AZURE_API_BASE:-}
+      - AZURE_API_VERSION=${AZURE_API_VERSION:-2024-02-15-preview}
+      - AZURE_DEPLOYMENT_NAME=${AZURE_DEPLOYMENT_NAME:-}
       - LLM_MODEL=${LLM_MODEL:-gpt-4o}
       - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.1}
       
