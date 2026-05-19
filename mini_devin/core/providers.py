@@ -208,6 +208,48 @@ GROQ_MODELS = [
 ]
 
 OPENAI_MODELS = [
+    # --- DigitalOcean Gradient Serverless Inference models ---
+    ModelInfo(
+        id="openai/llama3.3-70b-instruct",
+        name="Llama 3.3 70B (DigitalOcean)",
+        provider=Provider.OPENAI,
+        context_window=128000,
+        supports_tools=True,
+        supports_vision=False,
+        max_output_tokens=4096,
+        description="Meta Llama 3.3 70B via DigitalOcean Serverless Inference",
+    ),
+    ModelInfo(
+        id="openai/llama-4-maverick",
+        name="Llama 4 Maverick (DigitalOcean)",
+        provider=Provider.OPENAI,
+        context_window=524288,
+        supports_tools=True,
+        supports_vision=True,
+        max_output_tokens=8192,
+        description="Meta Llama 4 Maverick via DigitalOcean Serverless Inference",
+    ),
+    ModelInfo(
+        id="openai/qwen3-coder-flash",
+        name="Qwen3 Coder Flash (DigitalOcean)",
+        provider=Provider.OPENAI,
+        context_window=32768,
+        supports_tools=True,
+        supports_vision=False,
+        max_output_tokens=8192,
+        description="Qwen3 coding-specialized model via DigitalOcean",
+    ),
+    ModelInfo(
+        id="openai/deepseek-r1-distill-llama-70b",
+        name="DeepSeek R1 70B (DigitalOcean)",
+        provider=Provider.OPENAI,
+        context_window=64000,
+        supports_tools=False,
+        supports_vision=False,
+        max_output_tokens=8192,
+        description="DeepSeek R1 reasoning model via DigitalOcean",
+    ),
+    # --- Standard OpenAI models ---
     ModelInfo(
         id="gpt-4o",
         name="GPT-4o",
@@ -229,16 +271,6 @@ OPENAI_MODELS = [
         description="Smaller, faster, cheaper GPT-4o variant",
     ),
     ModelInfo(
-        id="gpt-4-turbo",
-        name="GPT-4 Turbo",
-        provider=Provider.OPENAI,
-        context_window=128000,
-        supports_tools=True,
-        supports_vision=True,
-        max_output_tokens=4096,
-        description="GPT-4 Turbo with vision",
-    ),
-    ModelInfo(
         id="gpt-3.5-turbo",
         name="GPT-3.5 Turbo",
         provider=Provider.OPENAI,
@@ -249,7 +281,6 @@ OPENAI_MODELS = [
         description="Fast and cost-effective model",
     ),
 ]
-
 ANTHROPIC_MODELS = [
     ModelInfo(
         id="claude-3-5-sonnet-20241022",
@@ -344,9 +375,49 @@ OLLAMA_MODELS = [
         max_output_tokens=4096,
         description="DeepSeek Coder (local)",
     ),
+    ModelInfo(
+        id="ollama/qwen2.5-coder:0.5b",
+        name="Qwen 2.5 Coder 0.5B",
+        provider=Provider.OLLAMA,
+        context_window=32768,
+        supports_tools=True,
+        supports_vision=False,
+        max_output_tokens=4096,
+        description="Lightweight Qwen Coder model (local)",
+    ),
+    ModelInfo(
+        id="ollama/gemma3:1b",
+        name="Gemma 3 1B",
+        provider=Provider.OLLAMA,
+        context_window=8192,
+        supports_tools=True,
+        supports_vision=False,
+        max_output_tokens=4096,
+        description="Gemma 3 1B model (local)",
+    ),
 ]
 
 GEMINI_MODELS = [
+    ModelInfo(
+        id="gemini/gemini-2.5-flash",
+        name="Gemini 2.5 Flash",
+        provider=Provider.GOOGLE,
+        context_window=1_000_000,
+        supports_tools=True,
+        supports_vision=True,
+        max_output_tokens=8192,
+        description="Fast Gemini 2.5 model with free-tier API access in Google AI Studio",
+    ),
+    ModelInfo(
+        id="gemini/gemini-2.5-flash-lite",
+        name="Gemini 2.5 Flash-Lite",
+        provider=Provider.GOOGLE,
+        context_window=1_000_000,
+        supports_tools=True,
+        supports_vision=True,
+        max_output_tokens=8192,
+        description="Lightweight Gemini 2.5 model for conserving free-tier quota",
+    ),
     ModelInfo(
         id="gemini/gemini-2.0-flash",
         name="Gemini 2.0 Flash",
@@ -504,19 +575,23 @@ class ModelRegistry:
     
     def get_default_model(self) -> str:
         """Get the default model ID based on configured providers."""
+        # Always respect explicit LLM_MODEL env var first.
+        explicit = os.environ.get("LLM_MODEL", "").strip()
+        if explicit:
+            return explicit
         if self.is_provider_configured(Provider.GROQ):
             return os.environ.get("DEFAULT_GROQ_MODEL", "llama-3.3-70b-versatile")
         if self.is_provider_configured(Provider.GOOGLE):
             return os.environ.get("DEFAULT_GEMINI_MODEL", "gemini/gemini-2.0-flash")
         if self.is_provider_configured(Provider.OPENAI):
-            return "gpt-4o"
+            return "openai/llama3.3-70b-instruct"
         if self.is_provider_configured(Provider.ANTHROPIC):
             return "claude-3-5-sonnet-20241022"
         if self.is_provider_configured(Provider.AZURE):
             return "azure/gpt-4o"
         if self.is_provider_configured(Provider.OLLAMA):
             return "ollama/llama3"
-        return "gpt-4o"
+        return "openai/llama3.3-70b-instruct"
     
     def to_api_format(self, only_configured: bool = True) -> list[dict[str, Any]]:
         """Convert models to API response format."""
@@ -630,7 +705,7 @@ def get_litellm_model_name(model_id: str, registry: ModelRegistry | None = None)
         if config and isinstance(config, AzureConfig) and config.deployment_name:
             return f"azure/{config.deployment_name}"
         return model_id.replace("azure/", "")
-    
+
     return model_id
 
 

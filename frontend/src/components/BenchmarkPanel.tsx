@@ -137,6 +137,7 @@ export const BenchmarkPanel: React.FC = () => {
   const [formRepo, setFormRepo] = useState('');
   const [formName, setFormName] = useState('');
   const [formUseAgent, setFormUseAgent] = useState(true);
+  const [benchmarkConfirmed, setBenchmarkConfirmed] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
 
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -208,6 +209,14 @@ export const BenchmarkPanel: React.FC = () => {
   // ── Actions ──────────────────────────────────────────────────────────────
 
   const handleStartRun = async () => {
+    if (formUseAgent && !benchmarkConfirmed) {
+      alert('Benchmark runs can spend a lot of LLM tokens. Confirm the token warning before starting.');
+      return;
+    }
+    if (formUseAgent && formLimit > 3) {
+      const ok = confirm(`This will run ${formLimit} agent tasks and may spend your free quota quickly. Continue?`);
+      if (!ok) return;
+    }
     setIsStarting(true);
     try {
       await fetch(`${getApiBase()}/benchmark/runs`, {
@@ -224,6 +233,7 @@ export const BenchmarkPanel: React.FC = () => {
       setFormOpen(false);
       setFormName('');
       setFormRepo('');
+      setBenchmarkConfirmed(false);
       await fetchRuns();
     } finally {
       setIsStarting(false);
@@ -331,6 +341,13 @@ export const BenchmarkPanel: React.FC = () => {
       {formOpen && (
         <div className="px-5 py-4 border-b border-[#1a1a1a] bg-[#111] flex-shrink-0 space-y-3">
           <p className="text-xs font-bold text-white">Configure Benchmark Run</p>
+          <div className="flex items-start gap-2 rounded-lg border border-yellow-500/25 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200">
+            <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="font-bold text-yellow-100">Token warning</p>
+              <p className="text-yellow-200/80">SWE-bench starts many agent loops. Use 1-3 tasks on free Gemini/Ollama mode, or turn off agent execution to browse tasks only.</p>
+            </div>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-[10px] uppercase tracking-wider text-[#525252] font-bold block mb-1">Split</label>
@@ -348,9 +365,9 @@ export const BenchmarkPanel: React.FC = () => {
               <input
                 type="number"
                 min={1}
-                max={50}
+                max={formUseAgent ? 10 : 50}
                 value={formLimit}
-                onChange={e => setFormLimit(Number(e.target.value))}
+                onChange={e => setFormLimit(Math.max(1, Math.min(formUseAgent ? 10 : 50, Number(e.target.value) || 1)))}
                 className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs text-white outline-none"
               />
             </div>
@@ -379,15 +396,30 @@ export const BenchmarkPanel: React.FC = () => {
             <input
               type="checkbox"
               checked={formUseAgent}
-              onChange={e => setFormUseAgent(e.target.checked)}
+              onChange={e => {
+                setFormUseAgent(e.target.checked);
+                setBenchmarkConfirmed(false);
+                if (e.target.checked && formLimit > 10) setFormLimit(10);
+              }}
               className="accent-[#00ff99]"
             />
             <span className="text-xs text-[#a3a3a3]">Run Plodder agent on each task</span>
           </label>
+          {formUseAgent && (
+            <label className="flex items-center gap-2 cursor-pointer rounded-lg border border-[#262626] bg-[#0f0f0f] px-3 py-2">
+              <input
+                type="checkbox"
+                checked={benchmarkConfirmed}
+                onChange={e => setBenchmarkConfirmed(e.target.checked)}
+                className="accent-yellow-400"
+              />
+              <span className="text-xs text-[#a3a3a3]">I understand this can use a lot of tokens.</span>
+            </label>
+          )}
           <div className="flex gap-2">
             <button
               onClick={handleStartRun}
-              disabled={isStarting}
+              disabled={isStarting || (formUseAgent && !benchmarkConfirmed)}
               className="flex items-center gap-1.5 px-4 py-2 bg-[#00ff99] text-black text-xs font-bold rounded-lg hover:bg-[#00e588] disabled:opacity-50 transition-colors"
             >
               {isStarting ? <RefreshCw size={11} className="animate-spin" /> : <Play size={11} />}

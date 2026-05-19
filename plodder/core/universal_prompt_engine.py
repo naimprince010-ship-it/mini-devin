@@ -103,6 +103,7 @@ class PolyglotSystemPrompt:
    `5001`, `5002`, `5173`, or `8000` instead of getting stuck on missing shell tools like `lsof`, `netstat`,
    `ss`, or `fuser`. Always verify the current working directory before rerunning app commands, and after a
    successful start attach `live_preview`.
+8. **Premium TS defaults**: For high-end TypeScript web apps, prefer **Next.js 15 App Router**, **Drizzle + Supabase** with clear server/client boundaries, and **Magic UI** only for marketing polish on top of shadcn primitives.
 
 ## Polyglot behaviour
 - You may be asked to work in hundreds of languages. If syntax is uncertain, **state assumptions** and prefer

@@ -418,6 +418,10 @@ class SessionManager:
                         data.get("url"),
                         data.get("query"),
                         data.get("screenshot_base64"),
+                        data.get("title"),
+                        data.get("summary"),
+                        data.get("action_time_ms"),
+                        data.get("travel_summary"),
                     )
                 elif update_type == "file_changed":
                     await connection_manager.send_file_changed(

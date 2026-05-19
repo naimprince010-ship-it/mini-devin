@@ -7,9 +7,26 @@ Each task run is stored in its own directory under a configurable base dir.
 """
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+
+_SUMMARY_SECTION_RE = re.compile(
+    r"(?ims)^\s*\*\*(?:think|thought|reasoning|internal monologue)\s*:\*\*.*?(?=^\s*(?:\*\*act\s*:\*\*|act\s*:|task complete\b|\*\*(?:task complete|result|summary|done|files?|changes?)\b)|\Z)"
+)
+
+
+def _sanitize_user_summary(summary: str) -> str:
+    text = (summary or "").strip()
+    if not text:
+        return ""
+    text = _SUMMARY_SECTION_RE.sub("", text).strip()
+    text = re.sub(r"(?im)^\s*\*\*(?:act|think|thought|reasoning|internal monologue)\s*:\*\*\s*", "", text)
+    text = re.sub(r"(?im)^\s*(?:act|think|thought|reasoning|internal monologue)\s*:\s*", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text or "Task completed successfully."
 
 
 class ArtifactLogger:
@@ -120,7 +137,7 @@ class ArtifactLogger:
             summary: Human-readable summary of what was done.
         """
         self._status = status
-        self._summary = summary
+        self._summary = _sanitize_user_summary(summary)
         self._completed_at = datetime.now(timezone.utc).isoformat()
         self._write_meta()
 

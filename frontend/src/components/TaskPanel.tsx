@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, Fragment } from 'react
 import { Session, Task, WebSocketMessage } from '../types';
 import { useApi } from '../hooks/useApi';
 import { useSessionStream } from '../hooks/useSessionStream';
-import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target, Coins, HelpCircle, X, DollarSign, Cpu, Download, FolderOpen } from 'lucide-react';
+import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target, Coins, HelpCircle, X, DollarSign, Cpu, Download, FolderOpen, RotateCcw } from 'lucide-react';
 import { StreamingOutput } from './StreamingOutput';
 import { useSessionEvents } from '../contexts/SessionEventsContext';
 import { PlanStepsView } from './PlanStepsView';
@@ -234,7 +234,8 @@ export function TaskPanel({
       case 'task_completed':
         setIsStreaming(false);
         setStreamingContent(prev => {
-          const finalContent = prev + '\n\n✅ Task completed successfully.';
+          const summary = String(data.summary || '').trim();
+          const finalContent = summary || `${prev.trim()}\n\nTask completed successfully.`.trim();
           if (currentTaskIdRef.current) {
             setTasks(prevTasks => prevTasks.map(t =>
               t.task_id === currentTaskIdRef.current
@@ -263,6 +264,23 @@ export function TaskPanel({
         });
         events.onTaskEnded();
         toast.error('Task failed', String(data.error || 'Unknown error'));
+        break;
+
+      case 'task_cancelled':
+        setIsStreaming(false);
+        setStreamingContent(prev => {
+          const finalContent = prev.trim() || 'Task cancelled by user.';
+          if (currentTaskIdRef.current) {
+            setTasks(prevTasks => prevTasks.map(t =>
+              t.task_id === currentTaskIdRef.current
+                ? { ...t, status: 'cancelled', summary: finalContent }
+                : t
+            ));
+          }
+          return finalContent;
+        });
+        events.onTaskEnded();
+        toast.error('Agent stopped', 'The task was cancelled.');
         break;
 
       case 'session_title_updated':
@@ -370,7 +388,7 @@ export function TaskPanel({
       return;
     }
 
-    if (!isConnected) {
+    if (!isConnected && transport !== 'websocket') {
       toast.error(
         'Agent offline',
         'Not connected to the server. Refresh the page or wait a few seconds and retry.',
@@ -409,10 +427,26 @@ export function TaskPanel({
     setIsStreaming(true);
   };
 
+  const retryTask = (task: Task) => {
+    if (isStreaming) {
+      toast.error('Retry blocked', 'Stop the running agent before retrying a task.');
+      return;
+    }
+    setTaskDescription(task.description);
+    toast.success('Task loaded', 'Review the prompt, then send it again.');
+  };
+
   const handleStop = async () => {
     // REST API call for proper cancellation
     await api.stopSession(session.session_id);
     setIsStreaming(false);
+    if (currentTaskIdRef.current) {
+      setTasks(prevTasks => prevTasks.map(t =>
+        t.task_id === currentTaskIdRef.current
+          ? { ...t, status: 'cancelled', summary: t.summary || 'Task cancelled by user.' }
+          : t
+      ));
+    }
     events.onTaskEnded();
     toast.error('Agent stopped', 'The agent was interrupted.');
   };
@@ -448,6 +482,7 @@ export function TaskPanel({
   const phaseLabel = currentPhase ? (PHASE_LABELS[currentPhase] || currentPhase) : null;
 
   const sessionModel = (session.model || 'auto').trim() || 'auto';
+  const isFreeSaverModel = /flash-lite|qwen2\.5-coder:0\.5b|gemma3:1b/i.test(sessionModel);
 
   const handleModelPick = async (modelId: string) => {
     if (modelId === sessionModel || modelBusy) return;
@@ -483,7 +518,7 @@ export function TaskPanel({
               <span className="text-[10px] font-bold uppercase tracking-wider text-[#a3a3a3]">
                 {isConnected
                   ? (isStreaming ? 'Agent running' : 'Connected')
-                  : 'Agent offline'}
+                  : 'Reconnecting'}
                 {isConnected && transport === 'sse' && (
                   <span className="font-normal text-[#525252]"> · SSE</span>
                 )}
@@ -510,7 +545,7 @@ export function TaskPanel({
                 <span className="text-[10px] font-bold uppercase tracking-wider text-[#a3a3a3]">
                   {isConnected
                     ? (isStreaming ? 'Agent Running' : 'Active Agent')
-                    : 'Agent Offline'}
+                    : 'Reconnecting'}
                   {isConnected && transport === 'sse' && (
                     <span className="font-normal text-[#525252]"> · SSE</span>
                   )}
@@ -598,6 +633,12 @@ export function TaskPanel({
             <span className="text-[10px] text-[#737373]">Saving…</span>
           )}
         </div>
+
+        {isFreeSaverModel && !isStreaming && (
+          <div className="mt-2 max-w-3xl rounded-lg border border-[#262626] bg-[#151515] px-3 py-2 text-[11px] text-[#a3a3a3]">
+            Free saver mode: keep tasks small, avoid Benchmark runs, and ask for one focused change per message.
+          </div>
+        )}
 
         {/* Phase progress bar */}
         {isStreaming && currentPhase && PHASE_ORDER.includes(currentPhase) && (
@@ -775,6 +816,17 @@ export function TaskPanel({
                       <AlertCircle size={16} />
                       <p>{task.error_message}</p>
                     </div>
+                  )}
+                  {(task.status === 'failed' || task.status === 'cancelled') && (
+                    <button
+                      onClick={() => retryTask(task)}
+                      disabled={isStreaming}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-[#262626] bg-[#151515] px-3 py-1.5 text-xs font-bold text-[#a3a3a3] transition-colors hover:border-[#00ff99]/40 hover:text-[#00ff99] disabled:cursor-not-allowed disabled:opacity-50"
+                      title="Load this prompt back into the input"
+                    >
+                      <RotateCcw size={12} />
+                      Retry task
+                    </button>
                   )}
                 </div>
               </div>

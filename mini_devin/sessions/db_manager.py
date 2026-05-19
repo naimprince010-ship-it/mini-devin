@@ -8,6 +8,7 @@ It wraps the existing SessionManager functionality while adding database persist
 import asyncio
 import json
 import os
+import re
 import sys
 import time as time_module
 from datetime import datetime, timezone
@@ -32,6 +33,27 @@ from ..database.config import get_session_maker
 from ..api.websocket import ConnectionManager, MessageType, WebSocketMessage
 from .manager import SessionStatus, TaskStatus, TaskResult, Task, Session
 from ..schemas.state import TaskState, TaskGoal, TaskStatus as AgentTaskStatus
+
+
+_SUMMARY_SECTION_RE = re.compile(
+    r"(?ims)^\s*\*\*(?:think|thought|reasoning|internal monologue)\s*:\*\*.*?(?=^\s*(?:\*\*act\s*:\*\*|act\s*:|task complete\b|\*\*(?:task complete|result|summary|done|files?|changes?)\b)|\Z)"
+)
+
+
+def _sanitize_user_summary(summary: str) -> str:
+    """Remove internal planning/reasoning labels from user-facing task summaries."""
+    text = (summary or "").strip()
+    if not text:
+        return ""
+
+    text = _SUMMARY_SECTION_RE.sub("", text).strip()
+    text = re.sub(r"(?im)^\s*\*\*(?:act|think|thought|reasoning|internal monologue)\s*:\*\*\s*", "", text)
+    text = re.sub(r"(?im)^\s*(?:act|think|thought|reasoning|internal monologue)\s*:\s*", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    if not text:
+        return "Task completed successfully."
+    return text
 
 
 class DatabaseSessionManager:
@@ -655,6 +677,10 @@ class DatabaseSessionManager:
                             data.get("url"),
                             data.get("query"),
                             data.get("screenshot_base64"),
+                            data.get("title"),
+                            data.get("summary"),
+                            data.get("action_time_ms"),
+                            data.get("travel_summary"),
                         )
                     elif update_type == "file_changed":
                         await connection_manager.send_file_changed(
@@ -664,18 +690,6 @@ class DatabaseSessionManager:
                             data.get("content", ""),
                         )
 
-                    # Update iteration and status in database with locking
-                    # Skip for high-frequency stream events (and large file_changed payloads)
-                    if update_type not in ("tokens", "thinking", "tool_output", "file_changed"):
-                        iteration = agent.state.iteration if agent and hasattr(agent, 'state') else 0
-                        async with update_lock:
-                            async with self._session_maker() as db:
-                                task_repo = TaskRepository(db)
-                                session_repo = SessionRepository(db)
-                                # Update status and iteration
-                                await task_repo.update_status(task_id, DBTaskStatus.RUNNING, iteration=iteration)
-                                await session_repo.update_status(session_id, DBSessionStatus.RUNNING, iteration=iteration)
-                                await db.commit()
                 except Exception as e:
                     print(f"Error in background update: {e}")
             
@@ -692,16 +706,13 @@ class DatabaseSessionManager:
             # Set up callbacks on the agent instance.
             # IMPORTANT: The callbacks are called from synchronous context inside the agent,
             # so we use asyncio.ensure_future() to schedule the async on_update coroutine.
+            main_loop = asyncio.get_running_loop()
             def _fire(coro):
-                """Schedule an async coroutine from a sync lambda context."""
+                """Schedule an async coroutine securely on the main event loop."""
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.ensure_future(coro)
-                    else:
-                        loop.run_until_complete(coro)
-                except Exception:
-                    pass
+                    asyncio.run_coroutine_threadsafe(coro, main_loop)
+                except Exception as _e:
+                    print(f"Warning: Failed to schedule update callback: {_e}")
 
             agent.callbacks = {
                 "on_message": lambda token, is_token=False: _fire(
@@ -764,6 +775,7 @@ class DatabaseSessionManager:
                     if msg.role == "assistant" and msg.content:
                         summary = msg.content
                         break
+            summary = _sanitize_user_summary(summary)
             
             # Create a simple result object that matches the code's expectations
             class AgentResult:

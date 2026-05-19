@@ -18,3 +18,11 @@ def test_format_playbooks_includes_both():
     assert "code_review" in block
     assert "refactor" in block
     assert "missing_tag_xyz" not in block
+
+
+def test_load_travel_booking_playbook():
+    root = Path(__file__).resolve().parents[3]
+    text = load_playbook_markdown(root, "travel_booking")
+    assert text
+    assert "hotel" in text.lower()
+    assert "browser_playwright" in text

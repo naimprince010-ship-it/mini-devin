@@ -8,6 +8,9 @@ LLM providers (OpenAI, Anthropic, etc.) with support for tool calling.
 import json
 import os
 import inspect
+import re
+import uuid
+from html import unescape
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -246,6 +249,35 @@ def _tail_trim_non_system_openai_safe(
     return []
 
 
+def _parse_text_tool_calls(content: str | None) -> list[ToolCall]:
+    """Parse XML-ish tool calls emitted as plain text by some OpenAI-compatible models."""
+    if not content or "<function=" not in content:
+        return []
+
+    calls: list[ToolCall] = []
+    for match in re.finditer(r"<function=([A-Za-z_][\w-]*)>(.*?)</function>", content, re.DOTALL):
+        name = match.group(1).strip()
+        body = match.group(2)
+        arguments: dict[str, Any] = {}
+        for param in re.finditer(
+            r"<parameter=([A-Za-z_][\w-]*)>(.*?)</parameter>",
+            body,
+            re.DOTALL,
+        ):
+            key = param.group(1).strip()
+            value = unescape(param.group(2)).strip()
+            arguments[key] = value
+        if arguments:
+            calls.append(
+                ToolCall(
+                    id=f"call_text_{uuid.uuid4().hex[:12]}",
+                    name=name,
+                    arguments=arguments,
+                )
+            )
+    return calls
+
+
 class LLMClient:
     """
     Client for interacting with LLMs via LiteLLM.
@@ -350,6 +382,7 @@ class LLMClient:
                 load_dotenv(override=True)
                 self._custom_client = AsyncOpenAI(
                     api_key=self.config.api_key or os.environ.get("OPENAI_API_KEY"),
+                    base_url=self.config.api_base or os.environ.get("OPENAI_API_BASE") or None,
                     organization=None,
                     http_client=httpx.AsyncClient(verify=False)
                 )
@@ -731,6 +764,11 @@ class LLMClient:
         self.total_prompt_tokens += usage["prompt_tokens"]
         self.total_completion_tokens += usage["completion_tokens"]
         self.total_tokens_used += usage["total_tokens"]
+
+        if not tool_calls:
+            tool_calls = _parse_text_tool_calls(content)
+            if tool_calls:
+                finish_reason = "tool_calls"
         
         return LLMResponse(
             content=content,

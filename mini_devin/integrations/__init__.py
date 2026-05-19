@@ -25,10 +25,16 @@ try:
 except Exception:  # pragma: no cover - optional dependency surface
     TestFixRerunLoop = None  # type: ignore[assignment]
 
+try:
+    from .travel_booking import render_travel_booking_prompt
+except Exception:  # pragma: no cover - optional dependency surface
+    render_travel_booking_prompt = None  # type: ignore[assignment]
+
 __all__ = [
     "GitHubIntegration",
     "DeploymentManager", 
     "PlaywrightAgent",
     "PersistentMemory",
-    "TestFixRerunLoop"
+    "TestFixRerunLoop",
+    "render_travel_booking_prompt",
 ]

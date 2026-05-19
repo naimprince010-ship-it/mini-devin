@@ -37,6 +37,38 @@ def _legacy_openai_toggle_env_set() -> bool:
     )
 
 
+def _available_ollama_model_ids() -> set[str]:
+    """Return installed Ollama model IDs in the app's ``ollama/<name>`` format."""
+    if os.getenv("OLLAMA_ENABLED", "false").lower() != "true":
+        return set()
+
+    import urllib.request
+
+    api_base = (os.getenv("OLLAMA_API_BASE") or "http://localhost:11434").strip().rstrip("/")
+    timeout_raw = (os.getenv("OLLAMA_DISCOVERY_TIMEOUT_SEC") or "2").strip()
+    try:
+        timeout = max(0.2, float(timeout_raw))
+    except ValueError:
+        timeout = 2.0
+
+    try:
+        with urllib.request.urlopen(f"{api_base}/api/tags", timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        print(f"[API] Ollama model discovery failed: {exc}")
+        return set()
+
+    ids: set[str] = set()
+    for item in payload.get("models", []):
+        name = str(item.get("model") or item.get("name") or "").strip()
+        if not name:
+            continue
+        ids.add(f"ollama/{name}")
+        if name.endswith(":latest"):
+            ids.add(f"ollama/{name.removesuffix(':latest')}")
+    return ids
+
+
 def _discover_repo_root() -> str:
     """Find project root (folder with pyproject.toml + mini_devin/). Works for editable installs,
     non-editable installs under ``<repo>/.venv/.../site-packages``, and odd cwd."""
@@ -341,15 +373,7 @@ app.include_router(auth_router, prefix="/api")
 app.include_router(integrations_router, prefix="/api")
 
 
-@app.get("/")
-async def root():
-    return {
-        "name": "Plodder API",
-        "version": "1.0.0",
-        "status": "running",
-        "mode": "lightweight",
-        "docs": "/docs",
-    }
+
 
 
 @app.get("/health")
@@ -1805,10 +1829,12 @@ async def get_task(session_id: str, task_id: str):
     return {
         "task_id": t.task_id,
         "session_id": session_id,
-        "description": t.goal.description,
-        "status": t.status.value,
+        "description": t.description,
+        "status": t.status.value if hasattr(t.status, "value") else str(t.status),
         "iteration": t.iteration,
-        "last_error": t.last_error,
+        "last_error": t.error_message,
+        "error_message": t.error_message,
+        "summary": t.result.summary if getattr(t, "result", None) else None,
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "started_at": t.started_at.isoformat() if t.started_at else None,
         "completed_at": t.completed_at.isoformat() if t.completed_at else None,
@@ -1820,13 +1846,16 @@ async def get_task_result(session_id: str, task_id: str):
     result = await session_manager.get_task_result(session_id, task_id)
     if not result:
         raise HTTPException(status_code=404, detail="Result not found")
+    status = getattr(result, "status", "")
+    duration_seconds = float(getattr(result, "duration_seconds", 0.0) or 0.0)
     return {
-        "success": result.success,
-        "summary": result.summary,
-        "files_modified": result.files_modified,
-        "commands_executed": result.commands_executed,
-        "total_tokens": result.total_tokens,
-        "duration_ms": result.duration_ms if hasattr(result, "duration_ms") else 0,
+        "success": status == "completed",
+        "status": status,
+        "summary": getattr(result, "summary", ""),
+        "files_modified": getattr(result, "files_modified", []),
+        "commands_executed": getattr(result, "commands_executed", []),
+        "total_tokens": getattr(result, "total_tokens", 0),
+        "duration_ms": int(duration_seconds * 1000),
     }
 
 @app.get("/api/sessions/{session_id}/tasks/{task_id}/artifacts")
@@ -1851,8 +1880,11 @@ async def list_providers():
     registry = get_model_registry()
     registry.configure_from_env()
 
+    available_ollama_models = _available_ollama_model_ids()
     models_by_provider: dict[str, list[str]] = {}
     for model in registry.list_models(only_configured=True):
+        if model.provider == Provider.OLLAMA and model.id not in available_ollama_models:
+            continue
         pid = model.provider.value
         models_by_provider.setdefault(pid, []).append(model.id)
 
@@ -1894,6 +1926,13 @@ async def list_models():
     registry = get_model_registry()
     registry.configure_from_env()
     models = registry.to_api_format(only_configured=True)
+    available_ollama_models = _available_ollama_model_ids()
+    models = [
+        model
+        for model in models
+        if model.get("provider") != Provider.OLLAMA.value
+        or model.get("id") in available_ollama_models
+    ]
 
     if _legacy_openai_toggle_env_set() and not any(m.get("provider") == "openai" for m in models):
         models.extend([
@@ -1944,6 +1983,8 @@ async def get_system_status():
         "total_tasks_completed": await session_manager.get_total_tasks_completed(),
         "uptime_seconds": session_manager.get_uptime_seconds(),
         "llm_configured": llm_ok,
+        "default_model": os.getenv("LLM_MODEL", "auto"),
+        "free_mode": "flash-lite" in os.getenv("LLM_MODEL", "").lower(),
         "browser_mode": browser_mode,
         # Safe booleans for Railway / preview deploy checks (no secret values).
         "deployment_env": {
@@ -3028,8 +3069,9 @@ _FRONTEND_DIST = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dis
 if _FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="assets")
 
+    @app.get("/")
     @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_spa(full_path: str):
+    async def serve_spa(full_path: str = ""):
         """Catch-all: serve index.html for non-API routes so React Router works.
 
         Unknown /api/* paths must not return the SPA shell (would confuse clients and tests).

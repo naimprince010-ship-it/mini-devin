@@ -492,6 +492,10 @@ class ConnectionManager:
         url: str | None = None,
         query: str | None = None,
         screenshot_base64: str | None = None,
+        title: str | None = None,
+        summary: str | None = None,
+        action_time_ms: int | None = None,
+        travel_summary: dict | None = None,
     ) -> int:
         """Send browser activity event."""
         return await self.broadcast_to_session(
@@ -503,6 +507,10 @@ class ConnectionManager:
                     "url": url,
                     "query": query,
                     "screenshot_base64": screenshot_base64,
+                    "title": title,
+                    "summary": summary,
+                    "action_time_ms": action_time_ms,
+                    "travel_summary": travel_summary,
                 },
                 task_id=task_id,
             ),

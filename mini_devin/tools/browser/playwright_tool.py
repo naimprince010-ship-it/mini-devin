@@ -24,6 +24,7 @@ from enum import Enum
 from typing import Any, Callable, Optional
 
 from .base import BaseBrowserTool, ToolResult
+from .travel_helpers import format_hotel_summary, summarize_hotel_options
 
 
 class PlaywrightAction(str, Enum):
@@ -75,6 +76,7 @@ class BrowserPageState:
     evaluate_result: Any = None
     action_time_ms: int = 0
     dom_outline: Optional[str] = None
+    travel_summary: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -441,15 +443,90 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         page_state.dom_outline = outline
         return PlaywrightResponse(success=True, action=PlaywrightAction.DEBUG_SNAPSHOT, page_state=page_state)
 
+    async def _maybe_attach_travel_summary(self, page_state: BrowserPageState) -> None:
+        """Attach hotel-result summary when the current page looks like a travel booking results page."""
+        try:
+            raw_cards = await self._extract_travel_candidates()
+            summary = summarize_hotel_options(raw_cards)
+            if summary:
+                page_state.travel_summary = summary
+        except Exception:
+            return
+
+    async def _extract_travel_candidates(self) -> list[dict[str, Any]]:
+        """Collect hotel-like cards from the current page using broad travel-site heuristics."""
+        script = r"""() => {
+  const selectors = [
+    '[data-stid*="lodging-card"]',
+    '[data-stid*="property-card"]',
+    '[data-testid*="property-card"]',
+    '[data-testid*="hotel-card"]',
+    '[data-testid*="lodging-card"]',
+    'article',
+    'li'
+  ];
+  const visible = (el) => {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    return rect.width > 120 && rect.height > 40 && style.visibility !== 'hidden' && style.display !== 'none';
+  };
+  const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+  const hotelish = (text) => /(hotel|property|guest|room|night|reviews?|rating|free cancellation|breakfast|reserve|book now|per night|wonderful|excellent|exceptional)/i.test(text);
+  const seen = new Set();
+  const cards = [];
+  const addCard = (el) => {
+    if (!visible(el)) return;
+    const text = clean(el.innerText || '');
+    if (text.length < 30 || !hotelish(text)) return;
+    const priceMatch = text.match(/([$€£])\s?\d[\d,]*(?:\.\d{1,2})?/);
+    const ratingMatch = text.match(/\b([0-5](?:\.\d)?)\s*(?:\/\s*5|out of 5|stars?)\b/i);
+    const reviewsMatch = text.match(/\b(\d[\d,]*)\s*(?:reviews?|ratings?)\b/i);
+    if (!priceMatch && !ratingMatch && !reviewsMatch) return;
+    const heading = el.querySelector('h1,h2,h3,h4,[data-stid*="title"],[data-testid*="title"],a[aria-label]');
+    const link = el.querySelector('a[href]');
+    const name = clean(heading ? (heading.innerText || heading.getAttribute('aria-label') || '') : '');
+    const dedupeKey = clean((name || text).slice(0, 180)).toLowerCase();
+    if (!dedupeKey || seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
+    cards.push({
+      name,
+      text: text.slice(0, 1200),
+      href: link ? link.href : '',
+      price_text: priceMatch ? priceMatch[0] : '',
+      rating: ratingMatch ? ratingMatch[1] : '',
+      review_count: reviewsMatch ? reviewsMatch[1] : '',
+      free_cancellation: /free cancellation/i.test(text),
+      breakfast_included: /breakfast included|includes breakfast/i.test(text),
+    });
+  };
+  for (const selector of selectors) {
+    for (const el of document.querySelectorAll(selector)) {
+      addCard(el);
+      if (cards.length >= 24) return cards;
+    }
+  }
+  return cards;
+}"""
+        raw = await self._page.evaluate(script)
+        return raw if isinstance(raw, list) else []
+
     async def _fire_event(self, action: str, page_state: BrowserPageState) -> None:
         """Stream browser event to frontend via callback."""
         if self.on_browser_event:
             try:
+                summary = None
+                if page_state.travel_summary:
+                    summary = format_hotel_summary(page_state.travel_summary)
                 event_data = {
                     "event_type": action,
                     "url": page_state.url,
-                    "query": None,
+                    "query": summary,
                     "screenshot_base64": page_state.screenshot_base64,
+                    "title": page_state.title,
+                    "summary": summary,
+                    "action_time_ms": page_state.action_time_ms,
+                    "travel_summary": page_state.travel_summary,
                 }
                 result = self.on_browser_event(event_data)
                 if asyncio.iscoroutine(result):
@@ -513,6 +590,7 @@ class PlaywrightBrowserTool(BaseBrowserTool):
             elapsed_ms = int((end_time - start_time).total_seconds() * 1000)
             if response.page_state:
                 response.page_state.action_time_ms = elapsed_ms
+                await self._maybe_attach_travel_summary(response.page_state)
 
             # Fire frontend event
             if response.page_state:
@@ -540,6 +618,11 @@ class PlaywrightBrowserTool(BaseBrowserTool):
                     output_parts.append("[Screenshot captured and streamed to Browser Tab]")
                 if response.page_state.dom_outline:
                     output_parts.append("--- DOM outline ---\n" + response.page_state.dom_outline[:8000])
+                if response.page_state.travel_summary:
+                    output_parts.append(
+                        "--- Travel booking summary ---\n"
+                        + format_hotel_summary(response.page_state.travel_summary)
+                    )
                 output_parts.append(f"Action time: {elapsed_ms}ms")
 
             diag = self._format_browser_diagnostics()

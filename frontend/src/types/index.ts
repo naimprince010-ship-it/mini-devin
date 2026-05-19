@@ -128,6 +128,8 @@ export interface SystemStatus {
   active_sessions: number;
   total_tasks_completed: number;
   uptime_seconds: number;
+  default_model?: string;
+  free_mode?: boolean;
 }
 
 export interface Model {

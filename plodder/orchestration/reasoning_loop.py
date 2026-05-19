@@ -603,8 +603,8 @@ Act as a **product designer**, not only a coder:
   (buttons, cards, inputs) → (3) **composed pages** / routes. Never skip straight to a monolithic page.
 - **Micro-interactions**: Every interactive control gets **hover**, **focus-visible**, and
   **motion** via short **transitions** (opacity/transform/shadow)—keyboard users included.
-- **Premium UI stack**: Prefer **shadcn/ui** (Radix primitives), **Radix UI** primitives, and
-  **Lucide** (or similar) icons over hand-rolled complex CSS when the stack allows (e.g. React + Vite).
+- **Premium UI stack**: For **Next.js 15 + Drizzle + Supabase** work, default to **shadcn/ui** + **Tailwind tokens**;
+  add **Magic UI** (magicui.design) for marketing motion/sections when appropriate—compose on shadcn, do not fork a second design system. **Lucide** icons. Use **git status/diff** first to limit which files you read (token discipline).
 - **State-driven UI**: For data views and forms, always implement **loading**, **error**, and
   **empty** states (skeletons/spinners, inline errors, friendly empty copy)—not only the happy path.
 

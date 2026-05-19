@@ -22,7 +22,7 @@ from typing import Any
 _DEFAULT_AGENT_MAX_ITERATIONS = int(os.environ.get("DEFAULT_MAX_ITERATIONS", "200"))
 
 from ..core.llm_client import LLMClient, create_llm_client
-from ..core.tool_interface import ToolRegistry, get_global_registry
+from ..core.tool_interface import ToolRegistry
 from ..schemas.state import (
     AgentPhase,
     AgentState,
@@ -180,7 +180,7 @@ _SYSTEM_PROMPT_TEMPLATE = """
 - **If the workspace root already contains `.git`**, this folder **is already a Git checkout** (e.g. the UI cloned a GitHub URL at session start). **Do NOT run `git clone` into `.`** or you will get "destination path already exists" / non-empty directory errors. Start with `editor` `list_directory` / `read_file` (e.g. README) or `terminal` from the repo root.
 - **NEVER describe or narrate actions without calling a tool.** If you say "I will create a file", you MUST immediately call the `editor` tool to do it.
 - **NEVER write fake outputs.** Do not write "The tests passed" unless you actually ran tests via `terminal` using the **Python executable from Runtime context** and saw exit code 0 in the output.
-- **NEVER say TASK COMPLETE unless you have used at least one tool** AND run verification (tests or a minimal run of the code) with real tool output showing success.
+- **NEVER say TASK COMPLETE unless you have used at least one tool** AND run verification (tests, a minimal run, or a targeted file/content check) with real tool output showing success.
 - **Do NOT just write a plan as text and stop.** After your brief plan, immediately call the first tool.
 
 ## Think → Act → Observe (required)
@@ -192,11 +192,11 @@ _SYSTEM_PROMPT_TEMPLATE = """
 1. **Brief plan** (2-3 lines max): State what you will do; align with `PLAN.md` at the workspace root (created/updated for each task).
 2. **ACT immediately**: Call the first tool right away — do not wait.
 3. **Continue**: After each tool result, call the next tool needed.
-4. **Verify**: Run tests with the workspace Python (`python -m …` / Runtime context). If tests fail, fix code or tests until green or you hit a clear blocker you report.
-5. **TASK COMPLETE**: Only after verification output confirms success (or you document why verification is N/A).
+4. **Verify once**: Use the cheapest proof that matches the task. For simple file/content tasks, one `editor read_file` or one focused `terminal` command is enough. Do not verify the same fact twice.
+5. **TASK COMPLETE**: As soon as verification output confirms success (or you document why verification is N/A), stop and write TASK COMPLETE. Do not take extra tool calls after success.
 
-## UX & front-end (designer + QA)
-When you build or change **user-facing web UI** (React/Vite/Next/Tailwind/CSS components):
+## High-Ticket Web Architect (premium product + data)
+When the task is **marketing sites, SaaS, dashboards, or CRUD apps** in TypeScript/React—and the repo is or should be a **modern web stack**—operate as a **senior web architect** shipping **$2000+ tier** quality: hierarchy, rhythm, accessibility, performance, and trustworthy data—not generic tutorial UI.
 
 - **Consistency**: Drive **color, spacing, and typography** from a **single source of truth**—prefer
   **Tailwind** `tailwind.config.*` (or shared CSS variables / design tokens). Avoid scattered magic values.
@@ -212,6 +212,34 @@ When you build or change **user-facing web UI** (React/Vite/Next/Tailwind/CSS co
 - **Visual QA**: After substantive UI edits, use **`browser_playwright`** (or the session’s Playwright
   observe tool) to capture the relevant route and **check alignment, contrast, and obvious layout issues**
   before claiming the UI is done.
+### Default stack (use unless the repo clearly forbids it)
+- **Next.js 15 — App Router**: Server Components by default; add ``'use client'`` only where hooks/events/browser APIs are required. Use **``loading.tsx``**, **``error.tsx``**, and **Route Handlers** where appropriate. Prefer **Server Actions** or server-only fetch for mutations that touch the DB—never ship secrets to the client bundle.
+- **Drizzle ORM**: Central schema (e.g. ``db/schema``), typed queries, **drizzle-kit** migrations; avoid raw SQL in UI layers; keep schema changes reviewable and incremental.
+- **Supabase**: ``@supabase/supabase-js``; **anon key + RLS** on the client when data is user-scoped; **service role only server-side** (Route Handlers / server actions / edge)—never commit keys or paste service role into client code. Design tables and policies as if production RLS is on.
+- **UI — shadcn/ui + Magic UI**: **shadcn/ui** (Radix + Tailwind) for app shell, forms, tables, dialogs. **Magic UI** ([magicui.design](https://magicui.design)) for **marketing polish**—animated heroes, bento grids, marquee, border beams—**composed** on top of shadcn primitives, not duplicate design systems. **Lucide** icons. One Tailwind token source (``tailwind.config`` / CSS variables).
+
+### Premium bar (non-negotiables)
+- **Consistency**: Color, spacing, type scale, radius, and shadows from **tokens**—no one-off hex/radius litter.
+- **Build order**: Layout shells → atomic components → pages/routes; **no monolithic 800-line screens**.
+- **Motion**: Purposeful **hover**, **focus-visible**, short **transitions**; respect **prefers-reduced-motion**.
+- **State-driven UI**: **Loading**, **error**, and **empty** states for every data view and form.
+- **Visual QA**: After substantive UI work, **`browser_playwright`** on the real route—alignment, contrast, obvious responsive breaks—before claiming done.
+
+### Git-aware context (save tokens; stay accurate)
+When ``.git`` exists in the workspace:
+- **Start narrow**: Use ``git`` **status** / **diff** (or terminal ``git diff --stat``, ``git log -3 --oneline``) to see **what changed** and **which files matter**—do **not** re-read the whole repo or paste huge directory trees into reasoning.
+- **Read selectively**: Open **only** files implicated by the task, diff, or error traces; use ``editor`` **search** to jump to symbols instead of bulk ``read_file`` across unrelated modules.
+- **Edit efficiently**: Prefer ``str_replace`` / ``apply_patch`` over full ``write_file`` when the file already exists and the change is local.
+- **Summarize tool output**: Long stdout listings—extract paths and errors; do not echo entire trees back in assistant text.
+
+### Clean architecture
+- **Boundaries**: UI (``app/``, ``components/``) → **server** data loaders / actions → **Drizzle** in a dedicated layer (e.g. ``lib/db``, ``server/db``)—no DB clients or ORM calls scattered in presentational components.
+- **Validation**: **Zod** (or equivalent) at system boundaries (forms, webhooks, route bodies).
+- **Features at scale**: **Feature folders** (e.g. ``features/inventory/``) with colocated components + server helpers when the app grows; keep shared UI in ``components/ui``.
+- **Env**: Document required vars in ``.env.example``; never commit real secrets.
+
+### Other stacks
+For **React/Vite/Next without** the full stack above, still apply **Tailwind tokens**, **shadcn where supported**, state-driven UI, and Git-aware reading—adapt file paths to the repo’s conventions.
 
 ## Browser Strategy
 - **Prefer persistent browser tools for real interaction**: Use **`browser_navigate`**, **`browser_click`**, **`browser_type`**, **`browser_scroll`**, and **`browser_screenshot`** when you need a login/session/cookie state that persists across steps.
@@ -359,7 +387,10 @@ class Agent:
         self._observation_llm_override = observation_llm_client
         self._observation_llm: LLMClient | None = None
         self._context_focus_path: str | None = None
-        self.registry = tool_registry or get_global_registry()
+        # Tool instances carry session-scoped state such as working_directory and
+        # bridge callbacks, so each Agent needs an isolated registry. Reusing the
+        # global registry made new sessions write into an older session workspace.
+        self.registry = tool_registry or ToolRegistry()
         self.working_directory = working_directory
         self.max_iterations = max_iterations
         self.verbose = verbose
@@ -4743,6 +4774,12 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             r"\b(clean\s*up|cleanup|migrate)\b", raw, re.I
         ):
             add("refactor")
+        if re.search(
+            r"\b(expedia|booking\.com|agoda|hotel|lodging|reservation|travel booking|hotel booking)\b",
+            raw,
+            re.I,
+        ):
+            add("travel_booking")
         return out
 
     def _apply_auto_injected_playbooks(self, task: TaskState) -> None:
@@ -4795,6 +4832,48 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         else:
             self._log(f"[skills] {summary} (no workspace — event not written to JSONL)")
     
+    def _simple_file_task_satisfied(
+        self,
+        task: TaskState,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_result: str,
+    ) -> bool:
+        """Cheaply complete simple file/content tasks after a successful write/read."""
+        if tool_name != "editor":
+            return False
+        action = tool_args.get("action")
+        if action not in {"write_file", "create_file", "read_file"}:
+            return False
+
+        description = task.description or ""
+        file_match = re.search(
+            r"(?:file named|file)\s+[`\"']?([A-Za-z0-9._-]+)[`\"']?",
+            description,
+            re.IGNORECASE,
+        )
+        exact_match = re.search(
+            r"(?:contain exactly|contains exactly|exact content|exactly this text|with exactly(?: this text)?)\s*:?\s*[`\"']?([^`\"'\r\n]+)",
+            description,
+            re.IGNORECASE,
+        )
+        if not file_match or not exact_match:
+            return False
+
+        expected_path = file_match.group(1).strip()
+        expected_content = exact_match.group(1).strip()
+        actual_path = str(tool_args.get("path", "")).replace("\\", "/")
+        if actual_path != expected_path.replace("\\", "/"):
+            return False
+
+        if action in {"write_file", "create_file"}:
+            return str(tool_args.get("content", "")).strip() == expected_content
+
+        lines = [line.rstrip("\r") for line in (tool_result or "").splitlines()]
+        content_lines = [line for line in lines if not line.startswith("File:")]
+        actual_content = "\n".join(content_lines).strip()
+        return actual_content == expected_content
+
     async def run(self, task: TaskState) -> TaskState:
         """
         Run the agent on a task.
@@ -5348,6 +5427,15 @@ Call a tool (editor or terminal) immediately as your first action."""
                             # Track in task state
                             if tc.name == "terminal":
                                 task.commands_executed.append(tc.arguments.get("command", ""))
+
+                            if tool_success and self._simple_file_task_satisfied(
+                                task, tc.name, tc.arguments, final_result
+                            ):
+                                await self._update_phase(AgentPhase.COMPLETE)
+                                task.status = TaskStatus.COMPLETED
+                                task.completed_at = datetime.now(timezone.utc)
+                                self._log("Task completed after targeted file verification.")
+                                break
                                 
                             # Handle Escalation to Planner
                             if not tool_success:
@@ -5382,6 +5470,8 @@ Call a tool (editor or terminal) immediately as your first action."""
                                             self._synthesize_tool_replies_for_open_assistant_tail()
                                             break
                                     
+                        if task.status == TaskStatus.COMPLETED:
+                            break
                     else:
                         # No tool calls - check if task is complete
                         if response.content:
@@ -5423,6 +5513,26 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 task.completed_at = datetime.now(timezone.utc)
                                 self._log("Task completed!")
                                 break
+                            is_verified_completion = (
+                                _tools_used > 0
+                                and "complete" in content_lower
+                                and any(
+                                    phrase in content_lower
+                                    for phrase in (
+                                        "verified",
+                                        "confirmed",
+                                        "contains exactly",
+                                        "as required",
+                                        "correct content",
+                                    )
+                                )
+                            )
+                            if is_verified_completion:
+                                await self._update_phase(AgentPhase.COMPLETE)
+                                task.status = TaskStatus.COMPLETED
+                                task.completed_at = datetime.now(timezone.utc)
+                                self._log("Task completed after verified summary.")
+                                break
                             elif is_completion and _tools_used == 0:
                                 # Agent said complete without using any tools — force it to act
                                 self._log("Completion signal with no tool use — forcing tool call.")
@@ -5433,8 +5543,9 @@ Call a tool (editor or terminal) immediately as your first action."""
                             elif response.finish_reason == "stop":
                                 # Nudge with forced tool use on the next iteration
                                 self._no_tool_streak = getattr(self, '_no_tool_streak', 0) + 1
-                                if self._no_tool_streak >= 1:
-                                    # After 2 text-only turns, force a tool call
+                                force_after = int(os.environ.get("PLODDER_FORCE_TOOL_AFTER_TEXT_TURNS", "2"))
+                                if self._no_tool_streak >= force_after:
+                                    # Avoid spending a second LLM call immediately after the first text-only turn.
                                     self._log("Multiple text-only turns — injecting forced tool call.")
                                     _msgs, _eph = await self._prepare_messages_for_llm_turn()
                                     forced_response = await self._get_observation_llm().complete(
@@ -5464,8 +5575,8 @@ Call a tool (editor or terminal) immediately as your first action."""
                                             self.llm.add_tool_result(tc.id, tc.name, result)
                                 else:
                                     self.llm.add_user_message(
-                                        "Please continue with the task using the tools. "
-                                        "Call a tool (terminal or editor) to take the next action."
+                                        "Continue with the next necessary tool call. If the task is already verified, "
+                                        "reply with TASK COMPLETE and do not verify the same fact again."
                                     )
     
                 
@@ -5490,7 +5601,7 @@ Call a tool (editor or terminal) immediately as your first action."""
                         break
             
             # Max iterations reached
-            if iteration >= self.max_iterations:
+            if iteration >= self.max_iterations and task.status != TaskStatus.COMPLETED:
                 self._log("Max iterations reached")
                 task.status = TaskStatus.FAILED
                 task.last_error = (
