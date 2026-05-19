@@ -162,6 +162,12 @@ export function useApi() {
     }
   }, []);
 
+  const openWorkspace = useCallback(async (sessionId: string): Promise<{ opened: boolean; path: string }> => {
+    return await fetchApi<{ opened: boolean; path: string }>(`/sessions/${sessionId}/open-workspace`, {
+      method: 'POST',
+    });
+  }, []);
+
   // Tasks
   const createTask = useCallback(async (
     sessionId: string,
@@ -499,6 +505,7 @@ export function useApi() {
     patchSession,
     deleteSession,
     stopSession,
+    openWorkspace,
     // Tasks
     createTask,
     listTasks,

@@ -12,6 +12,7 @@ import json
 from datetime import datetime, timezone
 
 import asyncio
+import sys
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,9 +23,11 @@ from typing import Optional
 from dotenv import load_dotenv
 import time
 import os
+import re
 import shutil
 import subprocess
 import hashlib
+from urllib.parse import urlparse
 
 from mini_devin.core.providers import Provider, get_model_registry
 
@@ -155,6 +158,21 @@ def _git_clone_url_with_token(url: str) -> str:
         if not rest.startswith("x-access-token:") and "@" not in rest.split("/", 1)[0]:
             return f"https://x-access-token:{token}@{rest}"
     return u
+
+
+def _workspace_slug_from_git_url(url: str) -> str:
+    """Best-effort readable folder prefix for cloned Git remotes."""
+    raw = (url or "").strip().rstrip("/")
+    name = ""
+    if raw.startswith("git@"):
+        name = raw.rsplit("/", 1)[-1]
+    else:
+        parsed = urlparse(raw)
+        name = parsed.path.rsplit("/", 1)[-1] if parsed.path else ""
+    if name.endswith(".git"):
+        name = name[:-4]
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-._").lower()
+    return slug[:48] or "repo"
 
 
 async def _await_app_db_startup(request: Request) -> None:
@@ -1132,6 +1150,7 @@ async def list_sessions():
             "created_at": s.created_at.isoformat(),
             "status": s.status.value,
             "working_directory": s.working_directory,
+            "workspace_path": s.working_directory,
             "workspace_id": getattr(s, "workspace_id", None),
             "current_task": s.current_task_id,
             "iteration": s.iteration,
@@ -1186,13 +1205,17 @@ async def create_session(raw_request: Request):
     except Exception:
         pass
 
+    requested_is_git_remote = _is_git_remote_url(requested_dir)
+    if requested_is_git_remote:
+        workspace_id = f"{_workspace_slug_from_git_url(requested_dir)}-{uuid.uuid4().hex[:8]}"
+
     # Determine working directory (empty = fresh folder; URL = git clone like a local IDE repo)
     os.makedirs(_workspaces_root, exist_ok=True)
     if requested_dir in ("", ".", "./"):
         working_dir = os.path.join(_workspaces_root, workspace_id)
         os.makedirs(working_dir, exist_ok=True)
         _init_git_workspace(working_dir)
-    elif _is_git_remote_url(requested_dir):
+    elif requested_is_git_remote:
         working_dir = os.path.join(_workspaces_root, workspace_id)
         if os.path.isdir(working_dir):
             shutil.rmtree(working_dir, ignore_errors=True)
@@ -1290,6 +1313,7 @@ async def get_session(session_id: str):
         "created_at": s.created_at.isoformat(),
         "status": s.status.value,
         "working_directory": s.working_directory,
+        "workspace_path": s.working_directory,
         "workspace_id": getattr(s, "workspace_id", None),
         "current_task": s.current_task_id,
         "iteration": s.iteration,
@@ -1330,6 +1354,7 @@ async def patch_session(session_id: str, body: PatchSessionRequest, request: Req
         "created_at": s.created_at.isoformat(),
         "status": s.status.value,
         "working_directory": s.working_directory,
+        "workspace_path": s.working_directory,
         "workspace_id": getattr(s, "workspace_id", None),
         "current_task": s.current_task_id,
         "iteration": s.iteration,
@@ -1726,6 +1751,28 @@ async def stop_session_app(session_id: str):
     """Stop the running task in a session."""
     success = await session_manager.stop_session(session_id)
     return {"stopped": True, "session_id": session_id}
+
+
+@app.post("/api/sessions/{session_id}/open-workspace")
+@app.post("/sessions/{session_id}/open-workspace")
+async def open_session_workspace(session_id: str):
+    """Open a session workspace folder on the API host, when supported."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    path = os.path.abspath(os.path.expanduser(session.working_directory or "."))
+    if not os.path.isdir(path):
+        raise HTTPException(status_code=404, detail=f"Workspace folder not found: {path}")
+    try:
+        if os.name == "nt":
+            os.startfile(path)  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not open workspace: {exc}") from exc
+    return {"opened": True, "path": path}
 
 
 @app.get("/api/sessions/{session_id}/history")

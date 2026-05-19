@@ -7,6 +7,7 @@ import {
   FileCode,
   Globe,
   Brain,
+  FolderOpen,
   PanelRightClose,
   PanelRightOpen,
 } from 'lucide-react';
@@ -14,6 +15,8 @@ import type { Session } from '../types';
 import { TaskPanel } from './TaskPanel';
 import { WorkspacePanel, type WorkspacePanelTab } from './WorkspacePanel';
 import { ErrorBoundary } from './ErrorBoundary';
+import { useApi } from '../hooks/useApi';
+import { useToast } from './Toast';
 
 const WORKSPACE_PANEL_LS = 'plodder:workspace-panel-open';
 
@@ -70,6 +73,9 @@ export function SessionWorkspaceShell({
   const [workspaceTab, setWorkspaceTab] = useState<WorkspacePanelTab>('shell');
   const [workspaceOpen, setWorkspaceOpen] = useState(loadPanelOpen);
   const [mobilePane, setMobilePane] = useState<'chat' | 'workspace'>('chat');
+  const [openingWorkspace, setOpeningWorkspace] = useState(false);
+  const api = useApi();
+  const toast = useToast();
 
   useEffect(() => {
     setWorkspaceTab('shell');
@@ -94,10 +100,24 @@ export function SessionWorkspaceShell({
   const handleBg = isDark ? 'hover:bg-[#1a1d22]' : 'hover:bg-[#e8eef4]';
 
   const wd = session.working_directory?.trim();
+  const workspacePath = session.workspace_path?.trim() || wd;
   const wdShort =
-    wd && wd.length > 0
-      ? wd.replace(/\\/g, '/').split('/').filter(Boolean).slice(-2).join('/')
+    workspacePath && workspacePath.length > 0
+      ? workspacePath.replace(/\\/g, '/').split('/').filter(Boolean).slice(-3).join('/')
       : null;
+
+  const handleOpenWorkspace = useCallback(async () => {
+    if (!workspacePath || openingWorkspace) return;
+    setOpeningWorkspace(true);
+    try {
+      const result = await api.openWorkspace(session.session_id);
+      toast.success('Workspace opened', result.path || workspacePath);
+    } catch (e) {
+      toast.error('Could not open workspace', e instanceof Error ? e.message : 'Open failed');
+    } finally {
+      setOpeningWorkspace(false);
+    }
+  }, [api, openingWorkspace, session.session_id, toast, workspacePath]);
 
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col gap-2 p-2 lg:gap-3 lg:p-0">
@@ -112,14 +132,32 @@ export function SessionWorkspaceShell({
             {session.title || 'Session'}
           </h1>
           {wdShort ? (
-            <p
-              className={`mt-0.5 truncate font-mono text-[11px] ${
-                isDark ? 'text-[#737373]' : 'text-[#64748b]'
-              }`}
-              title={wd}
-            >
-              {wdShort}
-            </p>
+            <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
+              <button
+                type="button"
+                onClick={handleOpenWorkspace}
+                disabled={openingWorkspace}
+                className={`inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded transition-colors ${
+                  isDark
+                    ? 'text-[#737373] hover:bg-[#1a1a1a] hover:text-[#00ff99]'
+                    : 'text-[#64748b] hover:bg-[#e2e8f0] hover:text-[#0f766e]'
+                } disabled:opacity-50`}
+                title="Open workspace folder"
+                aria-label="Open workspace folder"
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+              </button>
+              <p
+                className={`min-w-0 truncate font-mono text-[11px] ${
+                  isDark ? 'text-[#737373]' : 'text-[#64748b]'
+                }`}
+                title={workspacePath}
+              >
+                <span className="font-sans uppercase tracking-wider">Workspace</span>
+                <span className="mx-1 opacity-50">/</span>
+                {wdShort}
+              </p>
+            </div>
           ) : null}
         </div>
 

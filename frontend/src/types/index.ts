@@ -5,6 +5,7 @@ export interface Session {
   created_at: string;
   status: string;
   working_directory: string;
+  workspace_path?: string;
   /** Stable disk folder under PLODDER_AGENT_WORKSPACE_ROOT (managed sessions only). */
   workspace_id?: string | null;
   current_task: string | null;
