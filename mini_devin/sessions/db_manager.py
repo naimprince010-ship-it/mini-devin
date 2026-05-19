@@ -154,6 +154,9 @@ class DatabaseSessionManager:
         git_push: bool = False,
     ) -> Session:
         """Create a new agent session with database persistence."""
+        from ..core.providers import resolve_tool_capable_model
+
+        model = resolve_tool_capable_model(model)
         async with self._session_lock:
             async with self._session_maker() as db:
                 repo = SessionRepository(db)
@@ -228,7 +231,9 @@ class DatabaseSessionManager:
 
         Returns ``(True, None)`` on success, or ``(False, error_message)``.
         """
-        stored = (model or "auto").strip() or "auto"
+        from ..core.providers import resolve_tool_capable_model
+
+        stored = resolve_tool_capable_model((model or "auto").strip() or "auto")
         async with self._session_lock:
             async with self._session_maker() as db:
                 repo = SessionRepository(db)

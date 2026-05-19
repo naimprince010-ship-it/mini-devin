@@ -592,6 +592,46 @@ class ModelRegistry:
         if self.is_provider_configured(Provider.OLLAMA):
             return "ollama/llama3"
         return "openai/llama3.3-70b-instruct"
+
+    def get_tool_capable_model(self, requested_model: str | None = None) -> str:
+        """
+        Return a model suitable for autonomous agent work.
+
+        Coding sessions require function/tool calling. Some configured chat/reasoning
+        models can answer in plain text but cannot reliably call the editor/terminal
+        tools, which leaves tasks with plans but no file changes.
+        """
+        requested = (requested_model or "").strip()
+        if not requested or requested.lower() in ("auto", "default"):
+            requested = os.environ.get("LLM_MODEL", "").strip() or self.get_default_model()
+
+        requested_info = self.get_model(requested)
+        if requested_info is None:
+            # Unknown/custom model IDs may still support tools; do not block them.
+            return requested
+        if requested_info.supports_tools:
+            return requested
+
+        candidates = [
+            os.environ.get("LLM_TOOL_MODEL", "").strip(),
+            "openai/qwen3-coder-flash",
+            os.environ.get("LLM_MODEL", "").strip(),
+            self.get_default_model(),
+        ]
+        candidates.extend(m.id for m in self.list_models(supports_tools=True, only_configured=True))
+        candidates.extend(m.id for m in self.list_models(supports_tools=True, only_configured=False))
+
+        for candidate in candidates:
+            if not candidate or candidate == requested:
+                continue
+            info = self.get_model(candidate)
+            if info is None:
+                return candidate
+            if info.supports_tools and (
+                self.is_provider_configured(info.provider) or candidate == "openai/qwen3-coder-flash"
+            ):
+                return candidate
+        return requested
     
     def to_api_format(self, only_configured: bool = True) -> list[dict[str, Any]]:
         """Convert models to API response format."""
@@ -638,6 +678,12 @@ def normalize_groq_legacy_model_id(model_id: str) -> str:
     if low in ("llama3-8b-8192", "groq/llama3-8b-8192"):
         return "llama-3.1-8b-instant"
     return key
+
+
+def resolve_tool_capable_model(model_id: str | None, registry: ModelRegistry | None = None) -> str:
+    """Resolve a requested model to one that can drive editor/terminal tools."""
+    reg = registry or get_model_registry()
+    return reg.get_tool_capable_model(model_id)
 
 
 def normalize_gemini_model_id_for_litellm(model_id: str) -> str:

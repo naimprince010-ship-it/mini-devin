@@ -15,6 +15,7 @@ from mini_devin.core.providers import (
     AzureConfig,
     ModelRegistry,
     get_model_registry,
+    resolve_tool_capable_model,
     get_litellm_model_name,
     get_provider_env_vars,
     GEMINI_MODELS,
@@ -305,14 +306,16 @@ class TestModelRegistry:
         registry = ModelRegistry()
         openai_config = OpenAIConfig(api_key="test-key", enabled=True)
         registry.configure_providers(openai=openai_config)
-        default = registry.get_default_model()
-        assert default == "gpt-4o"
+        with patch.dict(os.environ, {"LLM_MODEL": ""}, clear=False):
+            default = registry.get_default_model()
+        assert default == "openai/llama3.3-70b-instruct"
 
     def test_get_default_model_google(self):
         """Test default model when only Google / Gemini is configured."""
         registry = ModelRegistry()
         registry.configure_providers(google=GoogleAIConfig(api_key="AIza-x", enabled=True))
-        default = registry.get_default_model()
+        with patch.dict(os.environ, {"LLM_MODEL": ""}, clear=False):
+            default = registry.get_default_model()
         assert default == "gemini/gemini-2.0-flash"
 
     def test_get_default_model_prefers_google_when_both_keys(self):
@@ -322,7 +325,8 @@ class TestModelRegistry:
             google=GoogleAIConfig(api_key="AIza-x", enabled=True),
             openai=OpenAIConfig(api_key="sk-x", enabled=True),
         )
-        assert registry.get_default_model() == "gemini/gemini-2.0-flash"
+        with patch.dict(os.environ, {"LLM_MODEL": ""}, clear=False):
+            assert registry.get_default_model() == "gemini/gemini-2.0-flash"
 
     def test_get_default_model_prefers_groq_when_configured(self):
         registry = ModelRegistry()
@@ -343,7 +347,8 @@ class TestModelRegistry:
         registry = ModelRegistry()
         anthropic_config = AnthropicConfig(api_key="test-key", enabled=True)
         registry.configure_providers(anthropic=anthropic_config)
-        default = registry.get_default_model()
+        with patch.dict(os.environ, {"LLM_MODEL": ""}, clear=False):
+            default = registry.get_default_model()
         assert default == "claude-3-5-sonnet-20241022"
 
     def test_to_api_format(self):
@@ -354,6 +359,23 @@ class TestModelRegistry:
         assert all("id" in m for m in api_models)
         assert all("name" in m for m in api_models)
         assert all("provider" in m for m in api_models)
+
+    def test_tool_capable_model_keeps_tool_model(self):
+        registry = ModelRegistry()
+        registry.configure_providers(openai=OpenAIConfig(api_key="test-key", enabled=True))
+
+        assert registry.get_tool_capable_model("openai/qwen3-coder-flash") == "openai/qwen3-coder-flash"
+
+    def test_tool_capable_model_replaces_non_tool_model(self):
+        registry = ModelRegistry()
+        registry.configure_providers(openai=OpenAIConfig(api_key="test-key", enabled=True))
+
+        assert registry.get_tool_capable_model("openai/deepseek-r1-distill-llama-70b") == "openai/qwen3-coder-flash"
+
+    def test_resolve_tool_capable_model_allows_unknown_custom_model(self):
+        registry = ModelRegistry()
+
+        assert resolve_tool_capable_model("custom/tool-model", registry) == "custom/tool-model"
 
 
 class TestGetLiteLLMModelName:

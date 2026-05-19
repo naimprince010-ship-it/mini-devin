@@ -19,6 +19,7 @@ from mini_devin.core.providers import (
     get_model_registry,
     get_litellm_model_name,
     normalize_groq_legacy_model_id,
+    resolve_tool_capable_model,
     AzureConfig,
     GroqConfig,
 )
@@ -871,6 +872,7 @@ def create_llm_client(
 
     if isinstance(model, str):
         model = normalize_groq_legacy_model_id(model.strip())
+    model = resolve_tool_capable_model(model, registry)
 
     model_info = registry.get_model(model)
     if model_info is None and isinstance(model, str) and _is_groq_litellm_model(model):
