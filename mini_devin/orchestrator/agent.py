@@ -4848,7 +4848,7 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         if action not in {"write_file", "create_file", "read_file"}:
             return False
 
-        description = task.description or ""
+        description = task.goal.description if task.goal else ""
         file_match = re.search(
             r"(?:file named|file)\s+[`\"']?([A-Za-z0-9._-]+)[`\"']?",
             description,
