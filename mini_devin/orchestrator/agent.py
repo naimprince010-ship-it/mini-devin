@@ -1818,6 +1818,19 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             return f"Error: Unknown tool '{name}'"
 
         arg_dict = dict(arguments) if isinstance(arguments, dict) else {}
+        if name == "editor" and not arg_dict:
+            return (
+                "Error: malformed editor tool call. Missing required arguments. "
+                "Use one of these forms: "
+                '{"action":"write_file","path":"index.html","content":"..."}; '
+                '{"action":"read_file","path":"PLAN.md"}; '
+                '{"action":"list_directory","path":"."}.'
+            )
+        if name == "editor" and arg_dict.get("action") in (None, "read_file") and not arg_dict.get("path"):
+            return (
+                "Error: malformed editor read_file call. Missing `path`. "
+                "If you need to create a file, use action=write_file with path and full content."
+            )
         state_before_snapshot = self._activity_state.to_meta_snapshot()
         action_type = classify_action_type(name, arg_dict)
         step = self._activity_state.bump_step()
@@ -4915,7 +4928,7 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             return None
 
         self._no_progress_inspection_streak += 1
-        threshold = int(os.environ.get("PLODDER_PROGRESS_GUARD_AFTER_INSPECTIONS", "4"))
+        threshold = int(os.environ.get("PLODDER_PROGRESS_GUARD_AFTER_INSPECTIONS", "2"))
         if self._no_progress_inspection_streak < threshold:
             return None
 
@@ -5060,6 +5073,9 @@ Working Directory: {self.working_directory or 'current directory'}
 Structured planning: read `PLAN.md` at the workspace root; every `terminal` / `editor` call must include **`plan_step`** (e.g. `"STEP-2"`).
 
 IMPORTANT: You MUST use tools to complete this task. Do NOT just write text descriptions. 
+For greenfield website/app/ecommerce work: inspect briefly, then implement. Do not run more than two inspection-only
+tool calls before creating or editing the first project file. Break broad requests into the PLAN.md milestones and
+complete the smallest usable vertical slice first.
 Call a tool (editor or terminal) immediately as your first action."""
         if self._workspace_sidecar:
             try:

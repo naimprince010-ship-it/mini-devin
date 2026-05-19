@@ -1,5 +1,6 @@
 """Tests for simple file task completion helpers."""
 
+import asyncio
 from unittest.mock import MagicMock
 
 from mini_devin.orchestrator.agent import Agent
@@ -68,13 +69,13 @@ def test_progress_guard_nudges_after_repeated_inspection():
             {"command": "git status"},
             tool_success=True,
         )
-        for _ in range(4)
+        for _ in range(2)
     ]
 
-    assert messages[:3] == [None, None, None]
-    assert messages[3] is not None
-    assert "Stop listing directories" in messages[3]
-    assert "Create index.html" in messages[3]
+    assert messages[0] is None
+    assert messages[1] is not None
+    assert "Stop listing directories" in messages[1]
+    assert "Create index.html" in messages[1]
 
 
 def test_progress_guard_resets_after_write_action():
@@ -97,3 +98,13 @@ def test_progress_guard_resets_after_write_action():
         tool_success=True,
     ) is None
     assert agent._no_progress_inspection_streak == 0
+
+
+def test_malformed_editor_call_gets_actionable_error():
+    agent = Agent(llm_client=MagicMock(), auto_verify=False)
+
+    result = asyncio.run(agent._execute_tool("editor", {}))
+
+    assert "malformed editor tool call" in result
+    assert "write_file" in result
+    assert "path" in result

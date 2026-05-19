@@ -10,6 +10,7 @@ import os
 import inspect
 import re
 import uuid
+import asyncio
 from html import unescape
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -627,39 +628,54 @@ class LLMClient:
         if self.config.provider == Provider.GROQ and self.config.api_key:
             kwargs["api_key"] = self.config.api_key
 
-        # Make the API call
-        try:
-            print(f"[LLM] Requesting completion: model={model_name}, tools={len(tools) if tools else 0}, stream={stream}")
-            response = await acompletion(**kwargs)
-        except Exception as e:
-            print(f"[LLM] Error in acompletion: {str(e)}")
-            # Raise a more descriptive error
-            error_msg = str(e)
-            if "AuthenticationError" in error_msg or "401" in error_msg:
-                raise RuntimeError(f"LLM Authentication Failed: API Key might be invalid or missing for {model_name}")
-            elif "RateLimitError" in error_msg or "429" in error_msg:
-                hint = ""
-                if self.config.provider == Provider.GROQ or (
-                    isinstance(model_name, str) and model_name.lower().startswith("groq/")
-                ):
-                    hint = (
-                        " Groq free tier: lower per-request size — set LLM_MAX_OUTPUT_TOKENS=2048, "
-                        "LLM_MAX_HISTORY_MESSAGES_GROQ=24, GROQ_MAX_OUTPUT_TOKENS_CAP=4096, enable "
-                        "LLM_CONTEXT_CONDENSER=true, or use LLM_MODEL_OBSERVATION=llama-3.1-8b-instant; see "
-                        "https://console.groq.com/settings/limits"
-                    )
-                raise RuntimeError(f"LLM Rate Limit Reached: {error_msg}{hint}")
-            elif "NotFoundError" in error_msg or "404" in error_msg:
-                raise RuntimeError(
-                    f"LLM Model Not Found: {model_name}. "
-                    "For Google AI Studio, LiteLLM expects ``gemini/<model>`` (not ``google/...``). "
-                    "Legacy ``gemini/gemini-1.5-flash`` is remapped to ``gemini/gemini-2.0-flash`` by default; "
-                    "set GEMINI_FLASH_SUCCESSOR_MODEL to override. Raw error: "
-                    + error_msg[:500]
+        # Make the API call. OpenAI-compatible proxy endpoints can intermittently
+        # return rate-limit, connection, or 5xx errors, so retry transient failures.
+        retry_count = max(1, int(os.environ.get("LLM_API_MAX_ATTEMPTS", "3")))
+        retry_delay = max(0.0, float(os.environ.get("LLM_API_RETRY_DELAY_SECONDS", "2")))
+        response = None
+        last_error_msg = ""
+        for attempt in range(1, retry_count + 1):
+            try:
+                print(
+                    f"[LLM] Requesting completion: model={model_name}, "
+                    f"tools={len(tools) if tools else 0}, stream={stream}, attempt={attempt}/{retry_count}"
                 )
-            else:
-                raise RuntimeError(f"LLM API Error: {error_msg}")
-        
+                response = await acompletion(**kwargs)
+                break
+            except Exception as e:
+                last_error_msg = str(e)
+                print(f"[LLM] Error in acompletion: {last_error_msg}")
+                if "AuthenticationError" in last_error_msg or "401" in last_error_msg:
+                    raise RuntimeError(f"LLM Authentication Failed: API Key might be invalid or missing for {model_name}")
+                if "NotFoundError" in last_error_msg or "404" in last_error_msg:
+                    raise RuntimeError(
+                        f"LLM Model Not Found: {model_name}. "
+                        "For Google AI Studio, LiteLLM expects ``gemini/<model>`` (not ``google/...``). "
+                        "Legacy ``gemini/gemini-1.5-flash`` is remapped to ``gemini/gemini-2.0-flash`` by default; "
+                        "set GEMINI_FLASH_SUCCESSOR_MODEL to override. Raw error: "
+                        + last_error_msg[:500]
+                    )
+                transient = any(
+                    marker in last_error_msg
+                    for marker in (
+                        "RateLimitError",
+                        "429",
+                        "InternalServerError",
+                        "Connection error",
+                        "APIConnectionError",
+                        "timeout",
+                        "Timeout",
+                        "temporarily unavailable",
+                    )
+                )
+                if not transient or attempt >= retry_count:
+                    break
+                await asyncio.sleep(retry_delay * attempt)
+
+        if response is None:
+            if "RateLimitError" in last_error_msg or "429" in last_error_msg:
+                raise RuntimeError(f"LLM Rate Limit Reached after {retry_count} attempts: {last_error_msg}")
+            raise RuntimeError(f"LLM API Error after {retry_count} attempts: {last_error_msg}")        
         content = ""
         tool_calls_dict = {}
         finish_reason = "stop"
