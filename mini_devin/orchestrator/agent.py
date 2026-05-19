@@ -472,6 +472,7 @@ class Agent:
         self._same_error_streak_tool: str | None = None
         self._same_error_streak_fp: str | None = None
         self._same_error_streak_n: int = 0
+        self._no_progress_inspection_streak: int = 0
         # Observation-style post-mortem (forced diagnostic + recovery path)
         self._post_mortem_diagnostic_triggers: list[DiagnosticTriggerRecord] = []
         self._post_mortem_failure_streaks: list[FailureStreakRecord] = []
@@ -4876,6 +4877,57 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         actual_content = "\n".join(content_lines).strip()
         return actual_content == expected_content
 
+    def _progress_guard_message(
+        self,
+        task: TaskState,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        *,
+        tool_success: bool,
+    ) -> str | None:
+        """Nudge the model when it keeps inspecting a clean workspace without edits."""
+        if not tool_success:
+            self._no_progress_inspection_streak = 0
+            return None
+
+        action = str(tool_args.get("action", "") or "")
+        command = str(tool_args.get("command", "") or "").strip().lower()
+        path = str(tool_args.get("path", "") or "").replace("\\", "/").strip("/")
+
+        is_inspection = False
+        if tool_name == "editor":
+            is_inspection = action == "list_directory" or (
+                action == "read_file" and path.upper() == "PLAN.md"
+            )
+        elif tool_name == "terminal":
+            listing_commands = {
+                "dir",
+                "ls",
+                "ls -la",
+                "get-childitem",
+                "get-childitem -force",
+                "git status",
+            }
+            is_inspection = command in listing_commands or command.endswith("; get-childitem -force")
+
+        if not is_inspection or task.files_changed:
+            self._no_progress_inspection_streak = 0
+            return None
+
+        self._no_progress_inspection_streak += 1
+        threshold = int(os.environ.get("PLODDER_PROGRESS_GUARD_AFTER_INSPECTIONS", "4"))
+        if self._no_progress_inspection_streak < threshold:
+            return None
+
+        self._no_progress_inspection_streak = 0
+        description = task.goal.description if task.goal else "the task"
+        return (
+            "Progress guard: you have inspected the same clean workspace several times without changing files. "
+            "Stop listing directories or checking git status. Take the next concrete implementation action now. "
+            "For this task, create or edit the requested file using the editor write_file/str_replace/apply_patch tool, "
+            f"then verify it. Task: {description}"
+        )
+
     async def run(self, task: TaskState) -> TaskState:
         """
         Run the agent on a task.
@@ -4925,6 +4977,7 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         self._same_error_streak_tool = None
         self._same_error_streak_fp = None
         self._same_error_streak_n = 0
+        self._no_progress_inspection_streak = 0
         self._post_mortem_diagnostic_triggers.clear()
         self._post_mortem_failure_streaks.clear()
         self._post_mortem_recovery_paths.clear()
@@ -5425,6 +5478,25 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 self.llm.add_tool_result(tc.id, tc.name, final_result)
                                 tool_ids_answered.add(tc.id)
                                 _batch_answered_tool_ids.add(tc.id)
+
+                            if _single_tool_batch:
+                                progress_guard = self._progress_guard_message(
+                                    task,
+                                    tc.name,
+                                    tc.arguments,
+                                    tool_success=tool_success,
+                                )
+                                if progress_guard:
+                                    self.llm.add_user_message(progress_guard)
+                                    self._append_session_event(
+                                        AgentStreamEvent(
+                                            kind=AgentEventKind.STATUS,
+                                            role="system",
+                                            text=progress_guard,
+                                            legacy_type="progress_guard",
+                                            meta={"task_id": task.task_id, "tool": tc.name},
+                                        )
+                                    )
                             
                             # Track in task state
                             if tc.name == "terminal":
