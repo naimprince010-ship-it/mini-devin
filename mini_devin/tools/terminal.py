@@ -59,6 +59,29 @@ def _translate_windows_statement(cmd: str) -> str:
     # ── which → where ─────────────────────────────────────────────────────────
     cmd = re.sub(r'\bwhich\b', 'where', cmd)
 
+    # ── ls/dir listing flags → PowerShell equivalents ────────────────────────
+    # Plain `ls`/`dir` are PowerShell aliases, but bash/cmd flags like `-la`
+    # and `/a` are invalid and can trap the agent in retry loops.
+    m = re.match(r'^\s*ll\s*(.*)$', cmd)
+    if m:
+        target = m.group(1).strip()
+        return f'Get-ChildItem -Force "{target}"' if target else 'Get-ChildItem -Force'
+
+    m = re.match(r'^\s*(?:ls|ll)\s+-(?:[A-Za-z]*a[A-Za-z]*|[A-Za-z]*l[A-Za-z]*)\s*(.*)$', cmd)
+    if m:
+        target = m.group(1).strip()
+        return f'Get-ChildItem -Force "{target}"' if target else 'Get-ChildItem -Force'
+
+    m = re.match(r'^\s*dir\s+/a\s*(.*)$', cmd, re.IGNORECASE)
+    if m:
+        target = m.group(1).strip()
+        return f'Get-ChildItem -Force "{target}"' if target else 'Get-ChildItem -Force'
+
+    m = re.match(r'^\s*dir\s+/b\s*(.*)$', cmd, re.IGNORECASE)
+    if m:
+        target = m.group(1).strip()
+        return f'Get-ChildItem -Name "{target}"' if target else 'Get-ChildItem -Name'
+
     # ── touch file → New-Item -Force ──────────────────────────────────────────
     m = re.match(r'^\s*touch\s+(.+)$', cmd)
     if m:

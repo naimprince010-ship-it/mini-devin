@@ -164,6 +164,17 @@ def test_terminal_sanity_check_accepts_simple_posix():
     assert msg == ""
 
 
+def test_terminal_sanity_check_rejects_bash_listing_flags_on_windows():
+    ok, msg = terminal_sanity_check("ls -la", is_windows=True)
+    assert not ok
+    assert "powershell" in msg.lower()
+    assert "get-childitem" in msg.lower()
+
+    ok, msg = terminal_sanity_check("dir /a", is_windows=True)
+    assert not ok
+    assert "plain `dir`" in msg.lower()
+
+
 def test_incremental_recovery_hint_pytest():
     h = incremental_recovery_hint(
         "terminal",

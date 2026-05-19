@@ -22,6 +22,18 @@ def terminal_recovery_hint(
     text = (output or "").lower()
     cmd = (command or "").lower()
 
+    if (
+        "parameter cannot be found that matches parameter name 'la'" in text
+        or re.search(r"cannot find path ['\"]?[a-z]:\\a", text)
+        or re.match(r"^\s*(ls|ll)\s+-", cmd)
+        or re.match(r"^\s*dir\s+/", cmd)
+    ):
+        return (
+            "**Hint**: This shell is PowerShell. For listings use "
+            "`Get-ChildItem -Force` or plain `dir`; avoid bash/cmd flags like "
+            "`ls -la`, `ll`, `dir /a`, and `dir /b`."
+        )
+
     if "not found" in text or "command not found" in text or "is not recognized" in text:
         return (
             "**Hint**: The shell could not find a binary. "

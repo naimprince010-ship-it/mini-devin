@@ -114,6 +114,7 @@ def _make_system_prompt() -> str:
         os_note = (
             "- The agent is running on **Windows** with **PowerShell**.\n"
             "- Use `python` (not `python3`), `pip` (not `pip3`).\n"
+            "- For directory listings use `Get-ChildItem -Force` or plain `dir`; do **not** use bash/cmd flags like `ls -la`, `ll`, `dir /a`, or `dir /b`.\n"
             "- Common Linux commands are auto-translated by the terminal tool: "
             "`ls`, `cat`, `mkdir -p`, `rm -rf`, `grep`, `touch`, `which`, `cp`, `mv` all work.\n"
             "- Chain commands with `;` not `&&`. Use relative paths only.\n"
@@ -172,6 +173,7 @@ def _runtime_context_block(working_directory: str | None) -> str:
 - **Python executable**: `{exe}`
 - **Workspace cwd** for terminal: `{wd}`
 - **Tests**: {test_hint}
+- **Windows listing rule**: if Platform is `win32`, use `Get-ChildItem -Force` or `editor list_directory`; never use `ls -la`, `ll`, `dir /a`, or `dir /b`.
 - **Unit tests you write** must assert behavior that matches your implementation (avoid contradictory expected values)."""
 
 
@@ -846,7 +848,7 @@ class Agent:
                 "Execute a shell command via PowerShell on Windows. "
                 "Common Linux commands are auto-translated (python3→python, ls, cat, mkdir -p, rm -rf, grep, touch, etc.). "
                 "Use relative paths from the workspace. Do NOT use absolute Windows paths like C:\\\\. "
-                "Prefer `python` over `python3`. Use `dir` or `ls` for listing. "
+                "Prefer `python` over `python3`. For listings use `Get-ChildItem -Force` or plain `dir`; avoid `ls -la`, `ll`, `dir /a`, and `dir /b`. "
                 "Chain commands with `;` instead of `&&` when possible."
             )
         else:

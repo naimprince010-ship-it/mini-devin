@@ -9,6 +9,7 @@ import textwrap
 import os
 
 from mini_devin.tools.terminal import TerminalTool, create_terminal_tool
+import mini_devin.tools.terminal as terminal_module
 from mini_devin.schemas.tools import ToolStatus, TerminalInput
 
 
@@ -195,3 +196,20 @@ class TestCreateTerminalTool:
         blocked = ["custom_blocked_cmd"]
         tool = create_terminal_tool(blocked_commands=blocked)
         assert "custom_blocked_cmd" in tool.blocked_commands
+
+
+class TestWindowsCommandTranslation:
+    """Windows-specific command normalization used before PowerShell execution."""
+
+    def test_translates_bash_listing_flags(self, monkeypatch):
+        monkeypatch.setattr(terminal_module, "_IS_WINDOWS", True)
+
+        assert terminal_module._translate_for_windows("ls -la") == "Get-ChildItem -Force"
+        assert terminal_module._translate_for_windows("ll ./src") == 'Get-ChildItem -Force "./src"'
+        assert terminal_module._translate_for_windows("ls -la node_modules") == 'Get-ChildItem -Force "node_modules"'
+
+    def test_translates_cmd_listing_flags(self, monkeypatch):
+        monkeypatch.setattr(terminal_module, "_IS_WINDOWS", True)
+
+        assert terminal_module._translate_for_windows("dir /a") == "Get-ChildItem -Force"
+        assert terminal_module._translate_for_windows("dir /b src") == 'Get-ChildItem -Name "src"'
