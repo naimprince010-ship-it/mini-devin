@@ -27,6 +27,7 @@ import re
 import shutil
 import subprocess
 import hashlib
+import mimetypes
 from urllib.parse import urlparse
 
 from mini_devin.core.providers import Provider, get_model_registry
@@ -1555,7 +1556,17 @@ async def live_preview_status(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     port = await get_session_preview_port(session_id)
     iframe_path = f"/api/sessions/{session_id}/live-preview/" if port else None
-    return {"active": bool(port), "port": port, "iframe_path": iframe_path}
+    static_iframe_path = None
+    wd = os.path.abspath(sess.working_directory or ".")
+    if os.path.isfile(os.path.join(wd, "index.html")):
+        static_iframe_path = f"/api/sessions/{session_id}/static-preview/index.html"
+    return {
+        "active": bool(port) or bool(static_iframe_path),
+        "port": port,
+        "iframe_path": iframe_path or static_iframe_path,
+        "dev_server_iframe_path": iframe_path,
+        "static_iframe_path": static_iframe_path,
+    }
 
 
 async def _live_preview_proxy_impl(session_id: str, path: str, request: Request):
@@ -1580,6 +1591,44 @@ async def live_preview_proxy_root(session_id: str, request: Request):
 async def live_preview_proxy_route(session_id: str, path: str, request: Request):
     """Reverse-proxy to ``127.0.0.1:{port}`` (Vite default 5173, etc.)."""
     return await _live_preview_proxy_impl(session_id, path, request)
+
+
+def _workspace_static_preview_target(base_dir: str, path: str) -> str:
+    rel = (path or "index.html").replace("\\", "/").lstrip("/")
+    if not rel or rel.endswith("/"):
+        rel = rel + "index.html"
+    if ".." in rel.split("/"):
+        raise HTTPException(status_code=400, detail="Invalid static preview path")
+    base = os.path.abspath(base_dir or ".")
+    target = os.path.abspath(os.path.join(base, rel))
+    try:
+        common = os.path.commonpath([base, target])
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied") from None
+    if common != base:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not os.path.isfile(target):
+        raise HTTPException(status_code=404, detail="Static preview file not found")
+    return target
+
+
+@app.get("/api/sessions/{session_id}/static-preview")
+@app.get("/sessions/{session_id}/static-preview")
+async def static_preview_root(session_id: str):
+    """Serve workspace ``index.html`` directly for no-build static UI tasks."""
+    return await static_preview_file(session_id, "index.html")
+
+
+@app.get("/api/sessions/{session_id}/static-preview/{path:path}")
+@app.get("/sessions/{session_id}/static-preview/{path:path}")
+async def static_preview_file(session_id: str, path: str):
+    """Serve static files from a session workspace, constrained to that workspace."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    target = _workspace_static_preview_target(session.working_directory or ".", path)
+    media_type = mimetypes.guess_type(target)[0] or "application/octet-stream"
+    return FileResponse(target, media_type=media_type)
 
 
 @app.get("/api/sessions/{session_id}/activity-feed")
