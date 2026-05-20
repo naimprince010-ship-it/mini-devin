@@ -48,6 +48,8 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     const [serverRefetchKey, setServerRefetchKey] = useState(0);
     const lastAtomicRefetchToolId = useRef<string | null>(null);
     const [livePreviewPort, setLivePreviewPort] = useState<number | null>(null);
+    const [browserFrameUrl, setBrowserFrameUrl] = useState<string | null>(null);
+    const [browserFrameLabel, setBrowserFrameLabel] = useState('Preview');
     const [livePreviewRefreshKey, setLivePreviewRefreshKey] = useState(0);
     const lastAtomicPreviewToolId = useRef<string | null>(null);
 
@@ -89,10 +91,17 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             try {
                 const r = await fetch(`${getApiBase()}/sessions/${sessionId}/live-preview/status`);
                 if (!r.ok || cancelled) return;
-                const j = (await r.json()) as { active?: boolean; port?: number | null };
+                const j = (await r.json()) as { active?: boolean; port?: number | null; iframe_path?: string | null };
                 if (cancelled) return;
-                if (j.active && typeof j.port === 'number') setLivePreviewPort(j.port);
-                else setLivePreviewPort(null);
+                if (j.active && j.iframe_path) {
+                    setLivePreviewPort(typeof j.port === 'number' ? j.port : null);
+                    setBrowserFrameUrl(`${getApiBase()}${j.iframe_path}`);
+                    setBrowserFrameLabel(typeof j.port === 'number' ? `Live Preview :${j.port}` : 'Static Preview');
+                } else {
+                    setLivePreviewPort(null);
+                    setBrowserFrameUrl(null);
+                    setBrowserFrameLabel('Preview');
+                }
             } catch {
                 /* ignore */
             }
@@ -163,6 +172,12 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [events.browserEvents.length]);
 
+    const lastBrowserEvent = events.browserEvents[events.browserEvents.length - 1];
+    const lastHttpUrl = [...events.browserEvents].reverse().find(e => e.url?.startsWith('http'))?.url;
+    const currentUrl = lastHttpUrl || lastBrowserEvent?.url || '';
+    const visibleFrameUrl = browserFrameUrl || currentUrl || null;
+    const visibleFrameLabel = browserFrameUrl ? browserFrameLabel : 'External URL';
+
     const tabs: { id: TabType; label: string; icon: React.ReactNode; badge?: number }[] = [
         { id: 'shell', label: 'Shell', icon: <Terminal size={13} /> },
         {
@@ -189,7 +204,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             badge:
                 events.browserEvents.length > 0
                     ? events.browserEvents.length
-                    : livePreviewPort
+                    : visibleFrameUrl
                       ? 1
                       : undefined,
         },
@@ -199,10 +214,6 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             icon: <Brain size={13} />,
         },
     ];
-
-    const lastBrowserEvent = events.browserEvents[events.browserEvents.length - 1];
-    const lastHttpUrl = [...events.browserEvents].reverse().find(e => e.url?.startsWith('http'))?.url;
-    const currentUrl = lastHttpUrl || lastBrowserEvent?.url || '';
 
     const browserRowIcon = (t: string) => {
         if (t === 'search') return <Search size={11} className="text-[#00ff99]" />;
@@ -506,20 +517,23 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                 {/* BROWSER — Live Preview (reverse-proxied dev server) + agent browser tool feed */}
                 {activeTab === 'browser' && (
                     <div className="absolute inset-0 flex flex-col bg-[#050505]">
-                        {sessionId && livePreviewPort ? (
+                        {visibleFrameUrl ? (
                             <>
                                 <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-[#1a1a1a] bg-[#0d0d0d] flex-shrink-0">
                                     <span className="text-[10px] font-mono text-[#00ff99]">
-                                        Live Preview · proxied :{livePreviewPort}
+                                        {visibleFrameLabel}
                                     </span>
-                                    <span className="text-[9px] text-[#3a3a3a]">Refreshes on atomic_edit</span>
+                                    <a href={visibleFrameUrl} target="_blank" rel="noreferrer"
+                                        className="inline-flex items-center gap-1 text-[9px] text-[#737373] hover:text-[#d4d4d4] transition-colors">
+                                        Open <ExternalLink size={10} />
+                                    </a>
                                 </div>
                                 <div className="flex-[1.2] min-h-[180px] border-b border-[#1a1a1a] bg-[#111]">
                                     <iframe
                                         key={livePreviewRefreshKey}
-                                        title="Live preview"
+                                        title="Browser preview"
                                         className="w-full h-full border-0 bg-white"
-                                        src={`${getApiBase()}/sessions/${sessionId}/live-preview/?_=${livePreviewRefreshKey}`}
+                                        src={`${visibleFrameUrl}${visibleFrameUrl.includes('?') ? '&' : '?'}_=${livePreviewRefreshKey}`}
                                         sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
                                         referrerPolicy="no-referrer"
                                     />
@@ -527,7 +541,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                             </>
                         ) : null}
 
-                        {events.browserEvents.length === 0 && !livePreviewPort ? (
+                        {events.browserEvents.length === 0 && !visibleFrameUrl ? (
                             <div className="flex flex-col items-center justify-center flex-1 text-center p-8 gap-4 max-w-sm mx-auto">
                                 <Globe size={48} className="text-[#2a2a2a]" />
                                 <div className="space-y-2">
@@ -537,6 +551,9 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         <strong className="text-[#737373]">workspace dev server</strong> on this host (e.g. Vite) for the iframe — not public URLs you type in chat.
                                         External sites appear via <span className="text-[#525252] font-mono">browser_playwright</span> /{' '}
                                         <span className="text-[#525252] font-mono">browser_fetch</span> in the log below.
+                                        <span className="text-[#525252] font-mono">browser_open</span> opens public/local URLs here.{' '}
+                                        <span className="text-[#525252] font-mono">live_preview</span> registers Vite/dev-server for{' '}
+                                        <strong className="text-[#737373]">Live Preview</strong> here. Agent browser tools still log below.
                                     </p>
                                     <p className="text-[#3a3a3a] text-xs leading-relaxed">
                                         While a task is running, searches, fetches, and Playwright steps appear here as the agent uses{' '}
@@ -573,7 +590,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                 </div>
 
                                 {/* Screenshot or activity log */}
-                                <div className={`overflow-y-auto custom-scrollbar ${livePreviewPort ? 'flex-1 max-h-[40%]' : 'flex-1'}`}>
+                                <div className={`overflow-y-auto custom-scrollbar ${visibleFrameUrl ? 'flex-1 max-h-[40%]' : 'flex-1'}`}>
                                     {lastBrowserEvent?.screenshotBase64 ? (
                                         <div className="flex items-center justify-center p-4">
                                             <img
@@ -618,9 +635,9 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                     )}
                                 </div>
                             </>
-                        ) : livePreviewPort ? (
+                        ) : visibleFrameUrl ? (
                             <div className="flex-1 flex items-center justify-center text-[#3a3a3a] text-[11px] px-6 text-center">
-                                No browser tool events yet. Live Preview is active above.
+                                No browser tool events yet. Browser preview is active above.
                             </div>
                         ) : null}
                     </div>

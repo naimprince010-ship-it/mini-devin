@@ -108,3 +108,28 @@ def test_malformed_editor_call_gets_actionable_error():
     assert "malformed editor tool call" in result
     assert "write_file" in result
     assert "path" in result
+
+
+def test_browser_open_emits_visible_browser_event():
+    seen = []
+    agent = Agent(
+        llm_client=MagicMock(),
+        auto_verify=False,
+        callbacks={"on_browser_event": lambda payload: seen.append(payload)},
+    )
+
+    result = asyncio.run(
+        agent._execute_tool(
+            "browser_open",
+            {"url": "https://halalzi.com", "note": "Open halalzi"},
+        )
+    )
+
+    assert "Opened URL" in result
+    assert seen == [
+        {
+            "event_type": "navigate",
+            "url": "https://halalzi.com",
+            "query": "Open halalzi",
+        }
+    ]

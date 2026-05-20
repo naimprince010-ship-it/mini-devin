@@ -973,6 +973,29 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         
         # Browser search tool schema
         schemas.append({
+            "name": "browser_open",
+            "description": (
+                "Open a URL in the user's Plodder Browser tab. Use this when the user asks to open, show, "
+                "visit, or navigate to a public/local URL visibly. This does not require backend network access; "
+                "the frontend browser tab loads the URL for the user."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Absolute URL to open, e.g. https://example.com or http://localhost:3000",
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "Optional short note to show in the browser activity feed",
+                    },
+                },
+                "required": ["url"],
+            },
+        })
+
+        schemas.append({
             "name": "browser_search",
             "description": "Search the web for information. Use this to find documentation, solutions to errors, or research topics.",
             "parameters": {
@@ -1813,11 +1836,45 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 return json.dumps(out_ok, indent=2)
             return f"Error: unknown live_preview action '{action}'"
         
+        arg_dict = dict(arguments) if isinstance(arguments, dict) else {}
+        if name == "browser_open":
+            url = str(arg_dict.get("url", "") or "").strip()
+            if not re.match(r"^https?://", url, re.IGNORECASE):
+                return "Error: browser_open requires an absolute http:// or https:// URL."
+            payload = {
+                "event_type": "navigate",
+                "url": url,
+                "query": str(arg_dict.get("note", "") or "Opened in Plodder Browser tab"),
+            }
+            await self._trigger_callback("on_browser_event", payload)
+            if self.working_directory:
+                self._append_session_event(
+                    AgentStreamEvent(
+                        kind=AgentEventKind.TOOL_CALL,
+                        tool_name="browser_open",
+                        tool_args=self._sanitize_tool_args_for_log(arg_dict),
+                        legacy_type="act",
+                        meta={"visible_browser": True},
+                    )
+                )
+                self._append_session_event(
+                    AgentStreamEvent(
+                        kind=AgentEventKind.OBSERVATION,
+                        tool_name="browser_open",
+                        legacy_type="observe",
+                        output=f"Opened URL in Plodder Browser tab: {url}",
+                        meta={"visible_browser": True, "url": url},
+                    )
+                )
+            return (
+                f"Opened URL in the user's Plodder Browser tab: {url}\n"
+                "If the site blocks iframe embedding, the Browser tab still shows an external-open link."
+            )
+
         tool = self.registry.get(name)
         if not tool:
             return f"Error: Unknown tool '{name}'"
 
-        arg_dict = dict(arguments) if isinstance(arguments, dict) else {}
         if name == "editor" and not arg_dict:
             return (
                 "Error: malformed editor tool call. Missing required arguments. "
