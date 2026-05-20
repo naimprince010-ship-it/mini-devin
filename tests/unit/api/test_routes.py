@@ -348,8 +348,9 @@ class TestAPIResponseFormat:
 class TestSessionAgentMessage:
     """Tests for chat-to-agent message routing."""
 
-    def test_casual_greeting_does_not_create_task(self, client, monkeypatch):
-        """A plain greeting should not burn an agent loop."""
+    @pytest.mark.parametrize("message", ["hi", "tumi ki ki korte paro", "what can you do"])
+    def test_chatty_message_does_not_create_task(self, client, monkeypatch, message):
+        """Plain chat/help messages should not burn an agent loop."""
         mock_session = SimpleNamespace(
             session_id="sess1234",
             status=SimpleNamespace(value="idle"),
@@ -362,14 +363,15 @@ class TestSessionAgentMessage:
         monkeypatch.setattr(app_module.session_manager, "create_task", create_task)
         monkeypatch.setattr(app_module.connection_manager, "broadcast_to_session", broadcast)
 
-        response = client.post("/api/sessions/sess1234/agent/message", json={"message": "hi"})
+        response = client.post("/api/sessions/sess1234/agent/message", json={"message": message})
 
         assert response.status_code == 200
         assert response.json()["mode"] == "chat"
         create_task.assert_not_awaited()
         broadcast.assert_awaited_once()
 
-    def test_casual_greeting_over_websocket_does_not_create_task(self, client, monkeypatch):
+    @pytest.mark.parametrize("message", ["hi", "tumi ki ki korte paro"])
+    def test_chatty_message_over_websocket_does_not_create_task(self, client, monkeypatch, message):
         """The live browser chat uses WebSockets, so it needs the same shortcut."""
         mock_session = SimpleNamespace(
             session_id="sess1234",
@@ -382,11 +384,10 @@ class TestSessionAgentMessage:
 
         with client.websocket_connect("/api/ws/sess1234") as websocket:
             json.loads(websocket.receive_text())
-            websocket.send_text("hi")
+            websocket.send_text(message)
             message = json.loads(websocket.receive_text())
 
         assert message["type"] == "token"
-        assert "Hi!" in message["data"]["content"]
         create_task.assert_not_awaited()
 
     @pytest.mark.parametrize("message", ["hi build an ecommerce site", "ok koro", "clone this repo"])

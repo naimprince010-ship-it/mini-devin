@@ -2870,10 +2870,32 @@ def _casual_reply_for_message(message: str) -> Optional[str]:
         "ধন্যবাদ",
     }
 
+    capability_questions = {
+        "what can you do",
+        "what can u do",
+        "what do you do",
+        "who are you",
+        "help",
+        "help me",
+        "ki korte paro",
+        "ki ki korte paro",
+        "tumi ki korte paro",
+        "tumi ki ki korte paro",
+        "tumi ki ki korte parbe",
+        "plodder ki korte pare",
+        "plodder ki ki korte pare",
+    }
+
     if normalized in greetings:
         return "Hi! Bolo, Plodder diye ekhon ki korte chao?"
     if normalized in thanks:
         return "Welcome! Next kaj bolo, ami ready."
+    if normalized in capability_questions:
+        return (
+            "Ami repo clone, code edit, bug fix, terminal command, file create/update, "
+            "local preview, browser check, test run, ar git commit korte pari. "
+            "Je kajta korte chao seta bolo."
+        )
     return None
 
 
