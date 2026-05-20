@@ -703,7 +703,6 @@ class LLMClient:
                         safe = repr(chunk_text).encode("ascii", "backslashreplace").decode("ascii")
                         print(f"[TOKEN STREAM CHUNK]: {safe}")
                     if on_token:
-                        import asyncio
                         if inspect.iscoroutinefunction(on_token):
                             await on_token(chunk_text)
                         else:

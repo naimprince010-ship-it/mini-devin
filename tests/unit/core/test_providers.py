@@ -335,12 +335,14 @@ class TestModelRegistry:
             google=GoogleAIConfig(api_key="AIza-x", enabled=True),
             openai=OpenAIConfig(api_key="sk-x", enabled=True),
         )
-        assert registry.get_default_model() == "llama-3.3-70b-versatile"
+        with patch.dict(os.environ, {"LLM_MODEL": ""}, clear=False):
+            assert registry.get_default_model() == "llama-3.3-70b-versatile"
 
     def test_get_default_model_groq_only(self):
         registry = ModelRegistry()
         registry.configure_providers(groq=GroqConfig(api_key="gsk-test", enabled=True))
-        assert registry.get_default_model() == "llama-3.3-70b-versatile"
+        with patch.dict(os.environ, {"LLM_MODEL": ""}, clear=False):
+            assert registry.get_default_model() == "llama-3.3-70b-versatile"
 
     def test_get_default_model_anthropic(self):
         """Test getting default model when only Anthropic is configured."""
