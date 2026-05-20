@@ -2838,6 +2838,45 @@ class SessionAgentMessageRequest(BaseModel):
     message: str
 
 
+def _casual_reply_for_message(message: str) -> Optional[str]:
+    """Return a zero-LLM reply for tiny chat messages that are not work requests."""
+    text = re.sub(r"\s+", " ", (message or "").strip().lower())
+    if not text or len(text) > 80:
+        return None
+
+    normalized = text.strip(" \t\r\n!?.;,।")
+    greetings = {
+        "hi",
+        "hii",
+        "hello",
+        "hey",
+        "hi there",
+        "hello there",
+        "salam",
+        "assalamualaikum",
+        "assalamu alaikum",
+        "as-salamu alaykum",
+        "হাই",
+        "হ্যালো",
+        "সালাম",
+        "আসসালামু আলাইকুম",
+    }
+    thanks = {
+        "thanks",
+        "thank you",
+        "thank u",
+        "dhonnobad",
+        "dhanyobad",
+        "ধন্যবাদ",
+    }
+
+    if normalized in greetings:
+        return "Hi! Bolo, Plodder diye ekhon ki korte chao?"
+    if normalized in thanks:
+        return "Welcome! Next kaj bolo, ami ready."
+    return None
+
+
 @app.get("/api/sessions/{session_id}/stream")
 @app.get("/sessions/{session_id}/stream")
 async def session_events_sse(session_id: str, request: Request):
@@ -2936,6 +2975,17 @@ async def post_session_agent_message(session_id: str, body: SessionAgentMessageR
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     st = session.status.value if hasattr(session.status, "value") else str(session.status)
+    casual_reply = _casual_reply_for_message(text)
+    if casual_reply and st != "running":
+        await connection_manager.broadcast_to_session(
+            session_id,
+            WebSocketMessage(
+                type=MessageType.TOKEN,
+                data={"content": casual_reply},
+                task_id=session.current_task_id,
+            ),
+        )
+        return {"ok": True, "mode": "chat", "reply": casual_reply}
     if st == "running":
         await session_manager.inject_followup(session_id, text)
         await connection_manager.broadcast_to_session(
@@ -3008,6 +3058,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 session = await session_manager.create_session(session_id=session_id)
                 session_id = session.session_id
             
+            casual_reply = _casual_reply_for_message(data)
+            if casual_reply and session.status.value != 'running':
+                await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
+                    type=MessageType.TOKEN,
+                    data={"content": casual_reply},
+                    task_id=session.current_task_id,
+                ))
+                continue
+
             # If agent is currently running -> inject as follow-up
             if session.status.value == 'running':
                 await session_manager.inject_followup(session_id, data)

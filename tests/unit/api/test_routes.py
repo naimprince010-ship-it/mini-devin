@@ -1,5 +1,7 @@
 """Unit tests for API routes."""
 
+import importlib
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -7,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from mini_devin.api import app as app_module
+app_module = importlib.import_module("mini_devin.api.app")
 from mini_devin.api.app import app
 from mini_devin.api.routes import router
 
@@ -341,3 +343,69 @@ class TestAPIResponseFormat:
             data = response.json()
             # Should have error detail
             assert "detail" in data or "error" in data or "message" in data
+
+
+class TestSessionAgentMessage:
+    """Tests for chat-to-agent message routing."""
+
+    def test_casual_greeting_does_not_create_task(self, client, monkeypatch):
+        """A plain greeting should not burn an agent loop."""
+        mock_session = SimpleNamespace(
+            session_id="sess1234",
+            status=SimpleNamespace(value="idle"),
+            current_task_id=None,
+        )
+        get_session = AsyncMock(return_value=mock_session)
+        create_task = AsyncMock()
+        broadcast = AsyncMock()
+        monkeypatch.setattr(app_module.session_manager, "get_session", get_session)
+        monkeypatch.setattr(app_module.session_manager, "create_task", create_task)
+        monkeypatch.setattr(app_module.connection_manager, "broadcast_to_session", broadcast)
+
+        response = client.post("/api/sessions/sess1234/agent/message", json={"message": "hi"})
+
+        assert response.status_code == 200
+        assert response.json()["mode"] == "chat"
+        create_task.assert_not_awaited()
+        broadcast.assert_awaited_once()
+
+    def test_casual_greeting_over_websocket_does_not_create_task(self, client, monkeypatch):
+        """The live browser chat uses WebSockets, so it needs the same shortcut."""
+        mock_session = SimpleNamespace(
+            session_id="sess1234",
+            status=SimpleNamespace(value="idle"),
+            current_task_id=None,
+        )
+        create_task = AsyncMock()
+        monkeypatch.setattr(app_module.session_manager, "get_session", AsyncMock(return_value=mock_session))
+        monkeypatch.setattr(app_module.session_manager, "create_task", create_task)
+
+        with client.websocket_connect("/api/ws/sess1234") as websocket:
+            json.loads(websocket.receive_text())
+            websocket.send_text("hi")
+            message = json.loads(websocket.receive_text())
+
+        assert message["type"] == "token"
+        assert "Hi!" in message["data"]["content"]
+        create_task.assert_not_awaited()
+
+    @pytest.mark.parametrize("message", ["hi build an ecommerce site", "ok koro", "clone this repo"])
+    def test_work_request_still_creates_task(self, client, monkeypatch, message):
+        """Task-like messages must still enter the agent workflow."""
+        mock_session = SimpleNamespace(
+            session_id="sess1234",
+            status=SimpleNamespace(value="idle"),
+            current_task_id=None,
+        )
+        mock_task = SimpleNamespace(task_id="task1234")
+        monkeypatch.setattr(app_module.session_manager, "get_session", AsyncMock(return_value=mock_session))
+        create_task = AsyncMock(return_value=mock_task)
+        run_task = AsyncMock(return_value=None)
+        monkeypatch.setattr(app_module.session_manager, "create_task", create_task)
+        monkeypatch.setattr(app_module.session_manager, "run_task", run_task)
+
+        response = client.post("/api/sessions/sess1234/agent/message", json={"message": message})
+
+        assert response.status_code == 200
+        assert response.json()["mode"] == "new_task"
+        create_task.assert_awaited_once()
