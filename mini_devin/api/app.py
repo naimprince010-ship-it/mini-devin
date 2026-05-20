@@ -2839,12 +2839,25 @@ class SessionAgentMessageRequest(BaseModel):
 
 
 def _casual_reply_for_message(message: str) -> Optional[str]:
-    """Return a zero-LLM reply for tiny chat messages that are not work requests."""
+    """Return a zero-LLM reply for chat/meta messages that are not work requests."""
     text = re.sub(r"\s+", " ", (message or "").strip().lower())
-    if not text or len(text) > 80:
+    if not text or len(text) > 220:
         return None
 
     normalized = text.strip(" \t\r\n!?.;,।")
+    has_question_shape = bool(
+        "?" in text
+        or re.search(
+            r"\b(what|why|how|who|where|when|can you|could you|should|ki|keno|kano|kivabe|kemne|naki|possible|paro|parbe|bujhano)\b",
+            normalized,
+        )
+    )
+    has_action_shape = bool(
+        re.search(
+            r"\b(build|make|create|write|edit|update|add|remove|delete|fix|debug|check|open|clone|run|test|install|deploy|push|commit|implement|improve|banao|banaye|likho|lekho|koro|kore|dekho|thik|chalu|start)\b",
+            normalized,
+        )
+    )
     greetings = {
         "hi",
         "hii",
@@ -2895,6 +2908,12 @@ def _casual_reply_for_message(message: str) -> Optional[str]:
             "Ami repo clone, code edit, bug fix, terminal command, file create/update, "
             "local preview, browser check, test run, ar git commit korte pari. "
             "Je kajta korte chao seta bolo."
+        )
+    if has_question_shape and not has_action_shape:
+        return (
+            "Eta question/help type message mone hocche, tai agent task start korchi na. "
+            "Jodi workspace-e kaj korte chao, clearly bolo: fix koro, check koro, build koro, "
+            "clone koro, ba file update koro."
         )
     return None
 

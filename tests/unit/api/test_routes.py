@@ -348,7 +348,16 @@ class TestAPIResponseFormat:
 class TestSessionAgentMessage:
     """Tests for chat-to-agent message routing."""
 
-    @pytest.mark.parametrize("message", ["hi", "tumi ki ki korte paro", "what can you do"])
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "hi",
+            "tumi ki ki korte paro",
+            "what can you do",
+            "amader ide ki professional grade er",
+            "eta possible naki",
+        ],
+    )
     def test_chatty_message_does_not_create_task(self, client, monkeypatch, message):
         """Plain chat/help messages should not burn an agent loop."""
         mock_session = SimpleNamespace(
@@ -370,7 +379,7 @@ class TestSessionAgentMessage:
         create_task.assert_not_awaited()
         broadcast.assert_awaited_once()
 
-    @pytest.mark.parametrize("message", ["hi", "tumi ki ki korte paro"])
+    @pytest.mark.parametrize("message", ["hi", "tumi ki ki korte paro", "eta possible naki"])
     def test_chatty_message_over_websocket_does_not_create_task(self, client, monkeypatch, message):
         """The live browser chat uses WebSockets, so it needs the same shortcut."""
         mock_session = SimpleNamespace(
@@ -390,7 +399,16 @@ class TestSessionAgentMessage:
         assert message["type"] == "token"
         create_task.assert_not_awaited()
 
-    @pytest.mark.parametrize("message", ["hi build an ecommerce site", "ok koro", "clone this repo"])
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "hi build an ecommerce site",
+            "ok koro",
+            "clone this repo",
+            "localhost keno open hoi na check koro",
+            "website banao",
+        ],
+    )
     def test_work_request_still_creates_task(self, client, monkeypatch, message):
         """Task-like messages must still enter the agent workflow."""
         mock_session = SimpleNamespace(
