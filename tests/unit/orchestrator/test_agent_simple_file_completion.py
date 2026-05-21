@@ -183,6 +183,25 @@ def test_clone_target_from_successful_command_uses_clone_output():
     )
 
 
+def test_clone_target_from_existing_directory_failure():
+    agent = Agent(llm_client=MagicMock(), auto_verify=False)
+    task = TaskState(
+        task_id="task-clone-existing",
+        goal=TaskGoal(description="Clone https://github.com/pypa/sampleproject and run git status."),
+    )
+
+    assert (
+        agent._clone_target_from_existing_directory_failure(
+            task,
+            "terminal",
+            {"command": "git clone https://github.com/pypa/sampleproject"},
+            "fatal: destination path 'sampleproject' already exists and is not an empty directory.\n"
+            "Exit code: 128",
+        )
+        == "sampleproject"
+    )
+
+
 def test_progress_guard_resets_after_write_action():
     agent = Agent(llm_client=MagicMock(), auto_verify=False)
     task = TaskState(

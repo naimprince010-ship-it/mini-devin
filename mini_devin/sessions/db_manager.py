@@ -781,6 +781,15 @@ class DatabaseSessionManager:
                         summary = msg.content
                         break
             summary = _sanitize_user_summary(summary)
+            if not summary and success:
+                parts = ["Task completed successfully."]
+                if final_task_state.commands_executed:
+                    parts.append("Commands: " + ", ".join(final_task_state.commands_executed[-5:]))
+                if final_task_state.files_changed:
+                    parts.append(
+                        "Files changed: " + ", ".join(f.path for f in final_task_state.files_changed[-5:])
+                    )
+                summary = " ".join(parts)
             
             # Create a simple result object that matches the code's expectations
             class AgentResult:

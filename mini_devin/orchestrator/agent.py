@@ -5142,6 +5142,26 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             repo_name = repo_name[:-4]
         return repo_name or None
 
+    def _clone_target_from_existing_directory_failure(
+        self,
+        task: TaskState,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_result: str,
+    ) -> str | None:
+        """Return repo folder when a repeated clone failed only because it already exists."""
+        if tool_name != "terminal":
+            return None
+        description = (task.goal.description if task.goal else "").lower()
+        command = str(tool_args.get("command", "") or "").strip().lower()
+        result = tool_result or ""
+        if "clone" not in description or not command.startswith("git clone "):
+            return None
+        match = re.search(r"destination path ['\"]([^'\"]+)['\"] already exists", result, re.IGNORECASE)
+        if not match:
+            return None
+        return match.group(1)
+
     async def run(self, task: TaskState) -> TaskState:
         """
         Run the agent on a task.
@@ -5498,6 +5518,26 @@ Call a tool (editor or terminal) immediately as your first action."""
                                         
                                 # Classify the result
                                 error_type = self._correction_engine.classify_error(tc.name, result, exit_code)
+
+                                existing_clone_target = self._clone_target_from_existing_directory_failure(
+                                    task, tc.name, tc.arguments, result
+                                )
+                                if existing_clone_target:
+                                    status_args = {
+                                        "command": "git status",
+                                        "working_directory": existing_clone_target,
+                                        "plan_step": "STEP-4",
+                                    }
+                                    status_result = await self._execute_tool("terminal", status_args)
+                                    task.commands_executed.append("git status")
+                                    if self._clone_status_verification_satisfied(
+                                        task, "terminal", status_args, status_result
+                                    ):
+                                        result = status_result
+                                        final_result = status_result
+                                        tc.arguments = status_args
+                                        tool_success = True
+                                        break
 
                                 if self._terminal_task_complete_satisfied(
                                     tc.name, result
