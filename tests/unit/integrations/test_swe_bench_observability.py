@@ -34,12 +34,17 @@ def test_collect_patch_includes_tracked_and_untracked_files(tmp_path: Path) -> N
         encoding="utf-8",
     )
     (repo_dir / "notes.txt").write_text("new diagnostic file\n", encoding="utf-8")
+    (repo_dir / "PLAN.md").write_text("runtime plan\n", encoding="utf-8")
+    (repo_dir / ".plodder").mkdir(exist_ok=True)
+    (repo_dir / ".plodder" / "session_events.jsonl").write_text("runtime event\n", encoding="utf-8")
 
     patch = swe_bench._collect_patch(str(repo_dir))
 
     assert "return word.lower() in text.lower()" in patch
     assert "notes.txt" in patch
     assert "new diagnostic file" in patch
+    assert "PLAN.md" not in patch
+    assert ".plodder" not in patch
 
     swe_bench._git("add", "string_utils.py", cwd=str(repo_dir))
     swe_bench._git("commit", "-m", "Agent checkpoint", cwd=str(repo_dir))

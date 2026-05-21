@@ -38,6 +38,8 @@ _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 _RUNS_FILE = _DATA_DIR / "runs.json"
 _RESULTS_FILE = _DATA_DIR / "results.json"
+_PATCH_EXCLUDED_ROOTS = (".plodder/",)
+_PATCH_EXCLUDED_FILES = {"PLAN.md"}
 
 
 # ── Data models ────────────────────────────────────────────────────────────────
@@ -346,12 +348,24 @@ def _setup_repo(task: SWEBenchTask, workspace_root: str) -> str | None:
 def _collect_patch(repo_dir: str, base_ref: str = "HEAD") -> str:
     """Return git diff of tracked, staged, and untracked text changes."""
     parts: list[str] = []
-    _, diff, _ = _git("diff", "--binary", base_ref, cwd=repo_dir)
+    _, diff, _ = _git(
+        "diff",
+        "--binary",
+        base_ref,
+        "--",
+        ".",
+        ":!.plodder",
+        ":!PLAN.md",
+        cwd=repo_dir,
+    )
     if diff:
         parts.append(diff)
 
     _, untracked, _ = _git("ls-files", "--others", "--exclude-standard", cwd=repo_dir)
     for rel in [line.strip() for line in untracked.splitlines() if line.strip()]:
+        rel_posix = rel.replace("\\", "/")
+        if rel_posix in _PATCH_EXCLUDED_FILES or rel_posix.startswith(_PATCH_EXCLUDED_ROOTS):
+            continue
         path = Path(repo_dir) / rel
         if not path.is_file() or path.stat().st_size > 200_000:
             continue
