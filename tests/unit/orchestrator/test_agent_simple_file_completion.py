@@ -78,6 +78,56 @@ def test_progress_guard_nudges_after_repeated_inspection():
     assert "Create index.html" in messages[1]
 
 
+def test_progress_guard_respects_no_edit_verification_task():
+    agent = Agent(llm_client=MagicMock(), auto_verify=False)
+    task = TaskState(
+        task_id="task-no-edit-progress-guard",
+        goal=TaskGoal(
+            description=(
+                "Inspect repo, run git status, then run python -m pytest tests/test_simple.py. "
+                "Do not edit files."
+            )
+        ),
+    )
+
+    assert agent._progress_guard_message(
+        task,
+        "terminal",
+        {"command": "git status"},
+        tool_success=True,
+    ) is None
+    message = agent._progress_guard_message(
+        task,
+        "terminal",
+        {"command": "git status"},
+        tool_success=True,
+    )
+
+    assert message is not None
+    assert "Do not edit files" in message
+    assert "create or edit" not in message.lower()
+
+
+def test_no_edit_verification_satisfied_after_pytest_passes():
+    agent = Agent(llm_client=MagicMock(), auto_verify=False)
+    task = TaskState(
+        task_id="task-no-edit-verification",
+        goal=TaskGoal(
+            description=(
+                "Reliability smoke test. Inspect this repository, run git status, "
+                "then run python -m pytest tests/test_simple.py. Do not edit files."
+            )
+        ),
+    )
+
+    assert agent._no_edit_verification_satisfied(
+        task,
+        "terminal",
+        {"command": "python -m pytest tests/test_simple.py"},
+        "1 passed\n\nExit code: 0",
+    )
+
+
 def test_progress_guard_resets_after_write_action():
     agent = Agent(llm_client=MagicMock(), auto_verify=False)
     task = TaskState(

@@ -5004,12 +5004,72 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
 
         self._no_progress_inspection_streak = 0
         description = task.goal.description if task.goal else "the task"
+        if self._is_no_edit_verification_task(task):
+            return (
+                "Progress guard: you have inspected the same clean workspace several times. "
+                "Do not edit files for this task. Run the requested verification command now, "
+                "or if it already passed with exit code 0, reply TASK COMPLETE with the observed result. "
+                f"Task: {description}"
+            )
         return (
             "Progress guard: you have inspected the same clean workspace several times without changing files. "
             "Stop listing directories or checking git status. Take the next concrete implementation action now. "
             "For this task, create or edit the requested file using the editor write_file/str_replace/apply_patch tool, "
             f"then verify it. Task: {description}"
         )
+
+    def _is_no_edit_verification_task(self, task: TaskState) -> bool:
+        """True when the user explicitly asked for inspection/testing without edits."""
+        description = (task.goal.description if task.goal else "").lower()
+        no_edit_markers = (
+            "do not edit",
+            "don't edit",
+            "no edit",
+            "no-edit",
+            "do not modify",
+            "don't modify",
+            "without editing",
+            "without modifying",
+        )
+        verification_markers = (
+            "run ",
+            "test",
+            "pytest",
+            "git status",
+            "inspect",
+            "smoke test",
+            "check",
+        )
+        return any(marker in description for marker in no_edit_markers) and any(
+            marker in description for marker in verification_markers
+        )
+
+    def _no_edit_verification_satisfied(
+        self,
+        task: TaskState,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_result: str,
+    ) -> bool:
+        """Auto-complete explicit no-edit verification tasks after a successful test/check command."""
+        if not self._is_no_edit_verification_task(task) or tool_name != "terminal":
+            return False
+        command = str(tool_args.get("command", "") or "").lower()
+        result = (tool_result or "").lower()
+        if "exit code: 0" not in result:
+            return False
+        verification_commands = (
+            "pytest",
+            "unittest",
+            "npm test",
+            "npm run test",
+            "pnpm test",
+            "yarn test",
+            "ruff",
+            "mypy",
+            "tsc",
+        )
+        return any(marker in command for marker in verification_commands)
 
     async def run(self, task: TaskState) -> TaskState:
         """
@@ -5588,6 +5648,15 @@ Call a tool (editor or terminal) immediately as your first action."""
                             # Track in task state
                             if tc.name == "terminal":
                                 task.commands_executed.append(tc.arguments.get("command", ""))
+
+                            if tool_success and self._no_edit_verification_satisfied(
+                                task, tc.name, tc.arguments, final_result
+                            ):
+                                await self._update_phase(AgentPhase.COMPLETE)
+                                task.status = TaskStatus.COMPLETED
+                                task.completed_at = datetime.now(timezone.utc)
+                                self._log("Task completed after no-edit verification passed.")
+                                break
 
                             if tool_success and self._simple_file_task_satisfied(
                                 task, tc.name, tc.arguments, final_result
