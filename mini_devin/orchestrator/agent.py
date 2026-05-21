@@ -5071,6 +5071,17 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         )
         return any(marker in command for marker in verification_commands)
 
+    def _terminal_task_complete_satisfied(
+        self,
+        tool_name: str,
+        tool_result: str,
+    ) -> bool:
+        """Treat an explicit TASK COMPLETE terminal echo as completion."""
+        if tool_name != "terminal":
+            return False
+        result = tool_result or ""
+        return "TASK COMPLETE" in result.upper() and "Exit code: 0" in result
+
     async def run(self, task: TaskState) -> TaskState:
         """
         Run the agent on a task.
@@ -5648,6 +5659,15 @@ Call a tool (editor or terminal) immediately as your first action."""
                             # Track in task state
                             if tc.name == "terminal":
                                 task.commands_executed.append(tc.arguments.get("command", ""))
+
+                            if tool_success and self._terminal_task_complete_satisfied(
+                                tc.name, final_result
+                            ):
+                                await self._update_phase(AgentPhase.COMPLETE)
+                                task.status = TaskStatus.COMPLETED
+                                task.completed_at = datetime.now(timezone.utc)
+                                self._log("Task completed after explicit terminal TASK COMPLETE signal.")
+                                break
 
                             if tool_success and self._no_edit_verification_satisfied(
                                 task, tc.name, tc.arguments, final_result

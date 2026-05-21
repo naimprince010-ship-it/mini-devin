@@ -128,6 +128,15 @@ def test_no_edit_verification_satisfied_after_pytest_passes():
     )
 
 
+def test_terminal_task_complete_echo_satisfies_completion():
+    agent = Agent(llm_client=MagicMock(), auto_verify=False)
+
+    assert agent._terminal_task_complete_satisfied(
+        "terminal",
+        "STDOUT:\nTASK COMPLETE: tests passed\n\nExit code: 0",
+    )
+
+
 def test_progress_guard_resets_after_write_action():
     agent = Agent(llm_client=MagicMock(), auto_verify=False)
     task = TaskState(
