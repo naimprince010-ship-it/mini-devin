@@ -24,6 +24,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -83,7 +84,10 @@ class TaskResult:
     repo: str = ""
     status: BenchmarkStatus = BenchmarkStatus.PENDING
     patch: str = ""           # git diff produced by agent
-    agent_log: str = ""       # summary / last message
+    agent_log: str = ""       # summary + timeline/actions captured during agent execution
+    agent_session_id: str = ""
+    agent_task_id: str = ""
+    workspace: str = ""
     test_output: str = ""     # stdout of test run
     fail_to_pass_results: dict[str, bool] = field(default_factory=dict)
     pass_to_pass_results: dict[str, bool] = field(default_factory=dict)
@@ -166,88 +170,20 @@ def _save_results(results: dict[str, TaskResult]) -> None:
 
 _SAMPLE_TASKS: list[dict] = [
     {
-        "task_id": "django__django-11099",
-        "repo": "django/django",
-        "instance_id": "django__django-11099",
-        "base_commit": "abc1234",
+        "task_id": "plodder_fixture__string_utils_casefold",
+        "repo": "plodder-fixtures/string-utils",
+        "instance_id": "plodder_fixture__string_utils_casefold",
+        "base_commit": "local:string-utils-v1",
         "problem_statement": (
-            "**Bug**: `HttpRequest.get_host()` raises `DisallowedHost` even when the "
-            "request hostname matches an entry in `ALLOWED_HOSTS` that uses a leading dot "
-            "wildcard (e.g. `.example.com`).\n\n"
-            "**Expected behavior**: A wildcard entry `.example.com` should match "
-            "`sub.example.com` as documented."
+            "**Bug**: `contains_word(text, word)` is supposed to be case-insensitive, "
+            "but it currently checks the original strings directly.\n\n"
+            "**Expected behavior**: `contains_word('Hello World', 'hello')` should return `True`."
         ),
-        "hints_text": "Look at django/http/request.py validate_host()",
+        "hints_text": "Look at string_utils.py and keep the implementation simple.",
         "test_patch": "",
-        "fail_to_pass": ["tests.test_request.HostValidationTests.test_wildcard_subdomain"],
+        "fail_to_pass": ["tests/test_string_utils.py::test_contains_word_is_case_insensitive"],
         "pass_to_pass": [],
-        "version": "3.0",
-    },
-    {
-        "task_id": "requests__requests-3738",
-        "repo": "psf/requests",
-        "instance_id": "requests__requests-3738",
-        "base_commit": "def5678",
-        "problem_statement": (
-            "**Bug**: When a redirect changes the method from POST to GET (303 See Other), "
-            "the `Content-Length` header is not removed from the redirected GET request, "
-            "causing some servers to wait for a body that never comes.\n\n"
-            "**Expected**: `Content-Length` should be stripped on method-changing redirects."
-        ),
-        "hints_text": "Check requests/sessions.py rebuild_method()",
-        "test_patch": "",
-        "fail_to_pass": ["tests/test_redirects.py::TestRedirects::test_303_removes_content_length"],
-        "pass_to_pass": [],
-        "version": "2.18",
-    },
-    {
-        "task_id": "flask__flask-2237",
-        "repo": "pallets/flask",
-        "instance_id": "flask__flask-2237",
-        "base_commit": "ghi9012",
-        "problem_statement": (
-            "**Feature request**: `flask.cli.with_appcontext` should be usable as a "
-            "decorator on async functions so that Flask-AsyncExt works without extra glue.\n\n"
-            "Currently wrapping an async command with `@with_appcontext` causes a "
-            "`RuntimeError: This event loop is already running`."
-        ),
-        "hints_text": "Look at flask/cli.py with_appcontext()",
-        "test_patch": "",
-        "fail_to_pass": ["tests/test_cli.py::test_with_appcontext_async"],
-        "pass_to_pass": [],
-        "version": "2.0",
-    },
-    {
-        "task_id": "numpy__numpy-18547",
-        "repo": "numpy/numpy",
-        "instance_id": "numpy__numpy-18547",
-        "base_commit": "jkl3456",
-        "problem_statement": (
-            "**Bug**: `np.unique` with `return_counts=True` returns incorrect counts when "
-            "the input array contains `NaN` values. Multiple NaN entries are not treated as "
-            "equal by the current implementation.\n\n"
-            "**Expected**: All NaN entries should be collapsed into a single unique entry."
-        ),
-        "hints_text": "Check numpy/lib/arraysetops.py unique()",
-        "test_patch": "",
-        "fail_to_pass": ["numpy/lib/tests/test_arraysetops.py::test_unique_nan_counts"],
-        "pass_to_pass": [],
-        "version": "1.21",
-    },
-    {
-        "task_id": "sympy__sympy-20049",
-        "repo": "sympy/sympy",
-        "instance_id": "sympy__sympy-20049",
-        "base_commit": "mno7890",
-        "problem_statement": (
-            "**Bug**: `Point2D` equality check raises `TypeError` instead of returning "
-            "`False` when compared against a non-Point type, e.g. `Point2D(1,2) == 'hello'`."
-        ),
-        "hints_text": "Check sympy/geometry/point.py __eq__()",
-        "test_patch": "",
-        "fail_to_pass": ["sympy/geometry/tests/test_point.py::test_point_equality_non_point"],
-        "pass_to_pass": [],
-        "version": "1.7",
+        "version": "fixture-v1",
     },
 ]
 
@@ -324,8 +260,60 @@ def _git(*args: str, cwd: str) -> tuple[int, str, str]:
     return result.returncode, result.stdout, result.stderr
 
 
+def _write_file(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(textwrap.dedent(content).lstrip(), encoding="utf-8")
+
+
+def _setup_fixture_repo(task: SWEBenchTask, workspace_root: str) -> str:
+    """Create a small real Git repo for fallback benchmark smoke tests."""
+    repo_dir = Path(workspace_root) / task.instance_id
+    if repo_dir.exists():
+        shutil.rmtree(repo_dir, ignore_errors=True)
+    repo_dir.mkdir(parents=True, exist_ok=True)
+
+    _write_file(
+        repo_dir / "string_utils.py",
+        """
+        def contains_word(text: str, word: str) -> bool:
+            \"\"\"Return whether word appears inside text, ignoring case.\"\"\"
+            return word in text
+        """,
+    )
+    _write_file(
+        repo_dir / "tests" / "test_string_utils.py",
+        """
+        from string_utils import contains_word
+
+
+        def test_contains_word_is_case_insensitive():
+            assert contains_word("Hello World", "hello") is True
+        """,
+    )
+    _write_file(
+        repo_dir / "README.md",
+        """
+        # Plodder benchmark fixture
+
+        This tiny repository is generated locally so benchmark smoke tests have
+        a real failing test and a meaningful patch to inspect when HuggingFace
+        SWE-bench data is unavailable.
+        """,
+    )
+
+    _git("init", cwd=str(repo_dir))
+    _git("config", "user.email", "benchmark@plodder.local", cwd=str(repo_dir))
+    _git("config", "user.name", "Plodder Benchmark", cwd=str(repo_dir))
+    _git("add", ".", cwd=str(repo_dir))
+    _git("commit", "-m", "Initial failing fixture", cwd=str(repo_dir))
+    return str(repo_dir)
+
+
 def _setup_repo(task: SWEBenchTask, workspace_root: str) -> str | None:
     """Clone / reset repo to task's base commit. Returns local path or None."""
+    if task.base_commit.startswith("local:") or task.repo.startswith("plodder-fixtures/"):
+        return _setup_fixture_repo(task, workspace_root)
+
     repo_dir = os.path.join(workspace_root, task.instance_id)
     clone_url = f"https://github.com/{task.repo}.git"
 
@@ -351,9 +339,28 @@ def _setup_repo(task: SWEBenchTask, workspace_root: str) -> str | None:
 
 
 def _collect_patch(repo_dir: str) -> str:
-    """Return git diff of all unstaged + staged changes."""
-    _, diff, _ = _git("diff", "HEAD", cwd=repo_dir)
-    return diff or ""
+    """Return git diff of tracked, staged, and untracked text changes."""
+    parts: list[str] = []
+    _, diff, _ = _git("diff", "--binary", "HEAD", cwd=repo_dir)
+    if diff:
+        parts.append(diff)
+
+    _, untracked, _ = _git("ls-files", "--others", "--exclude-standard", cwd=repo_dir)
+    for rel in [line.strip() for line in untracked.splitlines() if line.strip()]:
+        path = Path(repo_dir) / rel
+        if not path.is_file() or path.stat().st_size > 200_000:
+            continue
+        try:
+            path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        rc, out, err = _git("diff", "--no-index", "--", os.devnull, rel, cwd=repo_dir)
+        if out:
+            parts.append(out)
+        elif rc not in (0, 1) and err:
+            parts.append(f"# Failed to diff untracked file {rel}: {err}")
+
+    return "\n".join(part.rstrip() for part in parts if part).strip()
 
 
 def _run_tests(repo_dir: str, test_ids: list[str]) -> tuple[str, dict[str, bool]]:
@@ -387,6 +394,71 @@ def _run_tests(repo_dir: str, test_ids: list[str]) -> tuple[str, dict[str, bool]
             results[tid] = result.returncode == 0
 
     return output[:4000], results
+
+
+def _trim_text(text: str, limit: int = 12000) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit // 2] + "\n\n...[truncated]...\n\n" + text[-limit // 2 :]
+
+
+def _collect_agent_timeline(workspace: str, limit: int = 80) -> str:
+    """Read the agent JSONL timeline and format a compact debug log."""
+    try:
+        from ..orchestrator.event_stream import EventStream
+
+        events = EventStream(workspace).to_export_list(max_lines=limit)
+    except Exception as e:
+        return f"timeline unavailable: {e}"
+
+    lines: list[str] = []
+    for event in events[-limit:]:
+        kind = event.get("kind") or event.get("type") or "event"
+        title = event.get("title") or event.get("tool") or ""
+        summary = event.get("summary") or event.get("text") or event.get("output") or ""
+        line = f"[{kind}]"
+        if title:
+            line += f" {title}"
+        if summary:
+            line += f": {str(summary).strip()}"
+        lines.append(line[:2000])
+    return _trim_text("\n".join(lines))
+
+
+def _format_agent_log(
+    *,
+    status: str,
+    summary: str,
+    commands: list[str],
+    files: list[str],
+    timeline: str,
+    error: str = "",
+) -> str:
+    sections = [
+        f"status: {status or 'unknown'}",
+        f"summary:\n{summary or '(empty)'}",
+    ]
+    if error:
+        sections.append(f"error:\n{error}")
+    sections.append("commands_executed:\n" + ("\n".join(f"- {c}" for c in commands) if commands else "(none)"))
+    sections.append("files_modified:\n" + ("\n".join(f"- {f}" for f in files) if files else "(none)"))
+    sections.append("timeline:\n" + (timeline or "(empty)"))
+    return _trim_text("\n\n".join(sections))
+
+
+def _normalise_agent_output(raw: Any, repo_dir: str | None) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        out = dict(raw)
+    elif isinstance(raw, tuple):
+        patch = raw[0] if len(raw) > 0 else ""
+        log = raw[1] if len(raw) > 1 else ""
+        out = {"patch": patch, "agent_log": log}
+    else:
+        out = {"patch": "", "agent_log": str(raw or "")}
+
+    if repo_dir and not out.get("patch"):
+        out["patch"] = _collect_patch(repo_dir)
+    return out
 
 
 # ── Core runner ─────────────────────────────────────────────────────────────────
@@ -506,16 +578,23 @@ class SWEBenchRunner:
                 result.error = "Repository clone failed (network unavailable or invalid SHA). Using simulation mode."
                 # In simulation mode: present task to agent and capture response
                 if agent_runner:
-                    patch, log = await agent_runner(task, None)
-                    result.patch = patch
-                    result.agent_log = log
+                    agent_out = _normalise_agent_output(await agent_runner(task, None), None)
+                    result.patch = agent_out.get("patch", "")
+                    result.agent_log = agent_out.get("agent_log", "")
+                    result.agent_session_id = agent_out.get("agent_session_id", "")
+                    result.agent_task_id = agent_out.get("agent_task_id", "")
+                    result.workspace = agent_out.get("workspace", "")
                 result.status = BenchmarkStatus.UNRESOLVED
             else:
+                result.workspace = repo_dir
                 # Agent solves the task
                 if agent_runner:
-                    patch, log = await agent_runner(task, repo_dir)
-                    result.patch = patch
-                    result.agent_log = log
+                    agent_out = _normalise_agent_output(await agent_runner(task, repo_dir), repo_dir)
+                    result.patch = agent_out.get("patch", "")
+                    result.agent_log = agent_out.get("agent_log", "")
+                    result.agent_session_id = agent_out.get("agent_session_id", "")
+                    result.agent_task_id = agent_out.get("agent_task_id", "")
+                    result.workspace = agent_out.get("workspace", repo_dir)
                 else:
                     result.patch = ""
                     result.agent_log = "No agent runner provided."
@@ -596,14 +675,16 @@ def make_agent_runner(db_manager: Any, model: str = "auto"):
                 model=model,
             )
             sid = session.session_id
+            created_task_id = ""
 
             created_task = await mgr.create_task(
                 session_id=sid,
                 description=prompt,
             )
+            created_task_id = created_task.task_id
             task_result = await mgr.run_task(
                 session_id=sid,
-                task_id=created_task.task_id,
+                task_id=created_task_id,
             )
 
             # Gather patch
@@ -611,7 +692,28 @@ def make_agent_runner(db_manager: Any, model: str = "auto"):
             if repo_dir:
                 patch = _collect_patch(repo_dir)
 
-            log = task_result.get("summary", "") if isinstance(task_result, dict) else ""
+            if isinstance(task_result, dict):
+                status = str(task_result.get("status") or "")
+                summary = str(task_result.get("summary") or "")
+                commands = task_result.get("commands_executed") or []
+                files = task_result.get("files_modified") or []
+                error = str(task_result.get("error_message") or "")
+            else:
+                status = str(getattr(task_result, "status", "") or "")
+                summary = str(getattr(task_result, "summary", "") or "")
+                commands = list(getattr(task_result, "commands_executed", []) or [])
+                files = list(getattr(task_result, "files_modified", []) or [])
+                error = str(getattr(task_result, "error_message", "") or "")
+
+            timeline = _collect_agent_timeline(workspace)
+            log = _format_agent_log(
+                status=status,
+                summary=summary,
+                commands=commands,
+                files=files,
+                timeline=timeline,
+                error=error,
+            )
 
             # Clean up session
             try:
@@ -619,8 +721,18 @@ def make_agent_runner(db_manager: Any, model: str = "auto"):
             except Exception:
                 pass
 
-            return patch, log
+            return {
+                "patch": patch,
+                "agent_log": log,
+                "agent_session_id": sid,
+                "agent_task_id": created_task_id,
+                "workspace": workspace,
+            }
         except Exception as e:
-            return "", f"Agent error: {e}"
+            return {
+                "patch": _collect_patch(repo_dir) if repo_dir else "",
+                "agent_log": f"Agent error: {e}",
+                "workspace": workspace,
+            }
 
     return _run
