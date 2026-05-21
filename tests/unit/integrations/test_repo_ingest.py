@@ -26,6 +26,47 @@ def test_build_repo_digest_includes_readme_and_inventory(tmp_path: Path) -> None
     assert isinstance(out["manifest_files_used"], list)
 
 
+def test_build_repo_digest_adds_code_intelligence_sections(tmp_path: Path) -> None:
+    (tmp_path / "package.json").write_text(
+        """
+        {
+          "name": "sample-app",
+          "packageManager": "pnpm@10.0.0",
+          "scripts": {"test": "vitest", "build": "next build"},
+          "dependencies": {"next": "latest", "zod": "latest"},
+          "devDependencies": {"vitest": "latest"}
+        }
+        """,
+        encoding="utf-8",
+    )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "api.ts").write_text(
+        "import { z } from 'zod';\n"
+        "import { helper } from './helper';\n\n"
+        "export function createSurvey(input: unknown) {\n"
+        "  return helper(z.object({ name: z.string() }).parse(input));\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "src" / "helper.ts").write_text(
+        "export const helper = (value: unknown) => value;\n",
+        encoding="utf-8",
+    )
+
+    out = build_repo_digest(tmp_path, max_total_chars=80_000)
+    markdown = out["markdown"]
+
+    assert "## Dependency and command map" in markdown
+    assert "`sample-app`" in markdown
+    assert "`test`" in markdown
+    assert "## Symbol map" in markdown
+    assert "createSurvey" in markdown
+    assert "## Import/dependency edges" in markdown
+    assert "`src/api.ts` ->" in markdown
+    assert "`./helper`" in markdown
+    assert "## Selected code chunks" in markdown
+
+
 def test_is_path_allowed_respects_extra_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("REPO_INGEST_EXTRA_ROOT", str(tmp_path))
     roots = ingest_allowlist_roots()
