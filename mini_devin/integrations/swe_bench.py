@@ -589,9 +589,7 @@ def make_agent_runner(db_manager: Any, model: str = "auto"):
         )
 
         try:
-            from ..sessions.db_manager import SessionDBManager  # type: ignore
-            mgr: SessionDBManager = db_manager
-
+            mgr = db_manager
             # Create a throwaway session
             session = await mgr.create_session(
                 title=f"SWE-bench: {task.instance_id}",
