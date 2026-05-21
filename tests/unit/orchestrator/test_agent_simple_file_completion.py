@@ -137,6 +137,28 @@ def test_terminal_task_complete_echo_satisfies_completion():
     )
 
 
+def test_clone_status_verification_satisfied_after_clean_git_status():
+    agent = Agent(llm_client=MagicMock(), auto_verify=False)
+    task = TaskState(
+        task_id="task-clone-status",
+        goal=TaskGoal(
+            description=(
+                "Clone this public GitHub repository into the current workspace: "
+                "https://github.com/pypa/sampleproject. After cloning, run git status "
+                "inside the cloned repository and finish with TASK COMPLETE."
+            )
+        ),
+    )
+
+    assert agent._clone_status_verification_satisfied(
+        task,
+        "terminal",
+        {"command": "git status", "working_directory": "./sampleproject"},
+        "On branch main\nYour branch is up to date with 'origin/main'.\n\n"
+        "nothing to commit, working tree clean\n\nExit code: 0",
+    )
+
+
 def test_progress_guard_resets_after_write_action():
     agent = Agent(llm_client=MagicMock(), auto_verify=False)
     task = TaskState(

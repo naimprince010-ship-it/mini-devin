@@ -5082,6 +5082,33 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         result = tool_result or ""
         return "TASK COMPLETE" in result.upper() and "Exit code: 0" in result
 
+    def _clone_status_verification_satisfied(
+        self,
+        task: TaskState,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_result: str,
+    ) -> bool:
+        """Auto-complete clone tasks after git status confirms the cloned repo is clean."""
+        if tool_name != "terminal":
+            return False
+        description = (task.goal.description if task.goal else "").lower()
+        if "clone" not in description or "git status" not in description:
+            return False
+        command = str(tool_args.get("command", "") or "").strip().lower()
+        working_directory = str(tool_args.get("working_directory", "") or "").strip()
+        if command != "git status" or not working_directory:
+            return False
+        result = (tool_result or "").lower()
+        return (
+            "exit code: 0" in result
+            and (
+                "working tree clean" in result
+                or "nothing to commit" in result
+                or "up to date with" in result
+            )
+        )
+
     async def run(self, task: TaskState) -> TaskState:
         """
         Run the agent on a task.
@@ -5441,6 +5468,8 @@ Call a tool (editor or terminal) immediately as your first action."""
 
                                 if self._terminal_task_complete_satisfied(
                                     tc.name, result
+                                ) or self._clone_status_verification_satisfied(
+                                    task, tc.name, tc.arguments, result
                                 ) or self._no_edit_verification_satisfied(
                                     task, tc.name, tc.arguments, result
                                 ):
@@ -5675,6 +5704,15 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 task.status = TaskStatus.COMPLETED
                                 task.completed_at = datetime.now(timezone.utc)
                                 self._log("Task completed after explicit terminal TASK COMPLETE signal.")
+                                break
+
+                            if tool_success and self._clone_status_verification_satisfied(
+                                task, tc.name, tc.arguments, final_result
+                            ):
+                                await self._update_phase(AgentPhase.COMPLETE)
+                                task.status = TaskStatus.COMPLETED
+                                task.completed_at = datetime.now(timezone.utc)
+                                self._log("Task completed after cloned repository git status passed.")
                                 break
 
                             if tool_success and self._no_edit_verification_satisfied(
