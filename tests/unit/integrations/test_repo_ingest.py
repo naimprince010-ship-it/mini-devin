@@ -11,6 +11,7 @@ from mini_devin.integrations.repo_ingest import (
     ingest_allowlist_roots,
     is_path_allowed_for_repo_ingest,
 )
+from mini_devin.integrations.project_memory import default_project_memory_dir
 
 
 def test_build_repo_digest_includes_readme_and_inventory(tmp_path: Path) -> None:
@@ -75,3 +76,14 @@ def test_is_path_allowed_respects_extra_root(monkeypatch: pytest.MonkeyPatch, tm
     repo = tmp_path / "nested" / "repo"
     repo.mkdir(parents=True)
     assert is_path_allowed_for_repo_ingest(repo)
+
+
+def test_project_memory_defaults_to_workspace_volume_parent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("PLODDER_DATA", raising=False)
+    monkeypatch.delenv("MINI_DEVIN_DATA", raising=False)
+    workspace_root = tmp_path / "data" / "agent-workspace"
+    monkeypatch.setenv("PLODDER_AGENT_WORKSPACE_ROOT", str(workspace_root))
+
+    assert default_project_memory_dir() == str(tmp_path / "data" / "project_memory")

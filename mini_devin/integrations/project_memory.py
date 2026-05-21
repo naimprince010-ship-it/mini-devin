@@ -368,7 +368,15 @@ _instance: Optional[ProjectMemory] = None
 
 def default_project_memory_dir() -> str:
     """Under ``PLODDER_DATA`` (default ``data``), same family as training logs — avoids cwd surprises."""
-    base = os.environ.get("PLODDER_DATA") or os.environ.get("MINI_DEVIN_DATA", "data")
+    base = os.environ.get("PLODDER_DATA") or os.environ.get("MINI_DEVIN_DATA")
+    if not base:
+        workspace_root = os.environ.get("PLODDER_AGENT_WORKSPACE_ROOT")
+        if workspace_root:
+            # Production commonly mounts /data and sets the workspace to
+            # /data/agent-workspace. Keep memory on that durable volume too.
+            base = str(Path(workspace_root).resolve().parent)
+        else:
+            base = "data"
     return str(Path(base) / "project_memory")
 
 
