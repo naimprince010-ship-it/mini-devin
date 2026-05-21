@@ -309,6 +309,11 @@ def _setup_fixture_repo(task: SWEBenchTask, workspace_root: str) -> str:
     return str(repo_dir)
 
 
+def _current_head(repo_dir: str) -> str:
+    rc, out, _ = _git("rev-parse", "HEAD", cwd=repo_dir)
+    return out.strip() if rc == 0 else "HEAD"
+
+
 def _setup_repo(task: SWEBenchTask, workspace_root: str) -> str | None:
     """Clone / reset repo to task's base commit. Returns local path or None."""
     if task.base_commit.startswith("local:") or task.repo.startswith("plodder-fixtures/"):
@@ -338,10 +343,10 @@ def _setup_repo(task: SWEBenchTask, workspace_root: str) -> str | None:
     return repo_dir
 
 
-def _collect_patch(repo_dir: str) -> str:
+def _collect_patch(repo_dir: str, base_ref: str = "HEAD") -> str:
     """Return git diff of tracked, staged, and untracked text changes."""
     parts: list[str] = []
-    _, diff, _ = _git("diff", "--binary", "HEAD", cwd=repo_dir)
+    _, diff, _ = _git("diff", "--binary", base_ref, cwd=repo_dir)
     if diff:
         parts.append(diff)
 
@@ -446,7 +451,7 @@ def _format_agent_log(
     return _trim_text("\n\n".join(sections))
 
 
-def _normalise_agent_output(raw: Any, repo_dir: str | None) -> dict[str, Any]:
+def _normalise_agent_output(raw: Any, repo_dir: str | None, base_ref: str = "HEAD") -> dict[str, Any]:
     if isinstance(raw, dict):
         out = dict(raw)
     elif isinstance(raw, tuple):
@@ -457,7 +462,7 @@ def _normalise_agent_output(raw: Any, repo_dir: str | None) -> dict[str, Any]:
         out = {"patch": "", "agent_log": str(raw or "")}
 
     if repo_dir and not out.get("patch"):
-        out["patch"] = _collect_patch(repo_dir)
+        out["patch"] = _collect_patch(repo_dir, base_ref=base_ref)
     return out
 
 
@@ -587,9 +592,14 @@ class SWEBenchRunner:
                 result.status = BenchmarkStatus.UNRESOLVED
             else:
                 result.workspace = repo_dir
+                base_ref = _current_head(repo_dir)
                 # Agent solves the task
                 if agent_runner:
-                    agent_out = _normalise_agent_output(await agent_runner(task, repo_dir), repo_dir)
+                    agent_out = _normalise_agent_output(
+                        await agent_runner(task, repo_dir),
+                        repo_dir,
+                        base_ref=base_ref,
+                    )
                     result.patch = agent_out.get("patch", "")
                     result.agent_log = agent_out.get("agent_log", "")
                     result.agent_session_id = agent_out.get("agent_session_id", "")
@@ -601,7 +611,7 @@ class SWEBenchRunner:
 
                 # Collect actual diff
                 if not result.patch and repo_dir:
-                    result.patch = _collect_patch(repo_dir)
+                    result.patch = _collect_patch(repo_dir, base_ref=base_ref)
 
                 # Run tests
                 all_tests = task.fail_to_pass + task.pass_to_pass

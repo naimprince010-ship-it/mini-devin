@@ -27,6 +27,7 @@ def test_local_fixture_has_real_failing_test(tmp_path: Path) -> None:
 def test_collect_patch_includes_tracked_and_untracked_files(tmp_path: Path) -> None:
     task = swe_bench.load_tasks(limit=1, use_huggingface=False)[0]
     repo_dir = Path(swe_bench._setup_repo(task, str(tmp_path)) or "")
+    base_ref = swe_bench._current_head(str(repo_dir))
 
     (repo_dir / "string_utils.py").write_text(
         'def contains_word(text: str, word: str) -> bool:\n    return word.lower() in text.lower()\n',
@@ -39,6 +40,12 @@ def test_collect_patch_includes_tracked_and_untracked_files(tmp_path: Path) -> N
     assert "return word.lower() in text.lower()" in patch
     assert "notes.txt" in patch
     assert "new diagnostic file" in patch
+
+    swe_bench._git("add", "string_utils.py", cwd=str(repo_dir))
+    swe_bench._git("commit", "-m", "Agent checkpoint", cwd=str(repo_dir))
+
+    patch_after_checkpoint = swe_bench._collect_patch(str(repo_dir), base_ref=base_ref)
+    assert "return word.lower() in text.lower()" in patch_after_checkpoint
 
 
 def test_format_agent_log_includes_debug_sections() -> None:
