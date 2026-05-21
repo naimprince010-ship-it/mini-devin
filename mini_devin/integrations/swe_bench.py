@@ -571,7 +571,7 @@ def get_runner() -> SWEBenchRunner:
 
 # ── Agent runner factory ────────────────────────────────────────────────────────
 
-def make_agent_runner(db_manager: Any, model: str = "claude-3-5-sonnet-20241022"):
+def make_agent_runner(db_manager: Any, model: str = "auto"):
     """Return an async callable that runs the agent on one SWE-bench task."""
 
     async def _run(task: SWEBenchTask, repo_dir: str | None) -> tuple[str, str]:
@@ -596,14 +596,17 @@ def make_agent_runner(db_manager: Any, model: str = "claude-3-5-sonnet-20241022"
             session = await mgr.create_session(
                 title=f"SWE-bench: {task.instance_id}",
                 working_directory=workspace,
+                model=model,
             )
             sid = session.session_id
 
-            # Run the task
+            created_task = await mgr.create_task(
+                session_id=sid,
+                description=prompt,
+            )
             task_result = await mgr.run_task(
                 session_id=sid,
-                task_description=prompt,
-                model=model,
+                task_id=created_task.task_id,
             )
 
             # Gather patch
