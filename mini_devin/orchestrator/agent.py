@@ -162,11 +162,13 @@ def _runtime_context_block(working_directory: str | None) -> str:
         )
     elif plat == "win32":
         test_hint = (
-            f"Use `{exe} -m pytest` or `{exe} -m unittest discover` (not bare `pytest` if it is not on PATH)."
+            f"Use `{exe} -m pytest` or `{exe} -m unittest discover` (not bare `pytest` if it is not on PATH). "
+            f"If pytest is missing, run `{exe} -m pip install pytest` or install the repo's test requirements, then retry once."
         )
     else:
         test_hint = (
-            "Use `python3 -m pytest` or `python3 -m unittest discover` when `pytest` is missing from PATH."
+            "Use `python3 -m pytest` or `python3 -m unittest discover` when `pytest` is missing from PATH. "
+            "If pytest is missing, run `python3 -m pip install pytest` or install the repo's test requirements, then retry once."
         )
     return f"""## Runtime context (use these exact values in terminal commands)
 - **Platform**: `{plat}`

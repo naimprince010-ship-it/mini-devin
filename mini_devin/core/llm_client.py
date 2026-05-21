@@ -58,6 +58,41 @@ def _apply_gemini_safety_override(kwargs: dict[str, Any], model_name: str) -> No
     kwargs["safety_settings"] = _gemini_safety_settings_block_none()
 
 
+def _split_model_list(raw: str | None) -> list[str]:
+    """Parse a comma-separated model list from env."""
+    if not raw:
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _completion_model_candidates(config: "LLMConfig") -> list[str]:
+    """Return ordered LiteLLM model ids to try for one completion request."""
+    raw_candidates = [config.model]
+    raw_candidates.extend(_split_model_list(os.environ.get("LLM_FALLBACK_MODELS")))
+
+    # DigitalOcean's OpenAI-compatible inference endpoint exposes several tool-capable
+    # models. Keep these as a last-resort pool so one rate-limited model does not stop
+    # an agent run before it can recover or summarize.
+    if "inference.do-ai.run" in (config.api_base or ""):
+        raw_candidates.extend(
+            [
+                "openai/llama3.3-70b-instruct",
+                "openai/llama-4-maverick",
+                "openai/qwen3-coder-flash",
+            ]
+        )
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for raw_model in raw_candidates:
+        model_name = get_litellm_model_name(raw_model)
+        if model_name in seen:
+            continue
+        seen.add(model_name)
+        candidates.append(model_name)
+    return candidates
+
+
 # LiteLLM import
 try:
     import litellm
@@ -531,7 +566,8 @@ class LLMClient:
         One-shot completion without mutating ``self.conversation`` (summaries, condenser, etc.).
         Applies the same Gemini safety override as ``complete`` when applicable.
         """
-        model_name = get_litellm_model_name(self.config.model)
+        model_candidates = _completion_model_candidates(self.config)
+        model_name = model_candidates[0]
         kwargs: dict[str, Any] = {
             "model": model_name,
             "messages": coerce_messages_openai_strict(list(messages)),
@@ -593,7 +629,8 @@ class LLMClient:
             messages = messages + [dict(m) for m in ephemeral_user_messages]
         messages = coerce_messages_openai_strict(messages)
 
-        model_name = get_litellm_model_name(self.config.model)
+        model_candidates = _completion_model_candidates(self.config)
+        model_name = model_candidates[0]
         
         kwargs: dict[str, Any] = {
             "model": model_name,
@@ -617,8 +654,6 @@ class LLMClient:
         if self.config.api_base:
             kwargs["api_base"] = self.config.api_base
 
-        _apply_gemini_safety_override(kwargs, model_name)
-
         if self._custom_client and self.config.provider == Provider.OPENAI:
              kwargs["client"] = self._custom_client
 
@@ -634,48 +669,76 @@ class LLMClient:
         retry_delay = max(0.0, float(os.environ.get("LLM_API_RETRY_DELAY_SECONDS", "2")))
         response = None
         last_error_msg = ""
-        for attempt in range(1, retry_count + 1):
-            try:
+        rate_limited = False
+        for model_index, candidate_model in enumerate(model_candidates, start=1):
+            model_name = candidate_model
+            kwargs["model"] = model_name
+            kwargs.pop("safety_settings", None)
+            _apply_gemini_safety_override(kwargs, model_name)
+
+            if model_index > 1:
                 print(
-                    f"[LLM] Requesting completion: model={model_name}, "
-                    f"tools={len(tools) if tools else 0}, stream={stream}, attempt={attempt}/{retry_count}"
+                    f"[LLM] Falling back to model={model_name} "
+                    f"({model_index}/{len(model_candidates)}) after: {last_error_msg[:300]}"
                 )
-                response = await acompletion(**kwargs)
-                break
-            except Exception as e:
-                last_error_msg = str(e)
-                print(f"[LLM] Error in acompletion: {last_error_msg}")
-                if "AuthenticationError" in last_error_msg or "401" in last_error_msg:
-                    raise RuntimeError(f"LLM Authentication Failed: API Key might be invalid or missing for {model_name}")
-                if "NotFoundError" in last_error_msg or "404" in last_error_msg:
-                    raise RuntimeError(
-                        f"LLM Model Not Found: {model_name}. "
-                        "For Google AI Studio, LiteLLM expects ``gemini/<model>`` (not ``google/...``). "
-                        "Legacy ``gemini/gemini-1.5-flash`` is remapped to ``gemini/gemini-2.0-flash`` by default; "
-                        "set GEMINI_FLASH_SUCCESSOR_MODEL to override. Raw error: "
-                        + last_error_msg[:500]
+
+            for attempt in range(1, retry_count + 1):
+                try:
+                    print(
+                        f"[LLM] Requesting completion: model={model_name}, "
+                        f"tools={len(tools) if tools else 0}, stream={stream}, "
+                        f"attempt={attempt}/{retry_count}, model_try={model_index}/{len(model_candidates)}"
                     )
-                transient = any(
-                    marker in last_error_msg
-                    for marker in (
-                        "RateLimitError",
-                        "429",
-                        "InternalServerError",
-                        "Connection error",
-                        "APIConnectionError",
-                        "timeout",
-                        "Timeout",
-                        "temporarily unavailable",
-                    )
-                )
-                if not transient or attempt >= retry_count:
+                    response = await acompletion(**kwargs)
                     break
-                await asyncio.sleep(retry_delay * attempt)
+                except Exception as e:
+                    last_error_msg = str(e)
+                    print(f"[LLM] Error in acompletion: {last_error_msg}")
+                    if "AuthenticationError" in last_error_msg or "401" in last_error_msg:
+                        raise RuntimeError(f"LLM Authentication Failed: API Key might be invalid or missing for {model_name}")
+                    if "NotFoundError" in last_error_msg or "404" in last_error_msg:
+                        raise RuntimeError(
+                            f"LLM Model Not Found: {model_name}. "
+                            "For Google AI Studio, LiteLLM expects ``gemini/<model>`` (not ``google/...``). "
+                            "Legacy ``gemini/gemini-1.5-flash`` is remapped to ``gemini/gemini-2.0-flash`` by default; "
+                            "set GEMINI_FLASH_SUCCESSOR_MODEL to override. Raw error: "
+                            + last_error_msg[:500]
+                        )
+                    transient = any(
+                        marker in last_error_msg
+                        for marker in (
+                            "RateLimitError",
+                            "429",
+                            "InternalServerError",
+                            "Connection error",
+                            "APIConnectionError",
+                            "timeout",
+                            "Timeout",
+                            "temporarily unavailable",
+                        )
+                    )
+                    rate_limited = "RateLimitError" in last_error_msg or "429" in last_error_msg
+                    if not transient or attempt >= retry_count:
+                        break
+                    await asyncio.sleep(retry_delay * attempt)
+            if response is not None:
+                break
+            if not rate_limited and not any(
+                marker in last_error_msg
+                for marker in ("InternalServerError", "Connection error", "APIConnectionError", "timeout", "Timeout", "temporarily unavailable")
+            ):
+                break
 
         if response is None:
-            if "RateLimitError" in last_error_msg or "429" in last_error_msg:
-                raise RuntimeError(f"LLM Rate Limit Reached after {retry_count} attempts: {last_error_msg}")
-            raise RuntimeError(f"LLM API Error after {retry_count} attempts: {last_error_msg}")        
+            if rate_limited:
+                raise RuntimeError(
+                    f"LLM Rate Limit Reached after {retry_count} attempts across "
+                    f"{len(model_candidates)} model(s): {last_error_msg}"
+                )
+            raise RuntimeError(
+                f"LLM API Error after {retry_count} attempts across "
+                f"{len(model_candidates)} model(s): {last_error_msg}"
+            )        
         content = ""
         tool_calls_dict = {}
         finish_reason = "stop"
