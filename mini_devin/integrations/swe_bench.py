@@ -592,7 +592,6 @@ def make_agent_runner(db_manager: Any, model: str = "auto"):
             mgr = db_manager
             # Create a throwaway session
             session = await mgr.create_session(
-                title=f"SWE-bench: {task.instance_id}",
                 working_directory=workspace,
                 model=model,
             )
