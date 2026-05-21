@@ -5438,6 +5438,14 @@ Call a tool (editor or terminal) immediately as your first action."""
                                         
                                 # Classify the result
                                 error_type = self._correction_engine.classify_error(tc.name, result, exit_code)
+
+                                if self._terminal_task_complete_satisfied(
+                                    tc.name, result
+                                ) or self._no_edit_verification_satisfied(
+                                    task, tc.name, tc.arguments, result
+                                ):
+                                    tool_success = True
+                                    break
                                 
                                 if error_type == ErrorType.SUCCESS:
                                     self._same_error_streak_tool = None
