@@ -3150,6 +3150,7 @@ class BenchmarkRunRequest(BaseModel):
     repo_filter: str = ""
     name: str = ""
     use_agent: bool = True
+    retry_limit: int = 1
 
 
 @app.get("/api/benchmark/tasks")
@@ -3199,6 +3200,7 @@ async def start_benchmark_run(req: BenchmarkRunRequest, background_tasks: Backgr
             repo_filter=req.repo_filter,
             name=req.name,
             agent_runner=agent_fn,
+            retry_limit=req.retry_limit,
         )
 
     background_tasks.add_task(_run)

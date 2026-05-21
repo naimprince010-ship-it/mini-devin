@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from mini_devin.integrations import swe_bench
@@ -68,3 +69,35 @@ def test_format_agent_log_includes_debug_sections() -> None:
     assert "files_modified" in log
     assert "timeline" in log
     assert "boom" in log
+
+
+def test_runner_retries_failed_attempt_with_feedback(tmp_path: Path) -> None:
+    task = swe_bench.load_tasks(limit=1, use_huggingface=False)[0]
+    runner = swe_bench.SWEBenchRunner(workspace_root=str(tmp_path))
+    calls: list[str] = []
+
+    async def flaky_agent(task, repo_dir, retry_feedback=""):
+        calls.append(retry_feedback)
+        if len(calls) == 2:
+            Path(repo_dir, "string_utils.py").write_text(
+                'def contains_word(text: str, word: str) -> bool:\n'
+                '    """Return whether word appears inside text, ignoring case."""\n'
+                "    return word.casefold() in text.casefold()\n",
+                encoding="utf-8",
+            )
+        return {
+            "patch": "",
+            "agent_log": "retry-aware fake agent",
+            "workspace": repo_dir,
+        }
+
+    result = asyncio.run(
+        runner._run_single_task(task, "run-retry", flaky_agent, retry_limit=1)
+    )
+
+    assert result.status == swe_bench.BenchmarkStatus.RESOLVED
+    assert result.attempt_count == 2
+    assert len(result.attempts) == 2
+    assert calls[0] == ""
+    assert "Previous Test Output" in calls[1]
+    assert "return word.casefold() in text.casefold()" in result.patch

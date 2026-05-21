@@ -90,6 +90,8 @@ class TaskResult:
     agent_session_id: str = ""
     agent_task_id: str = ""
     workspace: str = ""
+    attempt_count: int = 0
+    attempts: list[dict[str, Any]] = field(default_factory=list)
     test_output: str = ""     # stdout of test run
     fail_to_pass_results: dict[str, bool] = field(default_factory=dict)
     pass_to_pass_results: dict[str, bool] = field(default_factory=dict)
@@ -480,6 +482,49 @@ def _normalise_agent_output(raw: Any, repo_dir: str | None, base_ref: str = "HEA
     return out
 
 
+async def _call_agent_runner(
+    agent_runner: Any,
+    task: SWEBenchTask,
+    repo_dir: str | None,
+    retry_feedback: str,
+) -> Any:
+    """Call newer retry-aware agent runners while preserving older callables."""
+    try:
+        return await agent_runner(task, repo_dir, retry_feedback)
+    except TypeError as e:
+        if retry_feedback:
+            raise
+        try:
+            return await agent_runner(task, repo_dir)
+        except TypeError:
+            raise e
+
+
+def _build_retry_feedback(
+    *,
+    attempt_no: int,
+    patch: str,
+    agent_log: str,
+    test_output: str,
+    fail_to_pass_results: dict[str, bool],
+    pass_to_pass_results: dict[str, bool],
+) -> str:
+    return _trim_text(
+        "\n\n".join(
+            [
+                f"## Retry Context\nThe previous benchmark attempt #{attempt_no} did not resolve the task.",
+                "Use the failure details below, inspect the repository again, fix the root cause, and rerun the relevant tests.",
+                "### Previous Test Output\n" + (test_output or "(empty)"),
+                "### Fail-to-Pass Results\n" + json.dumps(fail_to_pass_results, indent=2, default=str),
+                "### Pass-to-Pass Results\n" + json.dumps(pass_to_pass_results, indent=2, default=str),
+                "### Previous Patch\n" + (patch or "(empty)"),
+                "### Previous Agent Log\n" + (agent_log or "(empty)"),
+            ]
+        ),
+        limit=16000,
+    )
+
+
 # ── Core runner ─────────────────────────────────────────────────────────────────
 
 class SWEBenchRunner:
@@ -532,6 +577,7 @@ class SWEBenchRunner:
         repo_filter: str = "",
         name: str = "",
         agent_runner: Any = None,        # callable: async (task, workspace) -> (patch, log)
+        retry_limit: int = 1,
     ) -> BenchmarkRun:
         tasks = load_tasks(split=split, limit=limit, repo_filter=repo_filter)
         run = BenchmarkRun(
@@ -555,7 +601,12 @@ class SWEBenchRunner:
                 run.status = "cancelled"
                 break
 
-            result = await self._run_single_task(task, run.run_id, agent_runner)
+            result = await self._run_single_task(
+                task,
+                run.run_id,
+                agent_runner,
+                retry_limit=retry_limit,
+            )
             run.result_ids.append(result.result_id)
             if result.status == BenchmarkStatus.RESOLVED:
                 run.resolved += 1
@@ -576,6 +627,7 @@ class SWEBenchRunner:
         task: SWEBenchTask,
         run_id: str,
         agent_runner: Any,
+        retry_limit: int = 1,
     ) -> TaskResult:
         import time
         t0 = time.time()
@@ -607,6 +659,79 @@ class SWEBenchRunner:
             else:
                 result.workspace = repo_dir
                 base_ref = _current_head(repo_dir)
+                retry_feedback = ""
+                max_attempts = 1 + max(0, retry_limit if agent_runner else 0)
+                for attempt_no in range(1, max_attempts + 1):
+                    if agent_runner:
+                        agent_out = _normalise_agent_output(
+                            await _call_agent_runner(agent_runner, task, repo_dir, retry_feedback),
+                            repo_dir,
+                            base_ref=base_ref,
+                        )
+                        result.patch = agent_out.get("patch", "")
+                        result.agent_log = agent_out.get("agent_log", "")
+                        result.agent_session_id = agent_out.get("agent_session_id", "")
+                        result.agent_task_id = agent_out.get("agent_task_id", "")
+                        result.workspace = agent_out.get("workspace", repo_dir)
+                    else:
+                        result.patch = ""
+                        result.agent_log = "No agent runner provided."
+
+                    if not result.patch and repo_dir:
+                        result.patch = _collect_patch(repo_dir, base_ref=base_ref)
+
+                    all_tests = task.fail_to_pass + task.pass_to_pass
+                    if all_tests and repo_dir:
+                        test_out, ftp_results = _run_tests(repo_dir, task.fail_to_pass)
+                        _, ptp_results = _run_tests(repo_dir, task.pass_to_pass)
+                        result.test_output = test_out
+                        result.fail_to_pass_results = ftp_results
+                        result.pass_to_pass_results = ptp_results
+
+                        ftp_ok = all(ftp_results.values()) if ftp_results else False
+                        ptp_ok = all(ptp_results.values()) if ptp_results else True
+                        result.status = (
+                            BenchmarkStatus.RESOLVED if (ftp_ok and ptp_ok)
+                            else BenchmarkStatus.UNRESOLVED
+                        )
+                    else:
+                        result.status = (
+                            BenchmarkStatus.RESOLVED if len(result.patch) > 50
+                            else BenchmarkStatus.UNRESOLVED
+                        )
+
+                    result.attempt_count = attempt_no
+                    result.attempts.append(
+                        {
+                            "attempt": attempt_no,
+                            "status": result.status.value,
+                            "agent_session_id": result.agent_session_id,
+                            "agent_task_id": result.agent_task_id,
+                            "patch_chars": len(result.patch or ""),
+                            "test_output": result.test_output,
+                            "fail_to_pass_results": result.fail_to_pass_results,
+                            "pass_to_pass_results": result.pass_to_pass_results,
+                            "agent_log": result.agent_log,
+                        }
+                    )
+                    _save_results(self._results)
+
+                    if result.status == BenchmarkStatus.RESOLVED or attempt_no >= max_attempts:
+                        break
+
+                    retry_feedback = _build_retry_feedback(
+                        attempt_no=attempt_no,
+                        patch=result.patch,
+                        agent_log=result.agent_log,
+                        test_output=result.test_output,
+                        fail_to_pass_results=result.fail_to_pass_results,
+                        pass_to_pass_results=result.pass_to_pass_results,
+                    )
+
+                result.finished_at = datetime.now(timezone.utc).isoformat()
+                result.duration_s = round(time.time() - t0, 1)
+                _save_results(self._results)
+                return result
                 # Agent solves the task
                 if agent_runner:
                     agent_out = _normalise_agent_output(
@@ -677,7 +802,7 @@ def get_runner() -> SWEBenchRunner:
 def make_agent_runner(db_manager: Any, model: str = "auto"):
     """Return an async callable that runs the agent on one SWE-bench task."""
 
-    async def _run(task: SWEBenchTask, repo_dir: str | None) -> tuple[str, str]:
+    async def _run(task: SWEBenchTask, repo_dir: str | None, retry_feedback: str = "") -> tuple[str, str]:
         workspace = repo_dir or str(_DATA_DIR / "workspaces" / task.instance_id)
         Path(workspace).mkdir(parents=True, exist_ok=True)
 
@@ -690,6 +815,13 @@ def make_agent_runner(db_manager: Any, model: str = "auto"):
             f"Fix the bug described above. Edit the relevant source files. "
             f"Do NOT modify existing tests. When done, output a brief summary."
         )
+        if retry_feedback:
+            prompt += (
+                "\n\n## Previous Attempt Failed\n\n"
+                f"{retry_feedback}\n\n"
+                "Continue from the current workspace state. Fix the actual root cause, "
+                "run the relevant tests again, and finish only when they pass or you have a clear blocker."
+            )
 
         try:
             mgr = db_manager
