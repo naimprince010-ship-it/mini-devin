@@ -159,6 +159,30 @@ def test_clone_status_verification_satisfied_after_clean_git_status():
     )
 
 
+def test_clone_target_from_successful_command_uses_clone_output():
+    agent = Agent(llm_client=MagicMock(), auto_verify=False)
+    task = TaskState(
+        task_id="task-clone-target",
+        goal=TaskGoal(
+            description=(
+                "Clone this public GitHub repository into the current workspace: "
+                "https://github.com/pypa/sampleproject. After cloning, run git status "
+                "inside the cloned repository."
+            )
+        ),
+    )
+
+    assert (
+        agent._clone_target_from_successful_command(
+            task,
+            "terminal",
+            {"command": "git clone https://github.com/pypa/sampleproject"},
+            "STDERR:\nCloning into 'sampleproject'...\n\nExit code: 0",
+        )
+        == "sampleproject"
+    )
+
+
 def test_progress_guard_resets_after_write_action():
     agent = Agent(llm_client=MagicMock(), auto_verify=False)
     task = TaskState(

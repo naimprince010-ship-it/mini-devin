@@ -512,6 +512,15 @@ class SessionManager:
                     if msg.role == "assistant" and msg.content:
                         summary = msg.content
                         break
+            if not summary and success:
+                parts = ["Task completed successfully."]
+                if final_task_state.commands_executed:
+                    parts.append("Commands: " + ", ".join(final_task_state.commands_executed[-5:]))
+                if final_task_state.files_changed:
+                    parts.append(
+                        "Files changed: " + ", ".join(f.path for f in final_task_state.files_changed[-5:])
+                    )
+                summary = " ".join(parts)
             
             # Create a result-like object for compatibility
             class AgentResult:

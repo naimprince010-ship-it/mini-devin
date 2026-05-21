@@ -5109,6 +5109,39 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             )
         )
 
+    def _clone_target_from_successful_command(
+        self,
+        task: TaskState,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_result: str,
+    ) -> str | None:
+        """Return cloned folder path when a clone task has just cloned successfully."""
+        if tool_name != "terminal":
+            return None
+        description = (task.goal.description if task.goal else "").lower()
+        if "clone" not in description or "git status" not in description:
+            return None
+        command = str(tool_args.get("command", "") or "").strip()
+        command_lower = command.lower()
+        result = tool_result or ""
+        if not command_lower.startswith("git clone ") or "Exit code: 0" not in result:
+            return None
+
+        parts = command.split()
+        if len(parts) >= 4 and not parts[-1].startswith("http") and not parts[-1].startswith("git@"):
+            return parts[-1].strip("'\"")
+
+        match = re.search(r"Cloning into ['\"]([^'\"]+)['\"]", result)
+        if match:
+            return match.group(1)
+
+        repo_url = parts[-1] if parts else ""
+        repo_name = repo_url.rstrip("/").rsplit("/", 1)[-1]
+        if repo_name.endswith(".git"):
+            repo_name = repo_name[:-4]
+        return repo_name or None
+
     async def run(self, task: TaskState) -> TaskState:
         """
         Run the agent on a task.
@@ -5696,6 +5729,42 @@ Call a tool (editor or terminal) immediately as your first action."""
                             # Track in task state
                             if tc.name == "terminal":
                                 task.commands_executed.append(tc.arguments.get("command", ""))
+
+                            clone_target = None
+                            if tool_success:
+                                clone_target = self._clone_target_from_successful_command(
+                                    task, tc.name, tc.arguments, final_result
+                                )
+                            if clone_target:
+                                status_args = {
+                                    "command": "git status",
+                                    "working_directory": clone_target,
+                                    "plan_step": "STEP-4",
+                                }
+                                if "on_tool_start" in self.callbacks:
+                                    await self._trigger_callback("on_tool_start", "terminal", status_args)
+                                import time as _time
+
+                                _status_start = _time.time()
+                                status_result = await self._execute_tool("terminal", status_args)
+                                status_duration_ms = (_time.time() - _status_start) * 1000
+                                if "on_tool_result" in self.callbacks:
+                                    await self._trigger_callback(
+                                        "on_tool_result",
+                                        "terminal",
+                                        status_args,
+                                        status_result,
+                                        status_duration_ms,
+                                    )
+                                task.commands_executed.append("git status")
+                                if self._clone_status_verification_satisfied(
+                                    task, "terminal", status_args, status_result
+                                ):
+                                    await self._update_phase(AgentPhase.COMPLETE)
+                                    task.status = TaskStatus.COMPLETED
+                                    task.completed_at = datetime.now(timezone.utc)
+                                    self._log("Task completed after automatic cloned repository git status.")
+                                    break
 
                             if tool_success and self._terminal_task_complete_satisfied(
                                 tc.name, final_result
