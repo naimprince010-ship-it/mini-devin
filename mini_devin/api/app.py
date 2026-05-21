@@ -2965,7 +2965,7 @@ async def get_benchmark_run_results(run_id: str):
 async def start_benchmark_run(req: BenchmarkRunRequest, background_tasks: BackgroundTasks):
     from ..integrations.swe_bench import get_runner, make_agent_runner
     runner = get_runner()
-    agent_fn = make_agent_runner(db_manager) if req.use_agent else None
+    agent_fn = make_agent_runner(session_manager) if req.use_agent else None
 
     async def _run():
         await runner.start_run(
