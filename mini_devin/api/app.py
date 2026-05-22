@@ -2356,6 +2356,7 @@ class ProjectRetrievalSearchRequest(BaseModel):
     top_k: int = Field(default=8, ge=1, le=50)
     scorer: str = "hybrid"
     index_file: Optional[str] = None
+    group_by_repo: bool = True
 
 
 class IngestRepoRequest(BaseModel):
@@ -2448,7 +2449,7 @@ async def search_project_retrieval(req: ProjectRetrievalSearchRequest):
         "query": query,
         "source": source,
         "documents": len(docs),
-        "results": search_docs(docs, query, top_k=req.top_k, scorer=scorer),
+        "results": search_docs(docs, query, top_k=req.top_k, scorer=scorer, group_by_repo=req.group_by_repo),
     }
 
 

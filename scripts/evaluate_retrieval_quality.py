@@ -98,7 +98,7 @@ def evaluate_case(
 ) -> dict[str, Any]:
     query = str(case.get("query") or "").strip()
     expected = [str(x) for x in (case.get("expected") or [])]
-    ranked = search_docs(docs, query, top_k=len(docs), scorer=scorer, df=df)
+    ranked = search_docs(docs, query, top_k=len(docs), scorer=scorer, df=df, group_by_repo=True)
     hits = ranked[:top_k]
 
     expected_lower = {x.lower() for x in expected}

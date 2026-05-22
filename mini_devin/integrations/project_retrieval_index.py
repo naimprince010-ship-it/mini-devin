@@ -303,6 +303,7 @@ def search_docs(
     top_k: int = 8,
     scorer: str = "hybrid",
     df: dict[str, int] | None = None,
+    group_by_repo: bool = False,
 ) -> list[dict[str, Any]]:
     q_tokens = tokenize(query)
     df = df or document_frequencies(docs)
@@ -346,4 +347,14 @@ def search_docs(
             }
         )
     rows.sort(key=lambda r: r["score"], reverse=True)
+    if group_by_repo:
+        grouped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            repo_key = str(row["repo"]).lower()
+            if repo_key in seen:
+                continue
+            seen.add(repo_key)
+            grouped.append(row)
+        rows = grouped
     return rows[:top_k]
