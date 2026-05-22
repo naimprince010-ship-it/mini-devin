@@ -86,6 +86,11 @@ def tokenize(text: str) -> set[str]:
                 low = word.lower()
                 if len(low) >= 2 and low not in STOPWORDS:
                     out.add(low)
+    for token in list(out):
+        for suffix in ("css", "js", "ts", "rpc", "http", "sql", "orm"):
+            if token.endswith(suffix) and len(token) > len(suffix) + 2:
+                out.add(token[: -len(suffix)])
+                out.add(suffix)
     return out
 
 
@@ -280,6 +285,17 @@ def lexical_score(query_tokens: set[str], doc: RetrievalDoc, df: dict[str, int],
     return score / max(len(query_tokens), 1)
 
 
+def repo_identity_score(query_tokens: set[str], repo: str) -> float:
+    if not query_tokens:
+        return 0.0
+    repo_tokens = tokenize(repo)
+    repo_leaf = repo.rsplit("/", 1)[-1]
+    leaf_tokens = tokenize(repo_leaf)
+    overlap = query_tokens & repo_tokens
+    leaf_overlap = query_tokens & leaf_tokens
+    return min((1.2 * len(overlap)) + (0.8 * len(leaf_overlap)), 3.0)
+
+
 def search_docs(
     docs: list[RetrievalDoc],
     query: str,
@@ -310,12 +326,13 @@ def search_docs(
         semantic = 0.0
         if doc.chunk_id in semantic_candidates:
             semantic = _cosine(q_emb, doc.embedding or _embed(doc.search_text()))
+        identity = repo_identity_score(q_tokens, doc.repo)
         if scorer == "semantic":
             score = semantic
         elif scorer == "lexical":
-            score = lexical
+            score = lexical + identity
         else:
-            score = (0.25 * semantic) + (0.75 * lexical)
+            score = (0.25 * semantic) + (0.75 * lexical) + identity
         rows.append(
             {
                 "score": round(score, 4),
