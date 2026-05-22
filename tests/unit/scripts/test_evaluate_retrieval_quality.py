@@ -63,7 +63,7 @@ def test_retrieval_quality_scores_expected_repo(tmp_path: Path) -> None:
         scorer="hybrid",
     )
 
-    assert report["documents"] == 2
+    assert report["documents"] == 4
     assert report["top1"] == 1
     assert report["results"][0]["top"][0]["repo"] == "facebook/react"
 

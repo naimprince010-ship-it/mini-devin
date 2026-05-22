@@ -126,6 +126,25 @@ def load_docs(memory_dir: Path, *, max_entry_chars: int) -> list[EntryDoc]:
         except Exception:
             continue
         repo = _repo_from_project(project, project_dir.name)
+        project_text = "\n".join(
+            [
+                f"Repository: {repo}",
+                f"Description: {project.get('description') or ''}",
+                f"Tech stack: {', '.join(str(x) for x in (project.get('tech_stack') or []))}",
+                f"URL: {project.get('repo_url') or ''}",
+            ]
+        )
+        docs.append(
+            EntryDoc(
+                project_id=project_dir.name,
+                repo=repo,
+                entry_id=f"{project_dir.name}:project",
+                title=f"Project metadata: {repo}",
+                content=project_text,
+                embedding=_embed(project_text),
+                tokens=_tokens(project_text),
+            )
+        )
         for entry in entries if isinstance(entries, list) else []:
             if not isinstance(entry, dict):
                 continue
