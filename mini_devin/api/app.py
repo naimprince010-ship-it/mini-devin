@@ -3209,6 +3209,66 @@ class BenchmarkRunRequest(BaseModel):
     retry_limit: int = 1
 
 
+class CodeBenchmarkRunRequest(BaseModel):
+    benchmark: str = "humaneval"
+    limit: int = Field(default=10, ge=1, le=1000)
+    mode: str = "canonical"
+    model: str = ""
+    timeout: int = Field(default=10, ge=1, le=120)
+
+
+@app.get("/api/code-benchmark/runs")
+async def list_code_benchmark_runs():
+    from ..integrations.code_bench import list_runs
+
+    return {"runs": list_runs()}
+
+
+@app.get("/api/code-benchmark/runs/{run_id}")
+async def get_code_benchmark_run(run_id: str):
+    from ..integrations.code_bench import load_run
+
+    run = load_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
+
+
+@app.post("/api/code-benchmark/runs")
+async def start_code_benchmark_run(req: CodeBenchmarkRunRequest, background_tasks: BackgroundTasks):
+    import uuid
+
+    from ..integrations.code_bench import run_code_benchmark
+
+    benchmark = (req.benchmark or "humaneval").strip().lower()
+    if benchmark not in {"humaneval", "mbpp"}:
+        raise HTTPException(status_code=400, detail="benchmark must be humaneval or mbpp")
+    mode = (req.mode or "canonical").strip().lower()
+    if mode not in {"canonical", "litellm"}:
+        raise HTTPException(status_code=400, detail="mode must be canonical or litellm")
+
+    run_id = str(uuid.uuid4())[:12]
+
+    async def _run():
+        await run_code_benchmark(
+            benchmark,
+            limit=req.limit,
+            mode=mode,
+            model=req.model,
+            timeout=req.timeout,
+            run_id=run_id,
+        )
+
+    background_tasks.add_task(_run)
+    return {
+        "run_id": run_id,
+        "benchmark": benchmark,
+        "mode": mode,
+        "limit": req.limit,
+        "status": "starting",
+    }
+
+
 @app.get("/api/benchmark/tasks")
 async def list_benchmark_tasks(
     split: str = "lite",
