@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import math
 import json
 import os
+import re
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -81,7 +83,22 @@ class EntryDoc:
     title: str
     content: str
     embedding: list[float] | None = None
+    tokens: set[str] | None = None
     score: float = 0.0
+
+
+STOPWORDS = {
+    "a", "an", "and", "api", "app", "for", "in", "of", "on", "or", "the", "to", "with",
+    "server", "client", "project", "code", "framework",
+}
+
+
+def _tokens(text: str) -> set[str]:
+    return {
+        t
+        for t in re.findall(r"[a-zA-Z][a-zA-Z0-9_.+-]{1,}", text.lower())
+        if t not in STOPWORDS and len(t) >= 2
+    }
 
 
 def _repo_from_project(project: dict[str, Any], project_id: str) -> str:
@@ -125,6 +142,7 @@ def load_docs(memory_dir: Path, *, max_entry_chars: int) -> list[EntryDoc]:
                     title=title,
                     content=searchable,
                     embedding=_embed(f"{title}\n{searchable}"),
+                    tokens=_tokens(f"{repo}\n{title}\n{searchable}"),
                 )
             )
     return docs
@@ -139,13 +157,50 @@ def load_cases(path: Path | None) -> list[dict[str, Any]]:
     return [c for c in raw if isinstance(c, dict)]
 
 
-def evaluate_case(case: dict[str, Any], docs: list[EntryDoc], *, top_k: int) -> dict[str, Any]:
+def _document_frequencies(docs: list[EntryDoc]) -> dict[str, int]:
+    df: dict[str, int] = {}
+    for doc in docs:
+        for token in doc.tokens or set():
+            df[token] = df.get(token, 0) + 1
+    return df
+
+
+def _lexical_score(query_tokens: set[str], doc: EntryDoc, df: dict[str, int], doc_count: int) -> float:
+    doc_tokens = doc.tokens or set()
+    if not query_tokens or not doc_tokens:
+        return 0.0
+    score = 0.0
+    for token in query_tokens:
+        if token not in doc_tokens:
+            continue
+        idf = math.log((doc_count + 1) / (df.get(token, 0) + 1)) + 1.0
+        score += idf
+    return score / max(len(query_tokens), 1)
+
+
+def evaluate_case(
+    case: dict[str, Any],
+    docs: list[EntryDoc],
+    *,
+    top_k: int,
+    df: dict[str, int],
+    scorer: str,
+) -> dict[str, Any]:
     query = str(case.get("query") or "").strip()
     expected = [str(x) for x in (case.get("expected") or [])]
     q_emb = _embed(query)
+    q_tokens = _tokens(query)
+    doc_count = len(docs)
     ranked: list[EntryDoc] = []
     for doc in docs:
-        score = _cosine(q_emb, doc.embedding or _embed(f"{doc.title}\n{doc.content}"))
+        semantic = _cosine(q_emb, doc.embedding or _embed(f"{doc.title}\n{doc.content}"))
+        lexical = _lexical_score(q_tokens, doc, df, doc_count)
+        if scorer == "semantic":
+            score = semantic
+        elif scorer == "lexical":
+            score = lexical
+        else:
+            score = (0.35 * semantic) + (0.65 * lexical)
         row = EntryDoc(
             project_id=doc.project_id,
             repo=doc.repo,
@@ -153,6 +208,7 @@ def evaluate_case(case: dict[str, Any], docs: list[EntryDoc], *, top_k: int) -> 
             title=doc.title,
             content="",
             embedding=None,
+            tokens=None,
             score=round(score, 4),
         )
         ranked.append(row)
@@ -191,9 +247,11 @@ def evaluate(
     *,
     top_k: int,
     max_entry_chars: int = 30000,
+    scorer: str = "hybrid",
 ) -> dict[str, Any]:
     docs = load_docs(memory_dir, max_entry_chars=max_entry_chars)
-    results = [evaluate_case(case, docs, top_k=top_k) for case in cases]
+    df = _document_frequencies(docs)
+    results = [evaluate_case(case, docs, top_k=top_k, df=df, scorer=scorer) for case in cases]
     evaluated = len(results)
     top1 = sum(1 for r in results if r["rank"] == 1)
     topk = sum(1 for r in results if r["hit_top_k"])
@@ -210,6 +268,7 @@ def evaluate(
         "memory_dir": str(memory_dir),
         "documents": len(docs),
         "max_entry_chars": max_entry_chars,
+        "scorer": scorer,
         "cases": evaluated,
         "top1": top1,
         f"top{top_k}": topk,
@@ -254,10 +313,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON only")
     parser.add_argument("--output", default="", help="Optional path to write JSON report")
+    parser.add_argument("--scorer", choices=["hybrid", "semantic", "lexical"], default="hybrid")
     args = parser.parse_args(argv)
 
     cases = load_cases(Path(args.queries_file) if args.queries_file else None)
-    report = evaluate(Path(args.memory_dir), cases, top_k=args.top_k, max_entry_chars=args.max_entry_chars)
+    report = evaluate(
+        Path(args.memory_dir),
+        cases,
+        top_k=args.top_k,
+        max_entry_chars=args.max_entry_chars,
+        scorer=args.scorer,
+    )
     if args.output:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         Path(args.output).write_text(json.dumps(report, indent=2), encoding="utf-8")
