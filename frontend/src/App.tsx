@@ -388,11 +388,11 @@ function App() {
     { id: 'env_parity', icon: <Container size={18} />, label: 'Env Parity' },
     { id: 'ui_test', icon: <TestTube2 size={18} />, label: 'UI Tests' },
     { id: 'projects', icon: <FolderKanban size={18} />, label: 'Projects' },
-    { id: 'benchmark', icon: <FlaskConical size={18} />, label: 'Benchmark' },
+    { id: 'benchmark', icon: <FlaskConical size={18} />, label: 'Benchmarks' },
   ];
 
-  const primaryNavItems = navItems.filter(item => ['sessions', 'skills', 'repos'].includes(item.id));
-  const secondaryNavItems = navItems.filter(item => ['reviews', 'monitor', 'env_parity', 'ui_test', 'projects', 'benchmark'].includes(item.id));
+  const primaryNavItems = navItems.filter(item => ['sessions', 'skills', 'repos', 'benchmark'].includes(item.id));
+  const secondaryNavItems = navItems.filter(item => ['reviews', 'monitor', 'env_parity', 'ui_test', 'projects'].includes(item.id));
 
   const apiBase = getApiBase();
 
