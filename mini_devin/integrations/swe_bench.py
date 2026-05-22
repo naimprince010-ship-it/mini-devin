@@ -102,7 +102,7 @@ class TaskResult:
 
     def to_dict(self) -> dict:
         d = asdict(self)
-        d["status"] = self.status.value
+        d["status"] = self.status.value if isinstance(self.status, BenchmarkStatus) else str(self.status)
         return d
 
 
@@ -326,23 +326,36 @@ def _setup_repo(task: SWEBenchTask, workspace_root: str) -> str | None:
     repo_dir = os.path.join(workspace_root, task.instance_id)
     clone_url = f"https://github.com/{task.repo}.git"
 
-    if not os.path.exists(repo_dir):
-        os.makedirs(repo_dir, exist_ok=True)
+    if os.path.exists(repo_dir) and not os.path.isdir(os.path.join(repo_dir, ".git")):
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+    if not os.path.isdir(os.path.join(repo_dir, ".git")):
+        Path(workspace_root).mkdir(parents=True, exist_ok=True)
         rc, _, err = _git("clone", "--depth=50", clone_url, repo_dir, cwd=workspace_root)
         if rc != 0:
             print(f"[swe_bench] clone failed: {err}")
+            shutil.rmtree(repo_dir, ignore_errors=True)
             return None
 
     # Reset to base commit if available
     if task.base_commit and len(task.base_commit) > 6 and not task.base_commit.startswith("abc"):
-        _git("fetch", "--depth=50", "origin", task.base_commit, cwd=repo_dir)
-        _git("checkout", task.base_commit, cwd=repo_dir)
+        rc, _, err = _git("fetch", "--depth=50", "origin", task.base_commit, cwd=repo_dir)
+        if rc != 0:
+            print(f"[swe_bench] fetch failed for {task.instance_id}: {err}")
+            return None
+        rc, _, err = _git("checkout", task.base_commit, cwd=repo_dir)
+        if rc != 0:
+            print(f"[swe_bench] checkout failed for {task.instance_id}: {err}")
+            return None
 
     # Apply test patch so failing tests exist
     if task.test_patch:
         patch_path = os.path.join(repo_dir, "_test.patch")
         Path(patch_path).write_text(task.test_patch)
-        _git("apply", "--allow-empty", patch_path, cwd=repo_dir)
+        rc, _, err = _git("apply", "--allow-empty", patch_path, cwd=repo_dir)
+        if rc != 0:
+            print(f"[swe_bench] test patch apply failed for {task.instance_id}: {err}")
+            return None
 
     return repo_dir
 
