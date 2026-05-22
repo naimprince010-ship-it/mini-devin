@@ -101,3 +101,20 @@ def test_runner_retries_failed_attempt_with_feedback(tmp_path: Path) -> None:
     assert calls[0] == ""
     assert "Previous Test Output" in calls[1]
     assert "return word.casefold() in text.casefold()" in result.patch
+
+
+def test_runner_times_out_stuck_agent(tmp_path: Path, monkeypatch) -> None:
+    task = swe_bench.load_tasks(limit=1, use_huggingface=False)[0]
+    runner = swe_bench.SWEBenchRunner(workspace_root=str(tmp_path))
+    monkeypatch.setenv("PLODDER_SWEBENCH_AGENT_TIMEOUT_SEC", "1")
+
+    async def stuck_agent(task, repo_dir, retry_feedback=""):
+        await asyncio.sleep(5)
+        return {"patch": "", "agent_log": "too late"}
+
+    result = asyncio.run(
+        runner._run_single_task(task, "run-timeout", stuck_agent, retry_limit=0)
+    )
+
+    assert result.status == swe_bench.BenchmarkStatus.UNRESOLVED
+    assert "timed out" in result.agent_log

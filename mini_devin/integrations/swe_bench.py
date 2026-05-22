@@ -687,13 +687,25 @@ class SWEBenchRunner:
                 base_ref = _current_head(repo_dir)
                 retry_feedback = ""
                 max_attempts = 1 + max(0, retry_limit if agent_runner else 0)
+                timeout_raw = os.getenv("PLODDER_SWEBENCH_AGENT_TIMEOUT_SEC", "").strip()
+                agent_timeout = max(1, int(timeout_raw)) if timeout_raw else 600
                 for attempt_no in range(1, max_attempts + 1):
                     if agent_runner:
-                        agent_out = _normalise_agent_output(
-                            await _call_agent_runner(agent_runner, task, repo_dir, retry_feedback),
-                            repo_dir,
-                            base_ref=base_ref,
-                        )
+                        try:
+                            raw_agent_out = await asyncio.wait_for(
+                                _call_agent_runner(agent_runner, task, repo_dir, retry_feedback),
+                                timeout=agent_timeout,
+                            )
+                            agent_out = _normalise_agent_output(
+                                raw_agent_out,
+                                repo_dir,
+                                base_ref=base_ref,
+                            )
+                        except asyncio.TimeoutError:
+                            agent_out = {
+                                "patch": _collect_patch(repo_dir, base_ref=base_ref),
+                                "agent_log": f"Agent attempt timed out after {agent_timeout}s.",
+                            }
                         result.patch = agent_out.get("patch", "")
                         result.agent_log = agent_out.get("agent_log", "")
                         result.agent_session_id = agent_out.get("agent_session_id", "")
