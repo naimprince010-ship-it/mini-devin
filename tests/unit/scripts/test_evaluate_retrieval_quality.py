@@ -104,3 +104,32 @@ def test_chunk_index_finds_file_level_signal(tmp_path: Path) -> None:
 
     assert results[0]["repo"] == "facebook/react"
     assert results[0]["chunk_type"] == "file_inventory"
+
+
+def test_repo_aliases_boost_framework_identity() -> None:
+    from mini_devin.integrations.project_retrieval_index import RetrievalDoc, search_docs
+
+    docs = [
+        RetrievalDoc(
+            project_id="gh-react-use",
+            repo="streamich/react-use",
+            entry_id="1",
+            chunk_id="1",
+            chunk_type="section",
+            title="Hooks",
+            content="React hooks utilities useEffect useState component helpers.",
+        ).prepare(embed=False),
+        RetrievalDoc(
+            project_id="gh-facebook-react",
+            repo="facebook/react",
+            entry_id="2",
+            chunk_id="2",
+            chunk_type="project_metadata",
+            title="Project metadata",
+            content="Repository: facebook/react",
+        ).prepare(embed=False),
+    ]
+
+    results = search_docs(docs, "React hooks useState useEffect component rendering reconciliation", top_k=1)
+
+    assert results[0]["repo"] == "facebook/react"

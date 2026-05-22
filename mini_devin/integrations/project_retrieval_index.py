@@ -33,6 +33,86 @@ STOPWORDS = {
 }
 
 
+REPO_ALIASES = {
+    "django/django": {
+        "admin",
+        "django",
+        "model",
+        "models",
+        "migration",
+        "migrations",
+        "orm",
+        "queryset",
+    },
+    "facebook/react": {
+        "component",
+        "hooks",
+        "jsx",
+        "react",
+        "reconciliation",
+        "rendering",
+        "useeffect",
+        "usestate",
+    },
+    "fastapi/fastapi": {
+        "asgi",
+        "dependency",
+        "fastapi",
+        "injection",
+        "openapi",
+        "pydantic",
+        "routes",
+    },
+    "grpc/grpc": {
+        "channel",
+        "client",
+        "grpc",
+        "http2",
+        "interceptors",
+        "protobuf",
+        "server",
+    },
+    "laravel/framework": {
+        "artisan",
+        "blade",
+        "controllers",
+        "eloquent",
+        "framework",
+        "laravel",
+        "migrations",
+        "routes",
+    },
+    "swc-project/swc": {
+        "bundler",
+        "compiler",
+        "minifier",
+        "parser",
+        "rust",
+        "swc",
+        "transform",
+        "typescript",
+    },
+    "tailwindlabs/tailwindcss": {
+        "config",
+        "css",
+        "plugin",
+        "responsive",
+        "tailwind",
+        "tailwindcss",
+        "utility",
+    },
+    "vercel/next.js": {
+        "app",
+        "components",
+        "middleware",
+        "next",
+        "nextjs",
+        "router",
+        "server",
+    },
+}
+
+
 @dataclass
 class RetrievalDoc:
     project_id: str
@@ -291,9 +371,12 @@ def repo_identity_score(query_tokens: set[str], repo: str) -> float:
     repo_tokens = tokenize(repo)
     repo_leaf = repo.rsplit("/", 1)[-1]
     leaf_tokens = tokenize(repo_leaf)
+    alias_tokens = REPO_ALIASES.get(repo.lower(), set())
     overlap = query_tokens & repo_tokens
     leaf_overlap = query_tokens & leaf_tokens
-    return min((1.2 * len(overlap)) + (0.8 * len(leaf_overlap)), 3.0)
+    alias_overlap = query_tokens & alias_tokens
+    alias_weight = 0.9 if alias_tokens else 0.0
+    return min((1.2 * len(overlap)) + (0.8 * len(leaf_overlap)) + (alias_weight * len(alias_overlap)), 6.0)
 
 
 def search_docs(
