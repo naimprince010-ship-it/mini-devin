@@ -80,6 +80,7 @@ class EntryDoc:
     entry_id: str
     title: str
     content: str
+    embedding: list[float] | None = None
     score: float = 0.0
 
 
@@ -93,7 +94,7 @@ def _repo_from_project(project: dict[str, Any], project_id: str) -> str:
     return project_id
 
 
-def load_docs(memory_dir: Path) -> list[EntryDoc]:
+def load_docs(memory_dir: Path, *, max_entry_chars: int) -> list[EntryDoc]:
     docs: list[EntryDoc] = []
     if not memory_dir.is_dir():
         return docs
@@ -115,13 +116,15 @@ def load_docs(memory_dir: Path) -> list[EntryDoc]:
             content = str(entry.get("content") or "")
             if not content:
                 continue
+            searchable = content[:max_entry_chars] if max_entry_chars > 0 else content
             docs.append(
                 EntryDoc(
                     project_id=project_dir.name,
                     repo=repo,
                     entry_id=str(entry.get("id") or ""),
                     title=title,
-                    content=content,
+                    content=searchable,
+                    embedding=_embed(f"{title}\n{searchable}"),
                 )
             )
     return docs
@@ -142,8 +145,17 @@ def evaluate_case(case: dict[str, Any], docs: list[EntryDoc], *, top_k: int) -> 
     q_emb = _embed(query)
     ranked: list[EntryDoc] = []
     for doc in docs:
-        score = _cosine(q_emb, _embed(f"{doc.title}\n{doc.content}"))
-        ranked.append(EntryDoc(**{**asdict(doc), "score": round(score, 4)}))
+        score = _cosine(q_emb, doc.embedding or _embed(f"{doc.title}\n{doc.content}"))
+        row = EntryDoc(
+            project_id=doc.project_id,
+            repo=doc.repo,
+            entry_id=doc.entry_id,
+            title=doc.title,
+            content="",
+            embedding=None,
+            score=round(score, 4),
+        )
+        ranked.append(row)
     ranked.sort(key=lambda d: d.score, reverse=True)
     hits = ranked[:top_k]
 
@@ -173,8 +185,14 @@ def evaluate_case(case: dict[str, Any], docs: list[EntryDoc], *, top_k: int) -> 
     }
 
 
-def evaluate(memory_dir: Path, cases: list[dict[str, Any]], *, top_k: int) -> dict[str, Any]:
-    docs = load_docs(memory_dir)
+def evaluate(
+    memory_dir: Path,
+    cases: list[dict[str, Any]],
+    *,
+    top_k: int,
+    max_entry_chars: int = 30000,
+) -> dict[str, Any]:
+    docs = load_docs(memory_dir, max_entry_chars=max_entry_chars)
     results = [evaluate_case(case, docs, top_k=top_k) for case in cases]
     evaluated = len(results)
     top1 = sum(1 for r in results if r["rank"] == 1)
@@ -191,6 +209,7 @@ def evaluate(memory_dir: Path, cases: list[dict[str, Any]], *, top_k: int) -> di
     return {
         "memory_dir": str(memory_dir),
         "documents": len(docs),
+        "max_entry_chars": max_entry_chars,
         "cases": evaluated,
         "top1": top1,
         f"top{top_k}": topk,
@@ -227,12 +246,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--memory-dir", default=os.environ.get("PLODDER_PROJECT_MEMORY_DIR") or default_project_memory_dir())
     parser.add_argument("--queries-file", default="")
     parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument(
+        "--max-entry-chars",
+        type=int,
+        default=30000,
+        help="Characters per memory entry to score; keeps large repo digests fast.",
+    )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON only")
     parser.add_argument("--output", default="", help="Optional path to write JSON report")
     args = parser.parse_args(argv)
 
     cases = load_cases(Path(args.queries_file) if args.queries_file else None)
-    report = evaluate(Path(args.memory_dir), cases, top_k=args.top_k)
+    report = evaluate(Path(args.memory_dir), cases, top_k=args.top_k, max_entry_chars=args.max_entry_chars)
     if args.output:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         Path(args.output).write_text(json.dumps(report, indent=2), encoding="utf-8")

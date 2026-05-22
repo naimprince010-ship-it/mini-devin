@@ -59,6 +59,7 @@ def test_retrieval_quality_scores_expected_repo(tmp_path: Path) -> None:
         tmp_path,
         [{"id": "react", "query": "useEffect component rendering hooks", "expected": ["facebook/react"]}],
         top_k=1,
+        max_entry_chars=10000,
     )
 
     assert report["documents"] == 2
@@ -73,6 +74,7 @@ def test_missing_expected_repo_is_reported(tmp_path: Path) -> None:
         tmp_path,
         [{"id": "missing", "query": "grpc protobuf", "expected": ["grpc/grpc"]}],
         top_k=3,
+        max_entry_chars=10000,
     )
 
     assert report["missing_expected_repos"] == ["grpc/grpc"]
