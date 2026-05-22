@@ -2351,6 +2351,13 @@ class MemorySearchRequest(BaseModel):
     min_importance: int = 1
 
 
+class ProjectRetrievalSearchRequest(BaseModel):
+    query: str
+    top_k: int = Field(default=8, ge=1, le=50)
+    scorer: str = "hybrid"
+    index_file: Optional[str] = None
+
+
 class IngestRepoRequest(BaseModel):
     """
     Provide exactly one of:
@@ -2404,6 +2411,45 @@ async def list_projects():
     from ..integrations.project_memory import get_project_memory
     pm = get_project_memory()
     return {"projects": [p.to_dict() for p in pm.list_projects()]}
+
+
+@app.post("/api/projects/retrieval/search")
+async def search_project_retrieval(req: ProjectRetrievalSearchRequest):
+    from pathlib import Path
+
+    from ..integrations.project_memory import default_project_memory_dir
+    from ..integrations.project_retrieval_index import (
+        load_index,
+        load_project_memory_docs,
+        search_docs,
+    )
+
+    query = (req.query or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Query is required")
+
+    scorer = (req.scorer or "hybrid").strip().lower()
+    if scorer not in {"hybrid", "semantic", "lexical"}:
+        raise HTTPException(status_code=400, detail="scorer must be hybrid, semantic, or lexical")
+
+    index_file = Path(
+        req.index_file
+        or os.environ.get("PLODDER_PROJECT_RETRIEVAL_INDEX")
+        or "/data/project_retrieval_index.json"
+    )
+    if index_file.is_file():
+        docs = load_index(index_file)
+        source = str(index_file)
+    else:
+        docs = load_project_memory_docs(Path(default_project_memory_dir()))
+        source = "project_memory"
+
+    return {
+        "query": query,
+        "source": source,
+        "documents": len(docs),
+        "results": search_docs(docs, query, top_k=req.top_k, scorer=scorer),
+    }
 
 
 @app.get("/api/projects/{project_id}")

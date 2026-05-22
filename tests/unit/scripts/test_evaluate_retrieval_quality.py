@@ -81,3 +81,26 @@ def test_missing_expected_repo_is_reported(tmp_path: Path) -> None:
 
     assert report["missing_expected_repos"] == ["grpc/grpc"]
     assert report["results"][0]["rank"] is None
+
+
+def test_chunk_index_finds_file_level_signal(tmp_path: Path) -> None:
+    from mini_devin.integrations.project_retrieval_index import load_project_memory_docs, search_docs
+
+    digest = """
+    # Repository snapshot
+
+    ## File inventory (3 paths)
+
+    ```
+    packages/react/src/ReactHooks.js
+    packages/react-dom/src/client/ReactDOMRoot.js
+    README.md
+    ```
+    """
+    _write_project(tmp_path, "gh-facebook-react", "facebook/react", digest)
+
+    docs = load_project_memory_docs(tmp_path)
+    results = search_docs(docs, "React hooks useState useEffect", top_k=1)
+
+    assert results[0]["repo"] == "facebook/react"
+    assert results[0]["chunk_type"] == "file_inventory"

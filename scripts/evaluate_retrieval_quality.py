@@ -4,12 +4,9 @@
 from __future__ import annotations
 
 import argparse
-import math
 import json
 import os
-import re
 import sys
-from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +15,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from mini_devin.integrations.project_memory import _cosine, _embed, default_project_memory_dir
+from mini_devin.integrations.project_memory import default_project_memory_dir
+from mini_devin.integrations.project_retrieval_index import (
+    RetrievalDoc,
+    load_index,
+    load_project_memory_docs,
+    search_docs,
+)
 
 
 DEFAULT_CASES: list[dict[str, Any]] = [
@@ -75,98 +78,6 @@ DEFAULT_CASES: list[dict[str, Any]] = [
 ]
 
 
-@dataclass
-class EntryDoc:
-    project_id: str
-    repo: str
-    entry_id: str
-    title: str
-    content: str
-    embedding: list[float] | None = None
-    tokens: set[str] | None = None
-    score: float = 0.0
-
-
-STOPWORDS = {
-    "a", "an", "and", "api", "app", "for", "in", "of", "on", "or", "the", "to", "with",
-    "server", "client", "project", "code", "framework",
-}
-
-
-def _tokens(text: str) -> set[str]:
-    return {
-        t
-        for t in re.findall(r"[a-zA-Z][a-zA-Z0-9_.+-]{1,}", text.lower())
-        if t not in STOPWORDS and len(t) >= 2
-    }
-
-
-def _repo_from_project(project: dict[str, Any], project_id: str) -> str:
-    name = str(project.get("name") or "")
-    if "/" in name:
-        return name
-    if project_id.startswith("gh-"):
-        # Best-effort fallback for older ingests; not perfectly reversible.
-        return project_id[3:].replace("-", "/")
-    return project_id
-
-
-def load_docs(memory_dir: Path, *, max_entry_chars: int) -> list[EntryDoc]:
-    docs: list[EntryDoc] = []
-    if not memory_dir.is_dir():
-        return docs
-    for project_dir in sorted(p for p in memory_dir.iterdir() if p.is_dir()):
-        project_file = project_dir / "project.json"
-        entries_file = project_dir / "entries.json"
-        if not project_file.is_file() or not entries_file.is_file():
-            continue
-        try:
-            project = json.loads(project_file.read_text(encoding="utf-8"))
-            entries = json.loads(entries_file.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        repo = _repo_from_project(project, project_dir.name)
-        project_text = "\n".join(
-            [
-                f"Repository: {repo}",
-                f"Description: {project.get('description') or ''}",
-                f"Tech stack: {', '.join(str(x) for x in (project.get('tech_stack') or []))}",
-                f"URL: {project.get('repo_url') or ''}",
-            ]
-        )
-        docs.append(
-            EntryDoc(
-                project_id=project_dir.name,
-                repo=repo,
-                entry_id=f"{project_dir.name}:project",
-                title=f"Project metadata: {repo}",
-                content=project_text,
-                embedding=_embed(project_text),
-                tokens=_tokens(project_text),
-            )
-        )
-        for entry in entries if isinstance(entries, list) else []:
-            if not isinstance(entry, dict):
-                continue
-            title = str(entry.get("title") or "")
-            content = str(entry.get("content") or "")
-            if not content:
-                continue
-            searchable = content[:max_entry_chars] if max_entry_chars > 0 else content
-            docs.append(
-                EntryDoc(
-                    project_id=project_dir.name,
-                    repo=repo,
-                    entry_id=str(entry.get("id") or ""),
-                    title=title,
-                    content=searchable,
-                    embedding=_embed(f"{title}\n{searchable}"),
-                    tokens=_tokens(f"{repo}\n{title}\n{searchable}"),
-                )
-            )
-    return docs
-
-
 def load_cases(path: Path | None) -> list[dict[str, Any]]:
     if path is None:
         return list(DEFAULT_CASES)
@@ -176,68 +87,22 @@ def load_cases(path: Path | None) -> list[dict[str, Any]]:
     return [c for c in raw if isinstance(c, dict)]
 
 
-def _document_frequencies(docs: list[EntryDoc]) -> dict[str, int]:
-    df: dict[str, int] = {}
-    for doc in docs:
-        for token in doc.tokens or set():
-            df[token] = df.get(token, 0) + 1
-    return df
-
-
-def _lexical_score(query_tokens: set[str], doc: EntryDoc, df: dict[str, int], doc_count: int) -> float:
-    doc_tokens = doc.tokens or set()
-    if not query_tokens or not doc_tokens:
-        return 0.0
-    score = 0.0
-    for token in query_tokens:
-        if token not in doc_tokens:
-            continue
-        idf = math.log((doc_count + 1) / (df.get(token, 0) + 1)) + 1.0
-        score += idf
-    return score / max(len(query_tokens), 1)
-
-
 def evaluate_case(
     case: dict[str, Any],
-    docs: list[EntryDoc],
+    docs: list[RetrievalDoc],
     *,
     top_k: int,
-    df: dict[str, int],
     scorer: str,
 ) -> dict[str, Any]:
     query = str(case.get("query") or "").strip()
     expected = [str(x) for x in (case.get("expected") or [])]
-    q_emb = _embed(query)
-    q_tokens = _tokens(query)
-    doc_count = len(docs)
-    ranked: list[EntryDoc] = []
-    for doc in docs:
-        semantic = _cosine(q_emb, doc.embedding or _embed(f"{doc.title}\n{doc.content}"))
-        lexical = _lexical_score(q_tokens, doc, df, doc_count)
-        if scorer == "semantic":
-            score = semantic
-        elif scorer == "lexical":
-            score = lexical
-        else:
-            score = (0.35 * semantic) + (0.65 * lexical)
-        row = EntryDoc(
-            project_id=doc.project_id,
-            repo=doc.repo,
-            entry_id=doc.entry_id,
-            title=doc.title,
-            content="",
-            embedding=None,
-            tokens=None,
-            score=round(score, 4),
-        )
-        ranked.append(row)
-    ranked.sort(key=lambda d: d.score, reverse=True)
+    ranked = search_docs(docs, query, top_k=len(docs), scorer=scorer)
     hits = ranked[:top_k]
 
     expected_lower = {x.lower() for x in expected}
     rank = None
     for idx, hit in enumerate(ranked, start=1):
-        if hit.repo.lower() in expected_lower or hit.project_id.lower() in expected_lower:
+        if hit["repo"].lower() in expected_lower or hit["project_id"].lower() in expected_lower:
             rank = idx
             break
 
@@ -250,10 +115,11 @@ def evaluate_case(
         "top": [
             {
                 "rank": i,
-                "repo": hit.repo,
-                "project_id": hit.project_id,
-                "score": hit.score,
-                "title": hit.title,
+                "repo": hit["repo"],
+                "project_id": hit["project_id"],
+                "score": hit["score"],
+                "title": hit["title"],
+                "chunk_type": hit.get("chunk_type"),
             }
             for i, hit in enumerate(hits, start=1)
         ],
@@ -267,10 +133,15 @@ def evaluate(
     top_k: int,
     max_entry_chars: int = 30000,
     scorer: str = "hybrid",
+    index_file: Path | None = None,
 ) -> dict[str, Any]:
-    docs = load_docs(memory_dir, max_entry_chars=max_entry_chars)
-    df = _document_frequencies(docs)
-    results = [evaluate_case(case, docs, top_k=top_k, df=df, scorer=scorer) for case in cases]
+    if index_file and index_file.is_file():
+        docs = load_index(index_file)
+        index_source = str(index_file)
+    else:
+        docs = load_project_memory_docs(memory_dir, max_section_chars=max_entry_chars)
+        index_source = "memory_dir"
+    results = [evaluate_case(case, docs, top_k=top_k, scorer=scorer) for case in cases]
     evaluated = len(results)
     top1 = sum(1 for r in results if r["rank"] == 1)
     topk = sum(1 for r in results if r["hit_top_k"])
@@ -288,6 +159,7 @@ def evaluate(
         "documents": len(docs),
         "max_entry_chars": max_entry_chars,
         "scorer": scorer,
+        "index_source": index_source,
         "cases": evaluated,
         "top1": top1,
         f"top{top_k}": topk,
@@ -333,6 +205,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON only")
     parser.add_argument("--output", default="", help="Optional path to write JSON report")
     parser.add_argument("--scorer", choices=["hybrid", "semantic", "lexical"], default="hybrid")
+    parser.add_argument("--index-file", default="", help="Optional prebuilt chunk retrieval index JSON")
     args = parser.parse_args(argv)
 
     cases = load_cases(Path(args.queries_file) if args.queries_file else None)
@@ -342,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
         top_k=args.top_k,
         max_entry_chars=args.max_entry_chars,
         scorer=args.scorer,
+        index_file=Path(args.index_file) if args.index_file else None,
     )
     if args.output:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)

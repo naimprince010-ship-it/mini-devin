@@ -3,6 +3,7 @@
 import importlib
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -29,6 +30,39 @@ class TestHealthEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert data.get("status") == "healthy" or "ok" in str(data).lower()
+
+
+class TestProjectRetrievalEndpoint:
+    def test_global_project_retrieval_uses_chunk_index(self, client, monkeypatch, tmp_path: Path):
+        from mini_devin.integrations.project_retrieval_index import RetrievalDoc, save_index
+
+        index_path = tmp_path / "project_retrieval_index.json"
+        save_index(
+            [
+                RetrievalDoc(
+                    project_id="gh-facebook-react",
+                    repo="facebook/react",
+                    entry_id="entry-1",
+                    chunk_id="entry-1:files:1",
+                    chunk_type="file_inventory",
+                    title="File inventory",
+                    content="packages/react/src/ReactHooks.js useState useEffect component rendering",
+                ).prepare()
+            ],
+            index_path,
+        )
+        monkeypatch.setenv("PLODDER_PROJECT_RETRIEVAL_INDEX", str(index_path))
+
+        response = client.post(
+            "/api/projects/retrieval/search",
+            json={"query": "React hooks useEffect", "top_k": 1},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["documents"] == 1
+        assert data["results"][0]["repo"] == "facebook/react"
+        assert data["results"][0]["chunk_type"] == "file_inventory"
 
 
 class TestModelsEndpoint:
