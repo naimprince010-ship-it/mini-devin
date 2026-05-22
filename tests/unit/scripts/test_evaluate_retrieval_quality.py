@@ -133,3 +133,41 @@ def test_repo_aliases_boost_framework_identity() -> None:
     results = search_docs(docs, "React hooks useState useEffect component rendering reconciliation", top_k=1)
 
     assert results[0]["repo"] == "facebook/react"
+
+
+def test_index_loader_reuses_cached_stats(tmp_path: Path, monkeypatch) -> None:
+    import mini_devin.integrations.project_retrieval_index as index_mod
+    from mini_devin.integrations.project_retrieval_index import RetrievalDoc, load_index_with_stats, save_index
+
+    path = tmp_path / "index.json"
+    save_index(
+        [
+            RetrievalDoc(
+                project_id="gh-laravel-framework",
+                repo="laravel/framework",
+                entry_id="entry",
+                chunk_id="chunk",
+                chunk_type="project_metadata",
+                title="Project metadata",
+                content="Laravel Eloquent artisan routes.",
+            ).prepare(embed=False)
+        ],
+        path,
+    )
+    index_mod._INDEX_CACHE.clear()
+    real_load = index_mod.load_index
+    calls = 0
+
+    def counted_load(load_path: Path):
+        nonlocal calls
+        calls += 1
+        return real_load(load_path)
+
+    monkeypatch.setattr(index_mod, "load_index", counted_load)
+
+    first_docs, first_df = load_index_with_stats(path)
+    second_docs, second_df = load_index_with_stats(path)
+
+    assert calls == 1
+    assert first_docs is second_docs
+    assert first_df is second_df

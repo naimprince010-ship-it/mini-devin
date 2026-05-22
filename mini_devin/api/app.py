@@ -2420,7 +2420,8 @@ async def search_project_retrieval(req: ProjectRetrievalSearchRequest):
 
     from ..integrations.project_memory import default_project_memory_dir
     from ..integrations.project_retrieval_index import (
-        load_index,
+        document_frequencies,
+        load_index_with_stats,
         load_project_memory_docs,
         search_docs,
     )
@@ -2439,17 +2440,25 @@ async def search_project_retrieval(req: ProjectRetrievalSearchRequest):
         or "/data/project_retrieval_index.json"
     )
     if index_file.is_file():
-        docs = load_index(index_file)
+        docs, df = load_index_with_stats(index_file)
         source = str(index_file)
     else:
         docs = load_project_memory_docs(Path(default_project_memory_dir()))
+        df = document_frequencies(docs)
         source = "project_memory"
 
     return {
         "query": query,
         "source": source,
         "documents": len(docs),
-        "results": search_docs(docs, query, top_k=req.top_k, scorer=scorer, group_by_repo=req.group_by_repo),
+        "results": search_docs(
+            docs,
+            query,
+            top_k=req.top_k,
+            scorer=scorer,
+            df=df,
+            group_by_repo=req.group_by_repo,
+        ),
     }
 
 

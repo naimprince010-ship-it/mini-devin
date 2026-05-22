@@ -225,6 +225,7 @@ def _section_type(title: str) -> str:
 
 
 _HEADING_RE = re.compile(r"(?m)^\s*(#{1,3})\s+(.+?)\s*$")
+_INDEX_CACHE: dict[str, tuple[float, int, list[RetrievalDoc], dict[str, int]]] = {}
 
 
 def docs_from_digest(
@@ -343,6 +344,18 @@ def load_index(path: Path) -> list[RetrievalDoc]:
     raw = json.loads(path.read_text(encoding="utf-8"))
     docs = [RetrievalDoc.from_json(d).prepare(embed=False) for d in raw.get("documents", []) if isinstance(d, dict)]
     return docs
+
+
+def load_index_with_stats(path: Path) -> tuple[list[RetrievalDoc], dict[str, int]]:
+    stat = path.stat()
+    cache_key = str(path.resolve())
+    cached = _INDEX_CACHE.get(cache_key)
+    if cached and cached[0] == stat.st_mtime and cached[1] == stat.st_size:
+        return cached[2], cached[3]
+    docs = load_index(path)
+    df = document_frequencies(docs)
+    _INDEX_CACHE[cache_key] = (stat.st_mtime, stat.st_size, docs, df)
+    return docs, df
 
 
 def document_frequencies(docs: list[RetrievalDoc]) -> dict[str, int]:
