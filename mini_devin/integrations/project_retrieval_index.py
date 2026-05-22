@@ -46,10 +46,11 @@ class RetrievalDoc:
     embedding: list[float] | None = None
     tokens: set[str] | None = None
 
-    def prepare(self) -> "RetrievalDoc":
+    def prepare(self, *, embed: bool = True) -> "RetrievalDoc":
         text = self.search_text()
-        self.embedding = self.embedding or _embed(text)
         self.tokens = self.tokens or tokenize(text)
+        if embed:
+            self.embedding = self.embedding or _embed(text)
         return self
 
     def search_text(self) -> str:
@@ -175,7 +176,7 @@ def docs_from_digest(
                     title=heading,
                     content=chunk,
                     metadata={"source_title": title},
-                ).prepare()
+                ).prepare(embed=False)
             )
 
     if not docs and content.strip():
@@ -189,7 +190,7 @@ def docs_from_digest(
                     chunk_type="body",
                     title=title,
                     content=chunk,
-                ).prepare()
+                ).prepare(embed=False)
             )
     return docs
 
@@ -226,7 +227,7 @@ def load_project_memory_docs(memory_dir: Path, *, max_section_chars: int = 3500)
                 chunk_type="project_metadata",
                 title=f"Project metadata: {repo}",
                 content=project_text,
-            ).prepare()
+            ).prepare(embed=False)
         )
         for entry in entries if isinstance(entries, list) else []:
             if not isinstance(entry, dict):
@@ -249,26 +250,26 @@ def load_project_memory_docs(memory_dir: Path, *, max_section_chars: int = 3500)
 
 def save_index(docs: list[RetrievalDoc], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"version": 1, "documents": [doc.prepare().to_json() for doc in docs]}
+    payload = {"version": 1, "documents": [doc.prepare(embed=False).to_json() for doc in docs]}
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def load_index(path: Path) -> list[RetrievalDoc]:
     raw = json.loads(path.read_text(encoding="utf-8"))
-    docs = [RetrievalDoc.from_json(d).prepare() for d in raw.get("documents", []) if isinstance(d, dict)]
+    docs = [RetrievalDoc.from_json(d).prepare(embed=False) for d in raw.get("documents", []) if isinstance(d, dict)]
     return docs
 
 
 def document_frequencies(docs: list[RetrievalDoc]) -> dict[str, int]:
     df: dict[str, int] = {}
     for doc in docs:
-        for token in doc.prepare().tokens or set():
+        for token in doc.prepare(embed=False).tokens or set():
             df[token] = df.get(token, 0) + 1
     return df
 
 
 def lexical_score(query_tokens: set[str], doc: RetrievalDoc, df: dict[str, int], doc_count: int) -> float:
-    doc_tokens = doc.prepare().tokens or set()
+    doc_tokens = doc.prepare(embed=False).tokens or set()
     if not query_tokens or not doc_tokens:
         return 0.0
     score = 0.0
@@ -286,15 +287,28 @@ def search_docs(
     top_k: int = 8,
     scorer: str = "hybrid",
 ) -> list[dict[str, Any]]:
-    q_emb = _embed(query)
     q_tokens = tokenize(query)
     df = document_frequencies(docs)
     doc_count = len(docs)
-    rows: list[dict[str, Any]] = []
+    scored: list[tuple[RetrievalDoc, float]] = []
     for doc in docs:
-        doc.prepare()
-        semantic = _cosine(q_emb, doc.embedding or _embed(doc.search_text()))
         lexical = lexical_score(q_tokens, doc, df, doc_count)
+        scored.append((doc, lexical))
+
+    semantic_candidates: set[str] = set()
+    if scorer in {"hybrid", "semantic"}:
+        candidate_count = len(scored) if scorer == "semantic" else min(len(scored), max(top_k * 25, 100))
+        semantic_candidates = {
+            doc.chunk_id
+            for doc, _lexical in sorted(scored, key=lambda item: item[1], reverse=True)[:candidate_count]
+        }
+
+    q_emb = _embed(query) if semantic_candidates else []
+    rows: list[dict[str, Any]] = []
+    for doc, lexical in scored:
+        semantic = 0.0
+        if doc.chunk_id in semantic_candidates:
+            semantic = _cosine(q_emb, doc.embedding or _embed(doc.search_text()))
         if scorer == "semantic":
             score = semantic
         elif scorer == "lexical":
