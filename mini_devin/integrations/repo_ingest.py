@@ -228,9 +228,14 @@ def _top_dirs(paths: list[str], depth: int = 2, limit: int = 30) -> list[tuple[s
 
 def _json_load(path: Path) -> dict[str, Any]:
     try:
-        return json.loads(_read_text_for_analysis(path, 120_000))
+        data = json.loads(_read_text_for_analysis(path, 120_000))
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def _mapping_keys(value: Any) -> list[str]:
+    return sorted(value.keys()) if isinstance(value, dict) else []
 
 
 def _build_dependency_summary(root: Path, paths: list[str], *, max_package_files: int = 12) -> str:
@@ -243,9 +248,9 @@ def _build_dependency_summary(root: Path, paths: list[str], *, max_package_files
             data = _json_load(root / rel)
             if not data:
                 continue
-            deps = sorted((data.get("dependencies") or {}).keys())
-            dev = sorted((data.get("devDependencies") or {}).keys())
-            scripts = sorted((data.get("scripts") or {}).keys())
+            deps = _mapping_keys(data.get("dependencies"))
+            dev = _mapping_keys(data.get("devDependencies"))
+            scripts = _mapping_keys(data.get("scripts"))
             pkg_name = data.get("name") or rel
             pm = data.get("packageManager")
             workspaces = data.get("workspaces")
