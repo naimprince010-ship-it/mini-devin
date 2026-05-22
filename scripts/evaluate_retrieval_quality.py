@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 from mini_devin.integrations.project_memory import default_project_memory_dir
 from mini_devin.integrations.project_retrieval_index import (
     RetrievalDoc,
+    document_frequencies,
     load_index,
     load_project_memory_docs,
     search_docs,
@@ -93,10 +94,11 @@ def evaluate_case(
     *,
     top_k: int,
     scorer: str,
+    df: dict[str, int],
 ) -> dict[str, Any]:
     query = str(case.get("query") or "").strip()
     expected = [str(x) for x in (case.get("expected") or [])]
-    ranked = search_docs(docs, query, top_k=len(docs), scorer=scorer)
+    ranked = search_docs(docs, query, top_k=len(docs), scorer=scorer, df=df)
     hits = ranked[:top_k]
 
     expected_lower = {x.lower() for x in expected}
@@ -141,7 +143,8 @@ def evaluate(
     else:
         docs = load_project_memory_docs(memory_dir, max_section_chars=max_entry_chars)
         index_source = "memory_dir"
-    results = [evaluate_case(case, docs, top_k=top_k, scorer=scorer) for case in cases]
+    df = document_frequencies(docs)
+    results = [evaluate_case(case, docs, top_k=top_k, scorer=scorer, df=df) for case in cases]
     evaluated = len(results)
     top1 = sum(1 for r in results if r["rank"] == 1)
     topk = sum(1 for r in results if r["hit_top_k"])

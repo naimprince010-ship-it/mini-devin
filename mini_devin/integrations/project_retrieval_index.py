@@ -286,9 +286,10 @@ def search_docs(
     *,
     top_k: int = 8,
     scorer: str = "hybrid",
+    df: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     q_tokens = tokenize(query)
-    df = document_frequencies(docs)
+    df = df or document_frequencies(docs)
     doc_count = len(docs)
     scored: list[tuple[RetrievalDoc, float]] = []
     for doc in docs:
@@ -297,7 +298,7 @@ def search_docs(
 
     semantic_candidates: set[str] = set()
     if scorer in {"hybrid", "semantic"}:
-        candidate_count = len(scored) if scorer == "semantic" else min(len(scored), max(top_k * 25, 100))
+        candidate_count = len(scored) if scorer == "semantic" else min(len(scored), max(min(top_k, 10) * 25, 100))
         semantic_candidates = {
             doc.chunk_id
             for doc, _lexical in sorted(scored, key=lambda item: item[1], reverse=True)[:candidate_count]
