@@ -323,15 +323,16 @@ def _setup_repo(task: SWEBenchTask, workspace_root: str) -> str | None:
     if task.base_commit.startswith("local:") or task.repo.startswith("plodder-fixtures/"):
         return _setup_fixture_repo(task, workspace_root)
 
-    repo_dir = os.path.join(workspace_root, task.instance_id)
+    root = Path(workspace_root).resolve()
+    repo_dir = str(root / task.instance_id)
     clone_url = f"https://github.com/{task.repo}.git"
 
     if os.path.exists(repo_dir) and not os.path.isdir(os.path.join(repo_dir, ".git")):
         shutil.rmtree(repo_dir, ignore_errors=True)
 
     if not os.path.isdir(os.path.join(repo_dir, ".git")):
-        Path(workspace_root).mkdir(parents=True, exist_ok=True)
-        rc, _, err = _git("clone", "--depth=50", clone_url, repo_dir, cwd=workspace_root)
+        root.mkdir(parents=True, exist_ok=True)
+        rc, _, err = _git("clone", "--depth=50", clone_url, repo_dir, cwd=str(root))
         if rc != 0:
             print(f"[swe_bench] clone failed: {err}")
             shutil.rmtree(repo_dir, ignore_errors=True)
@@ -375,6 +376,18 @@ def _collect_patch(repo_dir: str, base_ref: str = "HEAD") -> str:
     )
     if diff:
         parts.append(diff)
+    else:
+        _, diff, _ = _git(
+            "diff",
+            "--binary",
+            "--",
+            ".",
+            ":!.plodder",
+            ":!PLAN.md",
+            cwd=repo_dir,
+        )
+        if diff:
+            parts.append(diff)
 
     _, untracked, _ = _git("ls-files", "--others", "--exclude-standard", cwd=repo_dir)
     for rel in [line.strip() for line in untracked.splitlines() if line.strip()]:
@@ -542,7 +555,7 @@ def _build_retry_feedback(
 
 class SWEBenchRunner:
     def __init__(self, workspace_root: str | None = None):
-        self.workspace_root = workspace_root or str(_DATA_DIR / "workspaces")
+        self.workspace_root = str(Path(workspace_root or (_DATA_DIR / "workspaces")).resolve())
         Path(self.workspace_root).mkdir(parents=True, exist_ok=True)
         self._runs = _load_runs()
         self._results = _load_results()
@@ -707,6 +720,9 @@ class SWEBenchRunner:
                             BenchmarkStatus.RESOLVED if (ftp_ok and ptp_ok)
                             else BenchmarkStatus.UNRESOLVED
                         )
+                        latest_patch = _collect_patch(repo_dir, base_ref=base_ref)
+                        if latest_patch:
+                            result.patch = latest_patch
                     else:
                         result.status = (
                             BenchmarkStatus.RESOLVED if len(result.patch) > 50
