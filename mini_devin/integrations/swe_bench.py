@@ -688,7 +688,7 @@ class SWEBenchRunner:
                 retry_feedback = ""
                 max_attempts = 1 + max(0, retry_limit if agent_runner else 0)
                 timeout_raw = os.getenv("PLODDER_SWEBENCH_AGENT_TIMEOUT_SEC", "").strip()
-                agent_timeout = max(1, int(timeout_raw)) if timeout_raw else 600
+                agent_timeout = max(1, int(timeout_raw)) if timeout_raw else 180
                 for attempt_no in range(1, max_attempts + 1):
                     if agent_runner:
                         try:
