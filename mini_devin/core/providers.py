@@ -584,7 +584,7 @@ class ModelRegistry:
         if self.is_provider_configured(Provider.GOOGLE):
             return os.environ.get("DEFAULT_GEMINI_MODEL", "gemini/gemini-2.0-flash")
         if self.is_provider_configured(Provider.OPENAI):
-            return "openai/llama3.3-70b-instruct"
+            return os.environ.get("DEFAULT_OPENAI_MODEL", "gpt-4o-mini")
         if self.is_provider_configured(Provider.ANTHROPIC):
             return "claude-3-5-sonnet-20241022"
         if self.is_provider_configured(Provider.AZURE):
