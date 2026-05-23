@@ -4,9 +4,9 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_URL: ""
     container_name: plodder-frontend
-    environment:
-      - VITE_API_URL=http://localhost:8000
     ports:
       - "80:80"
     depends_on:
