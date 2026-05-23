@@ -139,8 +139,11 @@ class SessionManager:
         candidate = Path(os.path.abspath(os.path.expanduser(configured)))
         try:
             candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / f".plodder-write-check-{os.getpid()}"
+            probe.mkdir(parents=False, exist_ok=False)
+            probe.rmdir()
             return candidate
-        except PermissionError:
+        except (PermissionError, OSError):
             fallback = os.environ.get(
                 "PLODDER_ARTIFACTS_BASE_DIR_FALLBACK",
                 "/var/tmp/plodder-runs",
