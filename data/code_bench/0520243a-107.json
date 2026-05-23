@@ -1,0 +1,23 @@
+{
+  "run_id": "0520243a-107",
+  "benchmark": "mbpp",
+  "mode": "litellm",
+  "limit": 1,
+  "status": "completed",
+  "started_at": "2026-05-23T06:00:19.037968+00:00",
+  "finished_at": "2026-05-23T06:00:19.051413+00:00",
+  "total": 1,
+  "passed": 0,
+  "results": [
+    {
+      "task_id": "mbpp-1",
+      "benchmark": "mbpp",
+      "passed": false,
+      "generated_code": "",
+      "test_output": "",
+      "error": "assert 'NameError' in 'Missing required function name(s): square'",
+      "duration_s": 0.0
+    }
+  ],
+  "pass_rate": 0.0
+}

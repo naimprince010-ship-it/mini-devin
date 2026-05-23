@@ -1,0 +1,24 @@
+{
+  "run_id": "1e01e5b5-51f",
+  "benchmark": "mbpp",
+  "mode": "canonical",
+  "model": "",
+  "limit": 1,
+  "status": "completed",
+  "started_at": "2026-05-23T07:39:25.381181+00:00",
+  "finished_at": "2026-05-23T07:39:25.795747+00:00",
+  "total": 1,
+  "passed": 1,
+  "results": [
+    {
+      "task_id": "mbpp-11",
+      "benchmark": "mbpp",
+      "passed": true,
+      "generated_code": "def remove_Occ(s,ch): \r\n    for i in range(len(s)): \r\n        if (s[i] == ch): \r\n            s = s[0 : i] + s[i + 1:] \r\n            break\r\n    for i in range(len(s) - 1,-1,-1):  \r\n        if (s[i] == ch): \r\n            s = s[0 : i] + s[i + 1:] \r\n            break\r\n    return s ",
+      "test_output": "",
+      "error": "",
+      "duration_s": 0.41
+    }
+  ],
+  "pass_rate": 100.0
+}

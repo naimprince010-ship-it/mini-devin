@@ -1,0 +1,41 @@
+{
+  "run_id": "49376e5c-6eb",
+  "benchmark": "mbpp",
+  "mode": "litellm",
+  "limit": 3,
+  "status": "completed",
+  "started_at": "2026-05-23T05:09:52.427056+00:00",
+  "finished_at": "2026-05-23T05:10:13.674870+00:00",
+  "total": 3,
+  "passed": 0,
+  "results": [
+    {
+      "task_id": "mbpp-11",
+      "benchmark": "mbpp",
+      "passed": false,
+      "generated_code": "",
+      "test_output": "",
+      "error": "litellm.AuthenticationError: AuthenticationError: OpenAIException - The api_key client option must be set either by passing api_key to the client or by setting the OPENAI_API_KEY environment variable",
+      "duration_s": 21.1
+    },
+    {
+      "task_id": "mbpp-12",
+      "benchmark": "mbpp",
+      "passed": false,
+      "generated_code": "",
+      "test_output": "",
+      "error": "litellm.AuthenticationError: AuthenticationError: OpenAIException - The api_key client option must be set either by passing api_key to the client or by setting the OPENAI_API_KEY environment variable",
+      "duration_s": 0.07
+    },
+    {
+      "task_id": "mbpp-13",
+      "benchmark": "mbpp",
+      "passed": false,
+      "generated_code": "",
+      "test_output": "",
+      "error": "litellm.AuthenticationError: AuthenticationError: OpenAIException - The api_key client option must be set either by passing api_key to the client or by setting the OPENAI_API_KEY environment variable",
+      "duration_s": 0.07
+    }
+  ],
+  "pass_rate": 0.0
+}

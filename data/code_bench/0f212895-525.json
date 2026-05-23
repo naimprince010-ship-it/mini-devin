@@ -1,0 +1,24 @@
+{
+  "run_id": "0f212895-525",
+  "benchmark": "humaneval",
+  "mode": "litellm",
+  "model": "openai/gpt-5.3-codex",
+  "limit": 1,
+  "status": "completed",
+  "started_at": "2026-05-23T07:50:06.897702+00:00",
+  "finished_at": "2026-05-23T07:50:07.464143+00:00",
+  "total": 1,
+  "passed": 0,
+  "results": [
+    {
+      "task_id": "HumanEval/0",
+      "benchmark": "humaneval",
+      "passed": false,
+      "generated_code": "",
+      "test_output": "",
+      "error": "litellm.UnsupportedParamsError: gpt-5 models (including gpt-5-codex) don't support temperature=0.0. Only temperature=1 is supported. For gpt-5.1, temperature is supported when reasoning_effort='none' (or not specified, as it defaults to 'none'). To drop unsupported params set `litellm.drop_params = True`",
+      "duration_s": 0.56
+    }
+  ],
+  "pass_rate": 0.0
+}

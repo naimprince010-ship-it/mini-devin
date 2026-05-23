@@ -1,0 +1,16 @@
+{
+  "started_at": "2026-05-21T06:39:10.725812+00:00",
+  "status": "active",
+  "phase": "bootstrap",
+  "targets": {
+    "sessions": 5,
+    "documented_failure_fix_pairs": 20,
+    "repeat_error_reduction_percent": 30
+  },
+  "weekly_loop": [
+    "Run real tasks and keep episode memory enabled.",
+    "After each fixed failure, append one short reflection rule.",
+    "Review learned patterns and remove noisy/duplicate rules.",
+    "Track repeated error signatures and compare trend week over week."
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "run_id": "40491592-465",
+  "benchmark": "mbpp",
+  "mode": "canonical",
+  "limit": 1,
+  "status": "completed",
+  "started_at": "2026-05-23T06:14:07.935667+00:00",
+  "finished_at": "2026-05-23T06:14:08.141806+00:00",
+  "total": 1,
+  "passed": 1,
+  "results": [
+    {
+      "task_id": "mbpp-1",
+      "benchmark": "mbpp",
+      "passed": true,
+      "generated_code": "def square(x):\n    return x * x\n",
+      "test_output": "",
+      "error": "",
+      "duration_s": 0.2
+    }
+  ],
+  "pass_rate": 100.0
+}
