@@ -62,6 +62,7 @@ services:
       - GROQ_API_BASE=${GROQ_API_BASE:-https://api.groq.com/openai/v1}
       - GROQ_ENABLED=${GROQ_ENABLED:-true}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - LLM_MODEL=${LLM_MODEL:-llama-3.3-70b-versatile}
       - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.1}
