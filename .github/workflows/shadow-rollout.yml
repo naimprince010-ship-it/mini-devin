@@ -1,0 +1,88 @@
+name: Shadow Rollout Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      benchmark:
+        description: "Benchmark name"
+        required: true
+        default: "mbpp"
+        type: choice
+        options:
+          - mbpp
+          - humaneval
+      limit:
+        description: "Task limit"
+        required: true
+        default: "50"
+        type: string
+      timeout:
+        description: "Per-task timeout seconds"
+        required: true
+        default: "20"
+        type: string
+      model_a:
+        description: "Current production model"
+        required: true
+        default: "openai/qwen3-coder-flash"
+        type: string
+      model_b:
+        description: "Challenger model"
+        required: true
+        default: "openai/gpt-5.3-codex"
+        type: string
+      shadow:
+        description: "Shadow mode (do not fail if challenger loses)"
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  run-shadow-rollout:
+    runs-on: ubuntu-latest
+    env:
+      PYTHON_VERSION: "3.12"
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: snok/install-poetry@v1
+        with:
+          version: 1.7.1
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - uses: actions/cache@v4
+        id: cache-shadow
+        with:
+          path: .venv
+          key: venv-shadow-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/poetry.lock') }}
+
+      - name: Install dependencies
+        if: steps.cache-shadow.outputs.cache-hit != 'true'
+        run: poetry install --no-interaction --no-root
+
+      - name: Install project
+        run: poetry install --no-interaction
+
+      - name: Run A/B or shadow rollout
+        run: >
+          poetry run python scripts/run_benchmark_ab.py
+          --benchmark "${{ github.event.inputs.benchmark }}"
+          --limit "${{ github.event.inputs.limit }}"
+          --timeout "${{ github.event.inputs.timeout }}"
+          --model-a "${{ github.event.inputs.model_a }}"
+          --model-b "${{ github.event.inputs.model_b }}"
+          ${{ github.event.inputs.shadow == 'true' && '--shadow' || '' }}
+
+      - name: Upload rollout artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-rollout-result
+          path: runs/benchmark_ab_*.json

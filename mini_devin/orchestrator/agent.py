@@ -5277,8 +5277,15 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             except Exception:
                 pass
 
+        _bench_ctx = getattr(self, "_benchmark_context_injection", None)
+
         # Add task description to conversation
-        _proj_prefix = f"\n\n{_proj_ctx}\n\n---\n" if _proj_ctx else ""
+        _context_prefix_parts: list[str] = []
+        if _proj_ctx:
+            _context_prefix_parts.append(_proj_ctx)
+        if _bench_ctx:
+            _context_prefix_parts.append("Benchmark lessons for better reliability:\n" + _bench_ctx)
+        _proj_prefix = "\n\n" + "\n\n---\n\n".join(_context_prefix_parts) + "\n\n---\n" if _context_prefix_parts else ""
         _rtc = _runtime_context_block(self.working_directory)
         task_message = f"""{_proj_prefix}{_rtc}
 

@@ -124,6 +124,61 @@ from ..sessions.db_manager import DatabaseSessionManager
 # Simple in-memory rate limiter (no external dependency)
 _rate_buckets: dict = {}
 
+
+def _env_flag(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _csv_env(name: str, default: str = "") -> set[str]:
+    raw = os.getenv(name, default)
+    return {part.strip().lower() for part in (raw or "").split(",") if part.strip()}
+
+
+def _normalize_model_id(model: str) -> str:
+    return (model or "").strip().lower()
+
+
+def _validate_model_scope(model: str, *, scope: str) -> str:
+    normalized = _normalize_model_id(model)
+    if not _env_flag("STRICT_MODEL_ROUTING", "true"):
+        return model
+
+    if scope == "chat":
+        allow = _csv_env("CHAT_MODEL_ALLOWLIST", "auto,openai/qwen3-coder-flash")
+        deny = _csv_env("CHAT_MODEL_DENYLIST", "openai/gpt-5.3-codex")
+    else:
+        allow = _csv_env("BENCHMARK_MODEL_ALLOWLIST", "openai/gpt-5.3-codex,openai/qwen3-coder-flash")
+        deny = _csv_env("BENCHMARK_MODEL_DENYLIST", "")
+
+    if normalized in deny:
+        raise HTTPException(status_code=400, detail=f"model `{model}` is blocked for {scope} scope")
+
+    if "*" not in allow and normalized not in allow:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"model `{model}` is not allowed for {scope} scope; set allowlist via "
+                f"{'CHAT_MODEL_ALLOWLIST' if scope == 'chat' else 'BENCHMARK_MODEL_ALLOWLIST'}"
+            ),
+        )
+    return model
+
+
+def _load_benchmark_lessons_context(max_chars: int = 8000) -> str:
+    if not _env_flag("BENCHMARK_KNOWLEDGE_INJECTION", "true"):
+        return ""
+    default_path = os.path.join(_REPO_ROOT, "knowledge_base", "benchmark_lessons.md")
+    path = os.getenv("BENCHMARK_LESSONS_PATH", default_path).strip()
+    if not path:
+        return ""
+    try:
+        text = open(path, "r", encoding="utf-8").read().strip()
+    except Exception:
+        return ""
+    if not text:
+        return ""
+    return text[:max_chars]
+
 def _check_rate_limit(key: str, max_calls: int, window_seconds: int = 60) -> bool:
     """Returns True if allowed, False if rate limited."""
     now = time.time()
@@ -1054,9 +1109,11 @@ async def start_issue_automation(
     if not requested_dir:
         raise HTTPException(status_code=400, detail="Repository does not have a usable local path or clone URL")
 
+    model = _validate_model_scope(body.model or "auto", scope="chat")
+
     session = await session_manager.create_session(
         working_directory=requested_dir,
-        model=body.model,
+        model=model,
         max_iterations=body.max_iterations,
         auto_git_commit=body.auto_git_commit,
         git_push=body.git_push,
@@ -1083,7 +1140,7 @@ async def start_issue_automation(
     return {
         "session": _serialize_session_payload(
             session,
-            model=body.model,
+            model=model,
             auto_git_commit=body.auto_git_commit,
             git_push=body.git_push,
         ),
@@ -1194,17 +1251,23 @@ async def create_session(raw_request: Request):
     git_push = False
     requested_dir = ""
     project_id = ""
+    body = {}
     try:
         body = await raw_request.json()
-        requested_dir = body.get("working_directory", "") or ""
-        raw_model = body.get("model", "auto")
-        model = (str(raw_model).strip() if raw_model is not None else "") or "auto"
-        max_iterations = int(body.get("max_iterations", DEFAULT_MAX_ITERATIONS) or DEFAULT_MAX_ITERATIONS)
-        auto_git_commit = bool(body.get("auto_git_commit", False))
-        git_push = bool(body.get("git_push", False))
-        project_id = body.get("project_id", "") or ""
     except Exception:
-        pass
+        body = {}
+
+    requested_dir = str(body.get("working_directory", "") or "")
+    raw_model = body.get("model", "auto")
+    model = (str(raw_model).strip() if raw_model is not None else "") or "auto"
+    model = _validate_model_scope(model, scope="chat")
+    try:
+        max_iterations = int(body.get("max_iterations", DEFAULT_MAX_ITERATIONS) or DEFAULT_MAX_ITERATIONS)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="max_iterations must be an integer")
+    auto_git_commit = bool(body.get("auto_git_commit", False))
+    git_push = bool(body.get("git_push", False))
+    project_id = str(body.get("project_id", "") or "")
 
     requested_is_git_remote = _is_git_remote_url(requested_dir)
     if requested_is_git_remote:
@@ -1294,6 +1357,18 @@ async def create_session(raw_request: Request):
                     print(f"[API] Injected project memory for project '{project_id}' into session {session.session_id}")
             except Exception as e:
                 print(f"[API] Could not inject project memory: {e}")
+
+    # Inject benchmark-derived lessons into chat sessions when configured.
+    try:
+        agent = session_manager._agents.get(session.session_id)
+        if agent:
+            lesson_ctx = _load_benchmark_lessons_context(
+                max_chars=int(os.getenv("BENCHMARK_LESSONS_MAX_CHARS", "8000"))
+            )
+            if lesson_ctx:
+                agent._benchmark_context_injection = lesson_ctx
+    except Exception as e:
+        print(f"[API] Could not inject benchmark lessons: {e}")
 
     return _serialize_session_payload(
         session,
@@ -3246,6 +3321,12 @@ async def start_code_benchmark_run(req: CodeBenchmarkRunRequest, background_task
     mode = (req.mode or "canonical").strip().lower()
     if mode not in {"canonical", "litellm"}:
         raise HTTPException(status_code=400, detail="mode must be canonical or litellm")
+    model = (req.model or "").strip()
+    if mode == "litellm":
+        model = model or os.getenv("BENCHMARK_DEFAULT_MODEL", "openai/gpt-5.3-codex")
+        model = _validate_model_scope(model, scope="benchmark")
+    else:
+        model = ""
 
     run_id = str(uuid.uuid4())[:12]
 
@@ -3254,7 +3335,7 @@ async def start_code_benchmark_run(req: CodeBenchmarkRunRequest, background_task
             benchmark,
             limit=req.limit,
             mode=mode,
-            model=req.model,
+            model=model,
             timeout=req.timeout,
             run_id=run_id,
         )
@@ -3264,6 +3345,7 @@ async def start_code_benchmark_run(req: CodeBenchmarkRunRequest, background_task
         "run_id": run_id,
         "benchmark": benchmark,
         "mode": mode,
+        "model": model,
         "limit": req.limit,
         "status": "starting",
     }

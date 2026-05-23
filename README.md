@@ -199,6 +199,34 @@ plodder/
 
 ---
 
+## Enterprise Evaluation Ops
+
+Plodder includes an eval-driven enterprise hardening path:
+
+- **Strict model routing policy (chat vs benchmark isolation)**
+   - Configure `STRICT_MODEL_ROUTING`, `CHAT_MODEL_ALLOWLIST`, `BENCHMARK_MODEL_ALLOWLIST` in `.env`.
+   - Chat session creation enforces chat allowlist; benchmark runs enforce benchmark allowlist.
+
+- **Mandatory regression gate before deploy**
+   - CI job: `Regression Gate (benchmark)` in `.github/workflows/ci.yml`.
+   - Runs `scripts/regression_gate.py` and uploads `runs/regression_gate.json`.
+   - Production deploy only triggers after CI success.
+
+- **A/B + shadow rollout pipeline**
+   - Workflow: `.github/workflows/shadow-rollout.yml` (manual dispatch).
+   - Script: `scripts/run_benchmark_ab.py`.
+
+- **Unified observability dashboard (quality + latency + cost)**
+   - Script: `scripts/build_benchmark_dashboard.py`.
+   - Reads `data/code_bench/*.json`, writes `runs/benchmark_dashboard.json`.
+
+- **Structured exam-to-chat knowledge transfer**
+   - Script: `scripts/transfer_benchmark_knowledge.py`.
+   - Automatic lesson export after benchmark runs via `BENCHMARK_TRANSFER_TO_CHAT=true`.
+   - Chat context injection via `BENCHMARK_KNOWLEDGE_INJECTION=true`.
+
+---
+
 ## Supported Models
 
 | Provider | Models |

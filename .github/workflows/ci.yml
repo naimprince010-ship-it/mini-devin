@@ -129,6 +129,46 @@ jobs:
       - name: Backbone + enterprise unit tests
         run: poetry run pytest tests/unit/backbone tests/unit/enterprise -q --tb=short
 
+  regression-gate:
+    name: Regression Gate (benchmark)
+    runs-on: ubuntu-latest
+    needs: [unit-core]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: snok/install-poetry@v1
+        with:
+          version: 1.7.1
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - uses: actions/cache@v4
+        id: cache-rg
+        with:
+          path: .venv
+          key: venv-rg-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/poetry.lock') }}
+
+      - name: Install dependencies
+        if: steps.cache-rg.outputs.cache-hit != 'true'
+        run: poetry install --no-interaction --no-root
+
+      - name: Install project
+        run: poetry install --no-interaction
+
+      - name: Run mandatory regression gate
+        run: poetry run python scripts/regression_gate.py --mbpp-limit 5 --humaneval-limit 5 --timeout 20
+
+      - name: Upload regression gate artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-gate
+          path: runs/regression_gate.json
+
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest
@@ -223,7 +263,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [lint, unit-core, frontend]
+    needs: [lint, unit-core, frontend, regression-gate]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
