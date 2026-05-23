@@ -11,6 +11,7 @@ import inspect
 import re
 import uuid
 import asyncio
+import random
 from html import unescape
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -91,6 +92,99 @@ def _completion_model_candidates(config: "LLMConfig") -> list[str]:
         seen.add(model_name)
         candidates.append(model_name)
     return candidates
+
+
+_llm_request_semaphore: asyncio.Semaphore | None = None
+_llm_request_semaphore_limit: int | None = None
+
+
+def _get_llm_request_semaphore() -> asyncio.Semaphore | None:
+    """Return a global semaphore for throttling concurrent outbound LLM calls."""
+    global _llm_request_semaphore
+    global _llm_request_semaphore_limit
+
+    raw = (os.environ.get("LLM_API_MAX_CONCURRENCY") or "8").strip()
+    try:
+        limit = int(raw)
+    except ValueError:
+        limit = 8
+    if limit <= 0:
+        return None
+
+    if _llm_request_semaphore is None or _llm_request_semaphore_limit != limit:
+        _llm_request_semaphore = asyncio.Semaphore(limit)
+        _llm_request_semaphore_limit = limit
+    return _llm_request_semaphore
+
+
+def _is_rate_limited_error(message: str) -> bool:
+    m = (message or "").lower()
+    return (
+        "ratelimiterror" in m
+        or "rate limit" in m
+        or "too many requests" in m
+        or "insufficient_quota" in m
+        or "quota" in m
+        or " 429" in m
+        or "(429" in m
+    )
+
+
+def _is_transient_llm_error(message: str) -> bool:
+    m = (message or "").lower()
+    transient_markers = (
+        "ratelimiterror",
+        "429",
+        "408",
+        "500",
+        "502",
+        "503",
+        "504",
+        "internalservererror",
+        "apiconnectionerror",
+        "connection error",
+        "timeout",
+        "temporarily unavailable",
+        "service unavailable",
+    )
+    return any(marker in m for marker in transient_markers)
+
+
+def _extract_retry_after_seconds(message: str) -> float | None:
+    m = message or ""
+    match = re.search(r"retry(?:\s|-)?after\s*[:=]?\s*(\d+(?:\.\d+)?)", m, flags=re.IGNORECASE)
+    if match:
+        try:
+            return max(0.0, float(match.group(1)))
+        except ValueError:
+            return None
+    return None
+
+
+def _retry_sleep_seconds(attempt: int, base_delay: float, last_error_msg: str) -> float:
+    """Compute exponential backoff with optional jitter and Retry-After hint."""
+    max_delay_raw = (os.environ.get("LLM_API_RETRY_MAX_DELAY_SECONDS") or "30").strip()
+    jitter_raw = (os.environ.get("LLM_API_RETRY_JITTER_SECONDS") or "0").strip()
+    try:
+        max_delay = max(0.0, float(max_delay_raw))
+    except ValueError:
+        max_delay = 30.0
+    try:
+        jitter_max = max(0.0, float(jitter_raw))
+    except ValueError:
+        jitter_max = 0.0
+
+    retry_after = _extract_retry_after_seconds(last_error_msg)
+    if retry_after is not None:
+        return retry_after
+
+    base = max(0.0, base_delay)
+    wait = base * (2 ** max(0, attempt - 1))
+    if jitter_max > 0:
+        wait += random.uniform(0.0, jitter_max)
+    if max_delay > 0:
+        wait = min(wait, max_delay)
+    return wait
 
 
 # LiteLLM import
@@ -586,7 +680,12 @@ class LLMClient:
         if self.config.provider == Provider.GROQ and self.config.api_key:
             kwargs["api_key"] = self.config.api_key
         try:
-            response = await acompletion(**kwargs)
+            semaphore = _get_llm_request_semaphore()
+            if semaphore is None:
+                response = await acompletion(**kwargs)
+            else:
+                async with semaphore:
+                    response = await acompletion(**kwargs)
         except Exception as e:
             raise RuntimeError(f"LLM ephemeral completion failed: {e}") from e
         choice = response.choices[0]
@@ -689,7 +788,12 @@ class LLMClient:
                         f"tools={len(tools) if tools else 0}, stream={stream}, "
                         f"attempt={attempt}/{retry_count}, model_try={model_index}/{len(model_candidates)}"
                     )
-                    response = await acompletion(**kwargs)
+                    semaphore = _get_llm_request_semaphore()
+                    if semaphore is None:
+                        response = await acompletion(**kwargs)
+                    else:
+                        async with semaphore:
+                            response = await acompletion(**kwargs)
                     break
                 except Exception as e:
                     last_error_msg = str(e)
@@ -704,36 +808,25 @@ class LLMClient:
                             "set GEMINI_FLASH_SUCCESSOR_MODEL to override. Raw error: "
                             + last_error_msg[:500]
                         )
-                    transient = any(
-                        marker in last_error_msg
-                        for marker in (
-                            "RateLimitError",
-                            "429",
-                            "InternalServerError",
-                            "Connection error",
-                            "APIConnectionError",
-                            "timeout",
-                            "Timeout",
-                            "temporarily unavailable",
-                        )
-                    )
-                    rate_limited = "RateLimitError" in last_error_msg or "429" in last_error_msg
+                    transient = _is_transient_llm_error(last_error_msg)
+                    rate_limited = rate_limited or _is_rate_limited_error(last_error_msg)
                     if not transient or attempt >= retry_count:
                         break
-                    await asyncio.sleep(retry_delay * attempt)
+                    sleep_for = _retry_sleep_seconds(attempt, retry_delay, last_error_msg)
+                    if sleep_for > 0:
+                        await asyncio.sleep(sleep_for)
             if response is not None:
                 break
-            if not rate_limited and not any(
-                marker in last_error_msg
-                for marker in ("InternalServerError", "Connection error", "APIConnectionError", "timeout", "Timeout", "temporarily unavailable")
-            ):
+            if not _is_transient_llm_error(last_error_msg):
                 break
 
         if response is None:
             if rate_limited:
                 raise RuntimeError(
                     f"LLM Rate Limit Reached after {retry_count} attempts across "
-                    f"{len(model_candidates)} model(s): {last_error_msg}"
+                    f"{len(model_candidates)} model(s): {last_error_msg}. "
+                    "Try: increase provider quota, lower parallel sessions, and tune "
+                    "LLM_API_MAX_CONCURRENCY / LLM_API_MAX_ATTEMPTS / LLM_API_RETRY_DELAY_SECONDS."
                 )
             raise RuntimeError(
                 f"LLM API Error after {retry_count} attempts across "
