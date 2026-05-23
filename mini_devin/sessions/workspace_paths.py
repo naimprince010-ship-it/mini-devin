@@ -20,7 +20,7 @@ def _ensure_writable_workspace_root(root: str) -> str:
     except PermissionError:
         fallback = os.path.abspath(
             os.path.expanduser(
-                os.environ.get("PLODDER_AGENT_WORKSPACE_ROOT_FALLBACK", "/tmp/agent-workspace")
+                os.environ.get("PLODDER_AGENT_WORKSPACE_ROOT_FALLBACK", "/workspace/agent-workspace")
             )
         )
         os.makedirs(fallback, exist_ok=True)
