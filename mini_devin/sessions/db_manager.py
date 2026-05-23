@@ -218,6 +218,7 @@ class DatabaseSessionManager:
                     llm_client=llm_client,
                     working_directory=working_directory,
                     max_iterations=max_iterations,
+                    artifact_dir=str(self.artifacts_base_dir),
                     use_sandbox=use_sandbox,
                     auto_git_commit=auto_git_commit,
                     git_push=git_push,
@@ -556,6 +557,7 @@ class DatabaseSessionManager:
                     llm_client=llm_client,
                     working_directory=resolved_wd,
                     max_iterations=db_session.max_iterations,
+                    artifact_dir=str(self.artifacts_base_dir),
                     session_id=session_id,
                 )
                 raw_conv = getattr(db_session, "conversation_json", None)

@@ -186,6 +186,7 @@ class SessionManager:
                 llm_client=llm_client,
                 working_directory=working_directory,
                 max_iterations=max_iterations,
+                artifact_dir=str(self.artifacts_base_dir),
                 session_id=session_id,
             )
             try:
