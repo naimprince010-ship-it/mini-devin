@@ -16,10 +16,11 @@ services:
     networks:
       - plodder-network
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:80"]
-      interval: 30s
+      test: ["CMD-SHELL", "pidof nginx >/dev/null && test -f /usr/share/nginx/html/index.html"]
+      interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
+      start_period: 15s
 
   # PostgreSQL Database
   postgres:
