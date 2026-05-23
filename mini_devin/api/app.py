@@ -1277,7 +1277,7 @@ async def create_session(raw_request: Request):
     try:
         os.makedirs(_workspaces_root, exist_ok=True)
     except PermissionError:
-        fallback_root = os.environ.get("PLODDER_AGENT_WORKSPACE_ROOT_FALLBACK", "/workspace/agent-workspace")
+        fallback_root = os.environ.get("PLODDER_AGENT_WORKSPACE_ROOT_FALLBACK", "/data/agent-workspace")
         os.makedirs(fallback_root, exist_ok=True)
         print(
             f"[API] create_session: workspace root '{_workspaces_root}' not writable; "
