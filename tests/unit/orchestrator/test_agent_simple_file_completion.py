@@ -257,3 +257,23 @@ def test_browser_open_emits_visible_browser_event():
             "query": "Open halalzi",
         }
     ]
+
+
+def test_browser_open_rejects_localhost_with_guidance():
+    seen = []
+    agent = Agent(
+        llm_client=MagicMock(),
+        auto_verify=False,
+        callbacks={"on_browser_event": lambda payload: seen.append(payload)},
+    )
+
+    result = asyncio.run(
+        agent._execute_tool(
+            "browser_open",
+            {"url": "http://localhost:3001", "note": "Open local dev server"},
+        )
+    )
+
+    assert "cannot load localhost/127.0.0.1" in result
+    assert "Use live_preview" in result
+    assert seen == []

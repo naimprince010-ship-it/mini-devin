@@ -1854,6 +1854,15 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             url = str(arg_dict.get("url", "") or "").strip()
             if not re.match(r"^https?://", url, re.IGNORECASE):
                 return "Error: browser_open requires an absolute http:// or https:// URL."
+            from urllib.parse import urlparse
+
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+            if host in {"localhost", "127.0.0.1", "::1"}:
+                return (
+                    "Error: browser_open cannot load localhost/127.0.0.1 from the remote Plodder Browser. "
+                    "Use live_preview for a local dev server, or browser_playwright/browser_fetch for a public URL."
+                )
             payload = {
                 "event_type": "navigate",
                 "url": url,
