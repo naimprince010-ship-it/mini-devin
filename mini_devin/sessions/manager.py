@@ -119,7 +119,7 @@ class SessionManager:
         artifacts_base_dir: str = "./runs",
         max_concurrent_sessions: int = 10,
     ):
-        self.artifacts_base_dir = Path(artifacts_base_dir)
+        self.artifacts_base_dir = self._ensure_writable_artifacts_dir(artifacts_base_dir)
         self.max_concurrent_sessions = max_concurrent_sessions
         
         # Session storage
@@ -131,6 +131,23 @@ class SessionManager:
         
         # Locks for thread safety
         self._session_lock = asyncio.Lock()
+
+    @staticmethod
+    def _ensure_writable_artifacts_dir(base_dir: str) -> Path:
+        """Return a writable artifacts directory, falling back when needed."""
+        configured = (base_dir or os.environ.get("PLODDER_ARTIFACTS_BASE_DIR") or "./runs").strip()
+        candidate = Path(os.path.abspath(os.path.expanduser(configured)))
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate
+        except PermissionError:
+            fallback = os.environ.get(
+                "PLODDER_ARTIFACTS_BASE_DIR_FALLBACK",
+                "/var/tmp/plodder-runs",
+            ).strip() or "/var/tmp/plodder-runs"
+            fallback_path = Path(os.path.abspath(os.path.expanduser(fallback)))
+            fallback_path.mkdir(parents=True, exist_ok=True)
+            return fallback_path
     
     async def create_session(
         self,
