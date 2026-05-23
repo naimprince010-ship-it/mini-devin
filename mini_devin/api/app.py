@@ -1274,7 +1274,16 @@ async def create_session(raw_request: Request):
         workspace_id = f"{_workspace_slug_from_git_url(requested_dir)}-{uuid.uuid4().hex[:8]}"
 
     # Determine working directory (empty = fresh folder; URL = git clone like a local IDE repo)
-    os.makedirs(_workspaces_root, exist_ok=True)
+    try:
+        os.makedirs(_workspaces_root, exist_ok=True)
+    except PermissionError:
+        fallback_root = os.environ.get("PLODDER_AGENT_WORKSPACE_ROOT_FALLBACK", "/tmp/agent-workspace")
+        os.makedirs(fallback_root, exist_ok=True)
+        print(
+            f"[API] create_session: workspace root '{_workspaces_root}' not writable; "
+            f"falling back to '{fallback_root}'"
+        )
+        _workspaces_root = fallback_root
     if requested_dir in ("", ".", "./"):
         working_dir = os.path.join(_workspaces_root, workspace_id)
         os.makedirs(working_dir, exist_ok=True)
