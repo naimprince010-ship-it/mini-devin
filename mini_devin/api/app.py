@@ -1908,14 +1908,61 @@ async def get_session_history(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     agent = session_manager._agents.get(session_id)
 
+    def _normalize_user_content(raw: str) -> str:
+        """Convert internal task/follow-up wrapper prompts back to user-visible text."""
+        text = (raw or "").strip()
+        if not text:
+            return ""
+
+        # Internal wrapper often includes a standalone line like: Task: <user text>
+        task_match = re.search(r"(?im)^task:\s*(.+)$", text)
+        if task_match:
+            return task_match.group(1).strip()
+
+        # Follow-up wrappers may include this prefix in generated context blocks.
+        followup_match = re.search(r"(?im)^follow-up(?:\s+from\s+user)?:\s*(.+)$", text)
+        if followup_match:
+            return followup_match.group(1).strip()
+
+        return text
+
+    def _augment_with_task_descriptions(messages: list[dict], tasks: list[Any]) -> list[dict]:
+        """Ensure user-entered task texts appear in history even if prompt wrappers hid them."""
+        seen_user_texts = {
+            (m.get("content") or "").strip().lower()
+            for m in messages
+            if m.get("role") == "user" and (m.get("content") or "").strip()
+        }
+        for t in sorted(tasks, key=lambda x: x.created_at or datetime.min):
+            desc = (getattr(t, "description", "") or "").strip()
+            if not desc:
+                continue
+            key = desc.lower()
+            if key in seen_user_texts:
+                continue
+            messages.append(
+                {
+                    "role": "user",
+                    "content": desc,
+                    "synthetic": True,
+                    "source": "task_description",
+                    "task_id": getattr(t, "task_id", None),
+                }
+            )
+            seen_user_texts.add(key)
+        return messages
+
     def _serialize_llm_messages(conv) -> list[dict]:
         out = []
         for msg in conv:
             if msg.role == "system":
                 continue
+            content = msg.content or ""
+            if msg.role == "user":
+                content = _normalize_user_content(content)
             entry = {
                 "role": msg.role,
-                "content": msg.content or "",
+                "content": content,
             }
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 tool_calls_out = []
@@ -1934,6 +1981,8 @@ async def get_session_history(session_id: str):
 
     if agent and getattr(agent, "llm", None):
         messages = _serialize_llm_messages(agent.llm.conversation)
+        tasks = await session_manager.list_tasks(session_id)
+        messages = _augment_with_task_descriptions(messages, tasks)
         return {
             "messages": messages,
             "session_id": session_id,
@@ -1950,7 +1999,11 @@ async def get_session_history(session_id: str):
     for row in stored:
         if row.get("role") == "system":
             continue
-        entry = {"role": row.get("role", "user"), "content": row.get("content") or ""}
+        role = row.get("role", "user")
+        content = row.get("content") or ""
+        if role == "user":
+            content = _normalize_user_content(content)
+        entry = {"role": role, "content": content}
         if row.get("tool_calls"):
             tool_calls_out = []
             for tc in row["tool_calls"]:
@@ -1969,6 +2022,8 @@ async def get_session_history(session_id: str):
                     tool_calls_out.append({"name": str(tc.get("name", "")), "args": tc.get("args", {})})
             entry["tool_calls"] = tool_calls_out
         messages.append(entry)
+    tasks = await session_manager.list_tasks(session_id)
+    messages = _augment_with_task_descriptions(messages, tasks)
     return {"messages": messages, "session_id": session_id, "total": len(messages), "source": "database"}
 
 @app.get("/api/sessions/{session_id}/tasks")
