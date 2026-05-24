@@ -42,13 +42,30 @@ function formatRelativeTime(date: string | Date): string {
   return `${Math.floor(diff / 86400000)}d ago`;
 }
 
-// GPT-4o pricing (per 1M tokens)
-const COST_PER_1M_INPUT = 2.50;
-const COST_PER_1M_OUTPUT = 10.00;
+// Per-1M token pricing snapshot for estimates shown in the chat UI.
+const MODEL_PRICING: { key: string; input: number; output: number }[] = [
+  { key: 'gpt-4o-mini', input: 0.15, output: 0.60 },
+  { key: 'gpt-4o', input: 2.50, output: 10.00 },
+  { key: 'gpt-4.1-mini', input: 0.40, output: 1.60 },
+  { key: 'gpt-4.1', input: 2.00, output: 8.00 },
+];
 
-function calcEstimatedCost(promptTokens: number, completionTokens: number): string {
-  const cost = (promptTokens / 1_000_000) * COST_PER_1M_INPUT
-    + (completionTokens / 1_000_000) * COST_PER_1M_OUTPUT;
+function getModelPricing(modelId: string): { input: number; output: number } | null {
+  const normalized = (modelId || '').toLowerCase();
+  if (!normalized || normalized === 'auto') {
+    return null;
+  }
+  const hit = MODEL_PRICING.find((p) => normalized.includes(p.key));
+  return hit ? { input: hit.input, output: hit.output } : null;
+}
+
+function calcEstimatedCost(modelId: string, promptTokens: number, completionTokens: number): string {
+  const pricing = getModelPricing(modelId);
+  if (!pricing) {
+    return 'N/A';
+  }
+  const cost = (promptTokens / 1_000_000) * pricing.input
+    + (completionTokens / 1_000_000) * pricing.output;
   if (cost < 0.001) return '<$0.001';
   return `$${cost.toFixed(3)}`;
 }
@@ -69,6 +86,7 @@ export function TaskPanel({
   const [showExport, setShowExport] = useState(false);
   const [modelBusy, setModelBusy] = useState(false);
   const currentTaskIdRef = useRef<string | null>(null);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const toolCallIdMapRef = useRef<Map<string, string>>(new Map()); // ws tool -> context id
 
@@ -367,6 +385,29 @@ export function TaskPanel({
     }
   }, [streamingContent, monologueContent, tasks]);
 
+  useEffect(() => {
+    if (!showExport) return;
+
+    const onDocumentMouseDown = (event: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(event.target as Node)) {
+        setShowExport(false);
+      }
+    };
+
+    const onDocumentKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowExport(false);
+      }
+    };
+
+    document.addEventListener('mousedown', onDocumentMouseDown);
+    document.addEventListener('keydown', onDocumentKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onDocumentMouseDown);
+      document.removeEventListener('keydown', onDocumentKeyDown);
+    };
+  }, [showExport]);
+
   const handleSubmitTask = async () => {
     const desc = taskDescription.trim();
     if (!desc) return;
@@ -475,6 +516,29 @@ export function TaskPanel({
     }
   };
 
+  const handleDismissClarification = async () => {
+    if (isSubmittingAnswer) return;
+    setClarificationQuestion(null);
+    events.dismissClarification();
+    setClarificationAnswer('');
+
+    setIsSubmittingAnswer(true);
+    try {
+      const response = await fetch(`${getApiBase()}/sessions/${session.session_id}/answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ answer: 'Proceed with your best guess.' })
+      });
+      if (!response.ok) {
+        toast.error('Failed to dismiss clarification', 'The agent may still be waiting for input.');
+      }
+    } catch {
+      toast.error('Failed to dismiss clarification', 'Could not reach server to resume the agent.');
+    } finally {
+      setIsSubmittingAnswer(false);
+    }
+  };
+
   const handleAnswerClarification = () => submitAnswer(clarificationAnswer);
   const handleOptionSelect = (option: string) => submitAnswer(option);
 
@@ -578,7 +642,7 @@ export function TaskPanel({
 
           <div className="flex flex-shrink-0 items-center gap-2">
             {/* Export button */}
-            <div className="relative">
+            <div ref={exportMenuRef} className="relative">
               <button
                 onClick={() => setShowExport(p => !p)}
                 className="p-1.5 rounded-lg text-[#525252] hover:text-[#a3a3a3] hover:bg-[#1a1a1a] transition-colors"
@@ -589,7 +653,7 @@ export function TaskPanel({
               {showExport && (
                 <div className="absolute right-0 top-full mt-1 bg-[#111111] border border-[#262626] rounded-xl shadow-2xl p-3 z-50 min-w-[160px]">
                   <p className="text-[10px] uppercase tracking-wider text-[#525252] mb-2 font-bold">Export As</p>
-                  <ExportButtons sessionId={session.session_id} />
+                  <ExportButtons sessionId={session.session_id} onDone={() => setShowExport(false)} />
                 </div>
               )}
             </div>
@@ -693,10 +757,11 @@ export function TaskPanel({
             <DollarSign size={11} className="text-emerald-500/70" />
             <span className="text-[11px] font-mono text-[#737373]">
               {calcEstimatedCost(
+                sessionModel,
                 events.tokenUsage.prompt_tokens,
                 events.tokenUsage.completion_tokens
               )}
-              <span className="text-[#525252]"> est. cost</span>
+              <span className="text-[#525252]">{getModelPricing(sessionModel) ? ' est. cost' : ' cost unavailable'}</span>
             </span>
           </div>
 
@@ -911,7 +976,7 @@ export function TaskPanel({
                   <h3 className="font-semibold text-sm tracking-wide">Agent Needs Your Input</h3>
                 </div>
                 <button
-                  onClick={() => { setClarificationQuestion(null); events.dismissClarification(); }}
+                  onClick={handleDismissClarification}
                   className="text-[#737373] hover:text-white transition-colors"
                   title="Dismiss — agent will make its best guess"
                 >
@@ -982,7 +1047,7 @@ export function TaskPanel({
 
               <div className="p-4 border-t border-[#262626] bg-[#0f0f0f]/50 flex justify-end gap-3">
                 <button
-                  onClick={() => { setClarificationQuestion(null); events.dismissClarification(); }}
+                  onClick={handleDismissClarification}
                   className="px-4 py-2 text-xs font-semibold text-[#a3a3a3] hover:text-white transition-colors"
                 >
                   Ignore

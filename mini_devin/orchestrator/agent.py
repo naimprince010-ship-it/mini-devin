@@ -29,6 +29,8 @@ from ..schemas.state import (
     TaskGoal,
     TaskState,
     TaskStatus,
+    TaskType,
+    StepStatus,
 )
 from ..skills.playbook import discover_repo_root, load_playbook_markdown
 from ..schemas.verification import (
@@ -126,20 +128,25 @@ def _make_system_prompt() -> str:
             "- Use standard Linux commands (`python3`, `pip3`, etc.).\n"
             "- Never use Windows drive paths (`C:\\\\`, `G:\\\\`)."
         )
-    github_note = ""
-    if os.environ.get("GITHUB_TOKEN", "").strip():
-        github_note = (
-            "\n## GitHub (``GITHUB_TOKEN`` is set — use a PR-based workflow)\n"
-            "- On a cloned GitHub repo, **avoid committing large features directly to the default branch** when a review is expected.\n"
-            "- Preferred sequence: ``github`` **get_repo_context** / **get_issue** when you are working from a GitHub issue → ``git`` **checkout_branch** "
-            "(or ``github`` **create_branch**) → implement with ``editor``/``terminal`` → run verification/tests → "
-            "``git``/**github** **commit** → **create_pr** (clear title/body). "
-            'For ``base_branch``, omit it or set ``\"default\"`` so the **GitHub repo default** (``main`` or ``master``) is used.\n'
-            "- If the user gives an issue number like ``#123``, fetch it first with ``github`` **get_issue** and use the issue title/body/comments/labels as the task spec.\n"
-            "- Use **get_pr_status** with ``pr_number`` to inspect **mergeable**, **mergeable_state**, and **CI combined status** before asking a human to merge.\n"
-            "- Use **merge_pr** only when your instructions explicitly allow merging; many teams require human approval on GitHub.\n"
-            "- Pass ``repo_path`` as the workspace root (the UI working directory; use ``.`` only if that is the repo root).\n"
-            "- **Auto git push**: if ``auto_git_commit`` + push is enabled, Plodder **skips ``git push`` on the remote default branch** unless you set ``PLODDER_GIT_PUSH_DEFAULT_BRANCH=1`` (local commits still run).\n"
+    has_github_token = bool(os.environ.get("GITHUB_TOKEN", "").strip())
+    github_note = (
+        "\n## Git/GitHub Workflow (always follow when repo work is requested)\n"
+        "- On a cloned repo, **avoid committing large features directly to the default branch** when review is expected.\n"
+        "- Preferred sequence: inspect issue/task context → create/switch to a feature branch → implement with ``editor``/``terminal`` → run verification/tests → commit with clear message → push/PR when auth permits.\n"
+        "- If explicit GitHub tools are unavailable, perform the same flow with terminal git commands and report exact next commands needed from the user.\n"
+        "- If user gives an issue number like ``#123``, treat it as the source spec and align implementation + commit/PR text to that issue.\n"
+        "- Before merge-ready claims, verify branch status and CI/test outputs; do not claim merge-ready without evidence.\n"
+        "- Do not push or merge unless asked (or unless task explicitly requires it).\n"
+    )
+    if has_github_token:
+        github_note += (
+            "\n## GitHub API tools (``GITHUB_TOKEN`` detected)\n"
+            "- Preferred sequence with GitHub tools: ``github`` **get_repo_context** / **get_issue** → ``git`` **checkout_branch** (or ``github`` **create_branch**) → implement + verify → ``git``/**github** **commit** → **create_pr**.\n"
+            'For ``base_branch``, omit it or set ``\"default\"`` so the repo default (``main`` or ``master``) is used.\n'
+            "- Use **get_pr_status** with ``pr_number`` to check **mergeable**, **mergeable_state**, and combined CI status before requesting merge.\n"
+            "- Use **merge_pr** only when instructions explicitly allow merging.\n"
+            "- Pass ``repo_path`` as the workspace root (use ``.`` only if that is repo root).\n"
+            "- **Auto git push**: if ``auto_git_commit`` + push is enabled, Plodder skips ``git push`` on remote default branch unless ``PLODDER_GIT_PUSH_DEFAULT_BRANCH=1`` is set (local commits still run).\n"
         )
     return _SYSTEM_PROMPT_TEMPLATE.format(os_env_note=os_note, github_note=github_note)
 
@@ -191,6 +198,11 @@ _SYSTEM_PROMPT_TEMPLATE = """
 1. **Think** — Before tool calls, your assistant text must include a short rationale prefixed with **Think:** and tied to a step in workspace `PLAN.md` (e.g. STEP-2).
 2. **Act** — Every `terminal` and `editor` tool call **must** include **`plan_step`** (string, e.g. `"STEP-2"`) matching the plan step you are executing.
 3. **Observe** — Read each tool result fully (stdout/stderr, exit code, and **Observe (filesystem)**). On non-zero exit codes, diagnose and self-correct with a new tool call; do not give up after one failure.
+
+## Anti-loop guard (strict)
+- Do not run the exact same terminal command repeatedly without new input/state change.
+- If a command returns the same output twice, switch strategy (read file, inspect config, check different signal) instead of retrying blindly.
+- If blocked by auth/permissions/secrets, stop retrying and ask the user for the missing prerequisite.
 
 ## Workflow
 1. **Brief plan** (2-3 lines max): State what you will do; align with `PLAN.md` at the workspace root (created/updated for each task).
@@ -600,6 +612,24 @@ class Agent:
                 except OSError:
                     pass
 
+        try:
+            cap_w = int((os.environ.get("PLODDER_WORKING_MEMORY_PROMPT_TOKENS") or "1200").strip() or "1200")
+            wm = self.get_memory_context(max_tokens=cap_w)
+            if wm.strip():
+                chunks.append("## Working memory snapshot\n```text\n" + wm + "\n```")
+        except Exception:
+            pass
+
+        if self._use_conversation_memory:
+            try:
+                lesson_limit = int((os.environ.get("PLODDER_RECENT_LESSONS_LIMIT") or "5").strip() or "5")
+                lessons = [lesson.strip() for lesson in self.get_recent_lessons(limit=lesson_limit) if lesson.strip()]
+                if lessons:
+                    lesson_block = "\n".join(f"- {lesson[:360]}" for lesson in lessons)
+                    chunks.append("## Recent lessons learned\n" + lesson_block)
+            except Exception:
+                pass
+
         if not chunks:
             return []
         return [
@@ -609,6 +639,128 @@ class Agent:
                 + "\n\n_(Workspace context — refreshed each model call.)_",
             }
         ]
+
+    def _seed_task_working_memory(self, task: TaskState, resumed_plan: list[str] | None = None) -> None:
+        """Load the live task goal, constraints, and any resumed plan into working memory."""
+        try:
+            goal = (task.goal.description or "").strip()
+            if goal:
+                self.add_to_memory(goal, item_type="goal", priority="critical")
+
+            criteria = [c.strip() for c in (task.goal.acceptance_criteria or []) if c and c.strip()]
+            if criteria:
+                self.add_to_memory(
+                    "Acceptance criteria:\n" + "\n".join(f"- {c}" for c in criteria[:12]),
+                    item_type="constraint",
+                    priority="high",
+                )
+
+            constraint_bits: list[str] = []
+            if task.constraints.require_tests:
+                constraint_bits.append("tests required")
+            if task.constraints.require_lint:
+                constraint_bits.append("lint required")
+            if task.constraints.allowed_directories:
+                constraint_bits.append(
+                    "allowed directories: " + ", ".join(task.constraints.allowed_directories[:10])
+                )
+            if constraint_bits:
+                self.add_to_memory(
+                    "Task constraints: " + "; ".join(constraint_bits),
+                    item_type="constraint",
+                    priority="high",
+                )
+
+            if self.working_directory:
+                self.add_to_memory(
+                    f"Workspace root: {self.working_directory}",
+                    item_type="context",
+                    priority="medium",
+                )
+
+            if resumed_plan:
+                self.add_to_memory(
+                    "Resumed plan steps:\n" + "\n".join(f"- {step}" for step in resumed_plan[:20]),
+                    item_type="plan",
+                    priority="high",
+                )
+        except Exception as e:
+            self._log(f"Warning: failed to seed working memory: {e}")
+
+    def _build_task_retrieval_context(self, task: TaskState) -> str:
+        """Collect a compact retrieval block from code search and long-term memory."""
+        parts: list[str] = []
+        queries = self._task_retrieval_queries(task)
+        if not queries:
+            return ""
+
+        try:
+            if self.working_directory and not self._memory_indexed:
+                self.index_workspace()
+            code_blocks: list[str] = []
+            for label, query in queries[:3]:
+                hits = self.search_code(query, max_results=3)
+                if not hits:
+                    continue
+                lines: list[str] = []
+                for hit in hits[:3]:
+                    if hasattr(hit, "to_dict"):
+                        data = hit.to_dict()
+                        file_path = data.get("location", {}).get("file_path") or data.get("file_path") or ""
+                        name = data.get("name") or data.get("symbol_name") or data.get("title") or ""
+                        kind = data.get("symbol_type") or data.get("type") or "symbol"
+                        detail = data.get("docstring") or data.get("summary") or data.get("content") or ""
+                        preview = str(detail).replace("\n", " ")[:260]
+                        loc = file_path or data.get("path") or ""
+                        lines.append(f"- [{kind}] {name} {loc}: {preview}".strip())
+                    else:
+                        text = str(hit)
+                        lines.append(f"- {text[:320]}")
+                code_blocks.append(f"{label}:\n" + "\n".join(lines))
+            if code_blocks:
+                parts.append("Relevant code search results:\n" + "\n\n".join(code_blocks))
+        except Exception as e:
+            self._log(f"Code retrieval skipped: {e}")
+
+        if self._use_conversation_memory:
+            try:
+                mem_block = self.get_context_from_memory("\n".join(q for _, q in queries[:2]))
+                if mem_block.strip():
+                    parts.append("Relevant past memory:\n" + mem_block)
+            except Exception as e:
+                self._log(f"Memory retrieval skipped: {e}")
+
+        return "\n\n---\n\n".join(parts)
+
+    @staticmethod
+    def _task_retrieval_queries(task: TaskState) -> list[tuple[str, str]]:
+        """Return prioritized retrieval queries tailored to the task type."""
+        description = (task.goal.description or "").strip()
+        criteria = " ".join(c.strip() for c in (task.goal.acceptance_criteria or []) if c and c.strip())
+        combined = " ".join(part for part in (description, criteria) if part)
+        ttype = getattr(task, "task_type", None)
+        task_type = getattr(ttype, "value", str(ttype or "general")).lower()
+
+        hint_map: dict[str, list[str]] = {
+            "bug_fix": ["bug fix error traceback failing test regression", "debug failure root cause"],
+            "feature": ["feature implementation endpoint route component api", "new functionality"],
+            "refactor": ["refactor cleanup restructure simplify similar code", "shared helper extraction"],
+            "testing": ["test pytest unit integration assertion", "verification test coverage"],
+            "documentation": ["documentation readme comments guide explanation", "docs update"],
+            "code_review": ["review validate lint audit issues", "diff review"],
+            "exploration": ["explore inspect understand symbols", "workspace overview"],
+        }
+        hints = hint_map.get(task_type, ["implementation verify"])
+
+        queries: list[tuple[str, str]] = []
+        if combined:
+            queries.append(("task goal", combined))
+        for hint in hints:
+            if combined:
+                queries.append((hint, f"{hint} {combined}".strip()))
+            else:
+                queries.append((hint, hint))
+        return queries
 
     async def _emit_file_changed_ui(self, relative_path: str, file_content: str | None = None) -> None:
         """Notify UI (WebSocket) with full file text after a successful workspace edit."""
@@ -4090,6 +4242,35 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             self.state.current_plan = result.plan
         
         return result
+
+    async def auto_replan_from_repeated_failure(self, error: str) -> bool:
+        """Replan the current task after repeated failures using the active plan step."""
+        if not self.state.current_task or not self.state.current_plan:
+            return False
+
+        failed_step = None
+        for step in self.state.current_plan.steps:
+            if step.status in (StepStatus.PENDING, StepStatus.IN_PROGRESS):
+                failed_step = step
+                break
+
+        if not failed_step:
+            return False
+
+        try:
+            self.mark_plan_step_failed(failed_step.step_id, error)
+        except Exception:
+            pass
+
+        result = await self.replan_from_failure(failed_step.step_id, error)
+        if result.success and result.plan:
+            self.add_to_memory(
+                f"Auto-replanned after repeated failure on step {failed_step.step_id}",
+                item_type="decision",
+                priority="high",
+            )
+            return True
+        return False
     
     def get_next_plan_step(self):
         """
@@ -5270,6 +5451,10 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                     "Planner: `PLAN.md` updated at workspace root.",
                     is_token=False,
                 )
+                self._seed_task_working_memory(
+                    task,
+                    resumed_plan=list(wl.current_plan) if resumed and wl and wl.current_plan else None,
+                )
             except Exception as e:
                 self._log(f"Planner sync skipped: {e}")
         
@@ -5287,6 +5472,7 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 pass
 
         _bench_ctx = getattr(self, "_benchmark_context_injection", None)
+        _retrieval_ctx = self._build_task_retrieval_context(task)
 
         # Add task description to conversation
         _context_prefix_parts: list[str] = []
@@ -5294,6 +5480,8 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             _context_prefix_parts.append(_proj_ctx)
         if _bench_ctx:
             _context_prefix_parts.append("Benchmark lessons for better reliability:\n" + _bench_ctx)
+        if _retrieval_ctx:
+            _context_prefix_parts.append("Task retrieval context:\n" + _retrieval_ctx)
         _proj_prefix = "\n\n" + "\n\n---\n\n".join(_context_prefix_parts) + "\n\n---\n" if _context_prefix_parts else ""
         _rtc = _runtime_context_block(self.working_directory)
         task_message = f"""{_proj_prefix}{_rtc}
@@ -5527,8 +5715,11 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 # Parse exit code from terminal output if available
                                 if tc.name == "terminal" and "Exit code:" in result:
                                     try:
-                                        exit_code_str = result.split("Exit code:")[-1].strip()
-                                        exit_code = int(exit_code_str)
+                                        # Parse the first integer after "Exit code:" even when
+                                        # additional sections (e.g. Observe snapshot) follow.
+                                        m = re.search(r"Exit code:\\s*(-?\\d+)", result)
+                                        if m:
+                                            exit_code = int(m.group(1))
                                     except (ValueError, TypeError):
                                         pass
                                         
@@ -5604,6 +5795,14 @@ Call a tool (editor or terminal) immediately as your first action."""
                                                     err_txt,
                                                     {"name": tname, "arguments": good_args},
                                                 )
+                                                try:
+                                                    self.add_to_memory(
+                                                        f"Recovered from {tname} failure by using {json.dumps(good_args, default=str)[:280]}",
+                                                        item_type="lesson",
+                                                        priority="high",
+                                                    )
+                                                except Exception:
+                                                    pass
                                                 self.get_conversation_memory().add_error_pattern(
                                                     error=err_txt[:400],
                                                     cause=f"{tname} tool (self-correct)",
@@ -5630,6 +5829,15 @@ Call a tool (editor or terminal) immediately as your first action."""
                                     self._same_error_streak_tool = tc.name
                                     self._same_error_streak_fp = _fp
                                     self._same_error_streak_n = 1
+
+                                try:
+                                    self.add_to_memory(
+                                        f"{tc.name} failed: {(str(result) or '')[:800]}",
+                                        item_type="error",
+                                        priority="high",
+                                    )
+                                except Exception:
+                                    pass
     
                                 if not _single_tool_batch:
                                     self._log(
@@ -5641,6 +5849,15 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 if not self._correction_engine.should_retry(error_type, retry_count):
                                     self._log("Max retries reached or error not retryable immediately")
                                     break
+
+                                try:
+                                    self.add_to_memory(
+                                        f"Retrying {tc.name} after {error_type.value}: {hint[:300]}",
+                                        item_type="decision",
+                                        priority="medium",
+                                    )
+                                except Exception:
+                                    pass
     
                                 _forced_diag = self._same_error_streak_n >= 3
                                 if _forced_diag:
@@ -5864,32 +6081,21 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 if self._correction_engine.should_replan(self._consecutive_failures):
                                     await self._trigger_callback("on_message", "🔁 **Replanning needed**: Consecutive failures exceeded limit.", is_token=False)
                                     self._consecutive_failures = 0
-                                    
-                                    # trigger replanning
-                                    if self.state.current_plan:
-                                        # Find current step
-                                        failed_step_id = None
-                                        from ..schemas.state import StepStatus
-                                        for step in self.state.current_plan.steps:
-                                            if step.status == StepStatus.PENDING or step.status == StepStatus.IN_PROGRESS:
-                                                failed_step_id = step.step_id
-                                                break
-                                                
-                                        if failed_step_id:
-                                            await self.replan_from_failure(failed_step_id, final_result)
-                                            # Force breakdown of iteration loop to let new plan take over
-                                            task.error_count += 1
-                                            # Replan must not leave orphan tool_calls on the last assistant message
-                                            for _ptc in response.tool_calls:
-                                                if _ptc.id not in _batch_answered_tool_ids:
-                                                    self.llm.add_tool_result(
-                                                        _ptc.id,
-                                                        _ptc.name,
-                                                        "Error: replan aborted before this tool_call_id received a result.",
-                                                    )
-                                                    _batch_answered_tool_ids.add(_ptc.id)
-                                            self._synthesize_tool_replies_for_open_assistant_tail()
-                                            break
+
+                                    if await self.auto_replan_from_repeated_failure(final_result):
+                                        # Force breakdown of iteration loop to let new plan take over
+                                        task.error_count += 1
+                                        # Replan must not leave orphan tool_calls on the last assistant message
+                                        for _ptc in response.tool_calls:
+                                            if _ptc.id not in _batch_answered_tool_ids:
+                                                self.llm.add_tool_result(
+                                                    _ptc.id,
+                                                    _ptc.name,
+                                                    "Error: replan aborted before this tool_call_id received a result.",
+                                                )
+                                                _batch_answered_tool_ids.add(_ptc.id)
+                                        self._synthesize_tool_replies_for_open_assistant_tail()
+                                        break
                                     
                         if task.status == TaskStatus.COMPLETED:
                             break

@@ -62,4 +62,30 @@ export default defineConfig({
     open: '/app',
     proxy: apiProxy,
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return;
+          if (id.includes('react-markdown') || id.includes('remark-') || id.includes('rehype-')) {
+            return 'markdown';
+          }
+          if (id.includes('react-syntax-highlighter') || id.includes('prismjs')) {
+            return 'syntax';
+          }
+          if (id.includes('refractor')) {
+            return 'refractor';
+          }
+          if (id.includes('monaco-editor')) {
+            return 'monaco';
+          }
+          if (id.includes('lucide-react')) {
+            return 'icons';
+          }
+          return 'vendor';
+        },
+      },
+    },
+    chunkSizeWarningLimit: 700,
+  },
 })

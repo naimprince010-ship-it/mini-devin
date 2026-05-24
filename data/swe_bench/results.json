@@ -380,5 +380,94 @@
     "started_at": "2026-05-22T14:48:18.699358+00:00",
     "finished_at": "2026-05-22T14:48:34.915265+00:00",
     "duration_s": 16.2
+  },
+  {
+    "result_id": "9a1fae94",
+    "run_id": "run-retry",
+    "task_id": "plodder_fixture__string_utils_casefold",
+    "instance_id": "plodder_fixture__string_utils_casefold",
+    "repo": "plodder-fixtures/string-utils",
+    "status": "resolved",
+    "patch": "diff --git a/string_utils.py b/string_utils.py\nindex b4c867d..b057e24 100644\n--- a/string_utils.py\n+++ b/string_utils.py\n@@ -1,3 +1,3 @@\n def contains_word(text: str, word: str) -> bool:\n     \"\"\"Return whether word appears inside text, ignoring case.\"\"\"\n-    return word in text\n+    return word.casefold() in text.casefold()",
+    "agent_log": "retry-aware fake agent",
+    "agent_session_id": "",
+    "agent_task_id": "",
+    "workspace": "E:\\temp\\pytest-of-User\\pytest-0\\test_runner_retries_failed_att0\\plodder_fixture__string_utils_casefold",
+    "attempt_count": 2,
+    "attempts": [
+      {
+        "attempt": 1,
+        "status": "unresolved",
+        "agent_session_id": "",
+        "agent_task_id": "",
+        "patch_chars": 0,
+        "test_output": "F                                                                        [100%]\n================================== FAILURES ===================================\n___________________ test_contains_word_is_case_insensitive ____________________\ntests\\test_string_utils.py:5: in test_contains_word_is_case_insensitive\n    assert contains_word(\"Hello World\", \"hello\") is True\nE   AssertionError: assert False is True\nE    +  where False = contains_word('Hello World', 'hello')\n=========================== short test summary info ===========================\nFAILED tests/test_string_utils.py::test_contains_word_is_case_insensitive - A...\n1 failed in 0.49s\n",
+        "fail_to_pass_results": {
+          "tests/test_string_utils.py::test_contains_word_is_case_insensitive": false
+        },
+        "pass_to_pass_results": {},
+        "agent_log": "retry-aware fake agent"
+      },
+      {
+        "attempt": 2,
+        "status": "resolved",
+        "agent_session_id": "",
+        "agent_task_id": "",
+        "patch_chars": 325,
+        "test_output": ".                                                                        [100%]\n1 passed in 0.08s\n",
+        "fail_to_pass_results": {
+          "tests/test_string_utils.py::test_contains_word_is_case_insensitive": true
+        },
+        "pass_to_pass_results": {},
+        "agent_log": "retry-aware fake agent"
+      }
+    ],
+    "test_output": ".                                                                        [100%]\n1 passed in 0.08s\n",
+    "fail_to_pass_results": {
+      "tests/test_string_utils.py::test_contains_word_is_case_insensitive": true
+    },
+    "pass_to_pass_results": {},
+    "error": "",
+    "started_at": "2026-05-24T15:40:28.930953+00:00",
+    "finished_at": "2026-05-24T15:40:44.680720+00:00",
+    "duration_s": 15.7
+  },
+  {
+    "result_id": "118492ec",
+    "run_id": "run-timeout",
+    "task_id": "plodder_fixture__string_utils_casefold",
+    "instance_id": "plodder_fixture__string_utils_casefold",
+    "repo": "plodder-fixtures/string-utils",
+    "status": "unresolved",
+    "patch": "",
+    "agent_log": "Agent attempt timed out after 1s.",
+    "agent_session_id": "",
+    "agent_task_id": "",
+    "workspace": "E:\\temp\\pytest-of-User\\pytest-0\\test_runner_times_out_stuck_ag0\\plodder_fixture__string_utils_casefold",
+    "attempt_count": 1,
+    "attempts": [
+      {
+        "attempt": 1,
+        "status": "unresolved",
+        "agent_session_id": "",
+        "agent_task_id": "",
+        "patch_chars": 0,
+        "test_output": "F                                                                        [100%]\n================================== FAILURES ===================================\n___________________ test_contains_word_is_case_insensitive ____________________\ntests\\test_string_utils.py:5: in test_contains_word_is_case_insensitive\n    assert contains_word(\"Hello World\", \"hello\") is True\nE   AssertionError: assert False is True\nE    +  where False = contains_word('Hello World', 'hello')\n=========================== short test summary info ===========================\nFAILED tests/test_string_utils.py::test_contains_word_is_case_insensitive - A...\n1 failed in 0.50s\n",
+        "fail_to_pass_results": {
+          "tests/test_string_utils.py::test_contains_word_is_case_insensitive": false
+        },
+        "pass_to_pass_results": {},
+        "agent_log": "Agent attempt timed out after 1s."
+      }
+    ],
+    "test_output": "F                                                                        [100%]\n================================== FAILURES ===================================\n___________________ test_contains_word_is_case_insensitive ____________________\ntests\\test_string_utils.py:5: in test_contains_word_is_case_insensitive\n    assert contains_word(\"Hello World\", \"hello\") is True\nE   AssertionError: assert False is True\nE    +  where False = contains_word('Hello World', 'hello')\n=========================== short test summary info ===========================\nFAILED tests/test_string_utils.py::test_contains_word_is_case_insensitive - A...\n1 failed in 0.50s\n",
+    "fail_to_pass_results": {
+      "tests/test_string_utils.py::test_contains_word_is_case_insensitive": false
+    },
+    "pass_to_pass_results": {},
+    "error": "",
+    "started_at": "2026-05-24T15:40:44.755276+00:00",
+    "finished_at": "2026-05-24T15:40:53.223131+00:00",
+    "duration_s": 8.5
   }
 ]

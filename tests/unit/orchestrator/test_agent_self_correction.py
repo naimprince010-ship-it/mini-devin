@@ -1,7 +1,8 @@
 """Unit tests for the Agent Self-Correction Engine."""
 
 import pytest
-from unittest.mock import MagicMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 from mini_devin.reliability.self_correction import (
     SelfCorrectionEngine,
@@ -10,6 +11,8 @@ from mini_devin.reliability.self_correction import (
     terminal_sanity_check,
     incremental_recovery_hint,
 )
+from mini_devin.schemas.state import TaskState, TaskGoal, PlanState, PlanStep, StepStatus, TaskStatus
+from mini_devin.orchestrator.agent import Agent
 
 class TestSelfCorrectionEngine:
     
@@ -251,6 +254,49 @@ def test_incremental_recovery_hint_missing_port_tools():
     low = h.lower()
     assert "lsof" in low
     assert "different port" in low or "another port" in low
+
+
+class TestAgentAutoReplan:
+    @pytest.fixture
+    def agent(self):
+        llm = MagicMock()
+        llm.conversation = []
+        llm.add_user_message = MagicMock()
+        llm.add_assistant_message = MagicMock()
+        llm.add_tool_result = MagicMock()
+        llm.get_usage_stats = MagicMock(return_value={"total_tokens": 0})
+        agent = Agent(llm_client=llm, verbose=False)
+        agent._use_conversation_memory = True
+        agent._conversation_memory = None
+        return agent
+
+    def test_auto_replan_from_repeated_failure_marks_step_and_replans(self, agent, monkeypatch):
+        task = TaskState(
+            task_id="task-1",
+            goal=TaskGoal(description="Fix login", acceptance_criteria=["works"]),
+            status=TaskStatus.IN_PROGRESS,
+        )
+        plan = PlanState(
+            plan_id="plan-1",
+            task_id="task-1",
+            steps=[
+                PlanStep(step_id="step-1", description="Inspect", expected_outcome="understand", status=StepStatus.IN_PROGRESS),
+                PlanStep(step_id="step-2", description="Fix", expected_outcome="code changed"),
+            ],
+        )
+        agent.state.current_task = task
+        agent.state.current_plan = plan
+
+        agent.mark_plan_step_failed = MagicMock(side_effect=agent.mark_plan_step_failed)
+        agent.add_to_memory = MagicMock(return_value="mem-1")
+        agent.replan_from_failure = AsyncMock(return_value=MagicMock(success=True, plan=plan))
+
+        ok = asyncio.run(agent.auto_replan_from_repeated_failure("same failure repeated"))
+
+        assert ok is True
+        agent.mark_plan_step_failed.assert_called_once_with("step-1", "same failure repeated")
+        agent.replan_from_failure.assert_called_once_with("step-1", "same failure repeated")
+        agent.add_to_memory.assert_called()
 
 
 def test_incremental_recovery_hint_cwd_mismatch():

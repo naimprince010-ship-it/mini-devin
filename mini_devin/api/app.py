@@ -19,6 +19,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Requ
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from dotenv import load_dotenv
@@ -26,6 +27,7 @@ import time
 import os
 import re
 import shutil
+import tempfile
 import subprocess
 import hashlib
 import mimetypes
@@ -1687,6 +1689,36 @@ async def read_file_content(session_id: str, path: str):
         return {"path": path, "content": content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/sessions/{session_id}/workspace.zip")
+@app.get("/sessions/{session_id}/workspace.zip")
+async def download_workspace_zip(session_id: str):
+    """Download the full session workspace as a zip archive."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    base_dir = os.path.abspath(session.working_directory or ".")
+    if not os.path.isdir(base_dir):
+        raise HTTPException(status_code=404, detail="Workspace directory not found")
+
+    safe_session = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)[:32] or "session"
+    temp_dir = tempfile.mkdtemp(prefix=f"plodder-workspace-{safe_session}-")
+    archive_base = os.path.join(temp_dir, f"workspace-{safe_session}")
+
+    try:
+        archive_path = shutil.make_archive(archive_base, "zip", root_dir=base_dir)
+    except Exception as exc:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create workspace zip: {exc}") from exc
+
+    return FileResponse(
+        path=archive_path,
+        filename=f"workspace-{safe_session}.zip",
+        media_type="application/zip",
+        background=BackgroundTask(shutil.rmtree, temp_dir, True),
+    )
 
 
 @app.get("/api/sessions/{session_id}/live-preview/status")
