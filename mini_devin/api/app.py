@@ -10,6 +10,7 @@ from typing import Any, AsyncGenerator, Dict, List
 import uuid
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import asyncio
 import sys
@@ -191,6 +192,65 @@ def _check_rate_limit(key: str, max_calls: int, window_seconds: int = 60) -> boo
     bucket["count"] += 1
     _rate_buckets[key] = bucket
     return True
+
+
+def _browser_trace_file_path() -> Path:
+    trace_dir = (os.getenv("PLODDER_BROWSER_TRACE_DIR") or "/var/tmp/plodder-browser-traces").strip()
+    return Path(trace_dir).expanduser().resolve() / "browser-actions.jsonl"
+
+
+def _read_browser_trace_entries(
+    *,
+    limit: int = 100,
+    status: str | None = None,
+    action: str | None = None,
+) -> list[dict[str, Any]]:
+    file_path = _browser_trace_file_path()
+    if not file_path.is_file():
+        return []
+
+    safe_limit = max(1, min(limit, 500))
+    status_filter = (status or "").strip().lower() or None
+    action_filter = (action or "").strip().lower() or None
+
+    entries: list[dict[str, Any]] = []
+    try:
+        lines = file_path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+
+    for raw in reversed(lines):
+        if not raw.strip():
+            continue
+        try:
+            row = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+
+        row_status = str(row.get("status") or "").strip().lower()
+        row_action = str(row.get("action") or "").strip().lower()
+        if status_filter and row_status != status_filter:
+            continue
+        if action_filter and row_action != action_filter:
+            continue
+
+        entries.append(row)
+        if len(entries) >= safe_limit:
+            break
+    return entries
+
+
+def _find_browser_trace_by_id(trace_id: str) -> dict[str, Any] | None:
+    target = (trace_id or "").strip()
+    if not target:
+        return None
+    matches = _read_browser_trace_entries(limit=500)
+    for item in matches:
+        if str(item.get("trace_id") or "").strip() == target:
+            return item
+    return None
 
 
 def _is_git_remote_url(value: str) -> bool:
@@ -2243,6 +2303,33 @@ async def get_system_status():
                 (os.getenv("TAVILY_API_KEY") or "").strip() or (os.getenv("SERPAPI_API_KEY") or "").strip()
             ),
         },
+    }
+
+
+@app.get("/api/browser/traces")
+async def list_browser_traces(
+    limit: int = 100,
+    status: str | None = None,
+    action: str | None = None,
+):
+    """List recent browser action traces for production debugging."""
+    entries = _read_browser_trace_entries(limit=limit, status=status, action=action)
+    return {
+        "trace_file": str(_browser_trace_file_path()),
+        "count": len(entries),
+        "entries": entries,
+    }
+
+
+@app.get("/api/browser/traces/{trace_id}")
+async def get_browser_trace(trace_id: str):
+    """Return one browser trace entry by trace_id."""
+    entry = _find_browser_trace_by_id(trace_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"browser trace not found: {trace_id}")
+    return {
+        "trace_file": str(_browser_trace_file_path()),
+        "entry": entry,
     }
 
 
