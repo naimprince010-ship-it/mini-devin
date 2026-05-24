@@ -18,6 +18,7 @@ Uses async Playwright (fully async/await compatible with the agent loop).
 import asyncio
 import base64
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -688,19 +689,90 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         )
         return PlaywrightResponse(success=True, action=PlaywrightAction.SCREENSHOT, page_state=page_state)
 
+    async def _retry_action(
+        self,
+        action_name: str,
+        operation: Callable[[], Any],
+        retries: int,
+        delay_ms: int,
+    ) -> Any:
+        """Execute an async Playwright operation with bounded retries."""
+        last_error: Exception | None = None
+        total_attempts = max(1, retries + 1)
+        for attempt in range(total_attempts):
+            try:
+                return await operation()
+            except Exception as e:
+                last_error = e
+                if attempt >= total_attempts - 1:
+                    break
+                await asyncio.sleep(max(0, delay_ms) / 1000.0)
+        raise RuntimeError(f"{action_name} failed after {total_attempts} attempt(s): {last_error}")
+
+    def _retry_settings(self, input_data: Any) -> tuple[int, int]:
+        """Get retry count and delay from input/env with safe bounds."""
+        default_retries = os.environ.get("PLODDER_BROWSER_RETRY_COUNT", "1")
+        default_delay_ms = os.environ.get("PLODDER_BROWSER_RETRY_DELAY_MS", "250")
+
+        raw_retries = self._get(input_data, "retries", default_retries)
+        raw_delay_ms = self._get(input_data, "retry_delay_ms", default_delay_ms)
+
+        try:
+            retries = int(raw_retries)
+        except (TypeError, ValueError):
+            retries = 1
+        try:
+            delay_ms = int(raw_delay_ms)
+        except (TypeError, ValueError):
+            delay_ms = 250
+
+        retries = max(0, min(retries, 5))
+        delay_ms = max(0, min(delay_ms, 5000))
+        return retries, delay_ms
+
+    async def _post_action_settle(self, input_data: Any) -> None:
+        """Allow DOM/network to settle after mutating actions."""
+        settle_ms = self._get(input_data, "post_action_wait_ms", 120)
+        wait_network_idle = bool(self._get(input_data, "wait_network_idle", False))
+
+        try:
+            settle_ms_int = int(settle_ms)
+        except (TypeError, ValueError):
+            settle_ms_int = 120
+
+        if settle_ms_int > 0:
+            await asyncio.sleep(min(settle_ms_int, 5000) / 1000.0)
+
+        if wait_network_idle:
+            try:
+                timeout = int(self._get(input_data, "network_idle_timeout", min(self.timeout_ms, 2500)))
+            except (TypeError, ValueError):
+                timeout = min(self.timeout_ms, 2500)
+            await self._page.wait_for_load_state("networkidle", timeout=max(250, timeout))
+
     async def _click(self, input_data: Any) -> PlaywrightResponse:
         """Click an element by CSS selector or coordinates."""
         selector = self._get(input_data, "selector", None)
         x = self._get(input_data, "x", None)
         y = self._get(input_data, "y", None)
+        timeout = int(self._get(input_data, "timeout", self.timeout_ms))
+        retries, delay_ms = self._retry_settings(input_data)
 
         if selector:
-            await self._page.click(selector)
+            async def do_click() -> Any:
+                await self._page.wait_for_selector(selector, state="visible", timeout=timeout)
+                return await self._page.click(selector, timeout=timeout)
+
+            await self._retry_action("click", do_click, retries, delay_ms)
         elif x is not None and y is not None:
-            await self._page.mouse.click(float(x), float(y))
+            async def do_xy_click() -> Any:
+                return await self._page.mouse.click(float(x), float(y))
+
+            await self._retry_action("click", do_xy_click, retries, delay_ms)
         else:
             raise ValueError("'click' requires either 'selector' or 'x'+'y' coordinates")
 
+        await self._post_action_settle(input_data)
         page_state = await self._get_page_state()
         return PlaywrightResponse(success=True, action=PlaywrightAction.CLICK, page_state=page_state)
 
@@ -709,8 +781,20 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         selector = self._get(input_data, "selector", "")
         text = self._get(input_data, "text", "")
         delay = self._get(input_data, "delay", 30)  # ms between keystrokes
+        clear_first = bool(self._get(input_data, "clear_first", True))
+        timeout = int(self._get(input_data, "timeout", self.timeout_ms))
+        retries, delay_ms = self._retry_settings(input_data)
 
-        await self._page.type(selector, text, delay=delay)
+        async def do_type() -> Any:
+            locator = self._page.locator(selector).first
+            await locator.wait_for(state="visible", timeout=timeout)
+            if clear_first:
+                await locator.fill("")
+            return await locator.type(text, delay=delay)
+
+        await self._retry_action("type", do_type, retries, delay_ms)
+
+        await self._post_action_settle(input_data)
         page_state = await self._get_page_state()
         return PlaywrightResponse(success=True, action=PlaywrightAction.TYPE, page_state=page_state)
 
@@ -718,8 +802,17 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         """Fill a form field instantly (faster than type for large text)."""
         selector = self._get(input_data, "selector", "")
         value = self._get(input_data, "value", "")
+        timeout = int(self._get(input_data, "timeout", self.timeout_ms))
+        retries, delay_ms = self._retry_settings(input_data)
 
-        await self._page.fill(selector, value)
+        async def do_fill() -> Any:
+            locator = self._page.locator(selector).first
+            await locator.wait_for(state="visible", timeout=timeout)
+            return await locator.fill(value)
+
+        await self._retry_action("fill", do_fill, retries, delay_ms)
+
+        await self._post_action_settle(input_data)
         page_state = await self._get_page_state()
         return PlaywrightResponse(success=True, action=PlaywrightAction.FILL, page_state=page_state)
 
@@ -728,14 +821,20 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         selector = self._get(input_data, "selector", "")
         value = self._get(input_data, "value", None)
         label = self._get(input_data, "label", None)
+        timeout = int(self._get(input_data, "timeout", self.timeout_ms))
+        retries, delay_ms = self._retry_settings(input_data)
 
-        if value:
-            await self._page.select_option(selector, value=value)
-        elif label:
-            await self._page.select_option(selector, label=label)
-        else:
+        async def do_select() -> Any:
+            await self._page.wait_for_selector(selector, state="visible", timeout=timeout)
+            if value:
+                return await self._page.select_option(selector, value=value)
+            if label:
+                return await self._page.select_option(selector, label=label)
             raise ValueError("'select' requires 'value' or 'label'")
 
+        await self._retry_action("select", do_select, retries, delay_ms)
+
+        await self._post_action_settle(input_data)
         page_state = await self._get_page_state()
         return PlaywrightResponse(success=True, action=PlaywrightAction.SELECT, page_state=page_state)
 
@@ -759,7 +858,15 @@ class PlaywrightBrowserTool(BaseBrowserTool):
     async def _hover(self, input_data: Any) -> PlaywrightResponse:
         """Hover over an element to trigger tooltips/dropdowns."""
         selector = self._get(input_data, "selector", "")
-        await self._page.hover(selector)
+        timeout = int(self._get(input_data, "timeout", self.timeout_ms))
+        retries, delay_ms = self._retry_settings(input_data)
+
+        async def do_hover() -> Any:
+            await self._page.wait_for_selector(selector, state="visible", timeout=timeout)
+            return await self._page.hover(selector, timeout=timeout)
+
+        await self._retry_action("hover", do_hover, retries, delay_ms)
+        await self._post_action_settle(input_data)
         page_state = await self._get_page_state()
         return PlaywrightResponse(success=True, action=PlaywrightAction.HOVER, page_state=page_state)
 
@@ -909,12 +1016,23 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         """Press a keyboard key (e.g. Enter, Tab, Escape)."""
         key = self._get(input_data, "key", "Enter")
         selector = self._get(input_data, "selector", None)
+        retries, delay_ms = self._retry_settings(input_data)
 
         if selector:
-            await self._page.press(selector, key)
-        else:
-            await self._page.keyboard.press(key)
+            timeout = int(self._get(input_data, "timeout", self.timeout_ms))
 
+            async def do_press_selector() -> Any:
+                await self._page.wait_for_selector(selector, state="visible", timeout=timeout)
+                return await self._page.press(selector, key, timeout=timeout)
+
+            await self._retry_action("press", do_press_selector, retries, delay_ms)
+        else:
+            async def do_press_keyboard() -> Any:
+                return await self._page.keyboard.press(key)
+
+            await self._retry_action("press", do_press_keyboard, retries, delay_ms)
+
+        await self._post_action_settle(input_data)
         page_state = await self._get_page_state()
         return PlaywrightResponse(success=True, action=PlaywrightAction.PRESS, page_state=page_state)
 
