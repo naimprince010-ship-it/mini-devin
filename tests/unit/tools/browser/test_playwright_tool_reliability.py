@@ -45,3 +45,29 @@ def test_retry_action_raises_after_exhausted_retries() -> None:
         assert "failed after 2 attempt" in str(exc)
 
     assert raised
+
+
+def test_selector_fallback_candidates_for_plain_token() -> None:
+    tool = PlaywrightBrowserTool()
+    candidates = tool._selector_fallback_candidates("submit_button")
+
+    assert candidates[0] == "submit_button"
+    assert "[data-testid='submit_button']" in candidates
+    assert "#submit_button" in candidates
+    assert "text=submit_button" in candidates
+
+
+def test_sanitize_trace_input_truncates_large_fields() -> None:
+    tool = PlaywrightBrowserTool()
+    payload = {
+        "selector": "#email",
+        "text": "x" * 3000,
+        "script": "y" * 3000,
+        "count": 2,
+    }
+
+    sanitized = tool._sanitize_trace_input(payload)
+    assert isinstance(sanitized, dict)
+    assert len(sanitized["text"]) == 800
+    assert len(sanitized["script"]) == 800
+    assert sanitized["count"] == 2
