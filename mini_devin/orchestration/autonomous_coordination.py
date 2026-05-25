@@ -12,10 +12,12 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Awaitable, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 from mini_devin.contracts.protocols import DurableCheckpoint
-from mini_devin.core.model_gateway import ModelGateway
+
+if TYPE_CHECKING:
+    from mini_devin.core.model_gateway import ModelGateway
 
 from .checkpoint_store import JsonlCheckpointStore
 from .execution_learning import (
@@ -214,7 +216,7 @@ class AutonomousCoordinatorRuntime:
         replan_fn: ReplanFn | None = None,
         checkpoint_store: JsonlCheckpointStore | None = None,
         typed_emitter: FileTypedEventEmitter | None = None,
-        model_gateway: ModelGateway | None = None,
+        model_gateway: "ModelGateway" | None = None,
         queue_boundary: Any | None = None,
         sandbox_boundary: Any | None = None,
         config: AutonomousCoordinationConfig | None = None,
