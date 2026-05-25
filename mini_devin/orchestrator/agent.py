@@ -6147,7 +6147,6 @@ Call a tool (editor or terminal) immediately as your first action."""
                             
                             # Detect numbered plan in LLM response (e.g. "1. Step one\n2. Step two")
                             content = response.content or ""
-                            import re
                             plan_lines = re.findall(r'^\s*(\d+)\.\s+(.+)', content, re.MULTILINE)
                             if len(plan_lines) >= 2 and not getattr(self, '_plan_sent', False):
                                 steps = [text.strip() for _, text in plan_lines]
