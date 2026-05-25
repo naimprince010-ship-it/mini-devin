@@ -40,7 +40,7 @@ Details: [docs/PLATFORM.md](docs/PLATFORM.md).
 
 - **Versioning:** See [CHANGELOG.md](CHANGELOG.md) and `pyproject.toml` (`0.2.0`).
 - **CI:** GitHub Actions runs Ruff, a **required** `unit-core` pytest gate (`tests/unit/backbone`, `tests/unit/enterprise`), frontend `npm run build`, eval tests, and `poetry build`. Packaging **Build** depends on lint + unit-core + frontend (not on eval, so eval cannot block wheels).
-- **Production auto-deploy:** `.github/workflows/deploy-production.yml` deploys to Railway after `CI` succeeds on `main`/`master`. Configure GitHub secrets: `RAILWAY_TOKEN`, `RAILWAY_SERVICE_ID`, and optional `RAILWAY_ENVIRONMENT_ID`.
+- **Production auto-deploy:** `.github/workflows/deploy-production.yml` deploys to a DigitalOcean droplet over SSH after `CI` succeeds on `main`/`master`. Configure GitHub secrets: `DO_DEPLOY_HOST`, `DO_DEPLOY_SSH_KEY`, and optional `DO_DEPLOY_USER`, `DO_BACKEND_PATH`, `DO_WEB_ROOT`, `DO_BACKEND_SERVICE`, and `DO_CADDY_SERVICE`.
 - **Security:** [docs/SECURITY.md](docs/SECURITY.md) — never commit `.env` or API keys.
 - **Scope (vs hosted “agent clouds”):** This repo is **self-hosted** software (CLI, SDK, local GUI via Docker/your infra). It is **not** a turnkey multi-tenant SaaS; bring your own keys, hosting, and hardening.
 

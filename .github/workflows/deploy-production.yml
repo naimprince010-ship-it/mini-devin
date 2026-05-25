@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy-railway:
-    name: Deploy to Railway Production
+  deploy-digitalocean:
+    name: Deploy to DigitalOcean Droplet
     if: >
       github.event_name == 'workflow_dispatch' ||
       (
@@ -28,43 +28,82 @@ jobs:
         )
       )
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/railwayapp/cli:latest
     env:
-      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-      RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
-      RAILWAY_ENVIRONMENT_ID: ${{ secrets.RAILWAY_ENVIRONMENT_ID }}
+      DO_DEPLOY_HOST: ${{ secrets.DO_DEPLOY_HOST }}
+      DO_DEPLOY_USER: ${{ secrets.DO_DEPLOY_USER || 'root' }}
+      DO_DEPLOY_SSH_KEY: ${{ secrets.DO_DEPLOY_SSH_KEY }}
+      DO_BACKEND_PATH: ${{ secrets.DO_BACKEND_PATH || '/root/plodder' }}
+      DO_WEB_ROOT: ${{ secrets.DO_WEB_ROOT || '/var/www/jomiye.com' }}
+      DO_BACKEND_SERVICE: ${{ secrets.DO_BACKEND_SERVICE || 'plodder' }}
+      DO_CADDY_SERVICE: ${{ secrets.DO_CADDY_SERVICE || 'caddy' }}
     steps:
-      - name: Validate required Railway secrets
+      - name: Validate required DigitalOcean secrets
         run: |
-          if [ -z "$RAILWAY_TOKEN" ]; then
-            echo "Missing required GitHub secret: RAILWAY_TOKEN"
+          if [ -z "$DO_DEPLOY_HOST" ]; then
+            echo "Missing required GitHub secret: DO_DEPLOY_HOST"
             exit 1
           fi
-          if [ -z "$RAILWAY_SERVICE_ID" ]; then
-            echo "Missing required GitHub secret: RAILWAY_SERVICE_ID"
+          if [ -z "$DO_DEPLOY_SSH_KEY" ]; then
+            echo "Missing required GitHub secret: DO_DEPLOY_SSH_KEY"
             exit 1
           fi
+          echo "Droplet: ${DO_DEPLOY_USER}@${DO_DEPLOY_HOST}"
+          echo "Backend path: ${DO_BACKEND_PATH}"
+          echo "Web root: ${DO_WEB_ROOT}"
 
       - name: Checkout main branch contents
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || github.event.workflow_run.head_sha }}
 
-      - name: Show deployment target
-        run: |
-          echo "Railway service: $RAILWAY_SERVICE_ID"
-          if [ -n "$RAILWAY_ENVIRONMENT_ID" ]; then
-            echo "Railway environment: $RAILWAY_ENVIRONMENT_ID"
-          else
-            echo "Railway environment: default linked environment"
-          fi
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
-      - name: Deploy to Railway
+      - name: Load SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DO_DEPLOY_SSH_KEY }}
+
+      - name: Trust droplet host key
         run: |
-          CMD="railway up --service=$RAILWAY_SERVICE_ID --ci"
-          if [ -n "$RAILWAY_ENVIRONMENT_ID" ]; then
-            CMD="$CMD --environment=$RAILWAY_ENVIRONMENT_ID"
-          fi
-          echo "Running: $CMD"
-          sh -lc "$CMD"
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$DO_DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Create remote directories
+        run: |
+          ssh "$DO_DEPLOY_USER@$DO_DEPLOY_HOST" "set -euo pipefail; mkdir -p '$DO_BACKEND_PATH' '$DO_WEB_ROOT'"
+
+      - name: Sync backend files
+        run: |
+          rsync -az --delete \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude 'frontend/node_modules' \
+            --exclude 'frontend/dist' \
+            --exclude 'data' \
+            --exclude 'runs' \
+            --exclude '__pycache__' \
+            --exclude '.venv' \
+            ./ "$DO_DEPLOY_USER@$DO_DEPLOY_HOST:$DO_BACKEND_PATH/"
+
+      - name: Sync frontend build
+        run: |
+          rsync -az --delete \
+            frontend/dist/ "$DO_DEPLOY_USER@$DO_DEPLOY_HOST:$DO_WEB_ROOT/"
+
+      - name: Restart services on droplet
+        run: |
+          ssh "$DO_DEPLOY_USER@$DO_DEPLOY_HOST" "set -euo pipefail; \
+            cd '$DO_BACKEND_PATH'; \
+            poetry install --no-interaction --no-ansi; \
+            systemctl restart '$DO_BACKEND_SERVICE'; \
+            systemctl reload '$DO_CADDY_SERVICE' || systemctl restart '$DO_CADDY_SERVICE'; \
+            curl -fsS http://127.0.0.1:8000/api/health >/dev/null"
