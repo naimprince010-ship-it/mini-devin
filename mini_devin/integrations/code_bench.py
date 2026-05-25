@@ -630,10 +630,15 @@ def export_run_lessons(run: CodeBenchRun) -> None:
     ]
     md_lines.extend(f"- {rule}" for rule in rules)
 
-    out_dir = Path(os.getenv("BENCHMARK_LESSONS_DIR", "knowledge_base"))
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "benchmark_lessons.json").write_text(json.dumps(lesson_json, indent=2), encoding="utf-8")
-    (out_dir / "benchmark_lessons.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+    out_dir = Path(os.getenv("BENCHMARK_LESSONS_DIR") or (_resolve_data_root() / "knowledge_base"))
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "benchmark_lessons.json").write_text(json.dumps(lesson_json, indent=2), encoding="utf-8")
+        (out_dir / "benchmark_lessons.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+    except OSError:
+        # Benchmark results are the source of truth; a lessons export should not
+        # turn a completed benchmark into a failed command in locked-down deploys.
+        return
 
 
 def load_run(run_id: str) -> dict[str, Any] | None:
