@@ -4,7 +4,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from mini_devin.orchestration.checkpoint_store import JsonlCheckpointStore
-from mini_devin.orchestration.task_queue import InMemoryQueueTransport, TaskQueueCoordinator
+from mini_devin.orchestration.task_queue import (
+    InMemoryQueueTransport,
+    TaskQueueCoordinator,
+    create_queue_transport,
+    queue_backend_status,
+)
 
 
 def _make_coordinator(tmp_path: Path, *, lease_seconds: int = 2, max_attempts: int = 2) -> TaskQueueCoordinator:
@@ -114,3 +119,30 @@ def test_queue_recovery_dead_letters_after_max_attempts(tmp_path: Path) -> None:
     assert len(recovered) == 1
     assert recovered[0].status == "dead_letter"
     assert recovered[0].dead_letter_reason is not None
+
+
+def test_queue_backend_unavailable_falls_back_to_memory(monkeypatch) -> None:
+    monkeypatch.setenv("PLODDER_QUEUE_BACKEND", "redis_streams")
+    monkeypatch.setenv("PLODDER_QUEUE_FORCE_BACKEND_FAILURE", "1")
+
+    transport = create_queue_transport()
+    status = queue_backend_status()
+
+    assert isinstance(transport, InMemoryQueueTransport)
+    assert status.requested_backend == "redis_streams"
+    assert status.active_backend == "memory"
+    assert status.degraded is True
+
+
+def test_queue_backend_strict_failover_blocks_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("PLODDER_QUEUE_BACKEND", "redis_streams")
+    monkeypatch.setenv("PLODDER_QUEUE_FORCE_BACKEND_FAILURE", "1")
+    monkeypatch.setenv("PLODDER_QUEUE_FAILOVER_POLICY", "strict")
+
+    try:
+        create_queue_transport()
+        raised = False
+    except RuntimeError:
+        raised = True
+
+    assert raised is True

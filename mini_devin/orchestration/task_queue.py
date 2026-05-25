@@ -90,6 +90,50 @@ def queue_backend_name() -> str:
     return (os.environ.get("PLODDER_QUEUE_BACKEND") or "memory").strip().lower()
 
 
+def queue_failover_policy() -> str:
+    return (os.environ.get("PLODDER_QUEUE_FAILOVER_POLICY") or "legacy").strip().lower()
+
+
+@dataclass(frozen=True, slots=True)
+class QueueBackendStatus:
+    requested_backend: str
+    active_backend: str
+    degraded: bool
+    reason: str | None = None
+    failover_policy: str = "legacy"
+
+
+_QUEUE_BACKEND_STATUS = QueueBackendStatus(
+    requested_backend="memory",
+    active_backend="memory",
+    degraded=False,
+    reason=None,
+    failover_policy="legacy",
+)
+
+
+def queue_backend_status() -> QueueBackendStatus:
+    return _QUEUE_BACKEND_STATUS
+
+
+def _set_queue_backend_status(
+    *,
+    requested_backend: str,
+    active_backend: str,
+    degraded: bool,
+    reason: str | None = None,
+    failover_policy: str = "legacy",
+) -> None:
+    global _QUEUE_BACKEND_STATUS
+    _QUEUE_BACKEND_STATUS = QueueBackendStatus(
+        requested_backend=requested_backend,
+        active_backend=active_backend,
+        degraded=degraded,
+        reason=reason,
+        failover_policy=failover_policy,
+    )
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -287,11 +331,60 @@ class RedisStreamsQueueTransportSkeleton(InMemoryQueueTransport):
 
 def create_queue_transport() -> TaskQueueTransport:
     backend = queue_backend_name()
+    policy = queue_failover_policy()
+
+    def _should_raise_on_backend_failure() -> bool:
+        if _flag_enabled("PLODDER_QUEUE_STRICT_BACKEND"):
+            return True
+        if policy == "strict":
+            return True
+        if policy == "safe_memory" and not _flag_enabled("PLODDER_QUEUE_ALLOW_DEGRADED_MEMORY"):
+            return True
+        return False
+
     if backend == "redis_streams":
+        if _flag_enabled("PLODDER_QUEUE_FORCE_BACKEND_FAILURE"):
+            if _should_raise_on_backend_failure():
+                raise RuntimeError("Queue backend 'redis_streams' forced failure under strict failover policy")
+            _set_queue_backend_status(
+                requested_backend=backend,
+                active_backend="memory",
+                degraded=True,
+                reason="forced_failure",
+                failover_policy=policy,
+            )
+            return InMemoryQueueTransport()
+        try:
+            import redis  # noqa: F401
+        except Exception as exc:
+            if _should_raise_on_backend_failure():
+                raise RuntimeError(f"Queue backend 'redis_streams' is unavailable: {exc}") from exc
+            _set_queue_backend_status(
+                requested_backend=backend,
+                active_backend="memory",
+                degraded=True,
+                reason=f"redis_unavailable:{type(exc).__name__}",
+                failover_policy=policy,
+            )
+            return InMemoryQueueTransport()
+        _set_queue_backend_status(
+            requested_backend=backend,
+            active_backend=backend,
+            degraded=False,
+            reason=None,
+            failover_policy=policy,
+        )
         return RedisStreamsQueueTransportSkeleton(
             stream_name=queue_stream_name(),
             consumer_group=queue_consumer_group(),
         )
+    _set_queue_backend_status(
+        requested_backend=backend,
+        active_backend="memory",
+        degraded=backend != "memory",
+        reason=None if backend == "memory" else f"unsupported_backend:{backend}",
+        failover_policy=policy,
+    )
     return InMemoryQueueTransport()
 
 

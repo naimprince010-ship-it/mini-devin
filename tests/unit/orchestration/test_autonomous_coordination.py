@@ -200,3 +200,37 @@ def test_bounded_execution_termination_on_deadlock(tmp_path: Path) -> None:
 
     assert result.terminated_reason == "bounded_deadlock"
     assert any("No runnable units" in err for err in result.errors)
+
+
+def test_orchestrator_recovers_from_implementer_exception(tmp_path: Path) -> None:
+    async def planner_one(goal: str, workspace: str) -> tuple[list[SchedulableUnit], str]:
+        del goal, workspace
+        return [_unit("unstable")], "single"
+
+    async def implementer_boom(unit: SchedulableUnit) -> WorkerObservation:
+        del unit
+        raise RuntimeError("sandbox startup failed")
+
+    async def verifier(unit: SchedulableUnit, obs: WorkerObservation) -> bool:
+        del unit
+        return bool(obs.success)
+
+    async def recovery_abort(unit: SchedulableUnit, obs: WorkerObservation, failure_count: int) -> RecoveryDecision:
+        del unit, obs, failure_count
+        return RecoveryDecision(action=RecoveryAction.ABORT, reason="implementer_crash")
+
+    runtime = AutonomousCoordinatorRuntime(
+        workspace=str(tmp_path),
+        session_id="sess-8",
+        planner_fn=planner_one,
+        implementer_fn=implementer_boom,
+        verifier_fn=verifier,
+        recovery_fn=recovery_abort,
+    )
+
+    result = __import__("asyncio").run(runtime.run("recover from crash"))
+
+    assert result.terminated_reason is not None
+    assert result.terminated_reason.startswith("aborted:unstable")
+    assert "unstable" in result.observations
+    assert result.observations["unstable"].success is False
