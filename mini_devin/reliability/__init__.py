@@ -43,6 +43,22 @@ from .self_correction import (
     SelfCorrectionEngine,
     ErrorType,
 )
+from .deploy_ops import (
+    DeployValidationIssue,
+    DeployPreflightReport,
+    RollbackGuardReport,
+    build_runtime_dependency_graph,
+    validate_dependency_graph,
+    validate_startup_sequence,
+    evaluate_rollback_guard,
+    build_operational_runbook_scaffold,
+    run_deploy_preflight,
+)
+from .incident_state import (
+    IncidentRecord,
+    CrashLoopSnapshot,
+    RuntimeIncidentTracker,
+)
 
 __all__ = [
     # Minimal reproduction
@@ -71,4 +87,18 @@ __all__ = [
     # Self-correction
     "SelfCorrectionEngine",
     "ErrorType",
+    # Deploy/operations hardening
+    "DeployValidationIssue",
+    "DeployPreflightReport",
+    "RollbackGuardReport",
+    "build_runtime_dependency_graph",
+    "validate_dependency_graph",
+    "validate_startup_sequence",
+    "evaluate_rollback_guard",
+    "build_operational_runbook_scaffold",
+    "run_deploy_preflight",
+    # Incident/crash-loop tracking
+    "IncidentRecord",
+    "CrashLoopSnapshot",
+    "RuntimeIncidentTracker",
 ]
