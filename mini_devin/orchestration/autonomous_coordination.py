@@ -533,7 +533,18 @@ class AutonomousCoordinatorRuntime:
                 result.terminated_reason = "budget_exhausted:implementer"
                 break
 
-            obs = await self.implementer_fn(unit)
+            try:
+                obs = await self.implementer_fn(unit)
+            except Exception as exc:
+                obs = WorkerObservation.from_task_outcome(
+                    action_id=f"impl-exc-{unit.id}",
+                    subtask_id=unit.id,
+                    success=False,
+                    summary="Implementer execution failed",
+                    worker_session_id=self.session_id,
+                    task_id=f"{self.session_id}:{unit.id}",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
             board.observations[unit.id] = obs
             result.observations[unit.id] = obs
 
@@ -551,7 +562,11 @@ class AutonomousCoordinatorRuntime:
                 result.terminated_reason = "budget_exhausted:verifier"
                 break
 
-            verified = await self.verifier_fn(unit, obs)
+            try:
+                verified = await self.verifier_fn(unit, obs)
+            except Exception as exc:
+                verified = False
+                result.errors.append(f"Verifier failure for {unit.id}: {type(exc).__name__}: {exc}")
             board.verification_log[unit.id] = verified
             result.learned_entries += self._learn_outcome(unit=unit, obs=obs, verified=verified)
 
