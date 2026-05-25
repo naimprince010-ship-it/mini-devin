@@ -19,8 +19,38 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-_DATA_DIR = Path(os.environ.get("PLODDER_DATA") or os.environ.get("MINI_DEVIN_DATA", "data")) / "code_bench"
+def _resolve_data_root() -> Path:
+    configured = os.environ.get("PLODDER_DATA") or os.environ.get("MINI_DEVIN_DATA")
+    if configured:
+        return Path(configured)
+
+    workspace = Path("/workspace")
+    if workspace.exists() and os.access(workspace, os.W_OK):
+        return workspace / "data"
+
+    return Path("data")
+
+
+_DATA_DIR = _resolve_data_root() / "code_bench"
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _run_data_dirs() -> list[Path]:
+    candidates = [
+        _DATA_DIR,
+        Path("data") / "code_bench",
+        Path("/app/data/code_bench"),
+    ]
+    dirs: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path.resolve()) if path.exists() else str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if path.exists():
+            dirs.append(path)
+    return dirs
 
 
 @dataclass
@@ -607,15 +637,24 @@ def export_run_lessons(run: CodeBenchRun) -> None:
 
 
 def load_run(run_id: str) -> dict[str, Any] | None:
-    path = _DATA_DIR / f"{run_id}.json"
-    if not path.is_file():
-        return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    for data_dir in _run_data_dirs():
+        path = data_dir / f"{run_id}.json"
+        if path.is_file():
+            return json.loads(path.read_text(encoding="utf-8"))
+    return None
 
 
 def list_runs() -> list[dict[str, Any]]:
     runs: list[dict[str, Any]] = []
-    for path in sorted(_DATA_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+    seen: set[str] = set()
+    paths: list[Path] = []
+    for data_dir in _run_data_dirs():
+        paths.extend(data_dir.glob("*.json"))
+    for path in sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True):
+        run_id = path.stem
+        if run_id in seen:
+            continue
+        seen.add(run_id)
         try:
             runs.append(json.loads(path.read_text(encoding="utf-8")))
         except Exception:

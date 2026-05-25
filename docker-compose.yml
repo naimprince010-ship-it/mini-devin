@@ -86,6 +86,7 @@ services:
       
       # Artifact Configuration
       - ARTIFACT_DIR=${ARTIFACT_DIR:-/workspace/runs}
+      - MINI_DEVIN_DATA=${MINI_DEVIN_DATA:-/workspace/data}
       - VERBOSE=${VERBOSE:-true}
       
       # Security Configuration
