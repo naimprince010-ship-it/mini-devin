@@ -178,6 +178,13 @@ def test_terminal_sanity_check_rejects_bash_listing_flags_on_windows():
     assert "plain `dir`" in msg.lower()
 
 
+def test_terminal_sanity_check_rejects_pip_install_stdlib():
+    ok, msg = terminal_sanity_check("pip install unittest", is_windows=False)
+    assert not ok
+    assert "standard library" in msg.lower()
+    assert "python -m unittest" in msg.lower()
+
+
 def test_incremental_recovery_hint_pytest():
     h = incremental_recovery_hint(
         "terminal",
@@ -201,6 +208,20 @@ def test_incremental_recovery_hint_unittest():
         last_failed_command="python -m unittest discover",
     )
     assert "unittest" in h.lower()
+
+
+def test_incremental_recovery_hint_unittest_is_not_pip_package():
+    h = incremental_recovery_hint(
+        "terminal",
+        {},
+        ErrorType.COMMAND_FAILED,
+        "ERROR: No matching distribution found for unittest",
+        last_failed_command="pip install unittest",
+    )
+    low = h.lower()
+    assert "built into python" in low
+    assert "pip install unittest" in low
+    assert "python -m unittest discover" in low
 
 
 def test_incremental_recovery_hint_npm():
