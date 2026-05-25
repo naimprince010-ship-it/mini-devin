@@ -105,7 +105,7 @@ from .session_worklog import SessionWorklog, load_worklog, save_worklog
 from .terminal_recovery import terminal_recovery_hint
 from .workspace_sidecar import WorkspaceSidecar
 from .standard_events import AgentEventKind, AgentStreamEvent, append_standard_event
-from .runtime_contracts import emit_step_completed, emit_step_started, runtime_contracts_enabled
+from ..orchestration.runtime_contracts import emit_step_completed, emit_step_started, runtime_contracts_enabled
 
 
 import sys as _sys_for_prompt
