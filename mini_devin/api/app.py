@@ -3923,9 +3923,15 @@ async def benchmark_stats():
 import pathlib
 
 _FRONTEND_DIST = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dist"
+_FRONTEND_ASSETS = _FRONTEND_DIST / "assets"
+_FRONTEND_INDEX = _FRONTEND_DIST / "index.html"
+_SKIP_FRONTEND_STATIC = (
+    os.getenv("PLODDER_SKIP_FRONTEND_STATIC", "").strip().lower() in {"1", "true", "yes", "on"}
+    or "pytest" in sys.modules
+)
 
-if _FRONTEND_DIST.exists():
-    app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="assets")
+if (not _SKIP_FRONTEND_STATIC) and _FRONTEND_ASSETS.exists() and _FRONTEND_INDEX.exists():
+    app.mount("/assets", StaticFiles(directory=str(_FRONTEND_ASSETS)), name="assets")
 
     @app.get("/")
     @app.get("/{full_path:path}", include_in_schema=False)
@@ -3936,8 +3942,7 @@ if _FRONTEND_DIST.exists():
         """
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not found")
-        index = _FRONTEND_DIST / "index.html"
-        return FileResponse(str(index))
+        return FileResponse(str(_FRONTEND_INDEX))
 
 
 if __name__ == "__main__":

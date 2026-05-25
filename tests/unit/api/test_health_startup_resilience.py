@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("PLODDER_SKIP_FRONTEND_STATIC", "1")
+
 from fastapi.testclient import TestClient
 
 from mini_devin.api.app import app
