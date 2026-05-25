@@ -105,6 +105,7 @@ from .session_worklog import SessionWorklog, load_worklog, save_worklog
 from .terminal_recovery import terminal_recovery_hint
 from .workspace_sidecar import WorkspaceSidecar
 from .standard_events import AgentEventKind, AgentStreamEvent, append_standard_event
+from .runtime_contracts import emit_step_completed, emit_step_started, runtime_contracts_enabled
 
 
 import sys as _sys_for_prompt
@@ -4620,6 +4621,34 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             except Exception as e:
                 self._log(f"Error in callback '{name}': {e}")
 
+    async def _emit_step_started_contract_event(self, task: TaskState, step_index: int, step: Any) -> None:
+        if not runtime_contracts_enabled() or not self.working_directory:
+            return
+        try:
+            await emit_step_started(
+                workspace=self.working_directory,
+                session_id=self.state.session_id,
+                task_id=task.task_id,
+                step_index=step_index,
+                step=step,
+            )
+        except Exception as e:
+            self._log(f"Runtime step.started emission skipped: {e}")
+
+    async def _emit_step_completed_contract_event(self, task: TaskState, step_index: int, step: Any) -> None:
+        if not runtime_contracts_enabled() or not self.working_directory:
+            return
+        try:
+            await emit_step_completed(
+                workspace=self.working_directory,
+                session_id=self.state.session_id,
+                task_id=task.task_id,
+                step_index=step_index,
+                step=step,
+            )
+        except Exception as e:
+            self._log(f"Runtime step.completed emission skipped: {e}")
+
     @staticmethod
     def _sanitize_tool_args_for_log(arguments: dict[str, Any]) -> dict[str, Any]:
         """Shrink tool arguments for JSONL (avoid huge file bodies in session_events)."""
@@ -5613,6 +5642,7 @@ Call a tool (editor or terminal) immediately as your first action."""
                                     self._current_step_idx = 0
                                     await self._trigger_callback("on_plan_created", steps)
                                     await self._trigger_callback("on_step_started", 0, steps[0])
+                                    await self._emit_step_started_contract_event(task, 0, steps[0])
                                     self._persist_worklog(task)
     
                         # --- Step progression detection when a plan is already active ---
@@ -5644,9 +5674,19 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 if new_step_reached > self._current_step_idx:
                                     # Complete previous step
                                     await self._trigger_callback("on_step_completed", self._current_step_idx, self._plan_steps[self._current_step_idx])
+                                    await self._emit_step_completed_contract_event(
+                                        task,
+                                        self._current_step_idx,
+                                        self._plan_steps[self._current_step_idx],
+                                    )
                                     # Start new step
                                     self._current_step_idx = new_step_reached
                                     await self._trigger_callback("on_step_started", self._current_step_idx, self._plan_steps[self._current_step_idx])
+                                    await self._emit_step_started_contract_event(
+                                        task,
+                                        self._current_step_idx,
+                                        self._plan_steps[self._current_step_idx],
+                                    )
                                     self._persist_worklog(task)
     
                     # Handle tool calls

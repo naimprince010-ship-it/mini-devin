@@ -25,6 +25,11 @@ from mini_devin.core.providers import (
     AzureConfig,
     GroqConfig,
 )
+from mini_devin.core.model_gateway import (
+    ModelGateway,
+    model_gateway_enabled,
+    routing_context_from_dict,
+)
 
 
 def _is_gemini_litellm_model(model_id: str) -> bool:
@@ -433,6 +438,8 @@ class LLMClient:
         self.total_tokens_used = 0
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        self._model_gateway: ModelGateway | None = None
+        self._default_routing_context: dict[str, Any] = {}
         
         self._setup_provider()
         
@@ -564,6 +571,10 @@ class LLMClient:
             tool_call_id=tool_call_id,
             name=tool_name,
         ))
+
+    def set_routing_context(self, context: dict[str, Any] | None) -> None:
+        """Set default model-routing context (task id, budget, reasoning depth, etc.)."""
+        self._default_routing_context = dict(context or {})
     
     def clear_conversation(self) -> None:
         """Clear the conversation history (keeps system prompt)."""
@@ -705,6 +716,7 @@ class LLMClient:
         on_token: Callable[[str], Any] | None = None,
         messages_for_api: list[dict[str, Any]] | None = None,
         ephemeral_user_messages: list[dict[str, Any]] | None = None,
+        routing_context: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """
         Get a completion from the LLM.
@@ -729,6 +741,42 @@ class LLMClient:
         messages = coerce_messages_openai_strict(messages)
 
         model_candidates = _completion_model_candidates(self.config)
+        gateway = self._model_gateway
+        gateway_context = routing_context_from_dict(routing_context or self._default_routing_context)
+        gateway_decision = None
+        cache_entry = None
+        if model_gateway_enabled():
+            if gateway is None:
+                gateway = ModelGateway()
+                self._model_gateway = gateway
+            gateway_decision = gateway.select_route(
+                base_model=self.config.model,
+                fallback_candidates=model_candidates,
+                messages=messages,
+                tools=tools,
+                context=gateway_context,
+            )
+            model_candidates = list(gateway_decision.candidate_models)
+            if not gateway.enforce_budget(context=gateway_context):
+                raise RuntimeError("Model gateway budget exceeded for task")
+            cache_entry = gateway.cache_get(gateway_decision.cache_key)
+            if cache_entry is not None:
+                cache_usage = {
+                    "prompt_tokens": int(cache_entry.response_usage.get("prompt_tokens") or 0),
+                    "completion_tokens": int(cache_entry.response_usage.get("completion_tokens") or 0),
+                    "total_tokens": int(cache_entry.response_usage.get("total_tokens") or 0),
+                }
+                self.total_prompt_tokens += cache_usage["prompt_tokens"]
+                self.total_completion_tokens += cache_usage["completion_tokens"]
+                self.total_tokens_used += cache_usage["total_tokens"]
+                gateway.account_usage(context=gateway_context, model=cache_entry.model, usage=cache_usage)
+                return LLMResponse(
+                    content=cache_entry.response_content,
+                    tool_calls=[],
+                    finish_reason=cache_entry.finish_reason,
+                    usage=cache_usage,
+                    model=cache_entry.model,
+                )
         model_name = model_candidates[0]
         
         kwargs: dict[str, Any] = {
@@ -809,6 +857,9 @@ class LLMClient:
                             + last_error_msg[:500]
                         )
                     transient = _is_transient_llm_error(last_error_msg)
+                    if gateway is not None:
+                        failure_type = gateway.classify_failure(last_error_msg)
+                        transient = transient and gateway.should_retry(failure_type)
                     rate_limited = rate_limited or _is_rate_limited_error(last_error_msg)
                     if not transient or attempt >= retry_count:
                         break
@@ -937,10 +988,27 @@ class LLMClient:
         self.total_completion_tokens += usage["completion_tokens"]
         self.total_tokens_used += usage["total_tokens"]
 
+        if gateway is not None:
+            gateway.account_usage(context=gateway_context, model=model_returned, usage=usage)
+
         if not tool_calls:
             tool_calls = _parse_text_tool_calls(content)
             if tool_calls:
                 finish_reason = "tool_calls"
+
+        if gateway is not None and gateway_decision is not None and not tool_calls:
+            from mini_devin.core.model_gateway import CacheEntry
+
+            gateway.cache_put(
+                CacheEntry(
+                    key=gateway_decision.cache_key,
+                    model=model_returned,
+                    response_content=content,
+                    response_usage=dict(usage),
+                    finish_reason=finish_reason,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                )
+            )
         
         return LLMResponse(
             content=content,

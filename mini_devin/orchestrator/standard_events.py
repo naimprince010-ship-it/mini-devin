@@ -18,6 +18,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from mini_devin.orchestration.observability import build_queue_timeline_record, record_timeline_event
+
 
 class AgentEventKind(str, Enum):
     """Unified event kinds for logging and UI (SSE/WebSocket)."""
@@ -192,6 +194,24 @@ def append_standard_event(
     if flat_extras:
         body = {**body, **flat_extras}
     written = append_session_event(Path(workspace), body)
+    if written is not None:
+        record_timeline_event(
+            workspace,
+            build_queue_timeline_record(
+                event_type=str(event.legacy_type or event.kind.value),
+                source="orchestrator",
+                session_id=session_id or str(body.get("session_id") or ""),
+                task_id=str(body.get("task_id") or session_id or ""),
+                unit_id=str(body.get("tool_call_id") or body.get("step_id") or event.kind.value),
+                payload=dict(written),
+                status=str(body.get("status") or body.get("kind") or event.kind.value),
+                correlation_id=body.get("correlation_id"),
+                trace_id=body.get("trace_id"),
+                span_id=body.get("span_id"),
+                traceparent=body.get("traceparent"),
+                parent_trace_id=body.get("parent_trace_id"),
+            ),
+        )
     if written and session_id:
         get_agent_event_broadcaster().publish(session_id, written)
     return written
