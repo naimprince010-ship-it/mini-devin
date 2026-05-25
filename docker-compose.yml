@@ -102,7 +102,7 @@ services:
         target: /tmp
         tmpfs:
           size: ${TMP_SIZE:-536870912}  # 512MB default
-          mode: "1777"
+          mode: 1023  # 01777
     working_dir: /workspace
     stdin_open: true
     tty: true
