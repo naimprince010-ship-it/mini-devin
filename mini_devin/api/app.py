@@ -123,6 +123,15 @@ from ..sandbox.railway_process_sandbox_test import (
     run_railway_process_sandbox_check,
 )
 from ..sessions.db_manager import DatabaseSessionManager
+from ..reliability.startup_guard import StartupPreflightReport, run_startup_preflight
+from ..orchestration.task_queue import queue_backend_status
+from ..reliability.deploy_ops import (
+    build_operational_runbook_scaffold,
+    run_deploy_preflight,
+    startup_stage_order,
+    validate_startup_sequence,
+)
+from ..reliability.incident_state import RuntimeIncidentTracker
 
 # Simple in-memory rate limiter (no external dependency)
 _rate_buckets: dict = {}
@@ -293,6 +302,87 @@ def _workspace_slug_from_git_url(url: str) -> str:
     return slug[:48] or "repo"
 
 
+def _new_startup_status(preflight: StartupPreflightReport | None = None) -> dict[str, Any]:
+    checks = preflight.to_dict() if preflight is not None else None
+    preflight_mode = checks.get("startup_mode") if checks else "normal"
+    return {
+        "boot_started_at": datetime.now(timezone.utc).isoformat(),
+        "db_ready": False,
+        "db_last_error": None,
+        "degraded": preflight_mode == "degraded",
+        "preflight": checks,
+        "issues": [],
+        "stage_history": [],
+    }
+
+
+def _record_startup_issue(app: FastAPI, code: str, message: str, *, severity: str = "warning") -> None:
+    status = getattr(app.state, "startup_status", None)
+    if not isinstance(status, dict):
+        return
+    status.setdefault("issues", []).append(
+        {
+            "time": datetime.now(timezone.utc).isoformat(),
+            "code": code,
+            "severity": severity,
+            "message": message,
+        }
+    )
+    if severity in {"warning", "error"}:
+        status["degraded"] = True
+
+
+def _startup_state_snapshot(app: FastAPI) -> dict[str, Any]:
+    status = getattr(app.state, "startup_status", None)
+    if not isinstance(status, dict):
+        return {
+            "ready": False,
+            "degraded": True,
+            "reason": "startup_state_missing",
+        }
+    return {
+        "ready": bool(status.get("db_ready", False)),
+        "degraded": bool(status.get("degraded", False)),
+        "db_last_error": status.get("db_last_error"),
+        "issues": list(status.get("issues", [])),
+        "preflight": status.get("preflight"),
+        "stage_history": list(status.get("stage_history", [])),
+    }
+
+
+def _ensure_incident_tracker(app: FastAPI) -> RuntimeIncidentTracker:
+    tracker = getattr(app.state, "incident_tracker", None)
+    if isinstance(tracker, RuntimeIncidentTracker):
+        return tracker
+    ops_root = Path(_REPO_ROOT) / ".plodder" / "ops"
+    tracker = RuntimeIncidentTracker(
+        crash_loop_file=ops_root / "crash_loop_state.json",
+        threshold=max(2, int(os.getenv("PLODDER_CRASH_LOOP_THRESHOLD", "3"))),
+        window_seconds=max(30, int(os.getenv("PLODDER_CRASH_LOOP_WINDOW_SECONDS", "300"))),
+    )
+    app.state.incident_tracker = tracker
+    return tracker
+
+
+def _record_startup_stage(app: FastAPI, stage: str) -> None:
+    status = getattr(app.state, "startup_status", None)
+    if not isinstance(status, dict):
+        return
+    history = status.setdefault("stage_history", [])
+    history.append(stage)
+    violations = validate_startup_sequence(list(history))
+    if not violations:
+        return
+    for issue in violations:
+        _record_startup_issue(app, issue.code, issue.message, severity=issue.level)
+    tracker = _ensure_incident_tracker(app)
+    tracker.record_failure(
+        "startup.sequence_violation",
+        "Startup stage ordering violation detected.",
+        severity="error",
+    )
+
+
 async def _await_app_db_startup(request: Request) -> None:
     """
     Block create_session until background DB init completes.
@@ -301,6 +391,7 @@ async def _await_app_db_startup(request: Request) -> None:
     while the browser shows a perpetual loading state.
     """
     task = getattr(request.app.state, "_db_startup_task", None)
+    startup_state = _startup_state_snapshot(request.app)
     if task is None:
         return
     if task.done():
@@ -308,8 +399,18 @@ async def _await_app_db_startup(request: Request) -> None:
         if exc is not None:
             raise HTTPException(
                 status_code=503,
-                detail="Server startup failed. Check API logs (DATABASE_URL, disk, permissions).",
+                detail=(
+                    "Server startup failed. "
+                    f"Reason={type(exc).__name__}: {exc}. "
+                    "Check DATABASE_URL, filesystem permissions, and startup diagnostics."
+                ),
             ) from exc
+        if not startup_state.get("ready", False):
+            db_reason = startup_state.get("db_last_error") or "database_not_ready"
+            raise HTTPException(
+                status_code=503,
+                detail=f"Database startup incomplete: {db_reason}",
+            )
         return
     wait_sec = float(os.getenv("CREATE_SESSION_DB_WAIT_SEC", "120"))
     try:
@@ -317,7 +418,10 @@ async def _await_app_db_startup(request: Request) -> None:
     except asyncio.TimeoutError:
         raise HTTPException(
             status_code=503,
-            detail="Database is still starting. Wait a few seconds and retry, or check DATABASE_INIT_TIMEOUT.",
+            detail=(
+                "Database is still starting. "
+                f"Timed out after {wait_sec}s; check DATABASE_INIT_TIMEOUT and startup diagnostics."
+            ),
         ) from None
     except Exception as e:
         raise HTTPException(
@@ -351,21 +455,47 @@ connection_manager = ConnectionManager()
 install_streaming_patch()
 
 
-async def _background_startup() -> None:
+async def _background_startup(app: FastAPI) -> None:
     """DB init + hooks that must not block HTTP readiness (Railway health checks / 502)."""
     import traceback
 
     init_timeout = float(os.getenv("DATABASE_INIT_TIMEOUT", "120"))
+    tracker = _ensure_incident_tracker(app)
+    _record_startup_stage(app, "db.init.start")
 
     try:
         print("[API] Initializing Database (background)...")
         await asyncio.wait_for(init_db(), timeout=init_timeout)
         print("[API] Database initialized successfully.")
+        if isinstance(getattr(app.state, "startup_status", None), dict):
+            app.state.startup_status["db_ready"] = True
+            app.state.startup_status["db_last_error"] = None
+        _record_startup_stage(app, "db.init.complete")
     except asyncio.TimeoutError:
         print(f"[API] Database init timed out after {init_timeout}s (DATABASE_INIT_TIMEOUT).")
+        if isinstance(getattr(app.state, "startup_status", None), dict):
+            app.state.startup_status["db_ready"] = False
+            app.state.startup_status["db_last_error"] = "database_init_timeout"
+        _record_startup_issue(
+            app,
+            "startup.db.timeout",
+            f"Database init timed out after {init_timeout}s.",
+            severity="error",
+        )
+        tracker.record_failure("startup.db.timeout", f"Database init timed out after {init_timeout}s.", severity="error")
     except Exception as e:
         print(f"[API] Error initializing database: {e}")
         traceback.print_exc()
+        if isinstance(getattr(app.state, "startup_status", None), dict):
+            app.state.startup_status["db_ready"] = False
+            app.state.startup_status["db_last_error"] = f"{type(e).__name__}: {e}"
+        _record_startup_issue(
+            app,
+            "startup.db.exception",
+            f"Database init failed: {type(e).__name__}: {e}",
+            severity="error",
+        )
+        tracker.record_failure("startup.db.exception", f"Database init failed: {type(e).__name__}: {e}", severity="error")
 
     try:
         from sqlalchemy import update
@@ -382,8 +512,20 @@ async def _background_startup() -> None:
             await db.commit()
             if result.rowcount > 0:
                 print(f"[API] Reset {result.rowcount} stale session(s) from previous run.")
+        _record_startup_stage(app, "session.cleanup.complete")
     except Exception as cleanup_err:
         print(f"[API] Warning: Could not reset stale sessions: {cleanup_err}")
+        _record_startup_issue(
+            app,
+            "startup.session_cleanup.failed",
+            f"Could not reset stale sessions: {cleanup_err}",
+            severity="warning",
+        )
+        tracker.record_failure(
+            "startup.session_cleanup.failed",
+            f"Could not reset stale sessions: {cleanup_err}",
+            severity="warning",
+        )
 
     try:
         from ..integrations.monitor import register_heal_callback
@@ -418,8 +560,27 @@ async def _background_startup() -> None:
 
         register_heal_callback(_auto_heal)
         print("[API] Self-heal callback registered.")
+        _record_startup_stage(app, "monitor.registration.complete")
     except Exception as e:
         print(f"[API] Warning: Could not register self-heal callback: {e}")
+        _record_startup_issue(
+            app,
+            "startup.self_heal_registration.failed",
+            f"Could not register self-heal callback: {e}",
+            severity="warning",
+        )
+        tracker.record_failure(
+            "startup.self_heal_registration.failed",
+            f"Could not register self-heal callback: {e}",
+            severity="warning",
+        )
+
+    startup_state = _startup_state_snapshot(app)
+    if startup_state.get("ready", False):
+        _record_startup_stage(app, "ready")
+        tracker.record_recovery("startup.db.timeout", "Database initialized after prior timeout.")
+        tracker.record_recovery("startup.db.exception", "Database initialized after prior exception.")
+        tracker.note_startup_success()
 
 
 def _log_task_result(task: asyncio.Task) -> None:
@@ -439,7 +600,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         f"DATABASE_URL={'Set' if os.getenv('DATABASE_URL') else 'Default SLite'}"
     )
 
-    startup_task = asyncio.create_task(_background_startup())
+    _ensure_incident_tracker(app)
+    preflight = run_startup_preflight()
+    app.state.startup_status = _new_startup_status(preflight)
+    _record_startup_stage(app, "boot.begin")
+    _record_startup_stage(app, "preflight.complete")
+    if preflight.should_fail_fast:
+        _ensure_incident_tracker(app).record_failure(
+            "startup.preflight.strict_failure",
+            "Startup preflight failed in strict mode.",
+            severity="error",
+        )
+        raise RuntimeError("Startup preflight failed in strict mode")
+
+    startup_task = asyncio.create_task(_background_startup(app))
     startup_task.add_done_callback(_log_task_result)
     app.state._db_startup_task = startup_task
 
@@ -513,20 +687,122 @@ app.include_router(integrations_router, prefix="/api")
 
 
 @app.get("/health")
-async def health():
-    return {"status": "healthy"}
+async def health(request: Request):
+    startup = _startup_state_snapshot(request.app)
+    status = "healthy"
+    if startup.get("degraded") and not startup.get("ready"):
+        status = "starting"
+    return {
+        "status": status,
+        "kind": "liveness",
+    }
 
 
-@app.get("/api/health")
-async def api_health():
-    """Cheap probe for uptime + whether `.env` / shell exposed an OpenAI key (never returns the key)."""
+def _build_health_payload(app: FastAPI) -> dict[str, Any]:
+    startup = _startup_state_snapshot(app)
+    queue_status = queue_backend_status()
+    tracker = _ensure_incident_tracker(app)
+    incident_diag = tracker.diagnostics()
+    readiness = bool(startup.get("ready", False))
+    degraded = bool(startup.get("degraded", False)) or queue_status.degraded or bool(incident_diag["crash_loop"].get("active"))
+    status = "healthy" if readiness and not degraded else ("degraded" if readiness else "starting")
+
     oa = (os.environ.get("OPENAI_API_KEY") or "").strip()
     return {
-        "status": "healthy",
+        "status": status,
         "mode": "lightweight",
         "repo_root": _REPO_ROOT,
         "openai_key_loaded": bool(oa),
+        "checks": {
+            "readiness": readiness,
+            "degraded": degraded,
+            "startup": startup,
+            "queue_backend": {
+                "requested": queue_status.requested_backend,
+                "active": queue_status.active_backend,
+                "degraded": queue_status.degraded,
+                "reason": queue_status.reason,
+                "failover_policy": queue_status.failover_policy,
+            },
+            "incidents": incident_diag,
+        },
     }
+
+
+@app.get("/api/health")
+async def api_health(request: Request):
+    """Cheap probe for uptime + whether `.env` / shell exposed an OpenAI key (never returns the key)."""
+    return _build_health_payload(request.app)
+
+
+@app.get("/api/readiness")
+async def readiness(request: Request):
+    payload = _build_health_payload(request.app)
+    status_code = 200 if payload["checks"]["readiness"] else 503
+    return JSONResponse(payload, status_code=status_code)
+
+
+@app.get("/api/liveness")
+async def liveness(request: Request):
+    payload = _build_health_payload(request.app)
+    return {
+        "status": "healthy",
+        "kind": "liveness",
+        "degraded": payload["checks"]["degraded"],
+    }
+
+
+@app.get("/api/ops/preflight")
+async def ops_deploy_preflight(request: Request):
+    startup = _startup_state_snapshot(request.app)
+    report = run_deploy_preflight(
+        repo_root=_REPO_ROOT,
+        startup_stage_history=list(startup.get("stage_history", [])),
+        mode=os.getenv("PLODDER_DEPLOY_MODE", "local"),
+    )
+    payload = report.to_dict()
+    status_code = 503 if report.has_errors and os.getenv("PLODDER_PREFLIGHT_HTTP_STRICT", "false").lower() in {"1", "true", "yes", "on"} else 200
+    return JSONResponse(payload, status_code=status_code)
+
+
+@app.get("/api/ops/rollback-guard")
+async def ops_rollback_guard(request: Request):
+    startup = _startup_state_snapshot(request.app)
+    report = run_deploy_preflight(
+        repo_root=_REPO_ROOT,
+        startup_stage_history=list(startup.get("stage_history", [])),
+        mode=os.getenv("PLODDER_DEPLOY_MODE", "local"),
+    )
+    return report.rollback.to_dict()
+
+
+@app.get("/api/ops/diagnostics")
+async def ops_runtime_diagnostics(request: Request):
+    startup = _startup_state_snapshot(request.app)
+    tracker = _ensure_incident_tracker(request.app)
+    sequence_issues = [
+        {
+            "code": item.code,
+            "level": item.level,
+            "message": item.message,
+            "component": item.component,
+            "hint": item.hint,
+        }
+        for item in validate_startup_sequence(list(startup.get("stage_history", [])))
+    ]
+    return {
+        "status": "ok",
+        "startup": startup,
+        "expected_startup_order": startup_stage_order(),
+        "startup_sequence_issues": sequence_issues,
+        "incidents": tracker.diagnostics(),
+        "health": _build_health_payload(request.app),
+    }
+
+
+@app.get("/api/ops/runbook")
+async def ops_runbook_scaffold():
+    return build_operational_runbook_scaffold()
 
 
 @app.get("/test-sandbox")
@@ -1411,7 +1687,10 @@ async def create_session(raw_request: Request):
         import traceback
         print(f"[API] create_session ERROR: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Session creation failed ({type(e).__name__}): {e}",
+        )
     # Store project_id on agent for memory auto-injection
     if project_id:
         agent = session_manager._agents.get(session.session_id)

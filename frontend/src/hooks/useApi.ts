@@ -19,6 +19,44 @@ const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
 
 type FetchApiOptions = RequestInit & { timeoutMs?: number };
 
+async function readApiErrorMessage(response: Response): Promise<string> {
+  const status = response.status;
+  const contentType = (response.headers.get('content-type') || '').toLowerCase();
+
+  if (contentType.includes('application/json')) {
+    const payload = await response.json().catch(() => null);
+    const detail =
+      payload && typeof payload === 'object'
+        ? (payload as { detail?: unknown; message?: unknown }).detail ??
+          (payload as { detail?: unknown; message?: unknown }).message
+        : null;
+    const text = typeof detail === 'string' ? detail.trim() : '';
+    if (text) {
+      return text;
+    }
+  } else {
+    const text = (await response.text().catch(() => '')).trim();
+    if (text) {
+      const compact = text.replace(/\s+/g, ' ');
+      if (status === 502) {
+        return '502 Bad Gateway: the backend is unreachable or not listening on the expected port.';
+      }
+      if (status === 503) {
+        return '503 Service Unavailable: the backend is still starting or temporarily down.';
+      }
+      return compact.length > 240 ? `${compact.slice(0, 240)}…` : compact;
+    }
+  }
+
+  if (status === 502) {
+    return '502 Bad Gateway: the backend is unreachable or not listening on the expected port.';
+  }
+  if (status === 503) {
+    return '503 Service Unavailable: the backend is still starting or temporarily down.';
+  }
+  return `HTTP ${status}`;
+}
+
 async function fetchApi<T>(endpoint: string, options: FetchApiOptions = {}): Promise<T> {
   const { timeoutMs = DEFAULT_FETCH_TIMEOUT_MS, ...rest } = options;
   const apiBase = getApiBase();
@@ -42,8 +80,7 @@ async function fetchApi<T>(endpoint: string, options: FetchApiOptions = {}): Pro
   }
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-    throw new Error(error.detail || `HTTP ${response.status}`);
+    throw new Error(await readApiErrorMessage(response));
   }
 
   return response.json();
