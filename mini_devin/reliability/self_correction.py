@@ -16,7 +16,18 @@ from enum import Enum
 import os
 import re
 import subprocess
+import sys
 from typing import Any, Dict, Optional, Tuple
+
+_PYTHON_STDLIB_MODULES = set(getattr(sys, "stdlib_module_names", ())) | {
+    "unittest",
+    "sqlite3",
+    "json",
+    "re",
+    "pathlib",
+    "typing",
+}
+
 
 def error_fingerprint(tool_name: str, tool_output: str, exit_code: Optional[int]) -> str:
     """
@@ -69,6 +80,19 @@ def terminal_sanity_check(command: str, *, is_windows: bool) -> Tuple[bool, str]
     # Unbalanced quotes (simple heuristic)
     if cmd.count('"') % 2 != 0 or cmd.count("'") % 2 != 0:
         return False, "Unbalanced single or double quotes in command."
+
+    pip_install_match = re.match(
+        r"(?i)^\s*(?:python3?|py)?(?:\s+-m)?\s*pip\s+install\s+([A-Za-z_][A-Za-z0-9_.-]*)\s*$",
+        cmd,
+    )
+    if pip_install_match:
+        package = pip_install_match.group(1).replace("-", "_").lower()
+        if package in _PYTHON_STDLIB_MODULES:
+            return (
+                False,
+                f"`{package}` is part of the Python standard library and must not be installed with pip. "
+                f"Use `python -m {package}` if it is a runnable module, or import it directly in code/tests.",
+            )
 
     return True, ""
 
@@ -225,6 +249,12 @@ def incremental_recovery_hint(
         or "python -m unittest" in cmd_l
         or re.search(r"\bunittest\b", cmd_l)
     ):
+        if "pip install" in cmd_l:
+            return (
+                "**Incremental recovery (stdlib module):** `unittest` is built into Python; do not run "
+                "`pip install unittest`. Run tests with `python -m unittest discover -v` from the project root, "
+                "or use `python -m pytest` only if pytest is installed."
+            )
         return (
             "**Incremental recovery (unittest):** Verify discovery paths: `ls -la`, "
             "`python -m unittest discover -v` from the package root, and ensure the module path matches the repo layout."
