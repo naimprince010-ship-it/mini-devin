@@ -16,6 +16,57 @@ from pathlib import Path
 from typing import Any
 
 
+GOVERNANCE_TELEMETRY_SCHEMA_VERSION = "governance.telemetry.v1"
+GOVERNANCE_SIGNAL_TYPES = frozenset({"budget", "retry", "loop"})
+
+
+def build_governance_signal(
+    signal_type: str,
+    *,
+    status: str,
+    counters: dict[str, Any] | None = None,
+    detail: str | None = None,
+    observe_only: bool = True,
+    schema_version: str = GOVERNANCE_TELEMETRY_SCHEMA_VERSION,
+) -> dict[str, Any]:
+    """Build one normalized governance telemetry signal payload."""
+    normalized_type = str(signal_type or "").strip().lower()
+    if normalized_type not in GOVERNANCE_SIGNAL_TYPES:
+        raise ValueError(f"Unsupported governance signal type: {signal_type!r}")
+    payload: dict[str, Any] = {
+        "schema": schema_version,
+        "observe_only": bool(observe_only),
+        "signal_type": normalized_type,
+        "status": str(status or "unknown"),
+        "counters": dict(counters or {}),
+    }
+    if detail:
+        payload["detail"] = str(detail)
+    return payload
+
+
+def normalize_governance_signals(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop malformed rows and normalize governance signal payloads."""
+    out: list[dict[str, Any]] = []
+    for row in signals:
+        if not isinstance(row, dict):
+            continue
+        signal_type = str(row.get("signal_type") or "").strip().lower()
+        if signal_type not in GOVERNANCE_SIGNAL_TYPES:
+            continue
+        out.append(
+            build_governance_signal(
+                signal_type,
+                status=str(row.get("status") or "unknown"),
+                counters=row.get("counters") if isinstance(row.get("counters"), dict) else {},
+                detail=str(row.get("detail")) if row.get("detail") is not None else None,
+                observe_only=bool(row.get("observe_only", True)),
+                schema_version=str(row.get("schema") or GOVERNANCE_TELEMETRY_SCHEMA_VERSION),
+            )
+        )
+    return out
+
+
 def estimate_llm_cost_usd(
     model: str,
     prompt_tokens: int,

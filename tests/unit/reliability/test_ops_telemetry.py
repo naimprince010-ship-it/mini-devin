@@ -125,3 +125,19 @@ def test_operational_score_bands() -> None:
     )
     assert high["band"] in {"high", "conditional"}
     assert risk["band"] == "risk"
+
+
+def test_governance_signal_counted_in_export(tmp_path: Path) -> None:
+    collector = _collector(tmp_path)
+    now = datetime.now(timezone.utc)
+
+    collector.record_governance_signal(
+        "budget",
+        "near_limit",
+        counters={"llm_total_tokens": 90, "token_budget": 100},
+        now=now,
+    )
+
+    export = collector.export(hours=1, now=now)
+    assert export["kpis"]["governance_signals"] == 1
+    assert export["kpis"]["governance_high_risk_signals"] == 1
