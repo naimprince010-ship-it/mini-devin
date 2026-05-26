@@ -135,6 +135,21 @@ def _is_rate_limited_error(message: str) -> bool:
     )
 
 
+def _is_hard_quota_exhausted_error(message: str) -> bool:
+    """True when provider indicates a non-recoverable quota exhaustion condition."""
+    m = (message or "").lower()
+    hard_markers = (
+        "resource_exhausted",
+        "quota exceeded",
+        "exceeded your current quota",
+        "generaterequestsperdayperprojectpermodel-freetier",
+        "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+        "insufficient_quota",
+        "billing details",
+    )
+    return any(marker in m for marker in hard_markers)
+
+
 def _is_transient_llm_error(message: str) -> bool:
     m = (message or "").lower()
     transient_markers = (
@@ -817,6 +832,7 @@ class LLMClient:
         response = None
         last_error_msg = ""
         rate_limited = False
+        hard_quota_exhausted = False
         for model_index, candidate_model in enumerate(model_candidates, start=1):
             model_name = candidate_model
             kwargs["model"] = model_name
@@ -857,10 +873,14 @@ class LLMClient:
                             + last_error_msg[:500]
                         )
                     transient = _is_transient_llm_error(last_error_msg)
+                    hard_quota_exhausted = _is_hard_quota_exhausted_error(last_error_msg)
                     if gateway is not None:
                         failure_type = gateway.classify_failure(last_error_msg)
                         transient = transient and gateway.should_retry(failure_type)
                     rate_limited = rate_limited or _is_rate_limited_error(last_error_msg)
+                    if hard_quota_exhausted:
+                        # Do not retry or fan out to fallback models on hard quota exhaustion.
+                        break
                     if not transient or attempt >= retry_count:
                         break
                     sleep_for = _retry_sleep_seconds(attempt, retry_delay, last_error_msg)
@@ -868,11 +888,19 @@ class LLMClient:
                         await asyncio.sleep(sleep_for)
             if response is not None:
                 break
+            if hard_quota_exhausted:
+                break
             if not _is_transient_llm_error(last_error_msg):
                 break
 
         if response is None:
             if rate_limited:
+                if hard_quota_exhausted:
+                    raise RuntimeError(
+                        "LLM Hard Quota Reached (non-recoverable in this run): "
+                        + last_error_msg
+                        + ". Pause execution and switch to a billed provider/model or wait for quota reset."
+                    )
                 raise RuntimeError(
                     f"LLM Rate Limit Reached after {retry_count} attempts across "
                     f"{len(model_candidates)} model(s): {last_error_msg}. "
