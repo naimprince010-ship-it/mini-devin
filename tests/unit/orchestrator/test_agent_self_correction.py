@@ -311,3 +311,13 @@ def test_incremental_recovery_hint_cwd_mismatch():
     assert "working directory" in low or "cwd" in low
     assert "pwd" in low
     assert "ls" in low
+
+
+def test_agent_hard_rate_limit_detector():
+    agent = Agent(llm_client=MagicMock(), auto_verify=False)
+
+    assert agent._is_hard_rate_limit_error("RESOURCE_EXHAUSTED quota exceeded")
+    assert agent._is_hard_rate_limit_error("LLM Hard Quota Reached")
+    assert not agent._is_hard_rate_limit_error("RateLimitError: 429 too many requests")
+
+
