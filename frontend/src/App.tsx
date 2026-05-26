@@ -9,6 +9,7 @@ import { SkillsManager } from './components/SkillsManager';
 import { RepoManager } from './components/RepoManager';
 import { PRReview } from './components/PRReview';
 import MonitorPanel from './components/MonitorPanel';
+import OperatorConsolePanel from './components/OperatorConsolePanel';
 import EnvParityPanel from './components/EnvParityPanel';
 import UITestPanel from './components/UITestPanel';
 import ProjectPlannerPanel from './components/ProjectPlannerPanel';
@@ -40,6 +41,7 @@ import {
   Moon,
   Menu,
   Activity,
+  LineChart,
   Container,
   TestTube2,
   FolderKanban,
@@ -48,7 +50,7 @@ import {
   SlidersHorizontal,
 } from 'lucide-react';
 
-type TabType = 'sessions' | 'skills' | 'repos' | 'reviews' | 'monitor' | 'env_parity' | 'ui_test' | 'projects' | 'benchmark';
+type TabType = 'sessions' | 'skills' | 'repos' | 'reviews' | 'monitor' | 'ops_dashboard' | 'env_parity' | 'ui_test' | 'projects' | 'benchmark';
 
 function NewSessionModal({
   onClose,
@@ -283,7 +285,7 @@ function App() {
   const handleTabChange = useCallback((tab: TabType) => {
     setActiveTab(tab);
     setSidebarOpen(false);
-    if (['reviews', 'monitor', 'env_parity', 'ui_test', 'projects', 'benchmark'].includes(tab)) {
+    if (['reviews', 'monitor', 'ops_dashboard', 'env_parity', 'ui_test', 'projects', 'benchmark'].includes(tab)) {
       setToolsExpanded(true);
     }
   }, []);
@@ -385,6 +387,7 @@ function App() {
     { id: 'repos', icon: <GitFork size={18} />, label: 'Repos' },
     { id: 'reviews', icon: <GitPullRequest size={18} />, label: 'Reviews' },
     { id: 'monitor', icon: <Activity size={18} />, label: 'Monitor' },
+    { id: 'ops_dashboard', icon: <LineChart size={18} />, label: 'Ops Console' },
     { id: 'env_parity', icon: <Container size={18} />, label: 'Env Parity' },
     { id: 'ui_test', icon: <TestTube2 size={18} />, label: 'UI Tests' },
     { id: 'projects', icon: <FolderKanban size={18} />, label: 'Projects' },
@@ -392,7 +395,7 @@ function App() {
   ];
 
   const primaryNavItems = navItems.filter(item => ['sessions', 'skills', 'repos', 'benchmark'].includes(item.id));
-  const secondaryNavItems = navItems.filter(item => ['reviews', 'monitor', 'env_parity', 'ui_test', 'projects'].includes(item.id));
+  const secondaryNavItems = navItems.filter(item => ['reviews', 'monitor', 'ops_dashboard', 'env_parity', 'ui_test', 'projects'].includes(item.id));
 
   const apiBase = getApiBase();
 
@@ -682,6 +685,10 @@ function App() {
                 ) : activeTab === 'monitor' ? (
                   <ErrorBoundary>
                     <MonitorPanel />
+                  </ErrorBoundary>
+                ) : activeTab === 'ops_dashboard' ? (
+                  <ErrorBoundary>
+                    <OperatorConsolePanel />
                   </ErrorBoundary>
                 ) : activeTab === 'env_parity' ? (
                   <ErrorBoundary>
