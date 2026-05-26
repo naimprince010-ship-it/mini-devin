@@ -645,3 +645,36 @@ class TestLLMClientRetries:
         msg = str(exc_info.value)
         assert "LLM Rate Limit Reached" in msg
         assert "LLM_API_MAX_CONCURRENCY" in msg
+
+    @patch("mini_devin.core.llm_client.LITELLM_AVAILABLE", True)
+    @patch("mini_devin.core.llm_client.litellm")
+    @patch("mini_devin.core.llm_client.acompletion", new_callable=AsyncMock)
+    @patch.dict(
+        os.environ,
+        {
+            "LLM_API_MAX_ATTEMPTS": "5",
+            "LLM_API_RETRY_DELAY_SECONDS": "0",
+            "LLM_FALLBACK_MODELS": "gpt-4o-mini",
+        },
+        clear=False,
+    )
+    def test_complete_hard_quota_exhaustion_fails_fast_without_retry_spam(self, mock_acompletion, mock_litellm):
+        import asyncio
+
+        mock_acompletion.side_effect = [
+            Exception(
+                "RateLimitError: 429 RESOURCE_EXHAUSTED quota exceeded "
+                "GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+            )
+        ]
+
+        client = LLMClient(LLMConfig(model="gpt-4o", api_key="k"))
+        client.add_user_message("hi")
+
+        with pytest.raises(RuntimeError) as exc_info:
+            asyncio.run(client.complete(tools=None, stream=False))
+
+        msg = str(exc_info.value)
+        assert "LLM Hard Quota Reached" in msg
+        assert "Pause execution" in msg
+        assert mock_acompletion.await_count == 1

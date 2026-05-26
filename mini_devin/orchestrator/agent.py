@@ -4671,6 +4671,21 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 out[k] = str(v)[:500]
         return out
 
+    @staticmethod
+    def _is_hard_rate_limit_error(message: str) -> bool:
+        """Detect non-recoverable provider quota exhaustion errors."""
+        m = (message or "").lower()
+        hard_markers = (
+            "llm hard quota reached",
+            "resource_exhausted",
+            "quota exceeded",
+            "exceeded your current quota",
+            "insufficient_quota",
+            "generaterequestsperdayperprojectpermodel-freetier",
+            "billing details",
+        )
+        return any(marker in m for marker in hard_markers)
+
     def _llm_usage_payload_for_session_event(self) -> dict[str, Any]:
         """Cumulative LLM tokens + rough USD; per-event token/cost delta since last think/observe."""
         llm = getattr(self, "llm", None)
@@ -6257,6 +6272,16 @@ Call a tool (editor or terminal) immediately as your first action."""
                     
                     # Report error to UI if callback exists
                     await self._trigger_callback("on_message", f"⚠️ **Error**: {str(e)}", is_token=False)
+
+                    if self._is_hard_rate_limit_error(str(e)):
+                        await self._update_phase(AgentPhase.BLOCKED)
+                        task.status = TaskStatus.FAILED
+                        task.last_error = (
+                            "Provider quota exhausted (hard rate limit). "
+                            "Execution paused to avoid retry spam. "
+                            "Switch model/provider or wait for quota reset before retrying."
+                        )
+                        break
                     
                     task.last_error = str(e)
                     task.error_count += 1
