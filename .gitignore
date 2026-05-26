@@ -96,3 +96,6 @@ droplet_details.json
 droplet_details_utf8.json
 *.log
 git_status.txt
+
+# Local operator runtime artifacts
+.plodder/ops/
