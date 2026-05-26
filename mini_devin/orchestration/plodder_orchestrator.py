@@ -9,12 +9,34 @@ DAG mutation (skip dependents, inject replacement_subtasks), bounded by ``max_re
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from .protocol import PlanEvent, SupervisorAction, WorkerObservation
+from .checkpoint_store import JsonlCheckpointStore
+from .runtime_contracts import FileTypedEventEmitter
+from .autonomous_coordination import (
+    AgentBudgetState,
+    AutonomousCoordinatorRuntime,
+    autonomous_coordination_enabled,
+)
+from .task_queue import (
+    create_queue_transport,
+    TaskQueueCoordinator,
+    queue_consumer_name,
+    queue_execution_enabled,
+    queue_typed_events_enabled,
+)
+from .sandbox_runtime import (
+    SandboxIsolationCoordinator,
+    TaskSandboxContext,
+    TaskSecretScope,
+    sandbox_hardening_enabled,
+)
 from .task_scheduler import (
     SchedulableUnit,
     auto_skip_when_dep_skipped,
@@ -171,6 +193,13 @@ class PlodderOrchestrator:
         prior = dict(prior_obs)
         last_err: str | None = None
         worker_session_id = ""
+        sandbox_coordinator: SandboxIsolationCoordinator | None = None
+        sandbox_context: TaskSandboxContext | None = None
+        if sandbox_hardening_enabled():
+            sandbox_coordinator = SandboxIsolationCoordinator(
+                workspace,
+                checkpoint_store=JsonlCheckpointStore(workspace),
+            )
         for attempt in range(self._max_retries + 1):
             desc = self._worker_task_prompt(unit, prior, attempt, last_err, workspace=workspace)
             try:
@@ -181,6 +210,21 @@ class PlodderOrchestrator:
                     max_iterations=getattr(parent, "max_iterations", None),
                 )
                 worker_session_id = worker_session.session_id
+                if sandbox_coordinator is not None:
+                    sandbox_context = sandbox_coordinator.prepare(
+                        task_id=unit.id,
+                        session_id=worker_session.session_id,
+                        secret_scope=TaskSecretScope(task_id=unit.id),
+                        metadata={
+                            "worker_action_id": act.id,
+                            "workspace": workspace,
+                            "attempt": attempt,
+                        },
+                    )
+                    sandbox_context = sandbox_coordinator.activate(
+                        sandbox_context,
+                        metadata={"worker_session_id": worker_session.session_id, "attempt": attempt},
+                    )
                 task = await self._session_manager.create_task(
                     session_id=worker_session.session_id,
                     description=desc,
@@ -202,11 +246,39 @@ class PlodderOrchestrator:
                     task_id=task.task_id,
                     error=err,
                 )
-                if success or attempt >= self._max_retries:
+                if success:
+                    if sandbox_coordinator is not None and sandbox_context is not None:
+                        sandbox_context = sandbox_coordinator.release(
+                            sandbox_context,
+                            metadata={"worker_session_id": worker_session.session_id, "success": success},
+                        )
+                    return obs
+                if attempt >= self._max_retries:
+                    if sandbox_coordinator is not None and sandbox_context is not None:
+                        sandbox_context = sandbox_coordinator.quarantine(
+                            sandbox_context,
+                            reason=err or "worker execution failed",
+                            metadata={"attempt": attempt, "worker_session_id": worker_session.session_id},
+                        )
                     return obs
                 last_err = err or "worker failed"
+                if sandbox_coordinator is not None and sandbox_context is not None:
+                    sandbox_context = sandbox_coordinator.quarantine(
+                        sandbox_context,
+                        reason=last_err,
+                        metadata={"attempt": attempt, "worker_session_id": worker_session.session_id},
+                    )
+                    sandbox_context = sandbox_coordinator.recover_quarantined_context(sandbox_context)
             except Exception as e:  # noqa: BLE001
                 last_err = str(e)
+                if sandbox_coordinator is not None and sandbox_context is not None:
+                    sandbox_context = sandbox_coordinator.record_crash(
+                        sandbox_context,
+                        reason=last_err,
+                        metadata={"attempt": attempt, "worker_session_id": worker_session_id or ""},
+                    )
+                    if attempt < self._max_retries:
+                        sandbox_context = sandbox_coordinator.recover_quarantined_context(sandbox_context)
                 if attempt >= self._max_retries:
                     return WorkerObservation.from_task_outcome(
                         act.id,
@@ -230,6 +302,15 @@ class PlodderOrchestrator:
         if not parent:
             raise ValueError(f"Session not found: {parent_session_id}")
         workspace = parent.working_directory
+
+        if autonomous_coordination_enabled():
+            return await self._run_goal_autonomous(
+                parent_session_id,
+                goal,
+                parent=parent,
+                workspace=workspace,
+                connection_manager=connection_manager,
+            )
 
         raw_plan = await self._supervisor.decompose_to_subtasks(
             goal,
@@ -267,19 +348,31 @@ class PlodderOrchestrator:
                 abort_reason = msg
                 break
 
-            results = await asyncio.gather(
-                *[
-                    self._execute_worker_unit(
-                        u,
-                        prior_obs=observations,
-                        parent=parent,
-                        workspace=workspace,
-                        connection_manager=connection_manager,
-                        actions=actions,
-                    )
-                    for u in ready
-                ]
-            )
+            if queue_execution_enabled():
+                results = await self._execute_ready_units_via_queue(
+                    ready,
+                    prior_obs=observations,
+                    parent=parent,
+                    workspace=workspace,
+                    connection_manager=connection_manager,
+                    actions=actions,
+                    session_id=parent_session_id,
+                    goal=goal,
+                )
+            else:
+                results = await asyncio.gather(
+                    *[
+                        self._execute_worker_unit(
+                            u,
+                            prior_obs=observations,
+                            parent=parent,
+                            workspace=workspace,
+                            connection_manager=connection_manager,
+                            actions=actions,
+                        )
+                        for u in ready
+                    ]
+                )
 
             pairs = list(zip(ready, results))
             for unit, obs in pairs:
@@ -389,6 +482,189 @@ class PlodderOrchestrator:
             aborted=aborted,
             abort_reason=abort_reason,
         )
+
+    async def _run_goal_autonomous(
+        self,
+        parent_session_id: str,
+        goal: str,
+        *,
+        parent: Any,
+        workspace: str,
+        connection_manager: Any | None,
+    ) -> OrchestratorRunResult:
+        async def planner_fn(local_goal: str, workspace_hint: str) -> tuple[list[SchedulableUnit], str]:
+            raw_plan = await self._supervisor.decompose_to_subtasks(local_goal, workspace_hint=workspace_hint)
+            return self._parse_subtasks(raw_plan), str(raw_plan.get("reasoning", ""))
+
+        actions: list[SupervisorAction] = []
+
+        async def implementer_fn(unit: SchedulableUnit) -> WorkerObservation:
+            return await self._execute_worker_unit(
+                unit,
+                prior_obs={},
+                parent=parent,
+                workspace=workspace,
+                connection_manager=connection_manager,
+                actions=actions,
+            )
+
+        async def verifier_fn(unit: SchedulableUnit, obs: WorkerObservation) -> bool:
+            del unit
+            return bool(obs.success)
+
+        async def recovery_replan_fn(
+            failed_unit: SchedulableUnit,
+            obs: WorkerObservation,
+            board: Any,
+        ) -> list[SchedulableUnit]:
+            remaining_summary = json.dumps(
+                [{"id": u.id, "depends_on": list(u.depends_on)} for u in board.queued_units if u.id not in board.completed_units],
+                indent=2,
+            )
+            pivot_data = await self._supervisor.pivot_after_failure(
+                failed_subtask_id=failed_unit.id,
+                observation=obs.to_json(),
+                overall_goal=board.goal,
+                completed_subtask_ids=sorted(board.completed_units),
+                remaining_plan_summary=remaining_summary,
+                workspace_hint=workspace,
+            )
+            replacement_raw = pivot_data.get("replacement_subtasks") or []
+            return _parse_replacement_units(
+                replacement_raw if isinstance(replacement_raw, list) else [],
+                completed_ids=set(board.completed_units),
+            )
+
+        runtime = AutonomousCoordinatorRuntime(
+            workspace=workspace,
+            session_id=parent_session_id,
+            planner_fn=planner_fn,
+            implementer_fn=implementer_fn,
+            verifier_fn=verifier_fn,
+            replan_fn=recovery_replan_fn,
+            checkpoint_store=JsonlCheckpointStore(workspace),
+            typed_emitter=FileTypedEventEmitter(workspace),
+            budget_state=AgentBudgetState(),
+        )
+        coordinated = await runtime.run(goal)
+
+        plan_event = PlanEvent(
+            type="plan.created",
+            goal=goal,
+            workspace=workspace,
+            subtasks=[
+                {
+                    "id": message.payload.get("unit_id", ""),
+                    "goal": message.payload.get("goal", ""),
+                    "depends_on": [],
+                }
+                for message in coordinated.events
+                if message.event_type == "unit.dispatched"
+            ],
+            reasoning="autonomous coordination runtime",
+        )
+
+        errors = list(coordinated.errors)
+        aborted = coordinated.terminated_reason not in ("completed",)
+        abort_reason = coordinated.terminated_reason if aborted else None
+        pivot_events = [
+            {
+                "event": "coordination",
+                "event_type": message.event_type,
+                "source": message.source.value,
+                "target": message.target.value,
+                "payload": dict(message.payload),
+            }
+            for message in coordinated.events
+            if message.event_type in ("replan.applied", "recovery.decision")
+        ]
+
+        return OrchestratorRunResult(
+            plan_event=plan_event,
+            observations=coordinated.observations,
+            actions=actions or coordinated.actions,
+            errors=errors,
+            pivot_events=pivot_events,
+            aborted=aborted,
+            abort_reason=abort_reason,
+        )
+
+    async def _execute_ready_units_via_queue(
+        self,
+        ready: list[SchedulableUnit],
+        *,
+        prior_obs: dict[str, WorkerObservation],
+        parent: Any,
+        workspace: str,
+        connection_manager: Any | None,
+        actions: list[SupervisorAction],
+        session_id: str,
+        goal: str,
+    ) -> list[WorkerObservation]:
+        transport = create_queue_transport()
+        emitter = FileTypedEventEmitter(workspace) if queue_typed_events_enabled() else None
+        coordinator = TaskQueueCoordinator(
+            transport=transport,
+            checkpoint_store=JsonlCheckpointStore(workspace),
+            typed_emitter=emitter,
+        )
+        consumer_name = queue_consumer_name("worker")
+        results: list[WorkerObservation] = []
+
+        for unit in ready:
+            queued = coordinator.enqueue_unit(
+                session_id=session_id,
+                task_id=session_id,
+                unit_id=unit.id,
+                goal=unit.goal,
+                acceptance_criteria=unit.acceptance_criteria,
+                depends_on=list(unit.depends_on),
+                metadata={"mode": "queue-backed"},
+            )
+            lease = coordinator.lease_next(consumer_name)
+            if not lease:
+                results.append(
+                    await self._execute_worker_unit(
+                        unit,
+                        prior_obs=prior_obs,
+                        parent=parent,
+                        workspace=workspace,
+                        connection_manager=connection_manager,
+                        actions=actions,
+                    )
+                )
+                continue
+
+            heartbeat_task = asyncio.create_task(self._queue_heartbeat_loop(coordinator, lease.lease_id))
+            try:
+                obs = await self._execute_worker_unit(
+                    unit,
+                    prior_obs=prior_obs,
+                    parent=parent,
+                    workspace=workspace,
+                    connection_manager=connection_manager,
+                    actions=actions,
+                )
+                if obs.success:
+                    coordinator.complete(lease.lease_id, summary=obs.result.get("summary", unit.goal))
+                else:
+                    coordinator.dead_letter(
+                        lease.lease_id,
+                        reason=obs.result.get("error") or "worker execution failed",
+                    )
+                results.append(obs)
+            finally:
+                heartbeat_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await heartbeat_task
+
+        return results
+
+    async def _queue_heartbeat_loop(self, coordinator: TaskQueueCoordinator, lease_id: str) -> None:
+        interval = max(1, coordinator.heartbeat_seconds)
+        while True:
+            await asyncio.sleep(interval)
+            coordinator.heartbeat(lease_id)
 
     def _worker_task_prompt(
         self,

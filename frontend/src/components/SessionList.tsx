@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Session, Task } from '../types';
 import { useApi } from '../hooks/useApi';
 import { Plus, Trash2, RefreshCw, Zap, Clock, CheckCircle2, AlertCircle, Search, X, SlidersHorizontal } from 'lucide-react';
@@ -44,31 +44,16 @@ export function SessionList({
 }: SessionListProps) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionTitles, setSessionTitles] = useState<Record<string, string>>({});
+  const knownTitlesRef = useRef<Record<string, boolean>>({});
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const api = useApi();
 
-  const loadSessions = async () => {
-    try {
-      const data = await api.listSessions();
-      setSessions(data);
-      // Use backend title if available, else fetch from tasks
-      for (const s of data) {
-        if (!sessionTitles[s.session_id]) {
-          if (s.title) {
-            setSessionTitles(prev => ({ ...prev, [s.session_id]: s.title! }));
-          } else if (s.total_tasks > 0) {
-            fetchSessionTitle(s.session_id);
-          }
-        }
-      }
-    } catch (e) {
-      console.error('Failed to load sessions:', e);
+  const fetchSessionTitle = useCallback(async (sessionId: string) => {
+    if (knownTitlesRef.current[sessionId]) {
+      return;
     }
-  };
-
-  const fetchSessionTitle = async (sessionId: string) => {
     try {
       const tasks = await api.listTasks(sessionId);
       if (tasks && tasks.length > 0) {
@@ -76,24 +61,45 @@ export function SessionList({
         const desc = firstTask.description || '';
         // Truncate to a reasonable title length
         const title = desc.length > 60 ? desc.slice(0, 57) + '…' : desc;
+        knownTitlesRef.current[sessionId] = true;
         setSessionTitles(prev => ({ ...prev, [sessionId]: title }));
       }
     } catch {
       // Ignore errors — title just won't show
     }
-  };
+  }, [api]);
+
+  const loadSessions = useCallback(async () => {
+    try {
+      const data = await api.listSessions();
+      setSessions(data);
+      // Use backend title if available, else fetch from tasks.
+      for (const s of data) {
+        if (!knownTitlesRef.current[s.session_id]) {
+          if (s.title) {
+            knownTitlesRef.current[s.session_id] = true;
+            setSessionTitles(prev => ({ ...prev, [s.session_id]: s.title! }));
+          } else if (s.total_tasks > 0) {
+            void fetchSessionTitle(s.session_id);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load sessions:', e);
+    }
+  }, [api, fetchSessionTitle]);
 
   useEffect(() => {
-    loadSessions();
+    void loadSessions();
     const interval = setInterval(loadSessions, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [loadSessions]);
 
   useEffect(() => {
     if (refreshTrigger > 0) {
-      loadSessions();
+      void loadSessions();
     }
-  }, [refreshTrigger]);
+  }, [refreshTrigger, loadSessions]);
 
   useEffect(() => {
     if (showSearch && searchRef.current) {
@@ -106,12 +112,13 @@ export function SessionList({
     if (!confirm('Delete this session?')) return;
     try {
       await api.deleteSession(sessionId);
-      setSessions(sessions.filter(s => s.session_id !== sessionId));
+      setSessions(prev => prev.filter(s => s.session_id !== sessionId));
       setSessionTitles(prev => {
         const next = { ...prev };
         delete next[sessionId];
         return next;
       });
+      delete knownTitlesRef.current[sessionId];
     } catch (e) {
       console.error('Failed to delete session:', e);
     }

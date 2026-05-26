@@ -1,0 +1,23 @@
+{
+  "run_id": "c064a73b-8c1",
+  "benchmark": "humaneval",
+  "mode": "canonical",
+  "limit": 1,
+  "status": "completed",
+  "started_at": "2026-05-22T15:26:57.614571+00:00",
+  "finished_at": "2026-05-22T15:26:58.052940+00:00",
+  "total": 1,
+  "passed": 1,
+  "results": [
+    {
+      "task_id": "HumanEval/0",
+      "benchmark": "humaneval",
+      "passed": true,
+      "generated_code": "def add(a, b):\n    \"\"\"Return sum.\"\"\"\n\n    return a + b\n",
+      "test_output": "",
+      "error": "",
+      "duration_s": 0.44
+    }
+  ],
+  "pass_rate": 100.0
+}

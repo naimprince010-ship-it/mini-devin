@@ -11,6 +11,15 @@ import os
 import uuid
 from typing import Any
 
+from .sandbox_runtime import (
+    SandboxIsolationCoordinator,
+    SandboxResourceLimits,
+    TaskSandboxContext,
+    TaskSecretScope,
+    build_default_sandbox_limits,
+    sandbox_hardening_enabled,
+)
+
 
 def orchestrator_worker_use_sandbox() -> bool:
     return (os.environ.get("ORCHESTRATOR_WORKER_USE_SANDBOX", "") or "").strip().lower() in (
@@ -18,6 +27,10 @@ def orchestrator_worker_use_sandbox() -> bool:
         "true",
         "yes",
     )
+
+
+def orchestrator_worker_sandbox_hardening_enabled() -> bool:
+    return sandbox_hardening_enabled()
 
 
 class WorkerRuntime:
@@ -55,6 +68,49 @@ class WorkerRuntime:
             kwargs["max_iterations"] = max_iterations
 
         return await session_manager.create_session(**kwargs)
+
+    @staticmethod
+    def build_sandbox_limits(*, cpu_cores: float = 1.0, memory_mb: int = 512, timeout_seconds: int = 300) -> SandboxResourceLimits:
+        return build_default_sandbox_limits(cpu_cores=cpu_cores, memory_mb=memory_mb, timeout_seconds=timeout_seconds)
+
+    @staticmethod
+    def prepare_task_sandbox(
+        workspace: str,
+        *,
+        task_id: str,
+        session_id: str,
+        limits: SandboxResourceLimits | None = None,
+        secret_scope: TaskSecretScope | None = None,
+        checkpoint_store: Any | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> TaskSandboxContext:
+        coordinator = SandboxIsolationCoordinator(workspace, checkpoint_store=checkpoint_store)
+        return coordinator.prepare(
+            task_id=task_id,
+            session_id=session_id,
+            limits=limits,
+            secret_scope=secret_scope,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def build_task_sandbox_environment(
+        workspace: str,
+        *,
+        task_id: str,
+        session_id: str,
+        base_environment: dict[str, str] | None = None,
+        limits: SandboxResourceLimits | None = None,
+        secret_scope: TaskSecretScope | None = None,
+    ) -> dict[str, str]:
+        coordinator = SandboxIsolationCoordinator(workspace)
+        context = coordinator.prepare(
+            task_id=task_id,
+            session_id=session_id,
+            limits=limits,
+            secret_scope=secret_scope,
+        )
+        return coordinator.build_worker_environment(context, base_environment=base_environment)
 
     @staticmethod
     def new_action_id() -> str:

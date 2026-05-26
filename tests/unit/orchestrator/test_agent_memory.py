@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 from datetime import datetime, timezone
 
 from mini_devin.orchestrator.agent import Agent
-from mini_devin.schemas.state import TaskState, TaskGoal, TaskStatus
+from mini_devin.schemas.state import TaskState, TaskGoal, TaskStatus, TaskType
 from mini_devin.memory.conversation_memory import (
     ConversationMemory,
     ConversationEntryType,
@@ -259,6 +259,56 @@ class TestAgentMemoryIntegration:
         entry_id = agent.save_task_summary(task=task, summary="summary")
         
         assert entry_id == ""
+
+    def test_build_task_retrieval_context_uses_code_and_memory(self, agent):
+        """Test that the agent builds a retrieval block from code and memory signals."""
+        agent.search_code = MagicMock(
+            return_value=[
+                MagicMock(
+                    to_dict=MagicMock(
+                        return_value={
+                            "name": "fix_login",
+                            "symbol_type": "function",
+                            "location": {"file_path": "app/auth.py"},
+                            "docstring": "Fix login flow",
+                        }
+                    )
+                )
+            ]
+        )
+        agent.get_context_from_memory = MagicMock(return_value="Relevant memory lesson")
+
+        task = TaskState(
+            task_id="retrieval-task",
+            goal=TaskGoal(
+                description="Fix login flow in auth",
+                acceptance_criteria=["Login succeeds", "Tests pass"],
+            ),
+        )
+
+        block = agent._build_task_retrieval_context(task)
+
+        assert "Relevant code search results" in block
+        assert "fix_login" in block
+        assert "Relevant past memory" in block
+        assert "Relevant memory lesson" in block
+
+    def test_task_retrieval_queries_prioritize_task_type(self, agent):
+        """Test that bug-fix tasks get bug-fix-oriented retrieval queries first."""
+        task = TaskState(
+            task_id="bug-task",
+            task_type=TaskType.BUG_FIX,
+            goal=TaskGoal(
+                description="Fix login failure when the session expires",
+                acceptance_criteria=["Login succeeds after refresh"],
+            ),
+        )
+
+        queries = agent._task_retrieval_queries(task)
+
+        assert queries[0][0] == "task goal"
+        assert "bug fix" in queries[1][0].lower() or "debug" in queries[1][0].lower()
+        assert "login failure" in queries[0][1].lower()
     
     def test_memory_statistics_includes_conversation_memory(self, agent):
         """Test that memory statistics include conversation memory."""

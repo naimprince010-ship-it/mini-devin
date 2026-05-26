@@ -1,0 +1,13 @@
+{
+  "run_id": "35d4b8b8-d2f",
+  "benchmark": "humaneval",
+  "model": "",
+  "pass_rate": 100.0,
+  "failed_by_type": {},
+  "rules": [
+    "Return only valid Python code; never include markdown fences.",
+    "Define exact function names expected by tests.",
+    "Match exact output shape and deterministic ordering for assertion checks.",
+    "Prefer efficient implementations to avoid timeout failures."
+  ]
+}

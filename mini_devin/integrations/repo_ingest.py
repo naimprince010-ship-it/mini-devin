@@ -8,7 +8,9 @@ retrieve it via ``ProjectMemory.get_context_for_task`` / API injection.
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -93,6 +95,39 @@ MANIFEST_RELATIVE = (
     "vite.config.js",
 )
 
+CODE_FILE_SUFFIXES = frozenset(
+    {
+        ".py",
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx",
+        ".go",
+        ".rs",
+        ".java",
+        ".c",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".rb",
+        ".php",
+    }
+)
+
+CONFIG_FILE_NAMES = frozenset(
+    {
+        "package.json",
+        "pyproject.toml",
+        "requirements.txt",
+        "Cargo.toml",
+        "go.mod",
+        "turbo.json",
+        "tsconfig.json",
+        "vite.config.ts",
+        "vite.config.js",
+    }
+)
+
 
 def _load_gitignore_patterns(root: Path) -> list[str]:
     gi = root / ".gitignore"
@@ -154,6 +189,197 @@ def _read_text_capped(path: Path, max_chars: int) -> str:
     return raw
 
 
+def _read_text_for_analysis(path: Path, max_chars: int = 80_000) -> str:
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return raw[:max_chars]
+
+
+def _path_priority(rel: str) -> tuple[int, str]:
+    name = rel.rsplit("/", 1)[-1]
+    if name in CONFIG_FILE_NAMES:
+        return (0, rel)
+    if "schema.prisma" in rel or "/api/" in rel or rel.startswith("api/"):
+        return (1, rel)
+    if rel.endswith((".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx", "_test.py", "_test.go")):
+        return (2, rel)
+    if rel.startswith(("apps/", "packages/", "src/", "lib/", "mini_devin/", "plodder/")):
+        return (3, rel)
+    return (9, rel)
+
+
+def _code_paths(paths: list[str], *, max_files: int = 120) -> list[str]:
+    code = [p for p in paths if Path(p).suffix.lower() in CODE_FILE_SUFFIXES]
+    return sorted(code, key=_path_priority)[:max_files]
+
+
+def _top_dirs(paths: list[str], depth: int = 2, limit: int = 30) -> list[tuple[str, int]]:
+    counts: dict[str, int] = {}
+    for rel in paths:
+        parts = rel.split("/")
+        if len(parts) < 2:
+            continue
+        key = "/".join(parts[: min(depth, len(parts) - 1)])
+        counts[key] = counts.get(key, 0) + 1
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
+
+
+def _json_load(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(_read_text_for_analysis(path, 120_000))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _mapping_keys(value: Any) -> list[str]:
+    return sorted(value.keys()) if isinstance(value, dict) else []
+
+
+def _build_dependency_summary(root: Path, paths: list[str], *, max_package_files: int = 12) -> str:
+    sections: list[str] = []
+    package_paths = [p for p in paths if p.endswith("package.json")]
+    package_paths = sorted(package_paths, key=lambda p: (0 if p == "package.json" else 1, p))[:max_package_files]
+    if package_paths:
+        lines = ["### JavaScript/TypeScript packages"]
+        for rel in package_paths:
+            data = _json_load(root / rel)
+            if not data:
+                continue
+            deps = _mapping_keys(data.get("dependencies"))
+            dev = _mapping_keys(data.get("devDependencies"))
+            scripts = _mapping_keys(data.get("scripts"))
+            pkg_name = data.get("name") or rel
+            pm = data.get("packageManager")
+            workspaces = data.get("workspaces")
+            bits = [f"- `{rel}`: `{pkg_name}`"]
+            if pm:
+                bits.append(f"  - packageManager: `{pm}`")
+            if workspaces:
+                bits.append(f"  - workspaces: `{workspaces}`")
+            if scripts:
+                bits.append(f"  - scripts: {', '.join(f'`{s}`' for s in scripts[:20])}")
+            if deps:
+                bits.append(f"  - dependencies: {', '.join(f'`{d}`' for d in deps[:25])}")
+            if dev:
+                bits.append(f"  - devDependencies: {', '.join(f'`{d}`' for d in dev[:18])}")
+            sections.append("\n".join(bits))
+        if len(sections) > 1:
+            sections.insert(0, lines[0])
+
+    pyproject = root / "pyproject.toml"
+    if pyproject.is_file():
+        text = _read_text_for_analysis(pyproject, 20_000)
+        interesting = [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip().startswith(("name =", "requires-python", "dependencies =", "[tool.poetry", "[project", "[tool.pytest"))
+        ][:40]
+        if interesting:
+            sections.append("### Python project hints\n" + "\n".join(f"- `{line}`" for line in interesting))
+
+    go_mod = root / "go.mod"
+    if go_mod.is_file():
+        lines = [line.strip() for line in _read_text_for_analysis(go_mod, 20_000).splitlines() if line.strip()]
+        sections.append("### Go module hints\n" + "\n".join(f"- `{line}`" for line in lines[:40]))
+
+    if not sections:
+        return "_No dependency manifests found in scanned files._\n"
+    return "\n\n".join(sections) + "\n"
+
+
+_TS_IMPORT_RE = re.compile(
+    r"""(?:import\s+(?:type\s+)?(?:[^'"]+?\s+from\s+)?|export\s+[^'"]+?\s+from\s+|require\()\s*['"]([^'"]+)['"]""",
+    re.MULTILINE,
+)
+_PY_IMPORT_RE = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import\s+.+|import\s+([\w.]+))", re.MULTILINE)
+
+
+def _extract_imports(rel: str, text: str) -> list[str]:
+    suffix = Path(rel).suffix.lower()
+    imports: list[str] = []
+    if suffix in {".js", ".jsx", ".ts", ".tsx"}:
+        imports = [m.group(1) for m in _TS_IMPORT_RE.finditer(text)]
+    elif suffix == ".py":
+        for m in _PY_IMPORT_RE.finditer(text):
+            imports.append(m.group(1) or m.group(2) or "")
+    return [i for i in imports if i][:20]
+
+
+def _build_import_graph(root: Path, paths: list[str], *, max_files: int = 80) -> str:
+    lines: list[str] = []
+    for rel in _code_paths(paths, max_files=max_files):
+        text = _read_text_for_analysis(root / rel, 80_000)
+        imports = _extract_imports(rel, text)
+        if not imports:
+            continue
+        local = [i for i in imports if i.startswith((".", "@/")) or i.startswith(("mini_devin", "plodder", "src/", "lib/"))]
+        external = [i for i in imports if i not in local]
+        shown = local[:10] + external[:6]
+        lines.append(f"- `{rel}` -> " + ", ".join(f"`{i}`" for i in shown))
+        if len(lines) >= 40:
+            break
+    return "\n".join(lines) + ("\n" if lines else "_No import edges extracted from selected code files._\n")
+
+
+def _build_symbol_summary(root: Path, paths: list[str], *, max_files: int = 80, max_symbols: int = 160) -> str:
+    try:
+        from ..memory.symbol_index import create_symbol_index
+    except Exception:
+        return "_Symbol index unavailable._\n"
+
+    index = create_symbol_index(str(root))
+    for rel in _code_paths(paths, max_files=max_files):
+        index.index_file(str(root / rel))
+        if len(index.symbols) >= max_symbols:
+            break
+
+    stats = index.get_statistics()
+    lines = [
+        f"- files indexed for symbols: `{stats['files_indexed']}`",
+        f"- total symbols: `{stats['total_symbols']}`",
+    ]
+    nonzero_types = {k: v for k, v in stats["symbols_by_type"].items() if v}
+    if nonzero_types:
+        lines.append("- by type: " + ", ".join(f"`{k}`={v}" for k, v in sorted(nonzero_types.items())))
+
+    shown = list(index.symbols.values())[:max_symbols]
+    if shown:
+        lines.append("")
+        lines.append("Key symbols:")
+    for sym in shown[:80]:
+        lines.append(
+            f"- `{sym.symbol_type.value}` `{sym.qualified_name}` at `{sym.location.file_path}:{sym.location.start_line}`"
+        )
+    if len(shown) > 80:
+        lines.append(f"- ... {len(shown) - 80} more symbols omitted")
+    return "\n".join(lines) + "\n"
+
+
+def _chunk_file(rel: str, text: str, *, chunk_lines: int = 80, max_chunks: int = 2) -> list[str]:
+    lines = text.splitlines()
+    chunks: list[str] = []
+    for idx in range(0, min(len(lines), chunk_lines * max_chunks), chunk_lines):
+        body = "\n".join(lines[idx : idx + chunk_lines]).strip()
+        if not body:
+            continue
+        start = idx + 1
+        end = min(idx + chunk_lines, len(lines))
+        chunks.append(f"### `{rel}:{start}-{end}`\n\n```\n{body[:8_000]}\n```\n")
+    return chunks
+
+
+def _build_code_chunks(root: Path, paths: list[str], *, max_files: int = 12) -> str:
+    interesting = _code_paths(paths, max_files=max_files)
+    chunks: list[str] = []
+    for rel in interesting:
+        text = _read_text_for_analysis(root / rel, 40_000)
+        chunks.extend(_chunk_file(rel, text, max_chunks=1))
+    return "\n".join(chunks) if chunks else "_No source chunks selected._\n"
+
+
 def build_repo_digest(
     root: Path,
     *,
@@ -162,7 +388,8 @@ def build_repo_digest(
     max_inventory_paths: int = 6_000,
 ) -> dict[str, Any]:
     """
-    Build a markdown digest: key manifest files + full path inventory.
+    Build a markdown digest: key manifest files, dependency/code intelligence,
+    selected source chunks, and file inventory.
 
     Returns keys: markdown, paths_count, manifest_files_used, warnings.
     """
@@ -217,6 +444,45 @@ def build_repo_digest(
     budget -= len(manifest_body)
 
     paths = _collect_relative_paths(root, max_paths=max_inventory_paths)
+
+    top_dirs = _top_dirs(paths)
+    if top_dirs and budget > 2_000:
+        section = "## Repository shape\n\n" + "\n".join(f"- `{name}`: {count} files" for name, count in top_dirs) + "\n\n"
+        sections.append(section)
+        budget -= len(section)
+
+    if budget > 6_000:
+        dep = "## Dependency and command map\n\n" + _build_dependency_summary(root, paths) + "\n"
+        if len(dep) > budget * 0.25:
+            dep = dep[: int(budget * 0.25)] + "\n...(dependency map truncated)\n\n"
+            warnings.append("dependency_map_truncated")
+        sections.append(dep)
+        budget -= len(dep)
+
+    if budget > 8_000:
+        symbols = "## Symbol map\n\n" + _build_symbol_summary(root, paths) + "\n"
+        if len(symbols) > budget * 0.25:
+            symbols = symbols[: int(budget * 0.25)] + "\n...(symbol map truncated)\n\n"
+            warnings.append("symbol_map_truncated")
+        sections.append(symbols)
+        budget -= len(symbols)
+
+    if budget > 6_000:
+        graph = "## Import/dependency edges\n\n" + _build_import_graph(root, paths) + "\n"
+        if len(graph) > budget * 0.18:
+            graph = graph[: int(budget * 0.18)] + "\n...(import graph truncated)\n\n"
+            warnings.append("import_graph_truncated")
+        sections.append(graph)
+        budget -= len(graph)
+
+    if budget > 12_000:
+        chunks = "## Selected code chunks\n\n" + _build_code_chunks(root, paths) + "\n"
+        if len(chunks) > budget * 0.35:
+            chunks = chunks[: int(budget * 0.35)] + "\n...(code chunks truncated)\n\n"
+            warnings.append("code_chunks_truncated")
+        sections.append(chunks)
+        budget -= len(chunks)
+
     inv_header = f"## File inventory ({len(paths)} paths)\n\n```\n"
     inv_footer = "\n```\n"
     inv_lines = "\n".join(paths)

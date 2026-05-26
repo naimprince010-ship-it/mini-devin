@@ -499,3 +499,149 @@ class TestLLMClientGeminiCompletion:
         kwargs = mock_acompletion.call_args.kwargs
         assert "safety_settings" in kwargs
         assert all(s["threshold"] == "BLOCK_NONE" for s in kwargs["safety_settings"])
+
+
+class TestLLMClientRetries:
+    @patch("mini_devin.core.llm_client.LITELLM_AVAILABLE", True)
+    @patch("mini_devin.core.llm_client.litellm")
+    @patch("mini_devin.core.llm_client.acompletion", new_callable=AsyncMock)
+    @patch.dict(os.environ, {"LLM_API_MAX_ATTEMPTS": "2", "LLM_API_RETRY_DELAY_SECONDS": "0"}, clear=False)
+    def test_complete_retries_transient_rate_limit(self, mock_acompletion, mock_litellm):
+        import asyncio
+
+        mock_message = MagicMock()
+        mock_message.content = "ok"
+        mock_message.tool_calls = None
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+        mock_choice.finish_reason = "stop"
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+        mock_response.model = "openai/test"
+        mock_response.usage = MagicMock(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+        mock_acompletion.side_effect = [Exception("RateLimitError: 429"), mock_response]
+
+        client = LLMClient(LLMConfig(model="gpt-4o", api_key="k"))
+        client.add_user_message("hi")
+
+        response = asyncio.run(client.complete(tools=None, stream=False))
+
+        assert response.content == "ok"
+        assert mock_acompletion.await_count == 2
+
+    @patch("mini_devin.core.llm_client.LITELLM_AVAILABLE", True)
+    @patch("mini_devin.core.llm_client.litellm")
+    @patch("mini_devin.core.llm_client.acompletion", new_callable=AsyncMock)
+    @patch.dict(
+        os.environ,
+        {
+            "LLM_API_MAX_ATTEMPTS": "2",
+            "LLM_API_RETRY_DELAY_SECONDS": "0",
+            "LLM_FALLBACK_MODELS": "gpt-4o-mini",
+        },
+        clear=False,
+    )
+    def test_complete_falls_back_to_next_model_after_retries(self, mock_acompletion, mock_litellm):
+        import asyncio
+
+        mock_message = MagicMock()
+        mock_message.content = "ok from fallback"
+        mock_message.tool_calls = None
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+        mock_choice.finish_reason = "stop"
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+        mock_response.model = "gpt-4o-mini"
+        mock_response.usage = MagicMock(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+        mock_acompletion.side_effect = [
+            Exception("RateLimitError: 429"),
+            Exception("RateLimitError: 429"),
+            mock_response,
+        ]
+
+        client = LLMClient(LLMConfig(model="gpt-4o", api_key="k"))
+        client.add_user_message("hi")
+
+        response = asyncio.run(client.complete(tools=None, stream=False))
+
+        assert response.content == "ok from fallback"
+        assert mock_acompletion.await_count == 3
+        assert mock_acompletion.await_args_list[0].kwargs["model"] == "gpt-4o"
+        assert mock_acompletion.await_args_list[1].kwargs["model"] == "gpt-4o"
+        assert mock_acompletion.await_args_list[2].kwargs["model"] == "gpt-4o-mini"
+
+    @patch("mini_devin.core.llm_client.LITELLM_AVAILABLE", True)
+    @patch("mini_devin.core.llm_client.litellm")
+    @patch("mini_devin.core.llm_client.asyncio.sleep", new_callable=AsyncMock)
+    @patch("mini_devin.core.llm_client.acompletion", new_callable=AsyncMock)
+    @patch.dict(
+        os.environ,
+        {
+            "LLM_API_MAX_ATTEMPTS": "3",
+            "LLM_API_RETRY_DELAY_SECONDS": "1",
+            "LLM_API_RETRY_MAX_DELAY_SECONDS": "60",
+            "LLM_API_RETRY_JITTER_SECONDS": "0",
+            "LLM_FALLBACK_MODELS": "",
+        },
+        clear=False,
+    )
+    def test_complete_uses_exponential_backoff(self, mock_acompletion, mock_sleep, mock_litellm):
+        import asyncio
+
+        mock_message = MagicMock()
+        mock_message.content = "ok"
+        mock_message.tool_calls = None
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+        mock_choice.finish_reason = "stop"
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+        mock_response.model = "openai/test"
+        mock_response.usage = MagicMock(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+
+        mock_acompletion.side_effect = [
+            Exception("RateLimitError: 429"),
+            Exception("InternalServerError: 503"),
+            mock_response,
+        ]
+
+        client = LLMClient(LLMConfig(model="gpt-4o", api_key="k"))
+        client.add_user_message("hi")
+
+        response = asyncio.run(client.complete(tools=None, stream=False))
+
+        assert response.content == "ok"
+        assert mock_acompletion.await_count == 3
+        assert mock_sleep.await_args_list[0].args[0] == 1
+        assert mock_sleep.await_args_list[1].args[0] == 2
+
+    @patch("mini_devin.core.llm_client.LITELLM_AVAILABLE", True)
+    @patch("mini_devin.core.llm_client.litellm")
+    @patch("mini_devin.core.llm_client.acompletion", new_callable=AsyncMock)
+    @patch.dict(
+        os.environ,
+        {
+            "LLM_API_MAX_ATTEMPTS": "2",
+            "LLM_API_RETRY_DELAY_SECONDS": "0",
+            "LLM_FALLBACK_MODELS": "",
+        },
+        clear=False,
+    )
+    def test_complete_rate_limit_error_has_operational_guidance(self, mock_acompletion, mock_litellm):
+        import asyncio
+
+        mock_acompletion.side_effect = [
+            Exception("RateLimitError: 429"),
+            Exception("RateLimitError: 429"),
+        ]
+
+        client = LLMClient(LLMConfig(model="gpt-4o", api_key="k"))
+        client.add_user_message("hi")
+
+        with pytest.raises(RuntimeError) as exc_info:
+            asyncio.run(client.complete(tools=None, stream=False))
+
+        msg = str(exc_info.value)
+        assert "LLM Rate Limit Reached" in msg
+        assert "LLM_API_MAX_CONCURRENCY" in msg

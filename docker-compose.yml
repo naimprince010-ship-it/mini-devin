@@ -1,25 +1,24 @@
-version: '3.8'
-
 services:
   # Frontend (React + Vite)
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_URL: ""
     container_name: plodder-frontend
-    environment:
-      - VITE_API_URL=http://localhost:8000
     ports:
-      - "3000:80"
+      - "80:80"
     depends_on:
       - plodder
     networks:
       - plodder-network
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:80"]
-      interval: 30s
+      test: ["CMD-SHELL", "pidof nginx >/dev/null && test -f /usr/share/nginx/html/index.html"]
+      interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
+      start_period: 15s
 
   # PostgreSQL Database
   postgres:
@@ -29,6 +28,7 @@ services:
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
       - POSTGRES_DB=${POSTGRES_DB:-plodder}
+      - POSTGRES_HOST_AUTH_METHOD=trust
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
@@ -63,6 +63,7 @@ services:
       - GROQ_API_BASE=${GROQ_API_BASE:-https://api.groq.com/openai/v1}
       - GROQ_ENABLED=${GROQ_ENABLED:-true}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://host.docker.internal:11434}
       - OLLAMA_ENABLED=${OLLAMA_ENABLED:-true}

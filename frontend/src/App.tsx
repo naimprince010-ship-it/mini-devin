@@ -9,6 +9,7 @@ import { SkillsManager } from './components/SkillsManager';
 import { RepoManager } from './components/RepoManager';
 import { PRReview } from './components/PRReview';
 import MonitorPanel from './components/MonitorPanel';
+import OperatorConsolePanel from './components/OperatorConsolePanel';
 import EnvParityPanel from './components/EnvParityPanel';
 import UITestPanel from './components/UITestPanel';
 import ProjectPlannerPanel from './components/ProjectPlannerPanel';
@@ -40,13 +41,16 @@ import {
   Moon,
   Menu,
   Activity,
+  LineChart,
   Container,
   TestTube2,
   FolderKanban,
   FlaskConical,
+  ChevronDown,
+  SlidersHorizontal,
 } from 'lucide-react';
 
-type TabType = 'sessions' | 'skills' | 'repos' | 'reviews' | 'monitor' | 'env_parity' | 'ui_test' | 'projects' | 'benchmark';
+type TabType = 'sessions' | 'skills' | 'repos' | 'reviews' | 'monitor' | 'ops_dashboard' | 'env_parity' | 'ui_test' | 'projects' | 'benchmark';
 
 function NewSessionModal({
   onClose,
@@ -275,7 +279,17 @@ function App() {
   const [showNewSession, setShowNewSession] = useState(false);
   const [newSessionInitialDir, setNewSessionInitialDir] = useState('');
   const [activeTab, setActiveTab] = useState<TabType>('sessions');
+  const [toolsExpanded, setToolsExpanded] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const handleTabChange = useCallback((tab: TabType) => {
+    setActiveTab(tab);
+    setSidebarOpen(false);
+    if (['reviews', 'monitor', 'ops_dashboard', 'env_parity', 'ui_test', 'projects', 'benchmark'].includes(tab)) {
+      setToolsExpanded(true);
+    }
+  }, []);
+
   /** Increment after a session is created so SessionList refetches immediately */
   const [sessionListRefresh, setSessionListRefresh] = useState(0);
   const [quickSessionBusy, setQuickSessionBusy] = useState(false);
@@ -373,11 +387,15 @@ function App() {
     { id: 'repos', icon: <GitFork size={18} />, label: 'Repos' },
     { id: 'reviews', icon: <GitPullRequest size={18} />, label: 'Reviews' },
     { id: 'monitor', icon: <Activity size={18} />, label: 'Monitor' },
+    { id: 'ops_dashboard', icon: <LineChart size={18} />, label: 'Ops Console' },
     { id: 'env_parity', icon: <Container size={18} />, label: 'Env Parity' },
     { id: 'ui_test', icon: <TestTube2 size={18} />, label: 'UI Tests' },
     { id: 'projects', icon: <FolderKanban size={18} />, label: 'Projects' },
-    { id: 'benchmark', icon: <FlaskConical size={18} />, label: 'Benchmark' },
+    { id: 'benchmark', icon: <FlaskConical size={18} />, label: 'Benchmarks' },
   ];
+
+  const primaryNavItems = navItems.filter(item => ['sessions', 'skills', 'repos', 'benchmark'].includes(item.id));
+  const secondaryNavItems = navItems.filter(item => ['reviews', 'monitor', 'ops_dashboard', 'env_parity', 'ui_test', 'projects'].includes(item.id));
 
   const apiBase = getApiBase();
 
@@ -448,50 +466,91 @@ function App() {
             </button>
           </div>
 
-          {/* Nav */}
-          <nav className="px-2 space-y-0.5">
-            {navItems.map(item => (
-              <button
-                key={item.id}
-                onClick={() => { setActiveTab(item.id); setSidebarOpen(false); }}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  activeTab === item.id
-                    ? `${bgActive} ${textPrimary}`
-                    : `${textMuted} ${bgHover} hover:${textPrimary}`
-                }`}
-              >
-                <span style={activeTab === item.id ? { color: accentColor } : {}}>{item.icon}</span>
-                {item.label}
-              </button>
-            ))}
-            <button
-              onClick={handleSelfEvolve}
-              disabled={api.loading}
-              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium hover:bg-[#00ff99]/10 transition-colors mt-2"
-              style={{ color: accentColor }}
-            >
-              <Zap size={18} fill="currentColor" fillOpacity={0.2} />
-              Self-Evolve
-            </button>
-          </nav>
+          {/* Scrollable middle container (combines Nav and SessionList to prevent collapse on small screens) */}
+          <div className="flex-1 flex flex-col overflow-y-auto min-h-0 custom-scrollbar">
+            {/* Nav */}
+            <nav className="px-2 space-y-0.5 flex-shrink-0">
+              {primaryNavItems.map(item => (
+                <button
+                  key={item.id}
+                  onClick={() => handleTabChange(item.id)}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    activeTab === item.id
+                      ? `${bgActive} ${textPrimary}`
+                      : `${textMuted} ${bgHover} hover:${textPrimary}`
+                  }`}
+                >
+                  <span style={activeTab === item.id ? { color: accentColor } : {}}>{item.icon}</span>
+                  {item.label}
+                </button>
+              ))}
 
-          {/* Sessions list */}
-          {activeTab === 'sessions' && (
-            <div className={`flex-1 mt-4 px-2 overflow-y-auto min-h-0 border-t ${borderColor} pt-4 custom-scrollbar`}>
-              <SessionList
-                refreshTrigger={sessionListRefresh}
-                onSelectSession={(s) => {
-                  setSelectedSession(s);
-                  localStorage.setItem(LAST_SESSION_KEY, s.session_id);
-                  setSidebarOpen(false);
-                }}
-                selectedSessionId={selectedSession?.session_id}
-                onQuickNewSession={handleQuickNewSession}
-                onCustomNewSession={() => setShowNewSession(true)}
-                quickCreateBusy={quickSessionBusy}
-              />
-            </div>
-          )}
+              {/* Specialty Tools submenu */}
+              <div className="space-y-0.5">
+                <button
+                  type="button"
+                  onClick={() => setToolsExpanded(!toolsExpanded)}
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium transition-colors ${textMuted} ${bgHover} hover:${textPrimary}`}
+                >
+                  <div className="flex items-center gap-3">
+                    <SlidersHorizontal size={18} />
+                    <span>Tools</span>
+                  </div>
+                  <ChevronDown
+                    size={14}
+                    className={`transition-transform duration-200 ${toolsExpanded ? 'rotate-180' : ''}`}
+                  />
+                </button>
+
+                {toolsExpanded && (
+                  <div className="pl-3 border-l border-[#262626]/60 ml-5 space-y-0.5 mt-1 animate-in slide-in-from-top-1 duration-150">
+                    {secondaryNavItems.map(item => (
+                      <button
+                        key={item.id}
+                        onClick={() => handleTabChange(item.id)}
+                        className={`w-full flex items-center gap-3 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                          activeTab === item.id
+                            ? `${bgActive} ${textPrimary}`
+                            : `${textMuted} ${bgHover} hover:${textPrimary}`
+                        }`}
+                      >
+                        <span style={activeTab === item.id ? { color: accentColor } : {}}>{item.icon}</span>
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <button
+                onClick={handleSelfEvolve}
+                disabled={api.loading}
+                className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium hover:bg-[#00ff99]/10 transition-colors mt-2 flex-shrink-0"
+                style={{ color: accentColor }}
+              >
+                <Zap size={18} fill="currentColor" fillOpacity={0.2} />
+                Self-Evolve
+              </button>
+            </nav>
+
+            {/* Sessions list */}
+            {activeTab === 'sessions' && (
+              <div className={`mt-4 px-2 border-t ${borderColor} pt-4 flex-shrink-0`}>
+                <SessionList
+                  refreshTrigger={sessionListRefresh}
+                  onSelectSession={(s) => {
+                    setSelectedSession(s);
+                    localStorage.setItem(LAST_SESSION_KEY, s.session_id);
+                    setSidebarOpen(false);
+                  }}
+                  selectedSessionId={selectedSession?.session_id}
+                  onQuickNewSession={handleQuickNewSession}
+                  onCustomNewSession={() => setShowNewSession(true)}
+                  quickCreateBusy={quickSessionBusy}
+                />
+              </div>
+            )}
+          </div>
 
           {/* Bottom links */}
           <div className={`p-2 border-t ${borderColor} space-y-0.5`}>
@@ -626,6 +685,10 @@ function App() {
                 ) : activeTab === 'monitor' ? (
                   <ErrorBoundary>
                     <MonitorPanel />
+                  </ErrorBoundary>
+                ) : activeTab === 'ops_dashboard' ? (
+                  <ErrorBoundary>
+                    <OperatorConsolePanel />
                   </ErrorBoundary>
                 ) : activeTab === 'env_parity' ? (
                   <ErrorBoundary>

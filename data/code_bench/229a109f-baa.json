@@ -1,0 +1,104 @@
+{
+  "run_id": "229a109f-baa",
+  "benchmark": "mbpp",
+  "mode": "litellm",
+  "limit": 10,
+  "status": "completed",
+  "started_at": "2026-05-23T05:47:11.653021+00:00",
+  "finished_at": "2026-05-23T05:47:47.113979+00:00",
+  "total": 10,
+  "passed": 9,
+  "results": [
+    {
+      "task_id": "mbpp-11",
+      "benchmark": "mbpp",
+      "passed": true,
+      "generated_code": "def remove_Occ(s, c):\n    first = s.find(c)\n    if first == -1:\n        return s\n    last = s.rfind(c)\n    return s[:first] + s[first+1:last] + s[last+1:]",
+      "test_output": "",
+      "error": "",
+      "duration_s": 19.28
+    },
+    {
+      "task_id": "mbpp-12",
+      "benchmark": "mbpp",
+      "passed": true,
+      "generated_code": "def sort_matrix(matrix):\n    return sorted(matrix, key=sum)",
+      "test_output": "",
+      "error": "",
+      "duration_s": 1.94
+    },
+    {
+      "task_id": "mbpp-13",
+      "benchmark": "mbpp",
+      "passed": false,
+      "generated_code": "def count_common(words):\n    from collections import Counter\n    counter = Counter(words)\n    return counter.most_common()",
+      "test_output": "Traceback (most recent call last):\n  File \"E:\\temp\\plodder_code_bench_8l0lh65e\\candidate.py\", line 6, in <module>\n    assert count_common(['red','green','black','pink','black','white','black','eyes','white','black','orange','pink','pink','red','red','white','orange','white',\"black\",'pink','green','green','pink','green','pink','white','orange',\"orange\",'red']) == [('pink', 6), ('black', 5), ('white', 5), ('red', 4)]\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError\n",
+      "error": "",
+      "duration_s": 4.44
+    },
+    {
+      "task_id": "mbpp-14",
+      "benchmark": "mbpp",
+      "passed": true,
+      "generated_code": "def find_Volume(length, width, height):\n    # Volume of triangular prism = (1/2 * base * height) * length\n    # Here, width is the base of triangle, height is the height of triangle\n    # length is the length of the prism\n    return 0.5 * width * height * length",
+      "test_output": "",
+      "error": "",
+      "duration_s": 1.44
+    },
+    {
+      "task_id": "mbpp-15",
+      "benchmark": "mbpp",
+      "passed": true,
+      "generated_code": "import re\n\ndef split_lowerstring(s):\n    # Split at lowercase letters and keep the lowercase letters\n    parts = re.split('([a-z])', s)\n    # Filter out empty strings and join the parts appropriately\n    result = []\n    for i in range(1, len(parts), 2):\n        if i < len(parts) - 1:\n            result.append(parts[i] + parts[i+1])\n        else:\n            result.append(parts[i])\n    return result",
+      "test_output": "",
+      "error": "",
+      "duration_s": 1.59
+    },
+    {
+      "task_id": "mbpp-16",
+      "benchmark": "mbpp",
+      "passed": true,
+      "generated_code": "import re\n\ndef text_lowercase_underscore(text):\n    pattern = r'^[a-z]+_[a-z]+$'\n    if re.match(pattern, text):\n        return 'Found a match!'\n    else:\n        return 'Not matched!'",
+      "test_output": "",
+      "error": "",
+      "duration_s": 1.34
+    },
+    {
+      "task_id": "mbpp-17",
+      "benchmark": "mbpp",
+      "passed": true,
+      "generated_code": "def square_perimeter(side_length):\n    return 4 * side_length",
+      "test_output": "",
+      "error": "",
+      "duration_s": 1.0
+    },
+    {
+      "task_id": "mbpp-18",
+      "benchmark": "mbpp",
+      "passed": true,
+      "generated_code": "def remove_dirty_chars(str1, str2):\n    dirty_set = set(str2)\n    return ''.join(char for char in str1 if char not in dirty_set)",
+      "test_output": "",
+      "error": "",
+      "duration_s": 1.25
+    },
+    {
+      "task_id": "mbpp-19",
+      "benchmark": "mbpp",
+      "passed": true,
+      "generated_code": "def test_duplicate(nums):\n    seen = set()\n    for num in nums:\n        if num in seen:\n            return True\n        seen.add(num)\n    return False",
+      "test_output": "",
+      "error": "",
+      "duration_s": 1.1
+    },
+    {
+      "task_id": "mbpp-20",
+      "benchmark": "mbpp",
+      "passed": true,
+      "generated_code": "def is_woodall(n):\n    if n < 1:\n        return False\n    \n    # Woodall numbers are of the form n*2^n - 1\n    # So we need to check if there exists an integer k such that n = k*2^k - 1\n    # This means n + 1 = k*2^k\n    \n    # We'll try values of k starting from 1\n    k = 1\n    while True:\n        # Calculate k * 2^k\n        woodall_candidate = k * (2 ** k)\n        \n        if woodall_candidate == n + 1:\n            return True\n        elif woodall_candidate > n + 1:\n            # If we've exceeded n+1, no point checking larger k\n            return False\n        \n        k += 1\n        # Safety check to prevent infinite loop\n        if k > 100:\n            return False",
+      "test_output": "",
+      "error": "",
+      "duration_s": 2.06
+    }
+  ],
+  "pass_rate": 90.0
+}

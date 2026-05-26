@@ -57,6 +57,14 @@ def terminal_sanity_check(command: str, *, is_windows: bool) -> Tuple[bool, str]
                 False,
                 "Use `;` to chain commands in PowerShell, or wrap in `cmd /c \"...\"` if you need `&&`.",
             )
+        if re.match(r"(?i)^\s*(ls|ll)\s+-[a-z]*[al][a-z]*(\s|$)", cmd) or re.match(
+            r"(?i)^\s*dir\s+/(a|b)(\s|$)", cmd
+        ):
+            return (
+                False,
+                "This is PowerShell, not bash/cmd.exe. Use `Get-ChildItem -Force` "
+                "for hidden files or plain `dir` for a normal listing.",
+            )
 
     # Unbalanced quotes (simple heuristic)
     if cmd.count('"') % 2 != 0 or cmd.count("'") % 2 != 0:
@@ -135,7 +143,7 @@ def format_system_correction_block(*, workspace_display: str, is_windows: bool) 
     """Hard 'System Correction' text injected as a user message on repeated failures."""
     if is_windows:
         env = "You are on **Windows** (typically PowerShell). Use `;` to chain commands, `python` (not `python3` unless available), and drive paths only when they exist on this machine."
-        path_hint = "Verify paths with `Test-Path` in PowerShell or `dir` before editing."
+        path_hint = "Verify paths with `Test-Path`, `Get-ChildItem -Force`, plain `dir`, or `editor list_directory`; do not use `ls -la`, `ll`, `dir /a`, or `dir /b`."
     else:
         env = "You are on **Linux/bash**. Do **not** use Windows paths (`C:\\\\`, `G:\\\\`, etc.)."
         path_hint = "The shell cwd should stay under the task workspace; use `pwd` and relative paths like `./src`."

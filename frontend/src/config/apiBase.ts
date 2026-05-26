@@ -8,7 +8,24 @@
 export function getApiBase(): string {
   const env = import.meta.env.VITE_API_URL;
   if (env !== undefined && env !== null && String(env).trim() !== '') {
-    return `${String(env).replace(/\/$/, '')}/api`;
+    const raw = String(env).replace(/\/$/, '');
+    // Ignore localhost env on deployed origins (common misconfig in containerized builds).
+    if (typeof window !== 'undefined') {
+      try {
+        const u = new URL(raw);
+        const host = (u.hostname || '').toLowerCase();
+        const isLoopback = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+        const cur = (window.location.hostname || '').toLowerCase();
+        const curLoopback = cur === 'localhost' || cur === '127.0.0.1' || cur === '::1';
+        if (isLoopback && !curLoopback) {
+          return '/api';
+        }
+      } catch {
+        // If env is malformed, fall back to same-origin API.
+        return '/api';
+      }
+    }
+    return `${raw}/api`;
   }
   if (typeof window === 'undefined') {
     return '/api';
@@ -16,14 +33,6 @@ export function getApiBase(): string {
   const custom = (window as unknown as { __DEVIN_API_BASE__?: string }).__DEVIN_API_BASE__;
   if (custom !== undefined && custom !== null && String(custom).trim() !== '') {
     return String(custom).replace(/\/$/, '');
-  }
-  const path = window.location.pathname || '';
-  if (path === '/app' || path.startsWith('/app/')) {
-    // Vite only proxies `/api` in dev; production uses `/app/api` + server rewrite for strict CDNs.
-    if (import.meta.env.DEV) {
-      return '/api';
-    }
-    return '/app/api';
   }
   return '/api';
 }

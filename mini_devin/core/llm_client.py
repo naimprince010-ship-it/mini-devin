@@ -8,6 +8,11 @@ LLM providers (OpenAI, Anthropic, etc.) with support for tool calling.
 import json
 import os
 import inspect
+import re
+import uuid
+import asyncio
+import random
+from html import unescape
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -16,8 +21,14 @@ from mini_devin.core.providers import (
     get_model_registry,
     get_litellm_model_name,
     normalize_groq_legacy_model_id,
+    resolve_tool_capable_model,
     AzureConfig,
     GroqConfig,
+)
+from mini_devin.core.model_gateway import (
+    ModelGateway,
+    model_gateway_enabled,
+    routing_context_from_dict,
 )
 
 
@@ -51,6 +62,134 @@ def _apply_gemini_safety_override(kwargs: dict[str, Any], model_name: str) -> No
     if os.environ.get("LLM_GEMINI_SAFETY_BLOCK_NONE", "true").lower() in ("0", "false", "no"):
         return
     kwargs["safety_settings"] = _gemini_safety_settings_block_none()
+
+
+def _split_model_list(raw: str | None) -> list[str]:
+    """Parse a comma-separated model list from env."""
+    if not raw:
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _completion_model_candidates(config: "LLMConfig") -> list[str]:
+    """Return ordered LiteLLM model ids to try for one completion request."""
+    raw_candidates = [config.model]
+    raw_candidates.extend(_split_model_list(os.environ.get("LLM_FALLBACK_MODELS")))
+
+    # DigitalOcean's OpenAI-compatible inference endpoint exposes several tool-capable
+    # models. Keep these as a last-resort pool so one rate-limited model does not stop
+    # an agent run before it can recover or summarize.
+    if "inference.do-ai.run" in (config.api_base or ""):
+        raw_candidates.extend(
+            [
+                "openai/llama3.3-70b-instruct",
+                "openai/llama-4-maverick",
+                "openai/qwen3-coder-flash",
+            ]
+        )
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for raw_model in raw_candidates:
+        model_name = get_litellm_model_name(raw_model)
+        if model_name in seen:
+            continue
+        seen.add(model_name)
+        candidates.append(model_name)
+    return candidates
+
+
+_llm_request_semaphore: asyncio.Semaphore | None = None
+_llm_request_semaphore_limit: int | None = None
+
+
+def _get_llm_request_semaphore() -> asyncio.Semaphore | None:
+    """Return a global semaphore for throttling concurrent outbound LLM calls."""
+    global _llm_request_semaphore
+    global _llm_request_semaphore_limit
+
+    raw = (os.environ.get("LLM_API_MAX_CONCURRENCY") or "8").strip()
+    try:
+        limit = int(raw)
+    except ValueError:
+        limit = 8
+    if limit <= 0:
+        return None
+
+    if _llm_request_semaphore is None or _llm_request_semaphore_limit != limit:
+        _llm_request_semaphore = asyncio.Semaphore(limit)
+        _llm_request_semaphore_limit = limit
+    return _llm_request_semaphore
+
+
+def _is_rate_limited_error(message: str) -> bool:
+    m = (message or "").lower()
+    return (
+        "ratelimiterror" in m
+        or "rate limit" in m
+        or "too many requests" in m
+        or "insufficient_quota" in m
+        or "quota" in m
+        or " 429" in m
+        or "(429" in m
+    )
+
+
+def _is_transient_llm_error(message: str) -> bool:
+    m = (message or "").lower()
+    transient_markers = (
+        "ratelimiterror",
+        "429",
+        "408",
+        "500",
+        "502",
+        "503",
+        "504",
+        "internalservererror",
+        "apiconnectionerror",
+        "connection error",
+        "timeout",
+        "temporarily unavailable",
+        "service unavailable",
+    )
+    return any(marker in m for marker in transient_markers)
+
+
+def _extract_retry_after_seconds(message: str) -> float | None:
+    m = message or ""
+    match = re.search(r"retry(?:\s|-)?after\s*[:=]?\s*(\d+(?:\.\d+)?)", m, flags=re.IGNORECASE)
+    if match:
+        try:
+            return max(0.0, float(match.group(1)))
+        except ValueError:
+            return None
+    return None
+
+
+def _retry_sleep_seconds(attempt: int, base_delay: float, last_error_msg: str) -> float:
+    """Compute exponential backoff with optional jitter and Retry-After hint."""
+    max_delay_raw = (os.environ.get("LLM_API_RETRY_MAX_DELAY_SECONDS") or "30").strip()
+    jitter_raw = (os.environ.get("LLM_API_RETRY_JITTER_SECONDS") or "0").strip()
+    try:
+        max_delay = max(0.0, float(max_delay_raw))
+    except ValueError:
+        max_delay = 30.0
+    try:
+        jitter_max = max(0.0, float(jitter_raw))
+    except ValueError:
+        jitter_max = 0.0
+
+    retry_after = _extract_retry_after_seconds(last_error_msg)
+    if retry_after is not None:
+        return retry_after
+
+    base = max(0.0, base_delay)
+    wait = base * (2 ** max(0, attempt - 1))
+    if jitter_max > 0:
+        wait += random.uniform(0.0, jitter_max)
+    if max_delay > 0:
+        wait = min(wait, max_delay)
+    return wait
 
 
 # LiteLLM import
@@ -246,6 +385,35 @@ def _tail_trim_non_system_openai_safe(
     return []
 
 
+def _parse_text_tool_calls(content: str | None) -> list[ToolCall]:
+    """Parse XML-ish tool calls emitted as plain text by some OpenAI-compatible models."""
+    if not content or "<function=" not in content:
+        return []
+
+    calls: list[ToolCall] = []
+    for match in re.finditer(r"<function=([A-Za-z_][\w-]*)>(.*?)</function>", content, re.DOTALL):
+        name = match.group(1).strip()
+        body = match.group(2)
+        arguments: dict[str, Any] = {}
+        for param in re.finditer(
+            r"<parameter=([A-Za-z_][\w-]*)>(.*?)</parameter>",
+            body,
+            re.DOTALL,
+        ):
+            key = param.group(1).strip()
+            value = unescape(param.group(2)).strip()
+            arguments[key] = value
+        if arguments:
+            calls.append(
+                ToolCall(
+                    id=f"call_text_{uuid.uuid4().hex[:12]}",
+                    name=name,
+                    arguments=arguments,
+                )
+            )
+    return calls
+
+
 class LLMClient:
     """
     Client for interacting with LLMs via LiteLLM.
@@ -270,6 +438,8 @@ class LLMClient:
         self.total_tokens_used = 0
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        self._model_gateway: ModelGateway | None = None
+        self._default_routing_context: dict[str, Any] = {}
         
         self._setup_provider()
         
@@ -350,6 +520,7 @@ class LLMClient:
                 load_dotenv(override=True)
                 self._custom_client = AsyncOpenAI(
                     api_key=self.config.api_key or os.environ.get("OPENAI_API_KEY"),
+                    base_url=self.config.api_base or os.environ.get("OPENAI_API_BASE") or None,
                     organization=None,
                     http_client=httpx.AsyncClient(verify=False)
                 )
@@ -400,6 +571,10 @@ class LLMClient:
             tool_call_id=tool_call_id,
             name=tool_name,
         ))
+
+    def set_routing_context(self, context: dict[str, Any] | None) -> None:
+        """Set default model-routing context (task id, budget, reasoning depth, etc.)."""
+        self._default_routing_context = dict(context or {})
     
     def clear_conversation(self) -> None:
         """Clear the conversation history (keeps system prompt)."""
@@ -496,7 +671,8 @@ class LLMClient:
         One-shot completion without mutating ``self.conversation`` (summaries, condenser, etc.).
         Applies the same Gemini safety override as ``complete`` when applicable.
         """
-        model_name = get_litellm_model_name(self.config.model)
+        model_candidates = _completion_model_candidates(self.config)
+        model_name = model_candidates[0]
         kwargs: dict[str, Any] = {
             "model": model_name,
             "messages": coerce_messages_openai_strict(list(messages)),
@@ -515,7 +691,12 @@ class LLMClient:
         if self.config.provider == Provider.GROQ and self.config.api_key:
             kwargs["api_key"] = self.config.api_key
         try:
-            response = await acompletion(**kwargs)
+            semaphore = _get_llm_request_semaphore()
+            if semaphore is None:
+                response = await acompletion(**kwargs)
+            else:
+                async with semaphore:
+                    response = await acompletion(**kwargs)
         except Exception as e:
             raise RuntimeError(f"LLM ephemeral completion failed: {e}") from e
         choice = response.choices[0]
@@ -535,6 +716,7 @@ class LLMClient:
         on_token: Callable[[str], Any] | None = None,
         messages_for_api: list[dict[str, Any]] | None = None,
         ephemeral_user_messages: list[dict[str, Any]] | None = None,
+        routing_context: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """
         Get a completion from the LLM.
@@ -558,7 +740,44 @@ class LLMClient:
             messages = messages + [dict(m) for m in ephemeral_user_messages]
         messages = coerce_messages_openai_strict(messages)
 
-        model_name = get_litellm_model_name(self.config.model)
+        model_candidates = _completion_model_candidates(self.config)
+        gateway = self._model_gateway
+        gateway_context = routing_context_from_dict(routing_context or self._default_routing_context)
+        gateway_decision = None
+        cache_entry = None
+        if model_gateway_enabled():
+            if gateway is None:
+                gateway = ModelGateway()
+                self._model_gateway = gateway
+            gateway_decision = gateway.select_route(
+                base_model=self.config.model,
+                fallback_candidates=model_candidates,
+                messages=messages,
+                tools=tools,
+                context=gateway_context,
+            )
+            model_candidates = list(gateway_decision.candidate_models)
+            if not gateway.enforce_budget(context=gateway_context):
+                raise RuntimeError("Model gateway budget exceeded for task")
+            cache_entry = gateway.cache_get(gateway_decision.cache_key)
+            if cache_entry is not None:
+                cache_usage = {
+                    "prompt_tokens": int(cache_entry.response_usage.get("prompt_tokens") or 0),
+                    "completion_tokens": int(cache_entry.response_usage.get("completion_tokens") or 0),
+                    "total_tokens": int(cache_entry.response_usage.get("total_tokens") or 0),
+                }
+                self.total_prompt_tokens += cache_usage["prompt_tokens"]
+                self.total_completion_tokens += cache_usage["completion_tokens"]
+                self.total_tokens_used += cache_usage["total_tokens"]
+                gateway.account_usage(context=gateway_context, model=cache_entry.model, usage=cache_usage)
+                return LLMResponse(
+                    content=cache_entry.response_content,
+                    tool_calls=[],
+                    finish_reason=cache_entry.finish_reason,
+                    usage=cache_usage,
+                    model=cache_entry.model,
+                )
+        model_name = model_candidates[0]
         
         kwargs: dict[str, Any] = {
             "model": model_name,
@@ -582,8 +801,6 @@ class LLMClient:
         if self.config.api_base:
             kwargs["api_base"] = self.config.api_base
 
-        _apply_gemini_safety_override(kwargs, model_name)
-
         if self._custom_client and self.config.provider == Provider.OPENAI:
              kwargs["client"] = self._custom_client
 
@@ -593,39 +810,79 @@ class LLMClient:
         if self.config.provider == Provider.GROQ and self.config.api_key:
             kwargs["api_key"] = self.config.api_key
 
-        # Make the API call
-        try:
-            print(f"[LLM] Requesting completion: model={model_name}, tools={len(tools) if tools else 0}, stream={stream}")
-            response = await acompletion(**kwargs)
-        except Exception as e:
-            print(f"[LLM] Error in acompletion: {str(e)}")
-            # Raise a more descriptive error
-            error_msg = str(e)
-            if "AuthenticationError" in error_msg or "401" in error_msg:
-                raise RuntimeError(f"LLM Authentication Failed: API Key might be invalid or missing for {model_name}")
-            elif "RateLimitError" in error_msg or "429" in error_msg:
-                hint = ""
-                if self.config.provider == Provider.GROQ or (
-                    isinstance(model_name, str) and model_name.lower().startswith("groq/")
-                ):
-                    hint = (
-                        " Groq free tier: lower per-request size — set LLM_MAX_OUTPUT_TOKENS=2048, "
-                        "LLM_MAX_HISTORY_MESSAGES_GROQ=24, GROQ_MAX_OUTPUT_TOKENS_CAP=4096, enable "
-                        "LLM_CONTEXT_CONDENSER=true, or use LLM_MODEL_OBSERVATION=llama-3.1-8b-instant; see "
-                        "https://console.groq.com/settings/limits"
-                    )
-                raise RuntimeError(f"LLM Rate Limit Reached: {error_msg}{hint}")
-            elif "NotFoundError" in error_msg or "404" in error_msg:
-                raise RuntimeError(
-                    f"LLM Model Not Found: {model_name}. "
-                    "For Google AI Studio, LiteLLM expects ``gemini/<model>`` (not ``google/...``). "
-                    "Legacy ``gemini/gemini-1.5-flash`` is remapped to ``gemini/gemini-2.0-flash`` by default; "
-                    "set GEMINI_FLASH_SUCCESSOR_MODEL to override. Raw error: "
-                    + error_msg[:500]
+        # Make the API call. OpenAI-compatible proxy endpoints can intermittently
+        # return rate-limit, connection, or 5xx errors, so retry transient failures.
+        retry_count = max(1, int(os.environ.get("LLM_API_MAX_ATTEMPTS", "3")))
+        retry_delay = max(0.0, float(os.environ.get("LLM_API_RETRY_DELAY_SECONDS", "2")))
+        response = None
+        last_error_msg = ""
+        rate_limited = False
+        for model_index, candidate_model in enumerate(model_candidates, start=1):
+            model_name = candidate_model
+            kwargs["model"] = model_name
+            kwargs.pop("safety_settings", None)
+            _apply_gemini_safety_override(kwargs, model_name)
+
+            if model_index > 1:
+                print(
+                    f"[LLM] Falling back to model={model_name} "
+                    f"({model_index}/{len(model_candidates)}) after: {last_error_msg[:300]}"
                 )
-            else:
-                raise RuntimeError(f"LLM API Error: {error_msg}")
-        
+
+            for attempt in range(1, retry_count + 1):
+                try:
+                    print(
+                        f"[LLM] Requesting completion: model={model_name}, "
+                        f"tools={len(tools) if tools else 0}, stream={stream}, "
+                        f"attempt={attempt}/{retry_count}, model_try={model_index}/{len(model_candidates)}"
+                    )
+                    semaphore = _get_llm_request_semaphore()
+                    if semaphore is None:
+                        response = await acompletion(**kwargs)
+                    else:
+                        async with semaphore:
+                            response = await acompletion(**kwargs)
+                    break
+                except Exception as e:
+                    last_error_msg = str(e)
+                    print(f"[LLM] Error in acompletion: {last_error_msg}")
+                    if "AuthenticationError" in last_error_msg or "401" in last_error_msg:
+                        raise RuntimeError(f"LLM Authentication Failed: API Key might be invalid or missing for {model_name}")
+                    if "NotFoundError" in last_error_msg or "404" in last_error_msg:
+                        raise RuntimeError(
+                            f"LLM Model Not Found: {model_name}. "
+                            "For Google AI Studio, LiteLLM expects ``gemini/<model>`` (not ``google/...``). "
+                            "Legacy ``gemini/gemini-1.5-flash`` is remapped to ``gemini/gemini-2.0-flash`` by default; "
+                            "set GEMINI_FLASH_SUCCESSOR_MODEL to override. Raw error: "
+                            + last_error_msg[:500]
+                        )
+                    transient = _is_transient_llm_error(last_error_msg)
+                    if gateway is not None:
+                        failure_type = gateway.classify_failure(last_error_msg)
+                        transient = transient and gateway.should_retry(failure_type)
+                    rate_limited = rate_limited or _is_rate_limited_error(last_error_msg)
+                    if not transient or attempt >= retry_count:
+                        break
+                    sleep_for = _retry_sleep_seconds(attempt, retry_delay, last_error_msg)
+                    if sleep_for > 0:
+                        await asyncio.sleep(sleep_for)
+            if response is not None:
+                break
+            if not _is_transient_llm_error(last_error_msg):
+                break
+
+        if response is None:
+            if rate_limited:
+                raise RuntimeError(
+                    f"LLM Rate Limit Reached after {retry_count} attempts across "
+                    f"{len(model_candidates)} model(s): {last_error_msg}. "
+                    "Try: increase provider quota, lower parallel sessions, and tune "
+                    "LLM_API_MAX_CONCURRENCY / LLM_API_MAX_ATTEMPTS / LLM_API_RETRY_DELAY_SECONDS."
+                )
+            raise RuntimeError(
+                f"LLM API Error after {retry_count} attempts across "
+                f"{len(model_candidates)} model(s): {last_error_msg}"
+            )        
         content = ""
         tool_calls_dict = {}
         finish_reason = "stop"
@@ -653,7 +910,6 @@ class LLMClient:
                         safe = repr(chunk_text).encode("ascii", "backslashreplace").decode("ascii")
                         print(f"[TOKEN STREAM CHUNK]: {safe}")
                     if on_token:
-                        import asyncio
                         if inspect.iscoroutinefunction(on_token):
                             await on_token(chunk_text)
                         else:
@@ -731,6 +987,28 @@ class LLMClient:
         self.total_prompt_tokens += usage["prompt_tokens"]
         self.total_completion_tokens += usage["completion_tokens"]
         self.total_tokens_used += usage["total_tokens"]
+
+        if gateway is not None:
+            gateway.account_usage(context=gateway_context, model=model_returned, usage=usage)
+
+        if not tool_calls:
+            tool_calls = _parse_text_tool_calls(content)
+            if tool_calls:
+                finish_reason = "tool_calls"
+
+        if gateway is not None and gateway_decision is not None and not tool_calls:
+            from mini_devin.core.model_gateway import CacheEntry
+
+            gateway.cache_put(
+                CacheEntry(
+                    key=gateway_decision.cache_key,
+                    model=model_returned,
+                    response_content=content,
+                    response_usage=dict(usage),
+                    finish_reason=finish_reason,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                )
+            )
         
         return LLMResponse(
             content=content,
@@ -833,6 +1111,7 @@ def create_llm_client(
 
     if isinstance(model, str):
         model = normalize_groq_legacy_model_id(model.strip())
+    model = resolve_tool_capable_model(model, registry)
 
     model_info = registry.get_model(model)
     if model_info is None and isinstance(model, str) and _is_groq_litellm_model(model):

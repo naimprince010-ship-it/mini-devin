@@ -1,0 +1,23 @@
+{
+  "run_id": "0f25f6b6-a61",
+  "benchmark": "mbpp",
+  "mode": "litellm",
+  "limit": 1,
+  "status": "completed",
+  "started_at": "2026-05-23T05:46:33.922407+00:00",
+  "finished_at": "2026-05-23T05:46:34.723974+00:00",
+  "total": 1,
+  "passed": 1,
+  "results": [
+    {
+      "task_id": "mbpp-1",
+      "benchmark": "mbpp",
+      "passed": true,
+      "generated_code": "def square(x):\n    return x * x\n",
+      "test_output": "",
+      "error": "",
+      "duration_s": 0.8
+    }
+  ],
+  "pass_rate": 100.0
+}

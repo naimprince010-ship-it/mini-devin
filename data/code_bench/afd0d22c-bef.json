@@ -1,0 +1,41 @@
+{
+  "run_id": "afd0d22c-bef",
+  "benchmark": "mbpp",
+  "mode": "litellm",
+  "limit": 3,
+  "status": "completed",
+  "started_at": "2026-05-23T05:04:09.770072+00:00",
+  "finished_at": "2026-05-23T05:04:09.787267+00:00",
+  "total": 3,
+  "passed": 0,
+  "results": [
+    {
+      "task_id": "mbpp-11",
+      "benchmark": "mbpp",
+      "passed": false,
+      "generated_code": "",
+      "test_output": "",
+      "error": "No module named 'litellm'",
+      "duration_s": 0.0
+    },
+    {
+      "task_id": "mbpp-12",
+      "benchmark": "mbpp",
+      "passed": false,
+      "generated_code": "",
+      "test_output": "",
+      "error": "No module named 'litellm'",
+      "duration_s": 0.0
+    },
+    {
+      "task_id": "mbpp-13",
+      "benchmark": "mbpp",
+      "passed": false,
+      "generated_code": "",
+      "test_output": "",
+      "error": "No module named 'litellm'",
+      "duration_s": 0.0
+    }
+  ],
+  "pass_rate": 0.0
+}

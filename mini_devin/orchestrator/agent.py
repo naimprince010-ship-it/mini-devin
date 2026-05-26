@@ -22,13 +22,15 @@ from typing import Any
 _DEFAULT_AGENT_MAX_ITERATIONS = int(os.environ.get("DEFAULT_MAX_ITERATIONS", "200"))
 
 from ..core.llm_client import LLMClient, create_llm_client
-from ..core.tool_interface import ToolRegistry, get_global_registry
+from ..core.tool_interface import ToolRegistry
 from ..schemas.state import (
     AgentPhase,
     AgentState,
     TaskGoal,
     TaskState,
     TaskStatus,
+    TaskType,
+    StepStatus,
 )
 from ..skills.playbook import discover_repo_root, load_playbook_markdown
 from ..schemas.verification import (
@@ -103,6 +105,7 @@ from .session_worklog import SessionWorklog, load_worklog, save_worklog
 from .terminal_recovery import terminal_recovery_hint
 from .workspace_sidecar import WorkspaceSidecar
 from .standard_events import AgentEventKind, AgentStreamEvent, append_standard_event
+from ..orchestration.runtime_contracts import emit_step_completed, emit_step_started, runtime_contracts_enabled
 
 
 import sys as _sys_for_prompt
@@ -114,6 +117,7 @@ def _make_system_prompt() -> str:
         os_note = (
             "- The agent is running on **Windows** with **PowerShell**.\n"
             "- Use `python` (not `python3`), `pip` (not `pip3`).\n"
+            "- For directory listings use `Get-ChildItem -Force` or plain `dir`; do **not** use bash/cmd flags like `ls -la`, `ll`, `dir /a`, or `dir /b`.\n"
             "- Common Linux commands are auto-translated by the terminal tool: "
             "`ls`, `cat`, `mkdir -p`, `rm -rf`, `grep`, `touch`, `which`, `cp`, `mv` all work.\n"
             "- Chain commands with `;` not `&&`. Use relative paths only.\n"
@@ -125,20 +129,25 @@ def _make_system_prompt() -> str:
             "- Use standard Linux commands (`python3`, `pip3`, etc.).\n"
             "- Never use Windows drive paths (`C:\\\\`, `G:\\\\`)."
         )
-    github_note = ""
-    if os.environ.get("GITHUB_TOKEN", "").strip():
-        github_note = (
-            "\n## GitHub (``GITHUB_TOKEN`` is set — use a PR-based workflow)\n"
-            "- On a cloned GitHub repo, **avoid committing large features directly to the default branch** when a review is expected.\n"
-            "- Preferred sequence: ``github`` **get_repo_context** / **get_issue** when you are working from a GitHub issue → ``git`` **checkout_branch** "
-            "(or ``github`` **create_branch**) → implement with ``editor``/``terminal`` → run verification/tests → "
-            "``git``/**github** **commit** → **create_pr** (clear title/body). "
-            'For ``base_branch``, omit it or set ``\"default\"`` so the **GitHub repo default** (``main`` or ``master``) is used.\n'
-            "- If the user gives an issue number like ``#123``, fetch it first with ``github`` **get_issue** and use the issue title/body/comments/labels as the task spec.\n"
-            "- Use **get_pr_status** with ``pr_number`` to inspect **mergeable**, **mergeable_state**, and **CI combined status** before asking a human to merge.\n"
-            "- Use **merge_pr** only when your instructions explicitly allow merging; many teams require human approval on GitHub.\n"
-            "- Pass ``repo_path`` as the workspace root (the UI working directory; use ``.`` only if that is the repo root).\n"
-            "- **Auto git push**: if ``auto_git_commit`` + push is enabled, Plodder **skips ``git push`` on the remote default branch** unless you set ``PLODDER_GIT_PUSH_DEFAULT_BRANCH=1`` (local commits still run).\n"
+    has_github_token = bool(os.environ.get("GITHUB_TOKEN", "").strip())
+    github_note = (
+        "\n## Git/GitHub Workflow (always follow when repo work is requested)\n"
+        "- On a cloned repo, **avoid committing large features directly to the default branch** when review is expected.\n"
+        "- Preferred sequence: inspect issue/task context → create/switch to a feature branch → implement with ``editor``/``terminal`` → run verification/tests → commit with clear message → push/PR when auth permits.\n"
+        "- If explicit GitHub tools are unavailable, perform the same flow with terminal git commands and report exact next commands needed from the user.\n"
+        "- If user gives an issue number like ``#123``, treat it as the source spec and align implementation + commit/PR text to that issue.\n"
+        "- Before merge-ready claims, verify branch status and CI/test outputs; do not claim merge-ready without evidence.\n"
+        "- Do not push or merge unless asked (or unless task explicitly requires it).\n"
+    )
+    if has_github_token:
+        github_note += (
+            "\n## GitHub API tools (``GITHUB_TOKEN`` detected)\n"
+            "- Preferred sequence with GitHub tools: ``github`` **get_repo_context** / **get_issue** → ``git`` **checkout_branch** (or ``github`` **create_branch**) → implement + verify → ``git``/**github** **commit** → **create_pr**.\n"
+            'For ``base_branch``, omit it or set ``\"default\"`` so the repo default (``main`` or ``master``) is used.\n'
+            "- Use **get_pr_status** with ``pr_number`` to check **mergeable**, **mergeable_state**, and combined CI status before requesting merge.\n"
+            "- Use **merge_pr** only when instructions explicitly allow merging.\n"
+            "- Pass ``repo_path`` as the workspace root (use ``.`` only if that is repo root).\n"
+            "- **Auto git push**: if ``auto_git_commit`` + push is enabled, Plodder skips ``git push`` on remote default branch unless ``PLODDER_GIT_PUSH_DEFAULT_BRANCH=1`` is set (local commits still run).\n"
         )
     return _SYSTEM_PROMPT_TEMPLATE.format(os_env_note=os_note, github_note=github_note)
 
@@ -161,17 +170,20 @@ def _runtime_context_block(working_directory: str | None) -> str:
         )
     elif plat == "win32":
         test_hint = (
-            f"Use `{exe} -m pytest` or `{exe} -m unittest discover` (not bare `pytest` if it is not on PATH)."
+            f"Use `{exe} -m pytest` or `{exe} -m unittest discover` (not bare `pytest` if it is not on PATH). "
+            f"If pytest is missing, run `{exe} -m pip install pytest` or install the repo's test requirements, then retry once."
         )
     else:
         test_hint = (
-            "Use `python3 -m pytest` or `python3 -m unittest discover` when `pytest` is missing from PATH."
+            "Use `python3 -m pytest` or `python3 -m unittest discover` when `pytest` is missing from PATH. "
+            "If pytest is missing, run `python3 -m pip install pytest` or install the repo's test requirements, then retry once."
         )
     return f"""## Runtime context (use these exact values in terminal commands)
 - **Platform**: `{plat}`
 - **Python executable**: `{exe}`
 - **Workspace cwd** for terminal: `{wd}`
 - **Tests**: {test_hint}
+- **Windows listing rule**: if Platform is `win32`, use `Get-ChildItem -Force` or `editor list_directory`; never use `ls -la`, `ll`, `dir /a`, or `dir /b`.
 - **Unit tests you write** must assert behavior that matches your implementation (avoid contradictory expected values)."""
 
 
@@ -180,7 +192,7 @@ _SYSTEM_PROMPT_TEMPLATE = """
 - **If the workspace root already contains `.git`**, this folder **is already a Git checkout** (e.g. the UI cloned a GitHub URL at session start). **Do NOT run `git clone` into `.`** or you will get "destination path already exists" / non-empty directory errors. Start with `editor` `list_directory` / `read_file` (e.g. README) or `terminal` from the repo root.
 - **NEVER describe or narrate actions without calling a tool.** If you say "I will create a file", you MUST immediately call the `editor` tool to do it.
 - **NEVER write fake outputs.** Do not write "The tests passed" unless you actually ran tests via `terminal` using the **Python executable from Runtime context** and saw exit code 0 in the output.
-- **NEVER say TASK COMPLETE unless you have used at least one tool** AND run verification (tests or a minimal run of the code) with real tool output showing success.
+- **NEVER say TASK COMPLETE unless you have used at least one tool** AND run verification (tests, a minimal run, or a targeted file/content check) with real tool output showing success.
 - **Do NOT just write a plan as text and stop.** After your brief plan, immediately call the first tool.
 
 ## Think → Act → Observe (required)
@@ -188,15 +200,31 @@ _SYSTEM_PROMPT_TEMPLATE = """
 2. **Act** — Every `terminal` and `editor` tool call **must** include **`plan_step`** (string, e.g. `"STEP-2"`) matching the plan step you are executing.
 3. **Observe** — Read each tool result fully (stdout/stderr, exit code, and **Observe (filesystem)**). On non-zero exit codes, diagnose and self-correct with a new tool call; do not give up after one failure.
 
+## Anti-loop guard (strict)
+- Do not run the exact same terminal command repeatedly without new input/state change.
+- If a command returns the same output twice, switch strategy (read file, inspect config, check different signal) instead of retrying blindly.
+- If blocked by auth/permissions/secrets, stop retrying and ask the user for the missing prerequisite.
+
 ## Workflow
 1. **Brief plan** (2-3 lines max): State what you will do; align with `PLAN.md` at the workspace root (created/updated for each task).
 2. **ACT immediately**: Call the first tool right away — do not wait.
 3. **Continue**: After each tool result, call the next tool needed.
-4. **Verify**: Run tests with the workspace Python (`python -m …` / Runtime context). If tests fail, fix code or tests until green or you hit a clear blocker you report.
-5. **TASK COMPLETE**: Only after verification output confirms success (or you document why verification is N/A).
+4. **Verify once**: Use the cheapest proof that matches the task. For simple file/content tasks, one `editor read_file` or one focused `terminal` command is enough. Do not verify the same fact twice.
+5. **TASK COMPLETE**: As soon as verification output confirms success (or you document why verification is N/A), stop and write TASK COMPLETE. Do not take extra tool calls after success.
 
-## UX & front-end (designer + QA)
-When you build or change **user-facing web UI** (React/Vite/Next/Tailwind/CSS components):
+## Autonomous Coding Agent Operating Policy
+- **Task vs question**: If the user asks an informational/meta question, answer directly without editing files. Only enter tool-heavy coding mode when the user requests an action such as build, fix, edit, clone, run, test, open, deploy, commit, or check.
+- **Plan before coding**: For coding work, create/read `PLAN.md` first, write a short plan, then execute the first concrete step. Keep the plan synced as work progresses.
+- **Inspect repository structure**: Before editing, inspect the repo narrowly: current directory, `git status`/`git diff` when available, package/config files, and only the files implicated by the task.
+- **Use terminal carefully**: Prefer narrow, non-destructive commands. Never run destructive commands (`rm -rf`, reset/checkout, forced deletes, migrations, deploys, pushes) unless explicitly requested or clearly safe for the task.
+- **Minimize diffs**: Make the smallest code change that solves the problem. Prefer `str_replace`/`apply_patch` over rewriting whole files; preserve unrelated user changes.
+- **Follow existing style**: Match the repo's conventions, naming, formatting, framework patterns, test style, and dependency choices. Do not introduce new architecture or packages unless necessary.
+- **Risky edits need reasoning**: Before schema changes, auth/payment/security changes, migrations, deploys, dependency installs, destructive file operations, or broad refactors, explain why the edit is needed and what you will touch.
+- **Verify after modifications**: After code edits, run the most relevant focused tests/build/typecheck/lint. If no automated test exists, run a targeted command or file/content check and say what was verified.
+- **Retry intelligently**: If tests or commands fail, read the error, make a focused fix, and retry. Do not give up after the first failure unless blocked by missing secrets, permissions, or external services.
+
+## High-Ticket Web Architect (premium product + data)
+When the task is **marketing sites, SaaS, dashboards, or CRUD apps** in TypeScript/React—and the repo is or should be a **modern web stack**—operate as a **senior web architect** shipping **$2000+ tier** quality: hierarchy, rhythm, accessibility, performance, and trustworthy data—not generic tutorial UI.
 
 - **Consistency**: Drive **color, spacing, and typography** from a **single source of truth**—prefer
   **Tailwind** `tailwind.config.*` (or shared CSS variables / design tokens). Avoid scattered magic values.
@@ -212,6 +240,34 @@ When you build or change **user-facing web UI** (React/Vite/Next/Tailwind/CSS co
 - **Visual QA**: After substantive UI edits, use **`browser_playwright`** (or the session’s Playwright
   observe tool) to capture the relevant route and **check alignment, contrast, and obvious layout issues**
   before claiming the UI is done.
+### Default stack (use unless the repo clearly forbids it)
+- **Next.js 15 — App Router**: Server Components by default; add ``'use client'`` only where hooks/events/browser APIs are required. Use **``loading.tsx``**, **``error.tsx``**, and **Route Handlers** where appropriate. Prefer **Server Actions** or server-only fetch for mutations that touch the DB—never ship secrets to the client bundle.
+- **Drizzle ORM**: Central schema (e.g. ``db/schema``), typed queries, **drizzle-kit** migrations; avoid raw SQL in UI layers; keep schema changes reviewable and incremental.
+- **Supabase**: ``@supabase/supabase-js``; **anon key + RLS** on the client when data is user-scoped; **service role only server-side** (Route Handlers / server actions / edge)—never commit keys or paste service role into client code. Design tables and policies as if production RLS is on.
+- **UI — shadcn/ui + Magic UI**: **shadcn/ui** (Radix + Tailwind) for app shell, forms, tables, dialogs. **Magic UI** ([magicui.design](https://magicui.design)) for **marketing polish**—animated heroes, bento grids, marquee, border beams—**composed** on top of shadcn primitives, not duplicate design systems. **Lucide** icons. One Tailwind token source (``tailwind.config`` / CSS variables).
+
+### Premium bar (non-negotiables)
+- **Consistency**: Color, spacing, type scale, radius, and shadows from **tokens**—no one-off hex/radius litter.
+- **Build order**: Layout shells → atomic components → pages/routes; **no monolithic 800-line screens**.
+- **Motion**: Purposeful **hover**, **focus-visible**, short **transitions**; respect **prefers-reduced-motion**.
+- **State-driven UI**: **Loading**, **error**, and **empty** states for every data view and form.
+- **Visual QA**: After substantive UI work, **`browser_playwright`** on the real route—alignment, contrast, obvious responsive breaks—before claiming done.
+
+### Git-aware context (save tokens; stay accurate)
+When ``.git`` exists in the workspace:
+- **Start narrow**: Use ``git`` **status** / **diff** (or terminal ``git diff --stat``, ``git log -3 --oneline``) to see **what changed** and **which files matter**—do **not** re-read the whole repo or paste huge directory trees into reasoning.
+- **Read selectively**: Open **only** files implicated by the task, diff, or error traces; use ``editor`` **search** to jump to symbols instead of bulk ``read_file`` across unrelated modules.
+- **Edit efficiently**: Prefer ``str_replace`` / ``apply_patch`` over full ``write_file`` when the file already exists and the change is local.
+- **Summarize tool output**: Long stdout listings—extract paths and errors; do not echo entire trees back in assistant text.
+
+### Clean architecture
+- **Boundaries**: UI (``app/``, ``components/``) → **server** data loaders / actions → **Drizzle** in a dedicated layer (e.g. ``lib/db``, ``server/db``)—no DB clients or ORM calls scattered in presentational components.
+- **Validation**: **Zod** (or equivalent) at system boundaries (forms, webhooks, route bodies).
+- **Features at scale**: **Feature folders** (e.g. ``features/inventory/``) with colocated components + server helpers when the app grows; keep shared UI in ``components/ui``.
+- **Env**: Document required vars in ``.env.example``; never commit real secrets.
+
+### Other stacks
+For **React/Vite/Next without** the full stack above, still apply **Tailwind tokens**, **shadcn where supported**, state-driven UI, and Git-aware reading—adapt file paths to the repo’s conventions.
 
 ## Browser Strategy
 - **Prefer persistent browser tools for real interaction**: Use **`browser_navigate`**, **`browser_click`**, **`browser_type`**, **`browser_scroll`**, and **`browser_screenshot`** when you need a login/session/cookie state that persists across steps.
@@ -359,7 +415,10 @@ class Agent:
         self._observation_llm_override = observation_llm_client
         self._observation_llm: LLMClient | None = None
         self._context_focus_path: str | None = None
-        self.registry = tool_registry or get_global_registry()
+        # Tool instances carry session-scoped state such as working_directory and
+        # bridge callbacks, so each Agent needs an isolated registry. Reusing the
+        # global registry made new sessions write into an older session workspace.
+        self.registry = tool_registry or ToolRegistry()
         self.working_directory = working_directory
         self.max_iterations = max_iterations
         self.verbose = verbose
@@ -439,6 +498,7 @@ class Agent:
         self._same_error_streak_tool: str | None = None
         self._same_error_streak_fp: str | None = None
         self._same_error_streak_n: int = 0
+        self._no_progress_inspection_streak: int = 0
         # Observation-style post-mortem (forced diagnostic + recovery path)
         self._post_mortem_diagnostic_triggers: list[DiagnosticTriggerRecord] = []
         self._post_mortem_failure_streaks: list[FailureStreakRecord] = []
@@ -553,6 +613,24 @@ class Agent:
                 except OSError:
                     pass
 
+        try:
+            cap_w = int((os.environ.get("PLODDER_WORKING_MEMORY_PROMPT_TOKENS") or "1200").strip() or "1200")
+            wm = self.get_memory_context(max_tokens=cap_w)
+            if wm.strip():
+                chunks.append("## Working memory snapshot\n```text\n" + wm + "\n```")
+        except Exception:
+            pass
+
+        if self._use_conversation_memory:
+            try:
+                lesson_limit = int((os.environ.get("PLODDER_RECENT_LESSONS_LIMIT") or "5").strip() or "5")
+                lessons = [lesson.strip() for lesson in self.get_recent_lessons(limit=lesson_limit) if lesson.strip()]
+                if lessons:
+                    lesson_block = "\n".join(f"- {lesson[:360]}" for lesson in lessons)
+                    chunks.append("## Recent lessons learned\n" + lesson_block)
+            except Exception:
+                pass
+
         if not chunks:
             return []
         return [
@@ -562,6 +640,128 @@ class Agent:
                 + "\n\n_(Workspace context — refreshed each model call.)_",
             }
         ]
+
+    def _seed_task_working_memory(self, task: TaskState, resumed_plan: list[str] | None = None) -> None:
+        """Load the live task goal, constraints, and any resumed plan into working memory."""
+        try:
+            goal = (task.goal.description or "").strip()
+            if goal:
+                self.add_to_memory(goal, item_type="goal", priority="critical")
+
+            criteria = [c.strip() for c in (task.goal.acceptance_criteria or []) if c and c.strip()]
+            if criteria:
+                self.add_to_memory(
+                    "Acceptance criteria:\n" + "\n".join(f"- {c}" for c in criteria[:12]),
+                    item_type="constraint",
+                    priority="high",
+                )
+
+            constraint_bits: list[str] = []
+            if task.constraints.require_tests:
+                constraint_bits.append("tests required")
+            if task.constraints.require_lint:
+                constraint_bits.append("lint required")
+            if task.constraints.allowed_directories:
+                constraint_bits.append(
+                    "allowed directories: " + ", ".join(task.constraints.allowed_directories[:10])
+                )
+            if constraint_bits:
+                self.add_to_memory(
+                    "Task constraints: " + "; ".join(constraint_bits),
+                    item_type="constraint",
+                    priority="high",
+                )
+
+            if self.working_directory:
+                self.add_to_memory(
+                    f"Workspace root: {self.working_directory}",
+                    item_type="context",
+                    priority="medium",
+                )
+
+            if resumed_plan:
+                self.add_to_memory(
+                    "Resumed plan steps:\n" + "\n".join(f"- {step}" for step in resumed_plan[:20]),
+                    item_type="plan",
+                    priority="high",
+                )
+        except Exception as e:
+            self._log(f"Warning: failed to seed working memory: {e}")
+
+    def _build_task_retrieval_context(self, task: TaskState) -> str:
+        """Collect a compact retrieval block from code search and long-term memory."""
+        parts: list[str] = []
+        queries = self._task_retrieval_queries(task)
+        if not queries:
+            return ""
+
+        try:
+            if self.working_directory and not self._memory_indexed:
+                self.index_workspace()
+            code_blocks: list[str] = []
+            for label, query in queries[:3]:
+                hits = self.search_code(query, max_results=3)
+                if not hits:
+                    continue
+                lines: list[str] = []
+                for hit in hits[:3]:
+                    if hasattr(hit, "to_dict"):
+                        data = hit.to_dict()
+                        file_path = data.get("location", {}).get("file_path") or data.get("file_path") or ""
+                        name = data.get("name") or data.get("symbol_name") or data.get("title") or ""
+                        kind = data.get("symbol_type") or data.get("type") or "symbol"
+                        detail = data.get("docstring") or data.get("summary") or data.get("content") or ""
+                        preview = str(detail).replace("\n", " ")[:260]
+                        loc = file_path or data.get("path") or ""
+                        lines.append(f"- [{kind}] {name} {loc}: {preview}".strip())
+                    else:
+                        text = str(hit)
+                        lines.append(f"- {text[:320]}")
+                code_blocks.append(f"{label}:\n" + "\n".join(lines))
+            if code_blocks:
+                parts.append("Relevant code search results:\n" + "\n\n".join(code_blocks))
+        except Exception as e:
+            self._log(f"Code retrieval skipped: {e}")
+
+        if self._use_conversation_memory:
+            try:
+                mem_block = self.get_context_from_memory("\n".join(q for _, q in queries[:2]))
+                if mem_block.strip():
+                    parts.append("Relevant past memory:\n" + mem_block)
+            except Exception as e:
+                self._log(f"Memory retrieval skipped: {e}")
+
+        return "\n\n---\n\n".join(parts)
+
+    @staticmethod
+    def _task_retrieval_queries(task: TaskState) -> list[tuple[str, str]]:
+        """Return prioritized retrieval queries tailored to the task type."""
+        description = (task.goal.description or "").strip()
+        criteria = " ".join(c.strip() for c in (task.goal.acceptance_criteria or []) if c and c.strip())
+        combined = " ".join(part for part in (description, criteria) if part)
+        ttype = getattr(task, "task_type", None)
+        task_type = getattr(ttype, "value", str(ttype or "general")).lower()
+
+        hint_map: dict[str, list[str]] = {
+            "bug_fix": ["bug fix error traceback failing test regression", "debug failure root cause"],
+            "feature": ["feature implementation endpoint route component api", "new functionality"],
+            "refactor": ["refactor cleanup restructure simplify similar code", "shared helper extraction"],
+            "testing": ["test pytest unit integration assertion", "verification test coverage"],
+            "documentation": ["documentation readme comments guide explanation", "docs update"],
+            "code_review": ["review validate lint audit issues", "diff review"],
+            "exploration": ["explore inspect understand symbols", "workspace overview"],
+        }
+        hints = hint_map.get(task_type, ["implementation verify"])
+
+        queries: list[tuple[str, str]] = []
+        if combined:
+            queries.append(("task goal", combined))
+        for hint in hints:
+            if combined:
+                queries.append((hint, f"{hint} {combined}".strip()))
+            else:
+                queries.append((hint, hint))
+        return queries
 
     async def _emit_file_changed_ui(self, relative_path: str, file_content: str | None = None) -> None:
         """Notify UI (WebSocket) with full file text after a successful workspace edit."""
@@ -815,7 +1015,7 @@ class Agent:
                 "Execute a shell command via PowerShell on Windows. "
                 "Common Linux commands are auto-translated (python3→python, ls, cat, mkdir -p, rm -rf, grep, touch, etc.). "
                 "Use relative paths from the workspace. Do NOT use absolute Windows paths like C:\\\\. "
-                "Prefer `python` over `python3`. Use `dir` or `ls` for listing. "
+                "Prefer `python` over `python3`. For listings use `Get-ChildItem -Force` or plain `dir`; avoid `ls -la`, `ll`, `dir /a`, and `dir /b`. "
                 "Chain commands with `;` instead of `&&` when possible."
             )
         else:
@@ -938,6 +1138,29 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         })
         
         # Browser search tool schema
+        schemas.append({
+            "name": "browser_open",
+            "description": (
+                "Open a URL in the user's Plodder Browser tab. Use this when the user asks to open, show, "
+                "visit, or navigate to a public/local URL visibly. This does not require backend network access; "
+                "the frontend browser tab loads the URL for the user."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Absolute URL to open, e.g. https://example.com or http://localhost:3000",
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "Optional short note to show in the browser activity feed",
+                    },
+                },
+                "required": ["url"],
+            },
+        })
+
         schemas.append({
             "name": "browser_search",
             "description": "Search the web for information. Use this to find documentation, solutions to errors, or research topics.",
@@ -1779,11 +2002,67 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 return json.dumps(out_ok, indent=2)
             return f"Error: unknown live_preview action '{action}'"
         
+        arg_dict = dict(arguments) if isinstance(arguments, dict) else {}
+        if name == "browser_open":
+            url = str(arg_dict.get("url", "") or "").strip()
+            if not re.match(r"^https?://", url, re.IGNORECASE):
+                return "Error: browser_open requires an absolute http:// or https:// URL."
+            from urllib.parse import urlparse
+
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+            if host in {"localhost", "127.0.0.1", "::1"}:
+                return (
+                    "Error: browser_open cannot load localhost/127.0.0.1 from the remote Plodder Browser. "
+                    "Use live_preview for a local dev server, or browser_playwright/browser_fetch for a public URL."
+                )
+            payload = {
+                "event_type": "navigate",
+                "url": url,
+                "query": str(arg_dict.get("note", "") or "Opened in Plodder Browser tab"),
+            }
+            await self._trigger_callback("on_browser_event", payload)
+            if self.working_directory:
+                self._append_session_event(
+                    AgentStreamEvent(
+                        kind=AgentEventKind.TOOL_CALL,
+                        tool_name="browser_open",
+                        tool_args=self._sanitize_tool_args_for_log(arg_dict),
+                        legacy_type="act",
+                        meta={"visible_browser": True},
+                    )
+                )
+                self._append_session_event(
+                    AgentStreamEvent(
+                        kind=AgentEventKind.OBSERVATION,
+                        tool_name="browser_open",
+                        legacy_type="observe",
+                        output=f"Opened URL in Plodder Browser tab: {url}",
+                        meta={"visible_browser": True, "url": url},
+                    )
+                )
+            return (
+                f"Opened URL in the user's Plodder Browser tab: {url}\n"
+                "If the site blocks iframe embedding, the Browser tab still shows an external-open link."
+            )
+
         tool = self.registry.get(name)
         if not tool:
             return f"Error: Unknown tool '{name}'"
 
-        arg_dict = dict(arguments) if isinstance(arguments, dict) else {}
+        if name == "editor" and not arg_dict:
+            return (
+                "Error: malformed editor tool call. Missing required arguments. "
+                "Use one of these forms: "
+                '{"action":"write_file","path":"index.html","content":"..."}; '
+                '{"action":"read_file","path":"PLAN.md"}; '
+                '{"action":"list_directory","path":"."}.'
+            )
+        if name == "editor" and arg_dict.get("action") in (None, "read_file") and not arg_dict.get("path"):
+            return (
+                "Error: malformed editor read_file call. Missing `path`. "
+                "If you need to create a file, use action=write_file with path and full content."
+            )
         state_before_snapshot = self._activity_state.to_meta_snapshot()
         action_type = classify_action_type(name, arg_dict)
         step = self._activity_state.bump_step()
@@ -3964,6 +4243,35 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             self.state.current_plan = result.plan
         
         return result
+
+    async def auto_replan_from_repeated_failure(self, error: str) -> bool:
+        """Replan the current task after repeated failures using the active plan step."""
+        if not self.state.current_task or not self.state.current_plan:
+            return False
+
+        failed_step = None
+        for step in self.state.current_plan.steps:
+            if step.status in (StepStatus.PENDING, StepStatus.IN_PROGRESS):
+                failed_step = step
+                break
+
+        if not failed_step:
+            return False
+
+        try:
+            self.mark_plan_step_failed(failed_step.step_id, error)
+        except Exception:
+            pass
+
+        result = await self.replan_from_failure(failed_step.step_id, error)
+        if result.success and result.plan:
+            self.add_to_memory(
+                f"Auto-replanned after repeated failure on step {failed_step.step_id}",
+                item_type="decision",
+                priority="high",
+            )
+            return True
+        return False
     
     def get_next_plan_step(self):
         """
@@ -4312,6 +4620,34 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                         await result
             except Exception as e:
                 self._log(f"Error in callback '{name}': {e}")
+
+    async def _emit_step_started_contract_event(self, task: TaskState, step_index: int, step: Any) -> None:
+        if not runtime_contracts_enabled() or not self.working_directory:
+            return
+        try:
+            await emit_step_started(
+                workspace=self.working_directory,
+                session_id=self.state.session_id,
+                task_id=task.task_id,
+                step_index=step_index,
+                step=step,
+            )
+        except Exception as e:
+            self._log(f"Runtime step.started emission skipped: {e}")
+
+    async def _emit_step_completed_contract_event(self, task: TaskState, step_index: int, step: Any) -> None:
+        if not runtime_contracts_enabled() or not self.working_directory:
+            return
+        try:
+            await emit_step_completed(
+                workspace=self.working_directory,
+                session_id=self.state.session_id,
+                task_id=task.task_id,
+                step_index=step_index,
+                step=step,
+            )
+        except Exception as e:
+            self._log(f"Runtime step.completed emission skipped: {e}")
 
     @staticmethod
     def _sanitize_tool_args_for_log(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -4743,6 +5079,12 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             r"\b(clean\s*up|cleanup|migrate)\b", raw, re.I
         ):
             add("refactor")
+        if re.search(
+            r"\b(expedia|booking\.com|agoda|hotel|lodging|reservation|travel booking|hotel booking)\b",
+            raw,
+            re.I,
+        ):
+            add("travel_booking")
         return out
 
     def _apply_auto_injected_playbooks(self, task: TaskState) -> None:
@@ -4795,6 +5137,250 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         else:
             self._log(f"[skills] {summary} (no workspace — event not written to JSONL)")
     
+    def _simple_file_task_satisfied(
+        self,
+        task: TaskState,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_result: str,
+    ) -> bool:
+        """Cheaply complete simple file/content tasks after a successful write/read."""
+        if tool_name != "editor":
+            return False
+        action = tool_args.get("action")
+        if action not in {"write_file", "create_file", "read_file"}:
+            return False
+
+        description = task.goal.description if task.goal else ""
+        file_match = re.search(
+            r"(?:file named|file)\s+[`\"']?([A-Za-z0-9._-]+)[`\"']?",
+            description,
+            re.IGNORECASE,
+        )
+        exact_match = re.search(
+            r"(?:contain exactly|contains exactly|exact content|exactly this text|with exactly(?: this text)?)\s*:?\s*[`\"']?([^`\"'\r\n]+)",
+            description,
+            re.IGNORECASE,
+        )
+        if not file_match or not exact_match:
+            return False
+
+        expected_path = file_match.group(1).strip()
+        expected_content = exact_match.group(1).strip()
+        actual_path = str(tool_args.get("path", "")).replace("\\", "/")
+        if actual_path != expected_path.replace("\\", "/"):
+            return False
+
+        if action in {"write_file", "create_file"}:
+            return str(tool_args.get("content", "")).strip() == expected_content
+
+        lines = [line.rstrip("\r") for line in (tool_result or "").splitlines()]
+        content_lines = [line for line in lines if not line.startswith("File:")]
+        actual_content = "\n".join(content_lines).strip()
+        return actual_content == expected_content
+
+    def _progress_guard_message(
+        self,
+        task: TaskState,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        *,
+        tool_success: bool,
+    ) -> str | None:
+        """Nudge the model when it keeps inspecting a clean workspace without edits."""
+        if not tool_success:
+            self._no_progress_inspection_streak = 0
+            return None
+
+        action = str(tool_args.get("action", "") or "")
+        command = str(tool_args.get("command", "") or "").strip().lower()
+        path = str(tool_args.get("path", "") or "").replace("\\", "/").strip("/")
+
+        is_inspection = False
+        if tool_name == "editor":
+            is_inspection = action == "list_directory" or (
+                action == "read_file" and path.upper() == "PLAN.md"
+            )
+        elif tool_name == "terminal":
+            listing_commands = {
+                "dir",
+                "ls",
+                "ls -la",
+                "get-childitem",
+                "get-childitem -force",
+                "git status",
+            }
+            is_inspection = command in listing_commands or command.endswith("; get-childitem -force")
+
+        if not is_inspection or task.files_changed:
+            self._no_progress_inspection_streak = 0
+            return None
+
+        self._no_progress_inspection_streak += 1
+        threshold = int(os.environ.get("PLODDER_PROGRESS_GUARD_AFTER_INSPECTIONS", "2"))
+        if self._no_progress_inspection_streak < threshold:
+            return None
+
+        self._no_progress_inspection_streak = 0
+        description = task.goal.description if task.goal else "the task"
+        if self._is_no_edit_verification_task(task):
+            return (
+                "Progress guard: you have inspected the same clean workspace several times. "
+                "Do not edit files for this task. Run the requested verification command now, "
+                "or if it already passed with exit code 0, reply TASK COMPLETE with the observed result. "
+                f"Task: {description}"
+            )
+        return (
+            "Progress guard: you have inspected the same clean workspace several times without changing files. "
+            "Stop listing directories or checking git status. Take the next concrete implementation action now. "
+            "For this task, create or edit the requested file using the editor write_file/str_replace/apply_patch tool, "
+            f"then verify it. Task: {description}"
+        )
+
+    def _is_no_edit_verification_task(self, task: TaskState) -> bool:
+        """True when the user explicitly asked for inspection/testing without edits."""
+        description = (task.goal.description if task.goal else "").lower()
+        no_edit_markers = (
+            "do not edit",
+            "don't edit",
+            "no edit",
+            "no-edit",
+            "do not modify",
+            "don't modify",
+            "without editing",
+            "without modifying",
+        )
+        verification_markers = (
+            "run ",
+            "test",
+            "pytest",
+            "git status",
+            "inspect",
+            "smoke test",
+            "check",
+        )
+        return any(marker in description for marker in no_edit_markers) and any(
+            marker in description for marker in verification_markers
+        )
+
+    def _no_edit_verification_satisfied(
+        self,
+        task: TaskState,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_result: str,
+    ) -> bool:
+        """Auto-complete explicit no-edit verification tasks after a successful test/check command."""
+        if not self._is_no_edit_verification_task(task) or tool_name != "terminal":
+            return False
+        command = str(tool_args.get("command", "") or "").lower()
+        result = (tool_result or "").lower()
+        if "exit code: 0" not in result:
+            return False
+        verification_commands = (
+            "pytest",
+            "unittest",
+            "npm test",
+            "npm run test",
+            "pnpm test",
+            "yarn test",
+            "ruff",
+            "mypy",
+            "tsc",
+        )
+        return any(marker in command for marker in verification_commands)
+
+    def _terminal_task_complete_satisfied(
+        self,
+        tool_name: str,
+        tool_result: str,
+    ) -> bool:
+        """Treat an explicit TASK COMPLETE terminal echo as completion."""
+        if tool_name != "terminal":
+            return False
+        result = tool_result or ""
+        return "TASK COMPLETE" in result.upper() and "Exit code: 0" in result
+
+    def _clone_status_verification_satisfied(
+        self,
+        task: TaskState,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_result: str,
+    ) -> bool:
+        """Auto-complete clone tasks after git status confirms the cloned repo is clean."""
+        if tool_name != "terminal":
+            return False
+        description = (task.goal.description if task.goal else "").lower()
+        if "clone" not in description or "git status" not in description:
+            return False
+        command = str(tool_args.get("command", "") or "").strip().lower()
+        working_directory = str(tool_args.get("working_directory", "") or "").strip()
+        if command != "git status" or not working_directory:
+            return False
+        result = (tool_result or "").lower()
+        return (
+            "exit code: 0" in result
+            and (
+                "working tree clean" in result
+                or "nothing to commit" in result
+                or "up to date with" in result
+            )
+        )
+
+    def _clone_target_from_successful_command(
+        self,
+        task: TaskState,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_result: str,
+    ) -> str | None:
+        """Return cloned folder path when a clone task has just cloned successfully."""
+        if tool_name != "terminal":
+            return None
+        description = (task.goal.description if task.goal else "").lower()
+        if "clone" not in description or "git status" not in description:
+            return None
+        command = str(tool_args.get("command", "") or "").strip()
+        command_lower = command.lower()
+        result = tool_result or ""
+        if not command_lower.startswith("git clone ") or "Exit code: 0" not in result:
+            return None
+
+        parts = command.split()
+        if len(parts) >= 4 and not parts[-1].startswith("http") and not parts[-1].startswith("git@"):
+            return parts[-1].strip("'\"")
+
+        match = re.search(r"Cloning into ['\"]([^'\"]+)['\"]", result)
+        if match:
+            return match.group(1)
+
+        repo_url = parts[-1] if parts else ""
+        repo_name = repo_url.rstrip("/").rsplit("/", 1)[-1]
+        if repo_name.endswith(".git"):
+            repo_name = repo_name[:-4]
+        return repo_name or None
+
+    def _clone_target_from_existing_directory_failure(
+        self,
+        task: TaskState,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_result: str,
+    ) -> str | None:
+        """Return repo folder when a repeated clone failed only because it already exists."""
+        if tool_name != "terminal":
+            return None
+        description = (task.goal.description if task.goal else "").lower()
+        command = str(tool_args.get("command", "") or "").strip().lower()
+        result = tool_result or ""
+        if "clone" not in description or not command.startswith("git clone "):
+            return None
+        match = re.search(r"destination path ['\"]([^'\"]+)['\"] already exists", result, re.IGNORECASE)
+        if not match:
+            return None
+        return match.group(1)
+
     async def run(self, task: TaskState) -> TaskState:
         """
         Run the agent on a task.
@@ -4844,6 +5430,7 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
         self._same_error_streak_tool = None
         self._same_error_streak_fp = None
         self._same_error_streak_n = 0
+        self._no_progress_inspection_streak = 0
         self._post_mortem_diagnostic_triggers.clear()
         self._post_mortem_failure_streaks.clear()
         self._post_mortem_recovery_paths.clear()
@@ -4893,6 +5480,10 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                     "Planner: `PLAN.md` updated at workspace root.",
                     is_token=False,
                 )
+                self._seed_task_working_memory(
+                    task,
+                    resumed_plan=list(wl.current_plan) if resumed and wl and wl.current_plan else None,
+                )
             except Exception as e:
                 self._log(f"Planner sync skipped: {e}")
         
@@ -4909,8 +5500,18 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             except Exception:
                 pass
 
+        _bench_ctx = getattr(self, "_benchmark_context_injection", None)
+        _retrieval_ctx = self._build_task_retrieval_context(task)
+
         # Add task description to conversation
-        _proj_prefix = f"\n\n{_proj_ctx}\n\n---\n" if _proj_ctx else ""
+        _context_prefix_parts: list[str] = []
+        if _proj_ctx:
+            _context_prefix_parts.append(_proj_ctx)
+        if _bench_ctx:
+            _context_prefix_parts.append("Benchmark lessons for better reliability:\n" + _bench_ctx)
+        if _retrieval_ctx:
+            _context_prefix_parts.append("Task retrieval context:\n" + _retrieval_ctx)
+        _proj_prefix = "\n\n" + "\n\n---\n\n".join(_context_prefix_parts) + "\n\n---\n" if _context_prefix_parts else ""
         _rtc = _runtime_context_block(self.working_directory)
         task_message = f"""{_proj_prefix}{_rtc}
 
@@ -4926,6 +5527,10 @@ Working Directory: {self.working_directory or 'current directory'}
 Structured planning: read `PLAN.md` at the workspace root; every `terminal` / `editor` call must include **`plan_step`** (e.g. `"STEP-2"`).
 
 IMPORTANT: You MUST use tools to complete this task. Do NOT just write text descriptions. 
+Autonomous coding policy: inspect the repository narrowly before editing, make the smallest style-consistent diff, explain reasoning before risky edits, run focused verification after modifications, and retry once you understand any failing test output.
+For greenfield website/app/ecommerce work: inspect briefly, then implement. Do not run more than two inspection-only
+tool calls before creating or editing the first project file. Break broad requests into the PLAN.md milestones and
+complete the smallest usable vertical slice first.
 Call a tool (editor or terminal) immediately as your first action."""
         if self._workspace_sidecar:
             try:
@@ -5037,6 +5642,7 @@ Call a tool (editor or terminal) immediately as your first action."""
                                     self._current_step_idx = 0
                                     await self._trigger_callback("on_plan_created", steps)
                                     await self._trigger_callback("on_step_started", 0, steps[0])
+                                    await self._emit_step_started_contract_event(task, 0, steps[0])
                                     self._persist_worklog(task)
     
                         # --- Step progression detection when a plan is already active ---
@@ -5068,9 +5674,19 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 if new_step_reached > self._current_step_idx:
                                     # Complete previous step
                                     await self._trigger_callback("on_step_completed", self._current_step_idx, self._plan_steps[self._current_step_idx])
+                                    await self._emit_step_completed_contract_event(
+                                        task,
+                                        self._current_step_idx,
+                                        self._plan_steps[self._current_step_idx],
+                                    )
                                     # Start new step
                                     self._current_step_idx = new_step_reached
                                     await self._trigger_callback("on_step_started", self._current_step_idx, self._plan_steps[self._current_step_idx])
+                                    await self._emit_step_started_contract_event(
+                                        task,
+                                        self._current_step_idx,
+                                        self._plan_steps[self._current_step_idx],
+                                    )
                                     self._persist_worklog(task)
     
                     # Handle tool calls
@@ -5139,13 +5755,46 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 # Parse exit code from terminal output if available
                                 if tc.name == "terminal" and "Exit code:" in result:
                                     try:
-                                        exit_code_str = result.split("Exit code:")[-1].strip()
-                                        exit_code = int(exit_code_str)
+                                        # Parse the first integer after "Exit code:" even when
+                                        # additional sections (e.g. Observe snapshot) follow.
+                                        m = re.search(r"Exit code:\\s*(-?\\d+)", result)
+                                        if m:
+                                            exit_code = int(m.group(1))
                                     except (ValueError, TypeError):
                                         pass
                                         
                                 # Classify the result
                                 error_type = self._correction_engine.classify_error(tc.name, result, exit_code)
+
+                                existing_clone_target = self._clone_target_from_existing_directory_failure(
+                                    task, tc.name, tc.arguments, result
+                                )
+                                if existing_clone_target:
+                                    status_args = {
+                                        "command": "git status",
+                                        "working_directory": existing_clone_target,
+                                        "plan_step": "STEP-4",
+                                    }
+                                    status_result = await self._execute_tool("terminal", status_args)
+                                    task.commands_executed.append("git status")
+                                    if self._clone_status_verification_satisfied(
+                                        task, "terminal", status_args, status_result
+                                    ):
+                                        result = status_result
+                                        final_result = status_result
+                                        tc.arguments = status_args
+                                        tool_success = True
+                                        break
+
+                                if self._terminal_task_complete_satisfied(
+                                    tc.name, result
+                                ) or self._clone_status_verification_satisfied(
+                                    task, tc.name, tc.arguments, result
+                                ) or self._no_edit_verification_satisfied(
+                                    task, tc.name, tc.arguments, result
+                                ):
+                                    tool_success = True
+                                    break
                                 
                                 if error_type == ErrorType.SUCCESS:
                                     self._same_error_streak_tool = None
@@ -5186,6 +5835,14 @@ Call a tool (editor or terminal) immediately as your first action."""
                                                     err_txt,
                                                     {"name": tname, "arguments": good_args},
                                                 )
+                                                try:
+                                                    self.add_to_memory(
+                                                        f"Recovered from {tname} failure by using {json.dumps(good_args, default=str)[:280]}",
+                                                        item_type="lesson",
+                                                        priority="high",
+                                                    )
+                                                except Exception:
+                                                    pass
                                                 self.get_conversation_memory().add_error_pattern(
                                                     error=err_txt[:400],
                                                     cause=f"{tname} tool (self-correct)",
@@ -5212,6 +5869,15 @@ Call a tool (editor or terminal) immediately as your first action."""
                                     self._same_error_streak_tool = tc.name
                                     self._same_error_streak_fp = _fp
                                     self._same_error_streak_n = 1
+
+                                try:
+                                    self.add_to_memory(
+                                        f"{tc.name} failed: {(str(result) or '')[:800]}",
+                                        item_type="error",
+                                        priority="high",
+                                    )
+                                except Exception:
+                                    pass
     
                                 if not _single_tool_batch:
                                     self._log(
@@ -5223,6 +5889,15 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 if not self._correction_engine.should_retry(error_type, retry_count):
                                     self._log("Max retries reached or error not retryable immediately")
                                     break
+
+                                try:
+                                    self.add_to_memory(
+                                        f"Retrying {tc.name} after {error_type.value}: {hint[:300]}",
+                                        item_type="decision",
+                                        priority="medium",
+                                    )
+                                except Exception:
+                                    pass
     
                                 _forced_diag = self._same_error_streak_n >= 3
                                 if _forced_diag:
@@ -5344,10 +6019,101 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 self.llm.add_tool_result(tc.id, tc.name, final_result)
                                 tool_ids_answered.add(tc.id)
                                 _batch_answered_tool_ids.add(tc.id)
+
+                            if _single_tool_batch:
+                                progress_guard = self._progress_guard_message(
+                                    task,
+                                    tc.name,
+                                    tc.arguments,
+                                    tool_success=tool_success,
+                                )
+                                if progress_guard:
+                                    self.llm.add_user_message(progress_guard)
+                                    self._append_session_event(
+                                        AgentStreamEvent(
+                                            kind=AgentEventKind.STATUS,
+                                            role="system",
+                                            text=progress_guard,
+                                            legacy_type="progress_guard",
+                                            meta={"task_id": task.task_id, "tool": tc.name},
+                                        )
+                                    )
                             
                             # Track in task state
                             if tc.name == "terminal":
                                 task.commands_executed.append(tc.arguments.get("command", ""))
+
+                            clone_target = None
+                            if tool_success:
+                                clone_target = self._clone_target_from_successful_command(
+                                    task, tc.name, tc.arguments, final_result
+                                )
+                            if clone_target:
+                                status_args = {
+                                    "command": "git status",
+                                    "working_directory": clone_target,
+                                    "plan_step": "STEP-4",
+                                }
+                                if "on_tool_start" in self.callbacks:
+                                    await self._trigger_callback("on_tool_start", "terminal", status_args)
+                                import time as _time
+
+                                _status_start = _time.time()
+                                status_result = await self._execute_tool("terminal", status_args)
+                                status_duration_ms = (_time.time() - _status_start) * 1000
+                                if "on_tool_result" in self.callbacks:
+                                    await self._trigger_callback(
+                                        "on_tool_result",
+                                        "terminal",
+                                        status_args,
+                                        status_result,
+                                        status_duration_ms,
+                                    )
+                                task.commands_executed.append("git status")
+                                if self._clone_status_verification_satisfied(
+                                    task, "terminal", status_args, status_result
+                                ):
+                                    await self._update_phase(AgentPhase.COMPLETE)
+                                    task.status = TaskStatus.COMPLETED
+                                    task.completed_at = datetime.now(timezone.utc)
+                                    self._log("Task completed after automatic cloned repository git status.")
+                                    break
+
+                            if tool_success and self._terminal_task_complete_satisfied(
+                                tc.name, final_result
+                            ):
+                                await self._update_phase(AgentPhase.COMPLETE)
+                                task.status = TaskStatus.COMPLETED
+                                task.completed_at = datetime.now(timezone.utc)
+                                self._log("Task completed after explicit terminal TASK COMPLETE signal.")
+                                break
+
+                            if tool_success and self._clone_status_verification_satisfied(
+                                task, tc.name, tc.arguments, final_result
+                            ):
+                                await self._update_phase(AgentPhase.COMPLETE)
+                                task.status = TaskStatus.COMPLETED
+                                task.completed_at = datetime.now(timezone.utc)
+                                self._log("Task completed after cloned repository git status passed.")
+                                break
+
+                            if tool_success and self._no_edit_verification_satisfied(
+                                task, tc.name, tc.arguments, final_result
+                            ):
+                                await self._update_phase(AgentPhase.COMPLETE)
+                                task.status = TaskStatus.COMPLETED
+                                task.completed_at = datetime.now(timezone.utc)
+                                self._log("Task completed after no-edit verification passed.")
+                                break
+
+                            if tool_success and self._simple_file_task_satisfied(
+                                task, tc.name, tc.arguments, final_result
+                            ):
+                                await self._update_phase(AgentPhase.COMPLETE)
+                                task.status = TaskStatus.COMPLETED
+                                task.completed_at = datetime.now(timezone.utc)
+                                self._log("Task completed after targeted file verification.")
+                                break
                                 
                             # Handle Escalation to Planner
                             if not tool_success:
@@ -5355,33 +6121,24 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 if self._correction_engine.should_replan(self._consecutive_failures):
                                     await self._trigger_callback("on_message", "🔁 **Replanning needed**: Consecutive failures exceeded limit.", is_token=False)
                                     self._consecutive_failures = 0
+
+                                    if await self.auto_replan_from_repeated_failure(final_result):
+                                        # Force breakdown of iteration loop to let new plan take over
+                                        task.error_count += 1
+                                        # Replan must not leave orphan tool_calls on the last assistant message
+                                        for _ptc in response.tool_calls:
+                                            if _ptc.id not in _batch_answered_tool_ids:
+                                                self.llm.add_tool_result(
+                                                    _ptc.id,
+                                                    _ptc.name,
+                                                    "Error: replan aborted before this tool_call_id received a result.",
+                                                )
+                                                _batch_answered_tool_ids.add(_ptc.id)
+                                        self._synthesize_tool_replies_for_open_assistant_tail()
+                                        break
                                     
-                                    # trigger replanning
-                                    if self.state.current_plan:
-                                        # Find current step
-                                        failed_step_id = None
-                                        from ..schemas.state import StepStatus
-                                        for step in self.state.current_plan.steps:
-                                            if step.status == StepStatus.PENDING or step.status == StepStatus.IN_PROGRESS:
-                                                failed_step_id = step.step_id
-                                                break
-                                                
-                                        if failed_step_id:
-                                            await self.replan_from_failure(failed_step_id, final_result)
-                                            # Force breakdown of iteration loop to let new plan take over
-                                            task.error_count += 1
-                                            # Replan must not leave orphan tool_calls on the last assistant message
-                                            for _ptc in response.tool_calls:
-                                                if _ptc.id not in _batch_answered_tool_ids:
-                                                    self.llm.add_tool_result(
-                                                        _ptc.id,
-                                                        _ptc.name,
-                                                        "Error: replan aborted before this tool_call_id received a result.",
-                                                    )
-                                                    _batch_answered_tool_ids.add(_ptc.id)
-                                            self._synthesize_tool_replies_for_open_assistant_tail()
-                                            break
-                                    
+                        if task.status == TaskStatus.COMPLETED:
+                            break
                     else:
                         # No tool calls - check if task is complete
                         if response.content:
@@ -5390,7 +6147,6 @@ Call a tool (editor or terminal) immediately as your first action."""
                             
                             # Detect numbered plan in LLM response (e.g. "1. Step one\n2. Step two")
                             content = response.content or ""
-                            import re
                             plan_lines = re.findall(r'^\s*(\d+)\.\s+(.+)', content, re.MULTILINE)
                             if len(plan_lines) >= 2 and not getattr(self, '_plan_sent', False):
                                 steps = [text.strip() for _, text in plan_lines]
@@ -5423,6 +6179,26 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 task.completed_at = datetime.now(timezone.utc)
                                 self._log("Task completed!")
                                 break
+                            is_verified_completion = (
+                                _tools_used > 0
+                                and "complete" in content_lower
+                                and any(
+                                    phrase in content_lower
+                                    for phrase in (
+                                        "verified",
+                                        "confirmed",
+                                        "contains exactly",
+                                        "as required",
+                                        "correct content",
+                                    )
+                                )
+                            )
+                            if is_verified_completion:
+                                await self._update_phase(AgentPhase.COMPLETE)
+                                task.status = TaskStatus.COMPLETED
+                                task.completed_at = datetime.now(timezone.utc)
+                                self._log("Task completed after verified summary.")
+                                break
                             elif is_completion and _tools_used == 0:
                                 # Agent said complete without using any tools — force it to act
                                 self._log("Completion signal with no tool use — forcing tool call.")
@@ -5433,8 +6209,9 @@ Call a tool (editor or terminal) immediately as your first action."""
                             elif response.finish_reason == "stop":
                                 # Nudge with forced tool use on the next iteration
                                 self._no_tool_streak = getattr(self, '_no_tool_streak', 0) + 1
-                                if self._no_tool_streak >= 1:
-                                    # After 2 text-only turns, force a tool call
+                                force_after = int(os.environ.get("PLODDER_FORCE_TOOL_AFTER_TEXT_TURNS", "2"))
+                                if self._no_tool_streak >= force_after:
+                                    # Avoid spending a second LLM call immediately after the first text-only turn.
                                     self._log("Multiple text-only turns — injecting forced tool call.")
                                     _msgs, _eph = await self._prepare_messages_for_llm_turn()
                                     forced_response = await self._get_observation_llm().complete(
@@ -5464,8 +6241,8 @@ Call a tool (editor or terminal) immediately as your first action."""
                                             self.llm.add_tool_result(tc.id, tc.name, result)
                                 else:
                                     self.llm.add_user_message(
-                                        "Please continue with the task using the tools. "
-                                        "Call a tool (terminal or editor) to take the next action."
+                                        "Continue with the next necessary tool call. If the task is already verified, "
+                                        "reply with TASK COMPLETE and do not verify the same fact again."
                                     )
     
                 
@@ -5490,7 +6267,7 @@ Call a tool (editor or terminal) immediately as your first action."""
                         break
             
             # Max iterations reached
-            if iteration >= self.max_iterations:
+            if iteration >= self.max_iterations and task.status != TaskStatus.COMPLETED:
                 self._log("Max iterations reached")
                 task.status = TaskStatus.FAILED
                 task.last_error = (

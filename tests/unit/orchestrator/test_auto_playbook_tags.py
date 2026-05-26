@@ -19,3 +19,17 @@ def test_refactor_tag():
 def test_order_and_dedupe():
     t = Agent._infer_auto_playbook_tags("Review and refactor the service")
     assert t == ["code_review", "refactor"]
+
+
+def test_travel_booking_tag_for_expedia_and_hotel_tasks():
+    assert Agent._infer_auto_playbook_tags("Go to Expedia and compare hotel options") == [
+        "travel_booking"
+    ]
+    assert Agent._infer_auto_playbook_tags("Test a hotel booking flow with sample dates") == [
+        "travel_booking"
+    ]
+
+
+def test_travel_booking_tag_preserves_order_with_review():
+    t = Agent._infer_auto_playbook_tags("Review the Expedia hotel booking flow")
+    assert t == ["code_review", "travel_booking"]

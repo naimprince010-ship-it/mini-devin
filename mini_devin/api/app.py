@@ -10,21 +10,29 @@ from typing import Any, AsyncGenerator, Dict, List
 import uuid
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import asyncio
+import sys
+import threading
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from dotenv import load_dotenv
 import time
 import os
+import re
 import shutil
+import tempfile
 import subprocess
 import hashlib
+import mimetypes
+from urllib.parse import urlparse
 
 from mini_devin.core.providers import Provider, get_model_registry
 
@@ -35,6 +43,38 @@ def _legacy_openai_toggle_env_set() -> bool:
         (os.getenv("Plodder") or "").strip()
         or (os.getenv("MiniDevin") or "").strip()
     )
+
+
+def _available_ollama_model_ids() -> set[str]:
+    """Return installed Ollama model IDs in the app's ``ollama/<name>`` format."""
+    if os.getenv("OLLAMA_ENABLED", "false").lower() != "true":
+        return set()
+
+    import urllib.request
+
+    api_base = (os.getenv("OLLAMA_API_BASE") or "http://localhost:11434").strip().rstrip("/")
+    timeout_raw = (os.getenv("OLLAMA_DISCOVERY_TIMEOUT_SEC") or "2").strip()
+    try:
+        timeout = max(0.2, float(timeout_raw))
+    except ValueError:
+        timeout = 2.0
+
+    try:
+        with urllib.request.urlopen(f"{api_base}/api/tags", timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        print(f"[API] Ollama model discovery failed: {exc}")
+        return set()
+
+    ids: set[str] = set()
+    for item in payload.get("models", []):
+        name = str(item.get("model") or item.get("name") or "").strip()
+        if not name:
+            continue
+        ids.add(f"ollama/{name}")
+        if name.endswith(":latest"):
+            ids.add(f"ollama/{name.removesuffix(':latest')}")
+    return ids
 
 
 def _discover_repo_root() -> str:
@@ -84,9 +124,108 @@ from ..sandbox.railway_process_sandbox_test import (
     run_railway_process_sandbox_check,
 )
 from ..sessions.db_manager import DatabaseSessionManager
+from ..reliability.startup_guard import StartupPreflightReport, run_startup_preflight
+from ..orchestration.task_queue import queue_backend_status
+from ..reliability.deploy_ops import (
+    build_operational_runbook_scaffold,
+    run_deploy_preflight,
+    startup_stage_order,
+    validate_startup_sequence,
+)
+from ..reliability.incident_state import RuntimeIncidentTracker
+from ..reliability.ops_telemetry import (
+    FileOpsTelemetryCollector,
+    telemetry_config_from_env,
+)
+from ..reliability.ops_dashboard import (
+    DashboardDeploymentTimelineResponse,
+    DashboardIncidentTimelineResponse,
+    DashboardPaginationModel,
+    DashboardQueueTimelineResponse,
+    DashboardRestartTrendResponse,
+    DashboardRuntimeTimelineResponse,
+    DashboardScoreHistoryResponse,
+    DashboardSummaryResponse,
+    DashboardTimelineEvent,
+    DashboardTimelineResponse,
+    DashboardWarningTrendResponse,
+    DashboardWindowModel,
+    build_dashboard_summary,
+    paginate_items,
+    read_window_rows,
+    serialize_deployment_event_timeline,
+    serialize_incident_lifecycle_timeline,
+    serialize_queue_degradation_timeline,
+    serialize_restart_loop_trend,
+    serialize_runtime_health_timeline,
+    serialize_score_history,
+    serialize_warning_frequency_trend,
+)
+from ..reliability.ops_actions import (
+    FileOperatorActionIntake,
+    OperatorActionRequest,
+    OperatorActionResponse,
+    policy_config_from_env,
+    store_config_from_env,
+)
 
 # Simple in-memory rate limiter (no external dependency)
 _rate_buckets: dict = {}
+
+
+def _env_flag(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _csv_env(name: str, default: str = "") -> set[str]:
+    raw = os.getenv(name, default)
+    return {part.strip().lower() for part in (raw or "").split(",") if part.strip()}
+
+
+def _normalize_model_id(model: str) -> str:
+    return (model or "").strip().lower()
+
+
+def _validate_model_scope(model: str, *, scope: str) -> str:
+    normalized = _normalize_model_id(model)
+    if not _env_flag("STRICT_MODEL_ROUTING", "true"):
+        return model
+
+    if scope == "chat":
+        allow = _csv_env("CHAT_MODEL_ALLOWLIST", "auto,openai/qwen3-coder-flash")
+        deny = _csv_env("CHAT_MODEL_DENYLIST", "openai/gpt-5.3-codex")
+    else:
+        allow = _csv_env("BENCHMARK_MODEL_ALLOWLIST", "openai/gpt-5.3-codex,openai/qwen3-coder-flash")
+        deny = _csv_env("BENCHMARK_MODEL_DENYLIST", "")
+
+    if normalized in deny:
+        raise HTTPException(status_code=400, detail=f"model `{model}` is blocked for {scope} scope")
+
+    if "*" not in allow and normalized not in allow:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"model `{model}` is not allowed for {scope} scope; set allowlist via "
+                f"{'CHAT_MODEL_ALLOWLIST' if scope == 'chat' else 'BENCHMARK_MODEL_ALLOWLIST'}"
+            ),
+        )
+    return model
+
+
+def _load_benchmark_lessons_context(max_chars: int = 8000) -> str:
+    if not _env_flag("BENCHMARK_KNOWLEDGE_INJECTION", "true"):
+        return ""
+    default_path = os.path.join(_REPO_ROOT, "knowledge_base", "benchmark_lessons.md")
+    path = os.getenv("BENCHMARK_LESSONS_PATH", default_path).strip()
+    if not path:
+        return ""
+    try:
+        text = open(path, "r", encoding="utf-8").read().strip()
+    except Exception:
+        return ""
+    if not text:
+        return ""
+    return text[:max_chars]
 
 def _check_rate_limit(key: str, max_calls: int, window_seconds: int = 60) -> bool:
     """Returns True if allowed, False if rate limited."""
@@ -100,6 +239,65 @@ def _check_rate_limit(key: str, max_calls: int, window_seconds: int = 60) -> boo
     bucket["count"] += 1
     _rate_buckets[key] = bucket
     return True
+
+
+def _browser_trace_file_path() -> Path:
+    trace_dir = (os.getenv("PLODDER_BROWSER_TRACE_DIR") or "/var/tmp/plodder-browser-traces").strip()
+    return Path(trace_dir).expanduser().resolve() / "browser-actions.jsonl"
+
+
+def _read_browser_trace_entries(
+    *,
+    limit: int = 100,
+    status: str | None = None,
+    action: str | None = None,
+) -> list[dict[str, Any]]:
+    file_path = _browser_trace_file_path()
+    if not file_path.is_file():
+        return []
+
+    safe_limit = max(1, min(limit, 500))
+    status_filter = (status or "").strip().lower() or None
+    action_filter = (action or "").strip().lower() or None
+
+    entries: list[dict[str, Any]] = []
+    try:
+        lines = file_path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+
+    for raw in reversed(lines):
+        if not raw.strip():
+            continue
+        try:
+            row = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+
+        row_status = str(row.get("status") or "").strip().lower()
+        row_action = str(row.get("action") or "").strip().lower()
+        if status_filter and row_status != status_filter:
+            continue
+        if action_filter and row_action != action_filter:
+            continue
+
+        entries.append(row)
+        if len(entries) >= safe_limit:
+            break
+    return entries
+
+
+def _find_browser_trace_by_id(trace_id: str) -> dict[str, Any] | None:
+    target = (trace_id or "").strip()
+    if not target:
+        return None
+    matches = _read_browser_trace_entries(limit=500)
+    for item in matches:
+        if str(item.get("trace_id") or "").strip() == target:
+            return item
+    return None
 
 
 def _is_git_remote_url(value: str) -> bool:
@@ -125,6 +323,155 @@ def _git_clone_url_with_token(url: str) -> str:
     return u
 
 
+def _workspace_slug_from_git_url(url: str) -> str:
+    """Best-effort readable folder prefix for cloned Git remotes."""
+    raw = (url or "").strip().rstrip("/")
+    name = ""
+    if raw.startswith("git@"):
+        name = raw.rsplit("/", 1)[-1]
+    else:
+        parsed = urlparse(raw)
+        name = parsed.path.rsplit("/", 1)[-1] if parsed.path else ""
+    if name.endswith(".git"):
+        name = name[:-4]
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-._").lower()
+    return slug[:48] or "repo"
+
+
+def _new_startup_status(preflight: StartupPreflightReport | None = None) -> dict[str, Any]:
+    checks = preflight.to_dict() if preflight is not None else None
+    preflight_mode = checks.get("startup_mode") if checks else "normal"
+    return {
+        "boot_started_at": datetime.now(timezone.utc).isoformat(),
+        "db_ready": False,
+        "db_last_error": None,
+        "degraded": preflight_mode == "degraded",
+        "preflight": checks,
+        "issues": [],
+        "stage_history": [],
+    }
+
+
+def _record_startup_issue(app: FastAPI, code: str, message: str, *, severity: str = "warning") -> None:
+    status = getattr(app.state, "startup_status", None)
+    if not isinstance(status, dict):
+        return
+    status.setdefault("issues", []).append(
+        {
+            "time": datetime.now(timezone.utc).isoformat(),
+            "code": code,
+            "severity": severity,
+            "message": message,
+        }
+    )
+    if severity in {"warning", "error"}:
+        status["degraded"] = True
+    try:
+        _ensure_ops_telemetry(app).record_warning(code=code, message=message, severity=severity)
+    except Exception:
+        pass
+
+
+def _startup_state_snapshot(app: FastAPI) -> dict[str, Any]:
+    status = getattr(app.state, "startup_status", None)
+    if not isinstance(status, dict):
+        return {
+            "ready": False,
+            "degraded": True,
+            "reason": "startup_state_missing",
+        }
+    return {
+        "ready": bool(status.get("db_ready", False)),
+        "degraded": bool(status.get("degraded", False)),
+        "db_last_error": status.get("db_last_error"),
+        "issues": list(status.get("issues", [])),
+        "preflight": status.get("preflight"),
+        "stage_history": list(status.get("stage_history", [])),
+    }
+
+
+def _ensure_incident_tracker(app: FastAPI) -> RuntimeIncidentTracker:
+    tracker = getattr(app.state, "incident_tracker", None)
+    if isinstance(tracker, RuntimeIncidentTracker):
+        return tracker
+    ops_root = Path(_REPO_ROOT) / ".plodder" / "ops"
+    tracker = RuntimeIncidentTracker(
+        crash_loop_file=ops_root / "crash_loop_state.json",
+        threshold=max(2, int(os.getenv("PLODDER_CRASH_LOOP_THRESHOLD", "3"))),
+        window_seconds=max(30, int(os.getenv("PLODDER_CRASH_LOOP_WINDOW_SECONDS", "300"))),
+    )
+    app.state.incident_tracker = tracker
+    return tracker
+
+
+def _ensure_ops_telemetry(app: FastAPI) -> FileOpsTelemetryCollector:
+    collector = getattr(app.state, "ops_telemetry", None)
+    if isinstance(collector, FileOpsTelemetryCollector):
+        return collector
+    telemetry_root = Path(_REPO_ROOT) / ".plodder" / "ops" / "telemetry"
+    collector = FileOpsTelemetryCollector(
+        events_file=telemetry_root / "events.jsonl",
+        state_file=telemetry_root / "state.json",
+        config=telemetry_config_from_env(),
+    )
+    app.state.ops_telemetry = collector
+    return collector
+
+
+def _ensure_ops_action_intake(app: FastAPI) -> FileOperatorActionIntake:
+    intake = getattr(app.state, "ops_action_intake", None)
+    if isinstance(intake, FileOperatorActionIntake):
+        return intake
+    action_root = Path(_REPO_ROOT) / ".plodder" / "ops" / "actions"
+    intake = FileOperatorActionIntake(
+        events_file=action_root / "events.jsonl",
+        state_file=action_root / "state.json",
+        policy=policy_config_from_env(),
+        store=store_config_from_env(),
+    )
+    app.state.ops_action_intake = intake
+    return intake
+
+
+def _runtime_resource_snapshot() -> dict[str, Any]:
+    snap: dict[str, Any] = {
+        "pid": os.getpid(),
+        "thread_count": threading.active_count(),
+    }
+    try:
+        import resource
+
+        raw = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        # Linux usually reports KB; macOS reports bytes.
+        snap["rss_mb"] = raw / (1024.0 * 1024.0 if raw > 10_000_000 else 1024.0)
+    except Exception:
+        pass
+    return snap
+
+
+def _record_startup_stage(app: FastAPI, stage: str) -> None:
+    status = getattr(app.state, "startup_status", None)
+    if not isinstance(status, dict):
+        return
+    history = status.setdefault("stage_history", [])
+    history.append(stage)
+    try:
+        _ensure_ops_telemetry(app).record_startup_stage(stage)
+    except Exception:
+        pass
+    violations = validate_startup_sequence(list(history))
+    if not violations:
+        return
+    for issue in violations:
+        _record_startup_issue(app, issue.code, issue.message, severity=issue.level)
+    tracker = _ensure_incident_tracker(app)
+    tracker.record_failure(
+        "startup.sequence_violation",
+        "Startup stage ordering violation detected.",
+        severity="error",
+    )
+
+
 async def _await_app_db_startup(request: Request) -> None:
     """
     Block create_session until background DB init completes.
@@ -133,6 +480,7 @@ async def _await_app_db_startup(request: Request) -> None:
     while the browser shows a perpetual loading state.
     """
     task = getattr(request.app.state, "_db_startup_task", None)
+    startup_state = _startup_state_snapshot(request.app)
     if task is None:
         return
     if task.done():
@@ -140,8 +488,18 @@ async def _await_app_db_startup(request: Request) -> None:
         if exc is not None:
             raise HTTPException(
                 status_code=503,
-                detail="Server startup failed. Check API logs (DATABASE_URL, disk, permissions).",
+                detail=(
+                    "Server startup failed. "
+                    f"Reason={type(exc).__name__}: {exc}. "
+                    "Check DATABASE_URL, filesystem permissions, and startup diagnostics."
+                ),
             ) from exc
+        if not startup_state.get("ready", False):
+            db_reason = startup_state.get("db_last_error") or "database_not_ready"
+            raise HTTPException(
+                status_code=503,
+                detail=f"Database startup incomplete: {db_reason}",
+            )
         return
     wait_sec = float(os.getenv("CREATE_SESSION_DB_WAIT_SEC", "120"))
     try:
@@ -149,7 +507,10 @@ async def _await_app_db_startup(request: Request) -> None:
     except asyncio.TimeoutError:
         raise HTTPException(
             status_code=503,
-            detail="Database is still starting. Wait a few seconds and retry, or check DATABASE_INIT_TIMEOUT.",
+            detail=(
+                "Database is still starting. "
+                f"Timed out after {wait_sec}s; check DATABASE_INIT_TIMEOUT and startup diagnostics."
+            ),
         ) from None
     except Exception as e:
         raise HTTPException(
@@ -183,21 +544,47 @@ connection_manager = ConnectionManager()
 install_streaming_patch()
 
 
-async def _background_startup() -> None:
+async def _background_startup(app: FastAPI) -> None:
     """DB init + hooks that must not block HTTP readiness (Railway health checks / 502)."""
     import traceback
 
     init_timeout = float(os.getenv("DATABASE_INIT_TIMEOUT", "120"))
+    tracker = _ensure_incident_tracker(app)
+    _record_startup_stage(app, "db.init.start")
 
     try:
         print("[API] Initializing Database (background)...")
         await asyncio.wait_for(init_db(), timeout=init_timeout)
         print("[API] Database initialized successfully.")
+        if isinstance(getattr(app.state, "startup_status", None), dict):
+            app.state.startup_status["db_ready"] = True
+            app.state.startup_status["db_last_error"] = None
+        _record_startup_stage(app, "db.init.complete")
     except asyncio.TimeoutError:
         print(f"[API] Database init timed out after {init_timeout}s (DATABASE_INIT_TIMEOUT).")
+        if isinstance(getattr(app.state, "startup_status", None), dict):
+            app.state.startup_status["db_ready"] = False
+            app.state.startup_status["db_last_error"] = "database_init_timeout"
+        _record_startup_issue(
+            app,
+            "startup.db.timeout",
+            f"Database init timed out after {init_timeout}s.",
+            severity="error",
+        )
+        tracker.record_failure("startup.db.timeout", f"Database init timed out after {init_timeout}s.", severity="error")
     except Exception as e:
         print(f"[API] Error initializing database: {e}")
         traceback.print_exc()
+        if isinstance(getattr(app.state, "startup_status", None), dict):
+            app.state.startup_status["db_ready"] = False
+            app.state.startup_status["db_last_error"] = f"{type(e).__name__}: {e}"
+        _record_startup_issue(
+            app,
+            "startup.db.exception",
+            f"Database init failed: {type(e).__name__}: {e}",
+            severity="error",
+        )
+        tracker.record_failure("startup.db.exception", f"Database init failed: {type(e).__name__}: {e}", severity="error")
 
     try:
         from sqlalchemy import update
@@ -214,8 +601,20 @@ async def _background_startup() -> None:
             await db.commit()
             if result.rowcount > 0:
                 print(f"[API] Reset {result.rowcount} stale session(s) from previous run.")
+        _record_startup_stage(app, "session.cleanup.complete")
     except Exception as cleanup_err:
         print(f"[API] Warning: Could not reset stale sessions: {cleanup_err}")
+        _record_startup_issue(
+            app,
+            "startup.session_cleanup.failed",
+            f"Could not reset stale sessions: {cleanup_err}",
+            severity="warning",
+        )
+        tracker.record_failure(
+            "startup.session_cleanup.failed",
+            f"Could not reset stale sessions: {cleanup_err}",
+            severity="warning",
+        )
 
     try:
         from ..integrations.monitor import register_heal_callback
@@ -250,8 +649,27 @@ async def _background_startup() -> None:
 
         register_heal_callback(_auto_heal)
         print("[API] Self-heal callback registered.")
+        _record_startup_stage(app, "monitor.registration.complete")
     except Exception as e:
         print(f"[API] Warning: Could not register self-heal callback: {e}")
+        _record_startup_issue(
+            app,
+            "startup.self_heal_registration.failed",
+            f"Could not register self-heal callback: {e}",
+            severity="warning",
+        )
+        tracker.record_failure(
+            "startup.self_heal_registration.failed",
+            f"Could not register self-heal callback: {e}",
+            severity="warning",
+        )
+
+    startup_state = _startup_state_snapshot(app)
+    if startup_state.get("ready", False):
+        _record_startup_stage(app, "ready")
+        tracker.record_recovery("startup.db.timeout", "Database initialized after prior timeout.")
+        tracker.record_recovery("startup.db.exception", "Database initialized after prior exception.")
+        tracker.note_startup_success()
 
 
 def _log_task_result(task: asyncio.Task) -> None:
@@ -271,13 +689,40 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         f"DATABASE_URL={'Set' if os.getenv('DATABASE_URL') else 'Default SLite'}"
     )
 
-    startup_task = asyncio.create_task(_background_startup())
+    _ensure_incident_tracker(app)
+    _ensure_ops_telemetry(app).record_deployment_event(
+        "deploy.start",
+        tags={"mode": os.getenv("PLODDER_DEPLOY_MODE", "local")},
+    )
+    preflight = run_startup_preflight()
+    app.state.startup_status = _new_startup_status(preflight)
+    _record_startup_stage(app, "boot.begin")
+    _record_startup_stage(app, "preflight.complete")
+    _ensure_ops_telemetry(app).record_deployment_event(
+        "deploy.preflight.complete",
+        tags={"startup_mode": preflight.startup_mode},
+    )
+    if preflight.should_fail_fast:
+        _ensure_incident_tracker(app).record_failure(
+            "startup.preflight.strict_failure",
+            "Startup preflight failed in strict mode.",
+            severity="error",
+        )
+        _ensure_ops_telemetry(app).record_warning(
+            code="startup.preflight.strict_failure",
+            message="Startup preflight failed in strict mode.",
+            severity="error",
+        )
+        raise RuntimeError("Startup preflight failed in strict mode")
+
+    startup_task = asyncio.create_task(_background_startup(app))
     startup_task.add_done_callback(_log_task_result)
     app.state._db_startup_task = startup_task
 
     yield
 
     print(f"[API] Shutting down Plodder API at {datetime.now(timezone.utc).isoformat()}")
+    _ensure_ops_telemetry(app).record_deployment_event("deploy.shutdown")
     startup_task.cancel()
     try:
         await startup_task
@@ -341,32 +786,576 @@ app.include_router(auth_router, prefix="/api")
 app.include_router(integrations_router, prefix="/api")
 
 
-@app.get("/")
-async def root():
-    return {
-        "name": "Plodder API",
-        "version": "1.0.0",
-        "status": "running",
-        "mode": "lightweight",
-        "docs": "/docs",
-    }
+
 
 
 @app.get("/health")
-async def health():
-    return {"status": "healthy"}
-
-
-@app.get("/api/health")
-async def api_health():
-    """Cheap probe for uptime + whether `.env` / shell exposed an OpenAI key (never returns the key)."""
-    oa = (os.environ.get("OPENAI_API_KEY") or "").strip()
+async def health(request: Request):
+    startup = _startup_state_snapshot(request.app)
+    status = "healthy"
+    if startup.get("degraded") and not startup.get("ready"):
+        status = "starting"
     return {
-        "status": "healthy",
+        "status": status,
+        "kind": "liveness",
+    }
+
+
+def _build_health_payload(app: FastAPI) -> dict[str, Any]:
+    startup = _startup_state_snapshot(app)
+    queue_status = queue_backend_status()
+    tracker = _ensure_incident_tracker(app)
+    incident_diag = tracker.diagnostics()
+    readiness = bool(startup.get("ready", False))
+    degraded = bool(startup.get("degraded", False)) or queue_status.degraded or bool(incident_diag["crash_loop"].get("active"))
+    status = "healthy" if readiness and not degraded else ("degraded" if readiness else "starting")
+
+    oa = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    payload = {
+        "status": status,
         "mode": "lightweight",
         "repo_root": _REPO_ROOT,
         "openai_key_loaded": bool(oa),
+        "checks": {
+            "readiness": readiness,
+            "degraded": degraded,
+            "startup": startup,
+            "queue_backend": {
+                "requested": queue_status.requested_backend,
+                "active": queue_status.active_backend,
+                "degraded": queue_status.degraded,
+                "reason": queue_status.reason,
+                "failover_policy": queue_status.failover_policy,
+            },
+            "incidents": incident_diag,
+        },
     }
+
+    try:
+        collector = _ensure_ops_telemetry(app)
+        if collector.should_capture_snapshot():
+            collector.record_runtime_snapshot(payload, resources=_runtime_resource_snapshot())
+    except Exception:
+        pass
+
+    return payload
+
+
+@app.get("/api/health")
+async def api_health(request: Request):
+    """Cheap probe for uptime + whether `.env` / shell exposed an OpenAI key (never returns the key)."""
+    return _build_health_payload(request.app)
+
+
+@app.get("/api/readiness")
+async def readiness(request: Request):
+    payload = _build_health_payload(request.app)
+    status_code = 200 if payload["checks"]["readiness"] else 503
+    return JSONResponse(payload, status_code=status_code)
+
+
+@app.get("/api/liveness")
+async def liveness(request: Request):
+    payload = _build_health_payload(request.app)
+    return {
+        "status": "healthy",
+        "kind": "liveness",
+        "degraded": payload["checks"]["degraded"],
+    }
+
+
+@app.get("/api/ops/preflight")
+async def ops_deploy_preflight(request: Request):
+    startup = _startup_state_snapshot(request.app)
+    report = run_deploy_preflight(
+        repo_root=_REPO_ROOT,
+        startup_stage_history=list(startup.get("stage_history", [])),
+        mode=os.getenv("PLODDER_DEPLOY_MODE", "local"),
+    )
+    payload = report.to_dict()
+    status_code = 503 if report.has_errors and os.getenv("PLODDER_PREFLIGHT_HTTP_STRICT", "false").lower() in {"1", "true", "yes", "on"} else 200
+    return JSONResponse(payload, status_code=status_code)
+
+
+@app.get("/api/ops/rollback-guard")
+async def ops_rollback_guard(request: Request):
+    startup = _startup_state_snapshot(request.app)
+    report = run_deploy_preflight(
+        repo_root=_REPO_ROOT,
+        startup_stage_history=list(startup.get("stage_history", [])),
+        mode=os.getenv("PLODDER_DEPLOY_MODE", "local"),
+    )
+    return report.rollback.to_dict()
+
+
+@app.get("/api/ops/diagnostics")
+async def ops_runtime_diagnostics(request: Request):
+    startup = _startup_state_snapshot(request.app)
+    tracker = _ensure_incident_tracker(request.app)
+    sequence_issues = [
+        {
+            "code": item.code,
+            "level": item.level,
+            "message": item.message,
+            "component": item.component,
+            "hint": item.hint,
+        }
+        for item in validate_startup_sequence(list(startup.get("stage_history", [])))
+    ]
+    return {
+        "status": "ok",
+        "startup": startup,
+        "expected_startup_order": startup_stage_order(),
+        "startup_sequence_issues": sequence_issues,
+        "incidents": tracker.diagnostics(),
+        "health": _build_health_payload(request.app),
+    }
+
+
+@app.get("/api/ops/runbook")
+async def ops_runbook_scaffold():
+    return build_operational_runbook_scaffold()
+
+
+@app.get("/api/ops/telemetry/export")
+async def ops_telemetry_export(request: Request, hours: int = 24):
+    collector = _ensure_ops_telemetry(request.app)
+    return collector.export(hours=max(1, min(int(hours), 24 * 30)))
+
+
+@app.get("/api/ops/telemetry/score")
+async def ops_telemetry_score(request: Request, hours: int = 24):
+    collector = _ensure_ops_telemetry(request.app)
+    export = collector.export(hours=max(1, min(int(hours), 24 * 30)))
+    return {
+        "schema": export.get("schema"),
+        "generated_at": export.get("generated_at"),
+        "score": export.get("score"),
+        "kpis": export.get("kpis"),
+    }
+
+
+@app.post("/api/ops/actions/intake", response_model=OperatorActionResponse)
+async def ops_action_intake(request: Request, payload: OperatorActionRequest):
+    intake = _ensure_ops_action_intake(request.app)
+    return intake.intake(payload)
+
+
+@app.get("/api/ops/actions/timeline")
+async def ops_action_timeline(
+    request: Request,
+    hours: int = 24,
+    limit: int = 100,
+    decision: str | None = None,
+    action_type: str | None = None,
+    status: str | None = None,
+):
+    intake = _ensure_ops_action_intake(request.app)
+    entries = intake.list_actions(
+        hours=max(1, min(int(hours), 24 * 30)),
+        limit=max(1, min(int(limit), 500)),
+        decision=decision,
+        action_type=action_type,
+        status=status,
+    )
+    return {
+        "schema": "ops.action.timeline.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(entries),
+        "items": entries,
+    }
+
+
+@app.get("/api/ops/actions/{action_id}")
+async def ops_action_get(request: Request, action_id: str):
+    intake = _ensure_ops_action_intake(request.app)
+    row = intake.get_action(action_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"operator action not found: {action_id}")
+    return row
+
+
+def _dashboard_window_payload(window) -> DashboardWindowModel:
+    return DashboardWindowModel(
+        hours=window.hours,
+        start_time=window.start.isoformat(),
+        end_time=window.end.isoformat(),
+    )
+
+
+def _dashboard_pagination_payload(pagination: DashboardPaginationModel) -> DashboardPaginationModel:
+    return pagination
+
+
+@app.get("/api/ops/dashboard/summary", response_model=DashboardSummaryResponse)
+async def ops_dashboard_summary(
+    request: Request,
+    hours: int = 24,
+    start_time: str | None = None,
+    end_time: str | None = None,
+):
+    collector = _ensure_ops_telemetry(request.app)
+    generated_at = datetime.now(timezone.utc)
+    rows, window = read_window_rows(
+        collector,
+        hours=hours,
+        start_time=start_time,
+        end_time=end_time,
+        now=generated_at,
+    )
+    export_payload = collector.export(hours=window.hours, now=generated_at)
+    return build_dashboard_summary(
+        export_payload=export_payload,
+        rows=rows,
+        window=window,
+        generated_at=generated_at,
+    )
+
+
+@app.get("/api/ops/dashboard/timeline", response_model=DashboardTimelineResponse)
+async def ops_dashboard_timeline(
+    request: Request,
+    hours: int = 24,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    kind: str = "all",
+    page: int = 1,
+    page_size: int = 50,
+):
+    collector = _ensure_ops_telemetry(request.app)
+    generated_at = datetime.now(timezone.utc)
+    rows, window = read_window_rows(
+        collector,
+        hours=hours,
+        start_time=start_time,
+        end_time=end_time,
+        now=generated_at,
+    )
+
+    runtime_rows = serialize_runtime_health_timeline(rows)
+    deploy_rows = serialize_deployment_event_timeline(rows)
+    queue_rows = serialize_queue_degradation_timeline(rows)
+    incident_rows = serialize_incident_lifecycle_timeline(rows)
+    action_rows = _ensure_ops_action_intake(request.app).list_actions(
+        hours=max(1, min(int(hours), 24 * 30)),
+        limit=500,
+    )
+
+    events: list[DashboardTimelineEvent] = []
+    if kind in {"all", "runtime_health"}:
+        events.extend(
+            [
+                DashboardTimelineEvent(kind="runtime_health", time=item.time, payload=item.model_dump(mode="json"))
+                for item in runtime_rows
+            ]
+        )
+    if kind in {"all", "deployment_event"}:
+        events.extend(
+            [
+                DashboardTimelineEvent(kind="deployment_event", time=item.time, payload=item.model_dump(mode="json"))
+                for item in deploy_rows
+            ]
+        )
+    if kind in {"all", "queue_degradation"}:
+        events.extend(
+            [
+                DashboardTimelineEvent(
+                    kind="queue_degradation",
+                    time=item.start_time,
+                    payload=item.model_dump(mode="json"),
+                )
+                for item in queue_rows
+            ]
+        )
+    if kind in {"all", "incident_lifecycle"}:
+        events.extend(
+            [
+                DashboardTimelineEvent(kind="incident_lifecycle", time=item.time, payload=item.model_dump(mode="json"))
+                for item in incident_rows
+            ]
+        )
+    if kind in {"all", "operator_action"}:
+        events.extend(
+            [
+                DashboardTimelineEvent(
+                    kind="operator_action",
+                    time=str(item.get("requested_at") or ""),
+                    payload=item,
+                )
+                for item in action_rows
+            ]
+        )
+
+    events.sort(key=lambda item: item.time, reverse=True)
+    page_items, pagination = paginate_items(events, page=page, page_size=page_size)
+
+    return DashboardTimelineResponse(
+        schema="ops.dashboard.v1",
+        generated_at=generated_at.isoformat(),
+        window=_dashboard_window_payload(window),
+        pagination=_dashboard_pagination_payload(pagination),
+        items=page_items,
+    )
+
+
+@app.get("/api/ops/dashboard/timeline/runtime-health", response_model=DashboardRuntimeTimelineResponse)
+async def ops_dashboard_runtime_timeline(
+    request: Request,
+    hours: int = 24,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    collector = _ensure_ops_telemetry(request.app)
+    generated_at = datetime.now(timezone.utc)
+    rows, window = read_window_rows(
+        collector,
+        hours=hours,
+        start_time=start_time,
+        end_time=end_time,
+        now=generated_at,
+    )
+    points = serialize_runtime_health_timeline(rows)
+    points.sort(key=lambda item: item.time, reverse=True)
+    page_items, pagination = paginate_items(points, page=page, page_size=page_size)
+    return DashboardRuntimeTimelineResponse(
+        schema="ops.dashboard.v1",
+        generated_at=generated_at.isoformat(),
+        window=_dashboard_window_payload(window),
+        pagination=_dashboard_pagination_payload(pagination),
+        items=page_items,
+    )
+
+
+@app.get("/api/ops/dashboard/timeline/deployments", response_model=DashboardDeploymentTimelineResponse)
+async def ops_dashboard_deployment_timeline(
+    request: Request,
+    hours: int = 24,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    collector = _ensure_ops_telemetry(request.app)
+    generated_at = datetime.now(timezone.utc)
+    rows, window = read_window_rows(
+        collector,
+        hours=hours,
+        start_time=start_time,
+        end_time=end_time,
+        now=generated_at,
+    )
+    points = serialize_deployment_event_timeline(rows)
+    points.sort(key=lambda item: item.time, reverse=True)
+    page_items, pagination = paginate_items(points, page=page, page_size=page_size)
+    return DashboardDeploymentTimelineResponse(
+        schema="ops.dashboard.v1",
+        generated_at=generated_at.isoformat(),
+        window=_dashboard_window_payload(window),
+        pagination=_dashboard_pagination_payload(pagination),
+        items=page_items,
+    )
+
+
+@app.get("/api/ops/dashboard/timeline/queue-degradation", response_model=DashboardQueueTimelineResponse)
+async def ops_dashboard_queue_timeline(
+    request: Request,
+    hours: int = 24,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    collector = _ensure_ops_telemetry(request.app)
+    generated_at = datetime.now(timezone.utc)
+    rows, window = read_window_rows(
+        collector,
+        hours=hours,
+        start_time=start_time,
+        end_time=end_time,
+        now=generated_at,
+    )
+    points = serialize_queue_degradation_timeline(rows)
+    points.sort(key=lambda item: item.start_time, reverse=True)
+    page_items, pagination = paginate_items(points, page=page, page_size=page_size)
+    return DashboardQueueTimelineResponse(
+        schema="ops.dashboard.v1",
+        generated_at=generated_at.isoformat(),
+        window=_dashboard_window_payload(window),
+        pagination=_dashboard_pagination_payload(pagination),
+        items=page_items,
+    )
+
+
+@app.get("/api/ops/dashboard/timeline/incidents", response_model=DashboardIncidentTimelineResponse)
+async def ops_dashboard_incident_timeline(
+    request: Request,
+    hours: int = 24,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    collector = _ensure_ops_telemetry(request.app)
+    generated_at = datetime.now(timezone.utc)
+    rows, window = read_window_rows(
+        collector,
+        hours=hours,
+        start_time=start_time,
+        end_time=end_time,
+        now=generated_at,
+    )
+    points = serialize_incident_lifecycle_timeline(rows)
+    points.sort(key=lambda item: item.time, reverse=True)
+    page_items, pagination = paginate_items(points, page=page, page_size=page_size)
+    return DashboardIncidentTimelineResponse(
+        schema="ops.dashboard.v1",
+        generated_at=generated_at.isoformat(),
+        window=_dashboard_window_payload(window),
+        pagination=_dashboard_pagination_payload(pagination),
+        items=page_items,
+    )
+
+
+@app.get("/api/ops/dashboard/timeline/operator-actions", response_model=DashboardTimelineResponse)
+async def ops_dashboard_operator_action_timeline(
+    request: Request,
+    hours: int = 24,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+    decision: str | None = None,
+    action_type: str | None = None,
+    status: str | None = None,
+):
+    collector = _ensure_ops_telemetry(request.app)
+    generated_at = datetime.now(timezone.utc)
+    _, window = read_window_rows(
+        collector,
+        hours=hours,
+        start_time=start_time,
+        end_time=end_time,
+        now=generated_at,
+    )
+    intake = _ensure_ops_action_intake(request.app)
+    rows = intake.list_actions(
+        hours=window.hours,
+        limit=500,
+        decision=decision,
+        action_type=action_type,
+        status=status,
+    )
+    points = [
+        DashboardTimelineEvent(
+            kind="operator_action",
+            time=str(item.get("requested_at") or ""),
+            payload=item,
+        )
+        for item in rows
+    ]
+    points.sort(key=lambda item: item.time, reverse=True)
+    page_items, pagination = paginate_items(points, page=page, page_size=page_size)
+    return DashboardTimelineResponse(
+        schema="ops.dashboard.v1",
+        generated_at=generated_at.isoformat(),
+        window=_dashboard_window_payload(window),
+        pagination=_dashboard_pagination_payload(pagination),
+        items=page_items,
+    )
+
+
+@app.get("/api/ops/dashboard/trends/score-history", response_model=DashboardScoreHistoryResponse)
+async def ops_dashboard_score_history(
+    request: Request,
+    hours: int = 24,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    collector = _ensure_ops_telemetry(request.app)
+    generated_at = datetime.now(timezone.utc)
+    rows, window = read_window_rows(
+        collector,
+        hours=hours,
+        start_time=start_time,
+        end_time=end_time,
+        now=generated_at,
+    )
+    points = serialize_score_history(rows)
+    points.sort(key=lambda item: item.time, reverse=True)
+    page_items, pagination = paginate_items(points, page=page, page_size=page_size)
+    return DashboardScoreHistoryResponse(
+        schema="ops.dashboard.v1",
+        generated_at=generated_at.isoformat(),
+        window=_dashboard_window_payload(window),
+        pagination=_dashboard_pagination_payload(pagination),
+        items=page_items,
+    )
+
+
+@app.get("/api/ops/dashboard/trends/warning-frequency", response_model=DashboardWarningTrendResponse)
+async def ops_dashboard_warning_trend(
+    request: Request,
+    hours: int = 24,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+    resolution_seconds: int = 300,
+):
+    collector = _ensure_ops_telemetry(request.app)
+    generated_at = datetime.now(timezone.utc)
+    rows, window = read_window_rows(
+        collector,
+        hours=hours,
+        start_time=start_time,
+        end_time=end_time,
+        now=generated_at,
+    )
+    points = serialize_warning_frequency_trend(rows, resolution_seconds=resolution_seconds)
+    points.sort(key=lambda item: item.bucket_start, reverse=True)
+    page_items, pagination = paginate_items(points, page=page, page_size=page_size)
+    return DashboardWarningTrendResponse(
+        schema="ops.dashboard.v1",
+        generated_at=generated_at.isoformat(),
+        window=_dashboard_window_payload(window),
+        pagination=_dashboard_pagination_payload(pagination),
+        items=page_items,
+    )
+
+
+@app.get("/api/ops/dashboard/trends/restart-loops", response_model=DashboardRestartTrendResponse)
+async def ops_dashboard_restart_trend(
+    request: Request,
+    hours: int = 24,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+    resolution_seconds: int = 300,
+):
+    collector = _ensure_ops_telemetry(request.app)
+    generated_at = datetime.now(timezone.utc)
+    rows, window = read_window_rows(
+        collector,
+        hours=hours,
+        start_time=start_time,
+        end_time=end_time,
+        now=generated_at,
+    )
+    points = serialize_restart_loop_trend(rows, resolution_seconds=resolution_seconds)
+    points.sort(key=lambda item: item.bucket_start, reverse=True)
+    page_items, pagination = paginate_items(points, page=page, page_size=page_size)
+    return DashboardRestartTrendResponse(
+        schema="ops.dashboard.v1",
+        generated_at=generated_at.isoformat(),
+        window=_dashboard_window_payload(window),
+        pagination=_dashboard_pagination_payload(pagination),
+        items=page_items,
+    )
 
 
 @app.get("/test-sandbox")
@@ -1011,9 +2000,11 @@ async def start_issue_automation(
     if not requested_dir:
         raise HTTPException(status_code=400, detail="Repository does not have a usable local path or clone URL")
 
+    model = _validate_model_scope(body.model or "auto", scope="chat")
+
     session = await session_manager.create_session(
         working_directory=requested_dir,
-        model=body.model,
+        model=model,
         max_iterations=body.max_iterations,
         auto_git_commit=body.auto_git_commit,
         git_push=body.git_push,
@@ -1040,7 +2031,7 @@ async def start_issue_automation(
     return {
         "session": _serialize_session_payload(
             session,
-            model=body.model,
+            model=model,
             auto_git_commit=body.auto_git_commit,
             git_push=body.git_push,
         ),
@@ -1120,6 +2111,7 @@ async def list_sessions():
             "created_at": s.created_at.isoformat(),
             "status": s.status.value,
             "working_directory": s.working_directory,
+            "workspace_path": s.working_directory,
             "workspace_id": getattr(s, "workspace_id", None),
             "current_task": s.current_task_id,
             "iteration": s.iteration,
@@ -1162,25 +2154,44 @@ async def create_session(raw_request: Request):
     git_push = False
     requested_dir = ""
     project_id = ""
+    body = {}
     try:
         body = await raw_request.json()
-        requested_dir = body.get("working_directory", "") or ""
-        raw_model = body.get("model", "auto")
-        model = (str(raw_model).strip() if raw_model is not None else "") or "auto"
-        max_iterations = int(body.get("max_iterations", DEFAULT_MAX_ITERATIONS) or DEFAULT_MAX_ITERATIONS)
-        auto_git_commit = bool(body.get("auto_git_commit", False))
-        git_push = bool(body.get("git_push", False))
-        project_id = body.get("project_id", "") or ""
     except Exception:
-        pass
+        body = {}
+
+    requested_dir = str(body.get("working_directory", "") or "")
+    raw_model = body.get("model", "auto")
+    model = (str(raw_model).strip() if raw_model is not None else "") or "auto"
+    model = _validate_model_scope(model, scope="chat")
+    try:
+        max_iterations = int(body.get("max_iterations", DEFAULT_MAX_ITERATIONS) or DEFAULT_MAX_ITERATIONS)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="max_iterations must be an integer")
+    auto_git_commit = bool(body.get("auto_git_commit", False))
+    git_push = bool(body.get("git_push", False))
+    project_id = str(body.get("project_id", "") or "")
+
+    requested_is_git_remote = _is_git_remote_url(requested_dir)
+    if requested_is_git_remote:
+        workspace_id = f"{_workspace_slug_from_git_url(requested_dir)}-{uuid.uuid4().hex[:8]}"
 
     # Determine working directory (empty = fresh folder; URL = git clone like a local IDE repo)
-    os.makedirs(_workspaces_root, exist_ok=True)
+    try:
+        os.makedirs(_workspaces_root, exist_ok=True)
+    except PermissionError:
+        fallback_root = os.environ.get("PLODDER_AGENT_WORKSPACE_ROOT_FALLBACK", "/var/tmp/agent-workspace")
+        os.makedirs(fallback_root, exist_ok=True)
+        print(
+            f"[API] create_session: workspace root '{_workspaces_root}' not writable; "
+            f"falling back to '{fallback_root}'"
+        )
+        _workspaces_root = fallback_root
     if requested_dir in ("", ".", "./"):
         working_dir = os.path.join(_workspaces_root, workspace_id)
         os.makedirs(working_dir, exist_ok=True)
         _init_git_workspace(working_dir)
-    elif _is_git_remote_url(requested_dir):
+    elif requested_is_git_remote:
         working_dir = os.path.join(_workspaces_root, workspace_id)
         if os.path.isdir(working_dir):
             shutil.rmtree(working_dir, ignore_errors=True)
@@ -1241,7 +2252,10 @@ async def create_session(raw_request: Request):
         import traceback
         print(f"[API] create_session ERROR: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Session creation failed ({type(e).__name__}): {e}",
+        )
     # Store project_id on agent for memory auto-injection
     if project_id:
         agent = session_manager._agents.get(session.session_id)
@@ -1258,6 +2272,18 @@ async def create_session(raw_request: Request):
                     print(f"[API] Injected project memory for project '{project_id}' into session {session.session_id}")
             except Exception as e:
                 print(f"[API] Could not inject project memory: {e}")
+
+    # Inject benchmark-derived lessons into chat sessions when configured.
+    try:
+        agent = session_manager._agents.get(session.session_id)
+        if agent:
+            lesson_ctx = _load_benchmark_lessons_context(
+                max_chars=int(os.getenv("BENCHMARK_LESSONS_MAX_CHARS", "8000"))
+            )
+            if lesson_ctx:
+                agent._benchmark_context_injection = lesson_ctx
+    except Exception as e:
+        print(f"[API] Could not inject benchmark lessons: {e}")
 
     return _serialize_session_payload(
         session,
@@ -1278,6 +2304,7 @@ async def get_session(session_id: str):
         "created_at": s.created_at.isoformat(),
         "status": s.status.value,
         "working_directory": s.working_directory,
+        "workspace_path": s.working_directory,
         "workspace_id": getattr(s, "workspace_id", None),
         "current_task": s.current_task_id,
         "iteration": s.iteration,
@@ -1318,6 +2345,7 @@ async def patch_session(session_id: str, body: PatchSessionRequest, request: Req
         "created_at": s.created_at.isoformat(),
         "status": s.status.value,
         "working_directory": s.working_directory,
+        "workspace_path": s.working_directory,
         "workspace_id": getattr(s, "workspace_id", None),
         "current_task": s.current_task_id,
         "iteration": s.iteration,
@@ -1507,6 +2535,36 @@ async def read_file_content(session_id: str, path: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/sessions/{session_id}/workspace.zip")
+@app.get("/sessions/{session_id}/workspace.zip")
+async def download_workspace_zip(session_id: str):
+    """Download the full session workspace as a zip archive."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    base_dir = os.path.abspath(session.working_directory or ".")
+    if not os.path.isdir(base_dir):
+        raise HTTPException(status_code=404, detail="Workspace directory not found")
+
+    safe_session = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)[:32] or "session"
+    temp_dir = tempfile.mkdtemp(prefix=f"plodder-workspace-{safe_session}-")
+    archive_base = os.path.join(temp_dir, f"workspace-{safe_session}")
+
+    try:
+        archive_path = shutil.make_archive(archive_base, "zip", root_dir=base_dir)
+    except Exception as exc:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create workspace zip: {exc}") from exc
+
+    return FileResponse(
+        path=archive_path,
+        filename=f"workspace-{safe_session}.zip",
+        media_type="application/zip",
+        background=BackgroundTask(shutil.rmtree, temp_dir, True),
+    )
+
+
 @app.get("/api/sessions/{session_id}/live-preview/status")
 @app.get("/sessions/{session_id}/live-preview/status")
 async def live_preview_status(session_id: str):
@@ -1518,7 +2576,17 @@ async def live_preview_status(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     port = await get_session_preview_port(session_id)
     iframe_path = f"/api/sessions/{session_id}/live-preview/" if port else None
-    return {"active": bool(port), "port": port, "iframe_path": iframe_path}
+    static_iframe_path = None
+    wd = os.path.abspath(sess.working_directory or ".")
+    if os.path.isfile(os.path.join(wd, "index.html")):
+        static_iframe_path = f"/api/sessions/{session_id}/static-preview/index.html"
+    return {
+        "active": bool(port) or bool(static_iframe_path),
+        "port": port,
+        "iframe_path": iframe_path or static_iframe_path,
+        "dev_server_iframe_path": iframe_path,
+        "static_iframe_path": static_iframe_path,
+    }
 
 
 async def _live_preview_proxy_impl(session_id: str, path: str, request: Request):
@@ -1543,6 +2611,44 @@ async def live_preview_proxy_root(session_id: str, request: Request):
 async def live_preview_proxy_route(session_id: str, path: str, request: Request):
     """Reverse-proxy to ``127.0.0.1:{port}`` (Vite default 5173, etc.)."""
     return await _live_preview_proxy_impl(session_id, path, request)
+
+
+def _workspace_static_preview_target(base_dir: str, path: str) -> str:
+    rel = (path or "index.html").replace("\\", "/").lstrip("/")
+    if not rel or rel.endswith("/"):
+        rel = rel + "index.html"
+    if ".." in rel.split("/"):
+        raise HTTPException(status_code=400, detail="Invalid static preview path")
+    base = os.path.abspath(base_dir or ".")
+    target = os.path.abspath(os.path.join(base, rel))
+    try:
+        common = os.path.commonpath([base, target])
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied") from None
+    if common != base:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not os.path.isfile(target):
+        raise HTTPException(status_code=404, detail="Static preview file not found")
+    return target
+
+
+@app.get("/api/sessions/{session_id}/static-preview")
+@app.get("/sessions/{session_id}/static-preview")
+async def static_preview_root(session_id: str):
+    """Serve workspace ``index.html`` directly for no-build static UI tasks."""
+    return await static_preview_file(session_id, "index.html")
+
+
+@app.get("/api/sessions/{session_id}/static-preview/{path:path}")
+@app.get("/sessions/{session_id}/static-preview/{path:path}")
+async def static_preview_file(session_id: str, path: str):
+    """Serve static files from a session workspace, constrained to that workspace."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    target = _workspace_static_preview_target(session.working_directory or ".", path)
+    media_type = mimetypes.guess_type(target)[0] or "application/octet-stream"
+    return FileResponse(target, media_type=media_type)
 
 
 @app.get("/api/sessions/{session_id}/activity-feed")
@@ -1716,6 +2822,28 @@ async def stop_session_app(session_id: str):
     return {"stopped": True, "session_id": session_id}
 
 
+@app.post("/api/sessions/{session_id}/open-workspace")
+@app.post("/sessions/{session_id}/open-workspace")
+async def open_session_workspace(session_id: str):
+    """Open a session workspace folder on the API host, when supported."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    path = os.path.abspath(os.path.expanduser(session.working_directory or "."))
+    if not os.path.isdir(path):
+        raise HTTPException(status_code=404, detail=f"Workspace folder not found: {path}")
+    try:
+        if os.name == "nt":
+            os.startfile(path)  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not open workspace: {exc}") from exc
+    return {"opened": True, "path": path}
+
+
 @app.get("/api/sessions/{session_id}/history")
 @app.get("/sessions/{session_id}/history")
 async def get_session_history(session_id: str):
@@ -1725,14 +2853,61 @@ async def get_session_history(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     agent = session_manager._agents.get(session_id)
 
+    def _normalize_user_content(raw: str) -> str:
+        """Convert internal task/follow-up wrapper prompts back to user-visible text."""
+        text = (raw or "").strip()
+        if not text:
+            return ""
+
+        # Internal wrapper often includes a standalone line like: Task: <user text>
+        task_match = re.search(r"(?im)^task:\s*(.+)$", text)
+        if task_match:
+            return task_match.group(1).strip()
+
+        # Follow-up wrappers may include this prefix in generated context blocks.
+        followup_match = re.search(r"(?im)^follow-up(?:\s+from\s+user)?:\s*(.+)$", text)
+        if followup_match:
+            return followup_match.group(1).strip()
+
+        return text
+
+    def _augment_with_task_descriptions(messages: list[dict], tasks: list[Any]) -> list[dict]:
+        """Ensure user-entered task texts appear in history even if prompt wrappers hid them."""
+        seen_user_texts = {
+            (m.get("content") or "").strip().lower()
+            for m in messages
+            if m.get("role") == "user" and (m.get("content") or "").strip()
+        }
+        for t in sorted(tasks, key=lambda x: x.created_at or datetime.min):
+            desc = (getattr(t, "description", "") or "").strip()
+            if not desc:
+                continue
+            key = desc.lower()
+            if key in seen_user_texts:
+                continue
+            messages.append(
+                {
+                    "role": "user",
+                    "content": desc,
+                    "synthetic": True,
+                    "source": "task_description",
+                    "task_id": getattr(t, "task_id", None),
+                }
+            )
+            seen_user_texts.add(key)
+        return messages
+
     def _serialize_llm_messages(conv) -> list[dict]:
         out = []
         for msg in conv:
             if msg.role == "system":
                 continue
+            content = msg.content or ""
+            if msg.role == "user":
+                content = _normalize_user_content(content)
             entry = {
                 "role": msg.role,
-                "content": msg.content or "",
+                "content": content,
             }
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 tool_calls_out = []
@@ -1751,6 +2926,8 @@ async def get_session_history(session_id: str):
 
     if agent and getattr(agent, "llm", None):
         messages = _serialize_llm_messages(agent.llm.conversation)
+        tasks = await session_manager.list_tasks(session_id)
+        messages = _augment_with_task_descriptions(messages, tasks)
         return {
             "messages": messages,
             "session_id": session_id,
@@ -1767,7 +2944,11 @@ async def get_session_history(session_id: str):
     for row in stored:
         if row.get("role") == "system":
             continue
-        entry = {"role": row.get("role", "user"), "content": row.get("content") or ""}
+        role = row.get("role", "user")
+        content = row.get("content") or ""
+        if role == "user":
+            content = _normalize_user_content(content)
+        entry = {"role": role, "content": content}
         if row.get("tool_calls"):
             tool_calls_out = []
             for tc in row["tool_calls"]:
@@ -1786,6 +2967,8 @@ async def get_session_history(session_id: str):
                     tool_calls_out.append({"name": str(tc.get("name", "")), "args": tc.get("args", {})})
             entry["tool_calls"] = tool_calls_out
         messages.append(entry)
+    tasks = await session_manager.list_tasks(session_id)
+    messages = _augment_with_task_descriptions(messages, tasks)
     return {"messages": messages, "session_id": session_id, "total": len(messages), "source": "database"}
 
 @app.get("/api/sessions/{session_id}/tasks")
@@ -1817,10 +3000,12 @@ async def get_task(session_id: str, task_id: str):
     return {
         "task_id": t.task_id,
         "session_id": session_id,
-        "description": t.goal.description,
-        "status": t.status.value,
+        "description": t.description,
+        "status": t.status.value if hasattr(t.status, "value") else str(t.status),
         "iteration": t.iteration,
-        "last_error": t.last_error,
+        "last_error": t.error_message,
+        "error_message": t.error_message,
+        "summary": t.result.summary if getattr(t, "result", None) else None,
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "started_at": t.started_at.isoformat() if t.started_at else None,
         "completed_at": t.completed_at.isoformat() if t.completed_at else None,
@@ -1832,13 +3017,16 @@ async def get_task_result(session_id: str, task_id: str):
     result = await session_manager.get_task_result(session_id, task_id)
     if not result:
         raise HTTPException(status_code=404, detail="Result not found")
+    status = getattr(result, "status", "")
+    duration_seconds = float(getattr(result, "duration_seconds", 0.0) or 0.0)
     return {
-        "success": result.success,
-        "summary": result.summary,
-        "files_modified": result.files_modified,
-        "commands_executed": result.commands_executed,
-        "total_tokens": result.total_tokens,
-        "duration_ms": result.duration_ms if hasattr(result, "duration_ms") else 0,
+        "success": status == "completed",
+        "status": status,
+        "summary": getattr(result, "summary", ""),
+        "files_modified": getattr(result, "files_modified", []),
+        "commands_executed": getattr(result, "commands_executed", []),
+        "total_tokens": getattr(result, "total_tokens", 0),
+        "duration_ms": int(duration_seconds * 1000),
     }
 
 @app.get("/api/sessions/{session_id}/tasks/{task_id}/artifacts")
@@ -1863,8 +3051,11 @@ async def list_providers():
     registry = get_model_registry()
     registry.configure_from_env()
 
+    available_ollama_models = _available_ollama_model_ids()
     models_by_provider: dict[str, list[str]] = {}
     for model in registry.list_models(only_configured=True):
+        if model.provider == Provider.OLLAMA and model.id not in available_ollama_models:
+            continue
         pid = model.provider.value
         models_by_provider.setdefault(pid, []).append(model.id)
 
@@ -1906,6 +3097,13 @@ async def list_models():
     registry = get_model_registry()
     registry.configure_from_env()
     models = registry.to_api_format(only_configured=True)
+    available_ollama_models = _available_ollama_model_ids()
+    models = [
+        model
+        for model in models
+        if model.get("provider") != Provider.OLLAMA.value
+        or model.get("id") in available_ollama_models
+    ]
 
     if _legacy_openai_toggle_env_set() and not any(m.get("provider") == "openai" for m in models):
         models.extend([
@@ -1956,6 +3154,8 @@ async def get_system_status():
         "total_tasks_completed": await session_manager.get_total_tasks_completed(),
         "uptime_seconds": session_manager.get_uptime_seconds(),
         "llm_configured": llm_ok,
+        "default_model": os.getenv("LLM_MODEL", "auto"),
+        "free_mode": "flash-lite" in os.getenv("LLM_MODEL", "").lower(),
         "browser_mode": browser_mode,
         # Safe booleans for Railway / preview deploy checks (no secret values).
         "deployment_env": {
@@ -1979,6 +3179,33 @@ async def get_system_status():
                 (os.getenv("TAVILY_API_KEY") or "").strip() or (os.getenv("SERPAPI_API_KEY") or "").strip()
             ),
         },
+    }
+
+
+@app.get("/api/browser/traces")
+async def list_browser_traces(
+    limit: int = 100,
+    status: str | None = None,
+    action: str | None = None,
+):
+    """List recent browser action traces for production debugging."""
+    entries = _read_browser_trace_entries(limit=limit, status=status, action=action)
+    return {
+        "trace_file": str(_browser_trace_file_path()),
+        "count": len(entries),
+        "entries": entries,
+    }
+
+
+@app.get("/api/browser/traces/{trace_id}")
+async def get_browser_trace(trace_id: str):
+    """Return one browser trace entry by trace_id."""
+    entry = _find_browser_trace_by_id(trace_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"browser trace not found: {trace_id}")
+    return {
+        "trace_file": str(_browser_trace_file_path()),
+        "entry": entry,
     }
 
 
@@ -2226,6 +3453,14 @@ class MemorySearchRequest(BaseModel):
     min_importance: int = 1
 
 
+class ProjectRetrievalSearchRequest(BaseModel):
+    query: str
+    top_k: int = Field(default=8, ge=1, le=50)
+    scorer: str = "hybrid"
+    index_file: Optional[str] = None
+    group_by_repo: bool = True
+
+
 class IngestRepoRequest(BaseModel):
     """
     Provide exactly one of:
@@ -2279,6 +3514,54 @@ async def list_projects():
     from ..integrations.project_memory import get_project_memory
     pm = get_project_memory()
     return {"projects": [p.to_dict() for p in pm.list_projects()]}
+
+
+@app.post("/api/projects/retrieval/search")
+async def search_project_retrieval(req: ProjectRetrievalSearchRequest):
+    from pathlib import Path
+
+    from ..integrations.project_memory import default_project_memory_dir
+    from ..integrations.project_retrieval_index import (
+        document_frequencies,
+        load_index_with_stats,
+        load_project_memory_docs,
+        search_docs,
+    )
+
+    query = (req.query or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Query is required")
+
+    scorer = (req.scorer or "hybrid").strip().lower()
+    if scorer not in {"hybrid", "semantic", "lexical"}:
+        raise HTTPException(status_code=400, detail="scorer must be hybrid, semantic, or lexical")
+
+    index_file = Path(
+        req.index_file
+        or os.environ.get("PLODDER_PROJECT_RETRIEVAL_INDEX")
+        or "/data/project_retrieval_index.json"
+    )
+    if index_file.is_file():
+        docs, df = load_index_with_stats(index_file)
+        source = str(index_file)
+    else:
+        docs = load_project_memory_docs(Path(default_project_memory_dir()))
+        df = document_frequencies(docs)
+        source = "project_memory"
+
+    return {
+        "query": query,
+        "source": source,
+        "documents": len(docs),
+        "results": search_docs(
+            docs,
+            query,
+            top_k=req.top_k,
+            scorer=scorer,
+            df=df,
+            group_by_repo=req.group_by_repo,
+        ),
+    }
 
 
 @app.get("/api/projects/{project_id}")
@@ -2713,6 +3996,86 @@ class SessionAgentMessageRequest(BaseModel):
     message: str
 
 
+def _casual_reply_for_message(message: str) -> Optional[str]:
+    """Return a zero-LLM reply for chat/meta messages that are not work requests."""
+    text = re.sub(r"\s+", " ", (message or "").strip().lower())
+    if not text or len(text) > 220:
+        return None
+
+    normalized = text.strip(" \t\r\n!?.;,।")
+    has_question_shape = bool(
+        "?" in text
+        or re.search(
+            r"\b(what|why|how|who|where|when|can you|could you|should|ki|keno|kano|kivabe|kemne|naki|possible|paro|parbe|bujhano)\b",
+            normalized,
+        )
+    )
+    has_action_shape = bool(
+        re.search(
+            r"\b(build|make|create|write|edit|update|add|remove|delete|fix|debug|check|open|clone|run|test|install|deploy|push|commit|implement|improve|banao|banaye|likho|lekho|koro|kore|dekho|thik|chalu|start)\b",
+            normalized,
+        )
+    )
+    greetings = {
+        "hi",
+        "hii",
+        "hello",
+        "hey",
+        "hi there",
+        "hello there",
+        "salam",
+        "assalamualaikum",
+        "assalamu alaikum",
+        "as-salamu alaykum",
+        "হাই",
+        "হ্যালো",
+        "সালাম",
+        "আসসালামু আলাইকুম",
+    }
+    thanks = {
+        "thanks",
+        "thank you",
+        "thank u",
+        "dhonnobad",
+        "dhanyobad",
+        "ধন্যবাদ",
+    }
+
+    capability_questions = {
+        "what can you do",
+        "what can u do",
+        "what do you do",
+        "who are you",
+        "help",
+        "help me",
+        "ki korte paro",
+        "ki ki korte paro",
+        "tumi ki korte paro",
+        "tumi ki ki korte paro",
+        "tumi ki ki korte parbe",
+        "plodder ki korte pare",
+        "plodder ki ki korte pare",
+    }
+
+    if normalized in greetings:
+        return "Hi! Bolo, Plodder diye ekhon ki korte chao?"
+    if normalized in thanks:
+        return "Welcome! Next kaj bolo, ami ready."
+    if normalized in capability_questions:
+        return (
+            "Ami repo clone, code edit, bug fix, terminal command, file create/update, "
+            "local preview, browser check, test run, ar git commit korte pari. "
+            "Je kajta korte chao seta bolo."
+        )
+    if has_question_shape and not has_action_shape:
+        return (
+            "Eta question/help type message mone hocche, tai agent task start korchi na. "
+            "Jodi workspace-e kaj korte chao, clearly bolo: fix koro, check koro, build koro, "
+            "clone koro, ba file update koro."
+        )
+    return None
+
+
 @app.get("/api/sessions/{session_id}/stream")
 @app.get("/sessions/{session_id}/stream")
 async def session_events_sse(session_id: str, request: Request):
@@ -2811,6 +4174,17 @@ async def post_session_agent_message(session_id: str, body: SessionAgentMessageR
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     st = session.status.value if hasattr(session.status, "value") else str(session.status)
+    casual_reply = _casual_reply_for_message(text)
+    if casual_reply and st != "running":
+        await connection_manager.broadcast_to_session(
+            session_id,
+            WebSocketMessage(
+                type=MessageType.TOKEN,
+                data={"content": casual_reply},
+                task_id=session.current_task_id,
+            ),
+        )
+        return {"ok": True, "mode": "chat", "reply": casual_reply}
     if st == "running":
         await session_manager.inject_followup(session_id, text)
         await connection_manager.broadcast_to_session(
@@ -2883,6 +4257,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 session = await session_manager.create_session(session_id=session_id)
                 session_id = session.session_id
             
+            casual_reply = _casual_reply_for_message(data)
+            if casual_reply and session.status.value != 'running':
+                await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
+                    type=MessageType.TOKEN,
+                    data={"content": casual_reply},
+                    task_id=session.current_task_id,
+                ))
+                continue
+
             # If agent is currently running -> inject as follow-up
             if session.status.value == 'running':
                 await session_manager.inject_followup(session_id, data)
@@ -2925,6 +4308,74 @@ class BenchmarkRunRequest(BaseModel):
     repo_filter: str = ""
     name: str = ""
     use_agent: bool = True
+    retry_limit: int = 1
+
+
+class CodeBenchmarkRunRequest(BaseModel):
+    benchmark: str = "humaneval"
+    limit: int = Field(default=10, ge=1, le=1000)
+    mode: str = "canonical"
+    model: str = ""
+    timeout: int = Field(default=10, ge=1, le=120)
+
+
+@app.get("/api/code-benchmark/runs")
+async def list_code_benchmark_runs():
+    from ..integrations.code_bench import list_runs
+
+    return {"runs": list_runs()}
+
+
+@app.get("/api/code-benchmark/runs/{run_id}")
+async def get_code_benchmark_run(run_id: str):
+    from ..integrations.code_bench import load_run
+
+    run = load_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
+
+
+@app.post("/api/code-benchmark/runs")
+async def start_code_benchmark_run(req: CodeBenchmarkRunRequest, background_tasks: BackgroundTasks):
+    import uuid
+
+    from ..integrations.code_bench import run_code_benchmark
+
+    benchmark = (req.benchmark or "humaneval").strip().lower()
+    if benchmark not in {"humaneval", "mbpp"}:
+        raise HTTPException(status_code=400, detail="benchmark must be humaneval or mbpp")
+    mode = (req.mode or "canonical").strip().lower()
+    if mode not in {"canonical", "litellm"}:
+        raise HTTPException(status_code=400, detail="mode must be canonical or litellm")
+    model = (req.model or "").strip()
+    if mode == "litellm":
+        model = model or os.getenv("BENCHMARK_DEFAULT_MODEL", "openai/gpt-5.3-codex")
+        model = _validate_model_scope(model, scope="benchmark")
+    else:
+        model = ""
+
+    run_id = str(uuid.uuid4())[:12]
+
+    async def _run():
+        await run_code_benchmark(
+            benchmark,
+            limit=req.limit,
+            mode=mode,
+            model=model,
+            timeout=req.timeout,
+            run_id=run_id,
+        )
+
+    background_tasks.add_task(_run)
+    return {
+        "run_id": run_id,
+        "benchmark": benchmark,
+        "mode": mode,
+        "model": model,
+        "limit": req.limit,
+        "status": "starting",
+    }
 
 
 @app.get("/api/benchmark/tasks")
@@ -2974,6 +4425,7 @@ async def start_benchmark_run(req: BenchmarkRunRequest, background_tasks: Backgr
             repo_filter=req.repo_filter,
             name=req.name,
             agent_runner=agent_fn,
+            retry_limit=req.retry_limit,
         )
 
     background_tasks.add_task(_run)
@@ -3036,20 +4488,26 @@ async def benchmark_stats():
 import pathlib
 
 _FRONTEND_DIST = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dist"
+_FRONTEND_ASSETS = _FRONTEND_DIST / "assets"
+_FRONTEND_INDEX = _FRONTEND_DIST / "index.html"
+_SKIP_FRONTEND_STATIC = (
+    os.getenv("PLODDER_SKIP_FRONTEND_STATIC", "").strip().lower() in {"1", "true", "yes", "on"}
+    or "pytest" in sys.modules
+)
 
-if _FRONTEND_DIST.exists():
-    app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="assets")
+if (not _SKIP_FRONTEND_STATIC) and _FRONTEND_ASSETS.exists() and _FRONTEND_INDEX.exists():
+    app.mount("/assets", StaticFiles(directory=str(_FRONTEND_ASSETS)), name="assets")
 
+    @app.get("/")
     @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_spa(full_path: str):
+    async def serve_spa(full_path: str = ""):
         """Catch-all: serve index.html for non-API routes so React Router works.
 
         Unknown /api/* paths must not return the SPA shell (would confuse clients and tests).
         """
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not found")
-        index = _FRONTEND_DIST / "index.html"
-        return FileResponse(str(index))
+        return FileResponse(str(_FRONTEND_INDEX))
 
 
 if __name__ == "__main__":

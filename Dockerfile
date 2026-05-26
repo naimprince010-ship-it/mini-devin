@@ -19,8 +19,15 @@ RUN apt-get update && apt-get install -y \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Pin Poetry 1.x (stable with existing lockfiles)
-RUN pip install "poetry>=1.8.5,<2.0" --no-cache-dir
+# Pin Poetry 1.x (stable with existing lockfiles). Also keep common agent
+# verification tools globally available for cloned workspaces that do not have
+# their own virtualenv yet.
+RUN pip install \
+    "poetry>=1.8.5,<2.0" \
+    "pytest>=7.4,<9" \
+    "pytest-asyncio>=0.21,<1" \
+    "ruff>=0.1,<1" \
+    --no-cache-dir
 
 # Copy backend files and install Python deps first (layer cache)
 COPY pyproject.toml poetry.lock* ./

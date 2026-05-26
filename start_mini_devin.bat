@@ -30,22 +30,7 @@ for /f "tokens=*" %%v in ('python --version 2^>^&1') do echo     Found: %%v
 
 REM ── Step 2: Install / update dependencies ───────────────
 echo.
-echo  [2/4] Checking dependencies...
-pip show fastapi >nul 2>&1
-if errorlevel 1 (
-    echo     Installing dependencies (first time — please wait)...
-    pip install -r requirements.txt --quiet
-    if errorlevel 1 (
-        echo.
-        echo  [ERROR] Failed to install dependencies.
-        echo  Please check your internet connection and try again.
-        pause
-        exit /b 1
-    )
-    echo     Dependencies installed successfully!
-) else (
-    echo     Dependencies OK!
-)
+echo  [2/4] Skipping legacy requirements.txt dependency check (using poetry instead)...
 
 REM ── Step 3: Load .env ───────────────────────────────────
 echo.

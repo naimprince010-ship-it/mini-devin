@@ -11,6 +11,22 @@ import os
 from pathlib import Path
 
 
+def _ensure_writable_workspace_root(root: str) -> str:
+    """Return a writable workspace root, falling back when the target is not writable."""
+    candidate = os.path.abspath(os.path.expanduser(root))
+    try:
+        os.makedirs(candidate, exist_ok=True)
+        return candidate
+    except PermissionError:
+        fallback = os.path.abspath(
+            os.path.expanduser(
+                os.environ.get("PLODDER_AGENT_WORKSPACE_ROOT_FALLBACK", "/var/tmp/agent-workspace")
+            )
+        )
+        os.makedirs(fallback, exist_ok=True)
+        return fallback
+
+
 def get_agent_workspaces_root() -> str:
     """
     Root directory for per-session agent workspaces.
@@ -21,12 +37,12 @@ def get_agent_workspaces_root() -> str:
     """
     override = (os.environ.get("PLODDER_AGENT_WORKSPACE_ROOT") or "").strip()
     if override:
-        return os.path.abspath(os.path.expanduser(override))
+        return _ensure_writable_workspace_root(override)
 
     env_root = (os.environ.get("PLODDER_REPO_ROOT") or os.environ.get("MINI_DEVIN_REPO_ROOT") or "").strip()
     if env_root:
         abs_env = os.path.abspath(os.path.expanduser(env_root))
-        return os.path.abspath(os.path.join(os.path.dirname(abs_env), "agent-workspace"))
+        return _ensure_writable_workspace_root(os.path.join(os.path.dirname(abs_env), "agent-workspace"))
 
     # Match ``mini_devin.api.app`` layout: sibling ``agent-workspace`` of the repo checkout.
     here = Path(__file__).resolve()
@@ -34,14 +50,14 @@ def get_agent_workspaces_root() -> str:
     p = mini_devin_pkg.parent
     for _ in range(16):
         if (p / "pyproject.toml").is_file() and (p / "mini_devin").is_dir():
-            return os.path.abspath(str((p.parent / "agent-workspace")))
+            return _ensure_writable_workspace_root(str((p.parent / "agent-workspace")))
         parent = p.parent
         if parent == p:
             break
         p = parent
 
     # Dev fallback: sibling of inferred repo folder (…/repo/mini_devin → …/agent-workspace)
-    return os.path.abspath(str((mini_devin_pkg.parent.parent / "agent-workspace")))
+    return _ensure_writable_workspace_root(str((mini_devin_pkg.parent.parent / "agent-workspace")))
 
 
 def resolve_session_workspace_directory(

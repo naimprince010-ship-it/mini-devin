@@ -72,6 +72,7 @@ data/plodder_lance/
 
 # Local scratch / duplicate app tree (not part of main repo)
 plloder-work/
+/workspace*/
 
 # OpenHands upstream (cloned locally for reference; not tracked)
 OpenHands/
@@ -95,3 +96,6 @@ droplet_details.json
 droplet_details_utf8.json
 *.log
 git_status.txt
+
+# Local operator runtime artifacts
+.plodder/ops/

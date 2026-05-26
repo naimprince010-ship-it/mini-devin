@@ -34,6 +34,23 @@ export function useSessionStream(options: UseSessionStreamOptions = {}) {
   const esRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
 
+  const postAgentMessage = useCallback(async (data: string): Promise<boolean> => {
+    if (!sessionId) {
+      return false;
+    }
+    try {
+      const base = getApiBase();
+      const r = await fetch(`${base}/sessions/${sessionId}/agent/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: data }),
+      });
+      return r.ok;
+    } catch {
+      return false;
+    }
+  }, [sessionId]);
+
   const sendMessage = useCallback(
     async (data: string): Promise<boolean> => {
       if (!sessionId) {
@@ -45,21 +62,11 @@ export function useSessionStream(options: UseSessionStreamOptions = {}) {
           ws.send(data);
           return true;
         }
-        return false;
+        return postAgentMessage(data);
       }
-      try {
-        const base = getApiBase();
-        const r = await fetch(`${base}/sessions/${sessionId}/agent/message`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: data }),
-        });
-        return r.ok;
-      } catch {
-        return false;
-      }
+      return postAgentMessage(data);
     },
-    [sessionId, transport],
+    [sessionId, transport, postAgentMessage],
   );
 
   useEffect(() => {

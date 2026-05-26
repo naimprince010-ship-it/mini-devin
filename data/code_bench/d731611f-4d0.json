@@ -1,0 +1,41 @@
+{
+  "run_id": "d731611f-4d0",
+  "benchmark": "mbpp",
+  "mode": "litellm",
+  "limit": 3,
+  "status": "completed",
+  "started_at": "2026-05-23T05:28:32.742758+00:00",
+  "finished_at": "2026-05-23T05:28:57.925081+00:00",
+  "total": 3,
+  "passed": 2,
+  "results": [
+    {
+      "task_id": "mbpp-11",
+      "benchmark": "mbpp",
+      "passed": true,
+      "generated_code": "def remove_Occ(s, c):\n    first = s.find(c)\n    if first == -1:\n        return s\n    last = s.rfind(c)\n    return s[:first] + s[first+1:last] + s[last+1:]",
+      "test_output": "",
+      "error": "",
+      "duration_s": 20.22
+    },
+    {
+      "task_id": "mbpp-12",
+      "benchmark": "mbpp",
+      "passed": true,
+      "generated_code": "def sort_matrix(matrix):\n    return sorted(matrix, key=sum)",
+      "test_output": "",
+      "error": "",
+      "duration_s": 1.86
+    },
+    {
+      "task_id": "mbpp-13",
+      "benchmark": "mbpp",
+      "passed": false,
+      "generated_code": "def count_common(words):\n    from collections import Counter\n    counter = Counter(words)\n    return counter.most_common()",
+      "test_output": "Traceback (most recent call last):\n  File \"E:\\temp\\plodder_code_bench_ay2qh0_2\\candidate.py\", line 6, in <module>\n    assert count_common(['red','green','black','pink','black','white','black','eyes','white','black','orange','pink','pink','red','red','white','orange','white',\"black\",'pink','green','green','pink','green','pink','white','orange',\"orange\",'red']) == [('pink', 6), ('black', 5), ('white', 5), ('red', 4)]\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError\n",
+      "error": "",
+      "duration_s": 3.1
+    }
+  ],
+  "pass_rate": 66.7
+}

@@ -5,6 +5,7 @@ export interface Session {
   created_at: string;
   status: string;
   working_directory: string;
+  workspace_path?: string;
   /** Stable disk folder under PLODDER_AGENT_WORKSPACE_ROOT (managed sessions only). */
   workspace_id?: string | null;
   current_task: string | null;
@@ -128,6 +129,8 @@ export interface SystemStatus {
   active_sessions: number;
   total_tasks_completed: number;
   uptime_seconds: number;
+  default_model?: string;
+  free_mode?: boolean;
 }
 
 export interface Model {

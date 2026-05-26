@@ -18,12 +18,17 @@ Uses async Playwright (fully async/await compatible with the agent loop).
 import asyncio
 import base64
 import json
+import os
+import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .base import BaseBrowserTool, ToolResult
+from .travel_helpers import format_hotel_summary, summarize_hotel_options
 
 
 class PlaywrightAction(str, Enum):
@@ -75,6 +80,7 @@ class BrowserPageState:
     evaluate_result: Any = None
     action_time_ms: int = 0
     dom_outline: Optional[str] = None
+    travel_summary: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -147,6 +153,11 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         self._debug_request_failed: list[str] = []
         # WS stream budget (reset on navigate/reload clear)
         self._ws_console_log_budget = 18
+        self._last_retry_attempts = 1
+        self._trace_enabled = os.environ.get("PLODDER_BROWSER_TRACE_ENABLED", "true").strip().lower() != "false"
+        self._trace_dir = Path(os.environ.get("PLODDER_BROWSER_TRACE_DIR", "/var/tmp/plodder-browser-traces"))
+        self._trace_max_entries = 300
+        self._action_trace: list[dict[str, Any]] = []
 
     def _emit_browser_ws(
         self,
@@ -401,6 +412,124 @@ class PlaywrightBrowserTool(BaseBrowserTool):
             text = text[: max_chars - 80] + "\n… (truncated)"
         return text
 
+    @staticmethod
+    def _selector_fallback_candidates(selector: str) -> list[str]:
+        """Build candidate selectors for simple self-healing."""
+        raw = (selector or "").strip()
+        if not raw:
+            return []
+
+        candidates: list[str] = [raw]
+
+        has_engine_prefix = raw.startswith(("text=", "xpath=", "css="))
+        has_css_sigils = raw.startswith(("#", ".", "[", "//", "(", "*", ">"))
+
+        if not has_engine_prefix and not has_css_sigils and re.fullmatch(r"[A-Za-z0-9_:\-.]+", raw):
+            candidates.extend([
+                f"[data-testid='{raw}']",
+                f"[data-test='{raw}']",
+                f"[data-qa='{raw}']",
+                f"#{raw}",
+                f"[name='{raw}']",
+                f"[aria-label='{raw}']",
+            ])
+
+        testid_match = re.search(r"data-testid=['\"]([^'\"]+)['\"]", raw)
+        if testid_match:
+            value = testid_match.group(1)
+            candidates.extend([
+                raw.replace("data-testid", "data-test"),
+                raw.replace("data-testid", "data-qa"),
+                f"[name='{value}']",
+            ])
+
+        if not has_engine_prefix and not has_css_sigils and len(raw.split()) <= 6:
+            candidates.append(f"text={raw}")
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                deduped.append(candidate)
+        return deduped[:10]
+
+    async def _resolve_selector_with_fallback(self, selector: str, timeout: int) -> str:
+        """Return first selector candidate that resolves to a visible element."""
+        candidates = self._selector_fallback_candidates(selector)
+        if not candidates:
+            raise ValueError("Selector is required")
+
+        probe_timeout = max(250, min(timeout, 2500))
+        last_error: Exception | None = None
+        for candidate in candidates:
+            try:
+                await self._page.wait_for_selector(candidate, state="visible", timeout=probe_timeout)
+                return candidate
+            except Exception as e:
+                last_error = e
+                continue
+        raise RuntimeError(f"No selector candidate matched visible element for '{selector}': {last_error}")
+
+    @staticmethod
+    def _sanitize_trace_input(input_data: Any) -> Any:
+        if not isinstance(input_data, dict):
+            return str(input_data)[:500]
+        out: dict[str, Any] = {}
+        for key, value in input_data.items():
+            if key in ("script", "html", "content", "text") and isinstance(value, str):
+                out[key] = value[:800]
+            elif isinstance(value, str):
+                out[key] = value[:400]
+            elif isinstance(value, (int, float, bool)) or value is None:
+                out[key] = value
+            else:
+                out[key] = str(value)[:400]
+        return out
+
+    def _record_action_trace(self, entry: dict[str, Any]) -> None:
+        if not self._trace_enabled:
+            return
+        self._action_trace.append(entry)
+        if len(self._action_trace) > self._trace_max_entries:
+            self._action_trace = self._action_trace[-self._trace_max_entries :]
+
+        try:
+            self._trace_dir.mkdir(parents=True, exist_ok=True)
+            file_path = self._trace_dir / "browser-actions.jsonl"
+            with file_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=True, default=str) + "\n")
+        except Exception:
+            return
+
+    async def _capture_failure_artifacts(self, action: str) -> dict[str, Any]:
+        """Capture screenshot + diagnostics for failed actions without raising."""
+        artifacts: dict[str, Any] = {}
+        try:
+            screenshot = await self._take_screenshot(full_page=False)
+            if screenshot:
+                artifacts["screenshot_base64_head"] = screenshot[:800]
+        except Exception:
+            pass
+        try:
+            artifacts["dom_outline"] = await self._get_dom_outline()
+        except Exception:
+            pass
+        try:
+            diag = self._format_browser_diagnostics(max_chars=4000)
+            if diag:
+                artifacts["diagnostics"] = diag
+        except Exception:
+            pass
+        try:
+            if self._page:
+                artifacts["url"] = self._page.url
+                artifacts["title"] = await self._page.title()
+        except Exception:
+            pass
+        artifacts["action"] = action
+        return artifacts
+
     async def _get_dom_outline(self) -> str:
         """Compact JSON outline: headings + body child tags (DevTools Elements-lite)."""
         script = r"""() => {
@@ -441,15 +570,90 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         page_state.dom_outline = outline
         return PlaywrightResponse(success=True, action=PlaywrightAction.DEBUG_SNAPSHOT, page_state=page_state)
 
+    async def _maybe_attach_travel_summary(self, page_state: BrowserPageState) -> None:
+        """Attach hotel-result summary when the current page looks like a travel booking results page."""
+        try:
+            raw_cards = await self._extract_travel_candidates()
+            summary = summarize_hotel_options(raw_cards)
+            if summary:
+                page_state.travel_summary = summary
+        except Exception:
+            return
+
+    async def _extract_travel_candidates(self) -> list[dict[str, Any]]:
+        """Collect hotel-like cards from the current page using broad travel-site heuristics."""
+        script = r"""() => {
+  const selectors = [
+    '[data-stid*="lodging-card"]',
+    '[data-stid*="property-card"]',
+    '[data-testid*="property-card"]',
+    '[data-testid*="hotel-card"]',
+    '[data-testid*="lodging-card"]',
+    'article',
+    'li'
+  ];
+  const visible = (el) => {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    return rect.width > 120 && rect.height > 40 && style.visibility !== 'hidden' && style.display !== 'none';
+  };
+  const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+  const hotelish = (text) => /(hotel|property|guest|room|night|reviews?|rating|free cancellation|breakfast|reserve|book now|per night|wonderful|excellent|exceptional)/i.test(text);
+  const seen = new Set();
+  const cards = [];
+  const addCard = (el) => {
+    if (!visible(el)) return;
+    const text = clean(el.innerText || '');
+    if (text.length < 30 || !hotelish(text)) return;
+    const priceMatch = text.match(/([$€£])\s?\d[\d,]*(?:\.\d{1,2})?/);
+    const ratingMatch = text.match(/\b([0-5](?:\.\d)?)\s*(?:\/\s*5|out of 5|stars?)\b/i);
+    const reviewsMatch = text.match(/\b(\d[\d,]*)\s*(?:reviews?|ratings?)\b/i);
+    if (!priceMatch && !ratingMatch && !reviewsMatch) return;
+    const heading = el.querySelector('h1,h2,h3,h4,[data-stid*="title"],[data-testid*="title"],a[aria-label]');
+    const link = el.querySelector('a[href]');
+    const name = clean(heading ? (heading.innerText || heading.getAttribute('aria-label') || '') : '');
+    const dedupeKey = clean((name || text).slice(0, 180)).toLowerCase();
+    if (!dedupeKey || seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
+    cards.push({
+      name,
+      text: text.slice(0, 1200),
+      href: link ? link.href : '',
+      price_text: priceMatch ? priceMatch[0] : '',
+      rating: ratingMatch ? ratingMatch[1] : '',
+      review_count: reviewsMatch ? reviewsMatch[1] : '',
+      free_cancellation: /free cancellation/i.test(text),
+      breakfast_included: /breakfast included|includes breakfast/i.test(text),
+    });
+  };
+  for (const selector of selectors) {
+    for (const el of document.querySelectorAll(selector)) {
+      addCard(el);
+      if (cards.length >= 24) return cards;
+    }
+  }
+  return cards;
+}"""
+        raw = await self._page.evaluate(script)
+        return raw if isinstance(raw, list) else []
+
     async def _fire_event(self, action: str, page_state: BrowserPageState) -> None:
         """Stream browser event to frontend via callback."""
         if self.on_browser_event:
             try:
+                summary = None
+                if page_state.travel_summary:
+                    summary = format_hotel_summary(page_state.travel_summary)
                 event_data = {
                     "event_type": action,
                     "url": page_state.url,
-                    "query": None,
+                    "query": summary,
                     "screenshot_base64": page_state.screenshot_base64,
+                    "title": page_state.title,
+                    "summary": summary,
+                    "action_time_ms": page_state.action_time_ms,
+                    "travel_summary": page_state.travel_summary,
                 }
                 result = self.on_browser_event(event_data)
                 if asyncio.iscoroutine(result):
@@ -460,6 +664,7 @@ class PlaywrightBrowserTool(BaseBrowserTool):
     async def execute(self, input_data: Any) -> ToolResult:
         """Execute a browser action."""
         start_time = datetime.now(timezone.utc)
+        trace_id = str(uuid.uuid4())
 
         action_str = (
             input_data.get("action") if isinstance(input_data, dict)
@@ -513,6 +718,7 @@ class PlaywrightBrowserTool(BaseBrowserTool):
             elapsed_ms = int((end_time - start_time).total_seconds() * 1000)
             if response.page_state:
                 response.page_state.action_time_ms = elapsed_ms
+                await self._maybe_attach_travel_summary(response.page_state)
 
             # Fire frontend event
             if response.page_state:
@@ -540,6 +746,11 @@ class PlaywrightBrowserTool(BaseBrowserTool):
                     output_parts.append("[Screenshot captured and streamed to Browser Tab]")
                 if response.page_state.dom_outline:
                     output_parts.append("--- DOM outline ---\n" + response.page_state.dom_outline[:8000])
+                if response.page_state.travel_summary:
+                    output_parts.append(
+                        "--- Travel booking summary ---\n"
+                        + format_hotel_summary(response.page_state.travel_summary)
+                    )
                 output_parts.append(f"Action time: {elapsed_ms}ms")
 
             diag = self._format_browser_diagnostics()
@@ -549,6 +760,18 @@ class PlaywrightBrowserTool(BaseBrowserTool):
             message = f"browser_playwright '{action.value}' succeeded"
             output_text = "\n".join(output_parts) if output_parts else message
 
+            self._record_action_trace({
+                "trace_id": trace_id,
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "status": "success",
+                "action": action.value,
+                "attempts": self._last_retry_attempts,
+                "elapsed_ms": elapsed_ms,
+                "input": self._sanitize_trace_input(input_data),
+                "url": response.page_state.url if response.page_state else "",
+                "title": response.page_state.title if response.page_state else "",
+            })
+
             return ToolResult(
                 success=True,
                 data=response,
@@ -556,6 +779,19 @@ class PlaywrightBrowserTool(BaseBrowserTool):
             )
 
         except Exception as e:
+            elapsed_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
+            failure_artifacts = await self._capture_failure_artifacts(action_str)
+            self._record_action_trace({
+                "trace_id": trace_id,
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "status": "failure",
+                "action": action_str,
+                "attempts": self._last_retry_attempts,
+                "elapsed_ms": elapsed_ms,
+                "input": self._sanitize_trace_input(input_data),
+                "error": str(e)[:4000],
+                "artifacts": failure_artifacts,
+            })
             return ToolResult(
                 success=False,
                 data=PlaywrightResponse(
@@ -563,7 +799,7 @@ class PlaywrightBrowserTool(BaseBrowserTool):
                     action=action if "action" in dir() else PlaywrightAction.SCREENSHOT,
                     error=str(e),
                 ),
-                message=f"browser_playwright '{action_str}' failed: {e}",
+                message=f"browser_playwright '{action_str}' failed: {e} (trace_id={trace_id})",
                 error=str(e),
             )
 
@@ -605,19 +841,93 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         )
         return PlaywrightResponse(success=True, action=PlaywrightAction.SCREENSHOT, page_state=page_state)
 
+    async def _retry_action(
+        self,
+        action_name: str,
+        operation: Callable[[], Any],
+        retries: int,
+        delay_ms: int,
+    ) -> Any:
+        """Execute an async Playwright operation with bounded retries."""
+        last_error: Exception | None = None
+        total_attempts = max(1, retries + 1)
+        for attempt in range(total_attempts):
+            try:
+                result = await operation()
+                self._last_retry_attempts = attempt + 1
+                return result
+            except Exception as e:
+                last_error = e
+                self._last_retry_attempts = attempt + 1
+                if attempt >= total_attempts - 1:
+                    break
+                await asyncio.sleep(max(0, delay_ms) / 1000.0)
+        raise RuntimeError(f"{action_name} failed after {total_attempts} attempt(s): {last_error}")
+
+    def _retry_settings(self, input_data: Any) -> tuple[int, int]:
+        """Get retry count and delay from input/env with safe bounds."""
+        default_retries = os.environ.get("PLODDER_BROWSER_RETRY_COUNT", "1")
+        default_delay_ms = os.environ.get("PLODDER_BROWSER_RETRY_DELAY_MS", "250")
+
+        raw_retries = self._get(input_data, "retries", default_retries)
+        raw_delay_ms = self._get(input_data, "retry_delay_ms", default_delay_ms)
+
+        try:
+            retries = int(raw_retries)
+        except (TypeError, ValueError):
+            retries = 1
+        try:
+            delay_ms = int(raw_delay_ms)
+        except (TypeError, ValueError):
+            delay_ms = 250
+
+        retries = max(0, min(retries, 5))
+        delay_ms = max(0, min(delay_ms, 5000))
+        return retries, delay_ms
+
+    async def _post_action_settle(self, input_data: Any) -> None:
+        """Allow DOM/network to settle after mutating actions."""
+        settle_ms = self._get(input_data, "post_action_wait_ms", 120)
+        wait_network_idle = bool(self._get(input_data, "wait_network_idle", False))
+
+        try:
+            settle_ms_int = int(settle_ms)
+        except (TypeError, ValueError):
+            settle_ms_int = 120
+
+        if settle_ms_int > 0:
+            await asyncio.sleep(min(settle_ms_int, 5000) / 1000.0)
+
+        if wait_network_idle:
+            try:
+                timeout = int(self._get(input_data, "network_idle_timeout", min(self.timeout_ms, 2500)))
+            except (TypeError, ValueError):
+                timeout = min(self.timeout_ms, 2500)
+            await self._page.wait_for_load_state("networkidle", timeout=max(250, timeout))
+
     async def _click(self, input_data: Any) -> PlaywrightResponse:
         """Click an element by CSS selector or coordinates."""
         selector = self._get(input_data, "selector", None)
         x = self._get(input_data, "x", None)
         y = self._get(input_data, "y", None)
+        timeout = int(self._get(input_data, "timeout", self.timeout_ms))
+        retries, delay_ms = self._retry_settings(input_data)
 
         if selector:
-            await self._page.click(selector)
+            async def do_click() -> Any:
+                resolved_selector = await self._resolve_selector_with_fallback(selector, timeout)
+                return await self._page.click(resolved_selector, timeout=timeout)
+
+            await self._retry_action("click", do_click, retries, delay_ms)
         elif x is not None and y is not None:
-            await self._page.mouse.click(float(x), float(y))
+            async def do_xy_click() -> Any:
+                return await self._page.mouse.click(float(x), float(y))
+
+            await self._retry_action("click", do_xy_click, retries, delay_ms)
         else:
             raise ValueError("'click' requires either 'selector' or 'x'+'y' coordinates")
 
+        await self._post_action_settle(input_data)
         page_state = await self._get_page_state()
         return PlaywrightResponse(success=True, action=PlaywrightAction.CLICK, page_state=page_state)
 
@@ -626,8 +936,20 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         selector = self._get(input_data, "selector", "")
         text = self._get(input_data, "text", "")
         delay = self._get(input_data, "delay", 30)  # ms between keystrokes
+        clear_first = bool(self._get(input_data, "clear_first", True))
+        timeout = int(self._get(input_data, "timeout", self.timeout_ms))
+        retries, delay_ms = self._retry_settings(input_data)
 
-        await self._page.type(selector, text, delay=delay)
+        async def do_type() -> Any:
+            resolved_selector = await self._resolve_selector_with_fallback(selector, timeout)
+            locator = self._page.locator(resolved_selector).first
+            if clear_first:
+                await locator.fill("")
+            return await locator.type(text, delay=delay)
+
+        await self._retry_action("type", do_type, retries, delay_ms)
+
+        await self._post_action_settle(input_data)
         page_state = await self._get_page_state()
         return PlaywrightResponse(success=True, action=PlaywrightAction.TYPE, page_state=page_state)
 
@@ -635,8 +957,17 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         """Fill a form field instantly (faster than type for large text)."""
         selector = self._get(input_data, "selector", "")
         value = self._get(input_data, "value", "")
+        timeout = int(self._get(input_data, "timeout", self.timeout_ms))
+        retries, delay_ms = self._retry_settings(input_data)
 
-        await self._page.fill(selector, value)
+        async def do_fill() -> Any:
+            resolved_selector = await self._resolve_selector_with_fallback(selector, timeout)
+            locator = self._page.locator(resolved_selector).first
+            return await locator.fill(value)
+
+        await self._retry_action("fill", do_fill, retries, delay_ms)
+
+        await self._post_action_settle(input_data)
         page_state = await self._get_page_state()
         return PlaywrightResponse(success=True, action=PlaywrightAction.FILL, page_state=page_state)
 
@@ -645,14 +976,20 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         selector = self._get(input_data, "selector", "")
         value = self._get(input_data, "value", None)
         label = self._get(input_data, "label", None)
+        timeout = int(self._get(input_data, "timeout", self.timeout_ms))
+        retries, delay_ms = self._retry_settings(input_data)
 
-        if value:
-            await self._page.select_option(selector, value=value)
-        elif label:
-            await self._page.select_option(selector, label=label)
-        else:
+        async def do_select() -> Any:
+            resolved_selector = await self._resolve_selector_with_fallback(selector, timeout)
+            if value:
+                return await self._page.select_option(resolved_selector, value=value)
+            if label:
+                return await self._page.select_option(resolved_selector, label=label)
             raise ValueError("'select' requires 'value' or 'label'")
 
+        await self._retry_action("select", do_select, retries, delay_ms)
+
+        await self._post_action_settle(input_data)
         page_state = await self._get_page_state()
         return PlaywrightResponse(success=True, action=PlaywrightAction.SELECT, page_state=page_state)
 
@@ -676,7 +1013,15 @@ class PlaywrightBrowserTool(BaseBrowserTool):
     async def _hover(self, input_data: Any) -> PlaywrightResponse:
         """Hover over an element to trigger tooltips/dropdowns."""
         selector = self._get(input_data, "selector", "")
-        await self._page.hover(selector)
+        timeout = int(self._get(input_data, "timeout", self.timeout_ms))
+        retries, delay_ms = self._retry_settings(input_data)
+
+        async def do_hover() -> Any:
+            resolved_selector = await self._resolve_selector_with_fallback(selector, timeout)
+            return await self._page.hover(resolved_selector, timeout=timeout)
+
+        await self._retry_action("hover", do_hover, retries, delay_ms)
+        await self._post_action_settle(input_data)
         page_state = await self._get_page_state()
         return PlaywrightResponse(success=True, action=PlaywrightAction.HOVER, page_state=page_state)
 
@@ -688,7 +1033,8 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         timeout = self._get(input_data, "timeout", self.timeout_ms)
 
         if selector:
-            await self._page.wait_for_selector(selector, timeout=timeout)
+            resolved_selector = await self._resolve_selector_with_fallback(selector, int(timeout))
+            await self._page.wait_for_selector(resolved_selector, timeout=timeout)
         elif url_pattern:
             await self._page.wait_for_url(url_pattern, timeout=timeout)
         elif network_idle:
@@ -826,12 +1172,23 @@ class PlaywrightBrowserTool(BaseBrowserTool):
         """Press a keyboard key (e.g. Enter, Tab, Escape)."""
         key = self._get(input_data, "key", "Enter")
         selector = self._get(input_data, "selector", None)
+        retries, delay_ms = self._retry_settings(input_data)
 
         if selector:
-            await self._page.press(selector, key)
-        else:
-            await self._page.keyboard.press(key)
+            timeout = int(self._get(input_data, "timeout", self.timeout_ms))
 
+            async def do_press_selector() -> Any:
+                resolved_selector = await self._resolve_selector_with_fallback(selector, timeout)
+                return await self._page.press(resolved_selector, key, timeout=timeout)
+
+            await self._retry_action("press", do_press_selector, retries, delay_ms)
+        else:
+            async def do_press_keyboard() -> Any:
+                return await self._page.keyboard.press(key)
+
+            await self._retry_action("press", do_press_keyboard, retries, delay_ms)
+
+        await self._post_action_settle(input_data)
         page_state = await self._get_page_state()
         return PlaywrightResponse(success=True, action=PlaywrightAction.PRESS, page_state=page_state)
 

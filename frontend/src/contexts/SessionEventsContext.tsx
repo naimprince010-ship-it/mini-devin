@@ -176,6 +176,7 @@ const BROWSER_TOOLS = new Set([
     'search_web',
     'browse',
     'browser',
+    'browser_open',
     'browser_search',
     'browser_fetch',
     'browser_interactive',
@@ -190,6 +191,9 @@ function browserMetaFromTool(tool: string, input: Record<string, unknown>): { ty
     }
     if (tool === 'browser_fetch') {
         return { type: 'navigate', url: (input.url as string) || undefined };
+    }
+    if (tool === 'browser_open') {
+        return { type: 'navigate', url: (input.url as string) || undefined, query: (input.note as string) || undefined };
     }
     if (tool === 'browser_interactive' || tool === 'browser_playwright') {
         if (action === 'search') {

@@ -229,6 +229,100 @@ async def generate_plan_with_llm(
         raise
 
 
+def deterministic_milestones_for_goal(goal: str) -> List[Dict[str, Any]]:
+    """Local fallback when the planner LLM is unavailable or returns invalid JSON."""
+    raw = (goal or "").lower()
+    if any(k in raw for k in ("ecommerce", "e-commerce", "shop", "store", "cart", "checkout")):
+        return [
+            {
+                "name": "Project foundation and scope",
+                "description": "Inspect the stack, confirm ecommerce scope, and establish the project structure.",
+                "acceptance_criteria": [
+                    "Project stack and scripts are identified",
+                    "Required storefront, product, cart, checkout, and admin scope is documented",
+                    "A runnable baseline exists",
+                ],
+                "depends_on_indexes": [],
+                "estimated_hours": 4,
+                "tags": ["planning", "foundation"],
+            },
+            {
+                "name": "Storefront catalog",
+                "description": "Build the public ecommerce storefront with homepage, category/product listing, and product detail views.",
+                "acceptance_criteria": [
+                    "Homepage shows ecommerce branding and featured products",
+                    "Product listing and product detail views are implemented",
+                    "Responsive layout works on mobile and desktop",
+                ],
+                "depends_on_indexes": [0],
+                "estimated_hours": 8,
+                "tags": ["frontend", "catalog"],
+            },
+            {
+                "name": "Cart and checkout flow",
+                "description": "Add cart state, cart UI, and checkout screen with order summary.",
+                "acceptance_criteria": [
+                    "Users can add and remove products from cart",
+                    "Cart totals update correctly",
+                    "Checkout screen captures required order details or clearly stubs payment",
+                ],
+                "depends_on_indexes": [1],
+                "estimated_hours": 8,
+                "tags": ["frontend", "checkout"],
+            },
+            {
+                "name": "Admin and data wiring",
+                "description": "Wire product data and add an admin/product management surface appropriate to the app stack.",
+                "acceptance_criteria": [
+                    "Products are loaded from a clear data source",
+                    "Admin/product management path exists or is explicitly scoped as a stub",
+                    "Data shapes are documented in code or schema",
+                ],
+                "depends_on_indexes": [1],
+                "estimated_hours": 8,
+                "tags": ["data", "admin"],
+            },
+            {
+                "name": "Verification and preview",
+                "description": "Run build/tests or static checks and verify the buyer flow in browser or static preview.",
+                "acceptance_criteria": [
+                    "Available build/lint/tests pass or failures are documented",
+                    "Storefront, product detail, cart, and checkout are previewed",
+                    "Remaining gaps are summarized",
+                ],
+                "depends_on_indexes": [2, 3],
+                "estimated_hours": 4,
+                "tags": ["verification"],
+            },
+        ]
+    return [
+        {
+            "name": "Foundation",
+            "description": "Inspect the project, define scope, and identify the minimal implementation path.",
+            "acceptance_criteria": ["Project structure is understood", "Files to change are identified"],
+            "depends_on_indexes": [],
+            "estimated_hours": 3,
+            "tags": ["planning"],
+        },
+        {
+            "name": "Implementation",
+            "description": "Implement the smallest usable vertical slice for the requested goal.",
+            "acceptance_criteria": ["Core user-facing behavior is implemented", "Changes are scoped to relevant files"],
+            "depends_on_indexes": [0],
+            "estimated_hours": 8,
+            "tags": ["implementation"],
+        },
+        {
+            "name": "Verification",
+            "description": "Run the closest available verification and document remaining gaps.",
+            "acceptance_criteria": ["Verification command or preview is run", "Result and follow-ups are summarized"],
+            "depends_on_indexes": [1],
+            "estimated_hours": 3,
+            "tags": ["verification"],
+        },
+    ]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Plan store (disk)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -320,16 +414,15 @@ class HierarchicalPlanner:
         Otherwise, call the LLM to decompose the goal.
         """
         if milestones is None:
-            raw = await generate_plan_with_llm(goal, project_context, llm_client)
+            try:
+                raw = await generate_plan_with_llm(goal, project_context, llm_client)
+            except Exception:
+                raw = deterministic_milestones_for_goal(goal)
         else:
             raw = milestones
 
         if not raw:
-            raise ValueError(
-                "No milestones returned. Usually: missing/invalid LLM API key, model error, or the "
-                "model did not return valid JSON with a 'milestones' array. Check .env OPENAI_API_KEY "
-                "and try again with a shorter goal."
-            )
+            raw = deterministic_milestones_for_goal(goal)
 
         specs: List[MilestoneSpec] = []
         id_map: Dict[int, str] = {}
@@ -405,7 +498,7 @@ class HierarchicalPlanner:
 
             # Spawn sub-agent task
             try:
-                session = await session_manager.create_session()
+                session = await session_manager.create_session(working_directory=plan.working_dir)
                 task = await session_manager.create_task(
                     session_id=session.session_id,
                     description=task_description,
@@ -418,13 +511,16 @@ class HierarchicalPlanner:
                     connection_manager=connection_manager,
                 )
                 # Get final task state
-                final_task = await session_manager.get_task(task.task_id)
+                final_task = await session_manager.get_task(session.session_id, task.task_id)
                 success = final_task and final_task.status.value == "completed"
+                summary = ""
+                if final_task and getattr(final_task, "result", None):
+                    summary = getattr(final_task.result, "summary", "") or ""
 
                 plan.results[ms.id] = MilestoneResult(
                     milestone_id=ms.id,
                     status=MilestoneStatus.COMPLETED if success else MilestoneStatus.FAILED,
-                    summary=final_task.result_summary if final_task and hasattr(final_task, "result_summary") else "",
+                    summary=summary,
                     task_id=task.task_id,
                     session_id=session.session_id,
                     started_at=plan.results[ms.id].started_at,
@@ -451,9 +547,9 @@ class HierarchicalPlanner:
                 self.store.save(plan)
                 break
 
-        else:
+        if plan.status == "running":
             prog = plan.progress()
-            plan.status = "completed" if prog["failed"] == 0 else "failed"
+            plan.status = "completed" if prog["completed"] == prog["total"] and prog["failed"] == 0 else "failed"
             self.store.save(plan)
 
         return plan
