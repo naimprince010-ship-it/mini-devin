@@ -94,7 +94,12 @@ from ..reliability.self_correction import (
 from ..learning.teacher_review import maybe_log_teacher_review
 
 from .planner import Planner
-from .session_events import estimate_llm_cost_usd, load_session_events
+from .session_events import (
+    build_governance_signal,
+    estimate_llm_cost_usd,
+    load_session_events,
+    normalize_governance_signals,
+)
 from .activity_loop import (
     AgentActivityState,
     build_activity_meta,
@@ -105,7 +110,15 @@ from .session_worklog import SessionWorklog, load_worklog, save_worklog
 from .terminal_recovery import terminal_recovery_hint
 from .workspace_sidecar import WorkspaceSidecar
 from .standard_events import AgentEventKind, AgentStreamEvent, append_standard_event
-from ..orchestration.runtime_contracts import emit_step_completed, emit_step_started, runtime_contracts_enabled
+from ..orchestration.runtime_contracts import (
+    emit_step_completed,
+    emit_step_started,
+    governance_budget_signals_enabled,
+    governance_loop_signals_enabled,
+    governance_retry_signals_enabled,
+    governance_telemetry_enabled,
+    runtime_contracts_enabled,
+)
 
 
 import sys as _sys_for_prompt
@@ -509,6 +522,15 @@ class Agent:
         self._current_activity_context: dict[str, Any] | None = None
         self._workspace_sidecar: WorkspaceSidecar | None = None
         self._last_terminal_command: str | None = None
+        self._governance_telemetry_enabled = governance_telemetry_enabled()
+        self._governance_emit_budget_signals = governance_budget_signals_enabled()
+        self._governance_emit_retry_signals = governance_retry_signals_enabled()
+        self._governance_emit_loop_signals = governance_loop_signals_enabled()
+        try:
+            _raw_token_budget = int(os.environ.get("PLODDER_GOVERNANCE_TOKEN_BUDGET", "0") or "0")
+        except ValueError:
+            _raw_token_budget = 0
+        self._governance_token_budget = max(0, _raw_token_budget)
 
         # EventStream / AgentController (optional; enabled for :meth:`run_simple`)
         self._backbone_stream: Any = None
@@ -4727,14 +4749,113 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             payload["llm_estimated_cost_usd_delta"] = round(del_cost, 10)
         return payload
 
+    def _governance_payload_for_session_event(
+        self,
+        event: AgentStreamEvent,
+        llm_usage_payload: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Emit observe-only governance telemetry signals as additive event metadata."""
+        if not self._governance_telemetry_enabled:
+            return {}
+
+        signals: list[dict[str, Any]] = []
+
+        if self._governance_emit_budget_signals and llm_usage_payload:
+            total_tokens = int(llm_usage_payload.get("llm_total_tokens") or 0)
+            status = "tracking"
+            detail = "Token tracking active"
+            if self._governance_token_budget > 0:
+                ratio = total_tokens / float(self._governance_token_budget)
+                if ratio >= 1.0:
+                    status = "limit_exceeded"
+                    detail = "Token budget exceeded"
+                elif ratio >= 0.9:
+                    status = "near_limit"
+                    detail = "Token budget near limit"
+                else:
+                    status = "within_limit"
+                    detail = "Token budget within limit"
+            signals.append(
+                build_governance_signal(
+                    "budget",
+                    status=status,
+                    counters={
+                        "llm_total_tokens": total_tokens,
+                        "token_budget": self._governance_token_budget,
+                    },
+                    detail=detail,
+                )
+            )
+
+        if self._governance_emit_retry_signals:
+            consecutive_failures = int(getattr(self, "_consecutive_failures", 0) or 0)
+            same_error_streak = int(getattr(self, "_same_error_streak_n", 0) or 0)
+            retry_status = "stable"
+            if consecutive_failures > self.max_immediate_retries or same_error_streak >= 3:
+                retry_status = "elevated"
+            elif consecutive_failures > 0 or same_error_streak > 0:
+                retry_status = "active"
+            signals.append(
+                build_governance_signal(
+                    "retry",
+                    status=retry_status,
+                    counters={
+                        "consecutive_failures": consecutive_failures,
+                        "same_error_streak": same_error_streak,
+                        "max_immediate_retries": int(self.max_immediate_retries),
+                    },
+                    detail="Observe-only retry pressure signal",
+                )
+            )
+
+        if self._governance_emit_loop_signals:
+            current_iteration = int(getattr(self.state, "iteration", 0) or 0)
+            max_iterations = int(self.max_iterations)
+            no_progress_streak = int(getattr(self, "_no_progress_inspection_streak", 0) or 0)
+            loop_status = "stable"
+            if max_iterations > 0 and current_iteration >= int(max_iterations * 0.9):
+                loop_status = "near_ceiling"
+            if no_progress_streak >= 2:
+                loop_status = "elevated"
+            signals.append(
+                build_governance_signal(
+                    "loop",
+                    status=loop_status,
+                    counters={
+                        "iteration": current_iteration,
+                        "max_iterations": max_iterations,
+                        "no_progress_streak": no_progress_streak,
+                        "event_kind": event.kind.value,
+                    },
+                    detail="Observe-only loop proximity signal",
+                )
+            )
+
+        normalized = normalize_governance_signals(signals)
+        if not normalized:
+            return {}
+        return {
+            "governance_schema": "governance.telemetry.v1",
+            "governance_observe_only": True,
+            "governance_signals": normalized,
+        }
+
     def _append_session_event(self, event: AgentStreamEvent) -> None:
         wd = self.working_directory
         if not wd:
             return
         flat: dict[str, Any] | None = None
+        llm_payload: dict[str, Any] = {}
         if event.kind in (AgentEventKind.STATUS, AgentEventKind.OBSERVATION):
             u = self._llm_usage_payload_for_session_event()
-            flat = u if u else None
+            llm_payload = u if u else {}
+            gov_payload = self._governance_payload_for_session_event(event, llm_payload)
+            combined: dict[str, Any] = {}
+            if llm_payload:
+                combined.update(llm_payload)
+            if gov_payload:
+                combined.update(gov_payload)
+            flat = combined if combined else None
         append_standard_event(
             wd,
             event,

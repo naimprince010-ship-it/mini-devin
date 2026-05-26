@@ -248,6 +248,29 @@ class FileOpsTelemetryCollector:
             now=now,
         )
 
+    def record_governance_signal(
+        self,
+        signal_type: str,
+        status: str,
+        *,
+        counters: dict[str, Any] | None = None,
+        tags: dict[str, Any] | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        """Append observe-only governance telemetry signal for dashboard/export consumers."""
+        self._append_event(
+            event_type="governance.signal",
+            metrics={
+                "signal_type": str(signal_type),
+                "status": str(status),
+                "counters": dict(counters or {}),
+                "observe_only": True,
+                "schema": "governance.telemetry.v1",
+            },
+            tags=tags,
+            now=now,
+        )
+
     def record_runtime_snapshot(
         self,
         payload: dict[str, Any],
@@ -349,6 +372,8 @@ class FileOpsTelemetryCollector:
             "window_hours": int(max(1, hours)),
             "deployment_events": aggregates["deployment_events"],
             "runtime_snapshots": aggregates["runtime_snapshots"],
+            "governance_signals": aggregates["governance_signals"],
+            "governance_high_risk_signals": aggregates["governance_high_risk_signals"],
             "warning_count": aggregates["warning_count"],
             "warning_frequency_per_min": aggregates["warning_frequency_per_min"],
             "readiness_success_ratio": aggregates["readiness_success_ratio"],
@@ -379,6 +404,8 @@ class FileOpsTelemetryCollector:
 def aggregate_telemetry(rows: list[dict[str, Any]]) -> dict[str, Any]:
     deployment_events = 0
     runtime_snapshots = 0
+    governance_signals = 0
+    governance_high_risk_signals = 0
     warning_count = 0
     readiness_values: list[float] = []
     crash_loop_values: list[float] = []
@@ -402,6 +429,11 @@ def aggregate_telemetry(rows: list[dict[str, Any]]) -> dict[str, Any]:
             runtime_snapshots += 1
             readiness_values.append(1.0 if bool(metrics.get("readiness")) else 0.0)
             crash_loop_values.append(float(metrics.get("crash_loop_failures") or 0.0))
+        elif event_type == "governance.signal":
+            governance_signals += 1
+            status = str(metrics.get("status") or "").strip().lower()
+            if status in {"near_limit", "limit_exceeded", "elevated", "risk", "near_ceiling"}:
+                governance_high_risk_signals += 1
         if event_type == "runtime.warning" or level in {"warning", "error"}:
             warning_count += 1
 
@@ -415,6 +447,8 @@ def aggregate_telemetry(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "deployment_events": deployment_events,
         "runtime_snapshots": runtime_snapshots,
+        "governance_signals": governance_signals,
+        "governance_high_risk_signals": governance_high_risk_signals,
         "warning_count": warning_count,
         "warning_frequency_per_min": warning_count / minutes,
         "readiness_success_ratio": readiness_ratio,
