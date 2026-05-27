@@ -92,6 +92,10 @@ from ..reliability.self_correction import (
     incremental_recovery_hint,
 )
 from ..learning.teacher_review import maybe_log_teacher_review
+from ..reliability.ops_telemetry import (
+    FileOpsTelemetryCollector,
+    telemetry_config_from_env,
+)
 
 from .planner import Planner
 from .session_events import (
@@ -526,6 +530,7 @@ class Agent:
         self._governance_emit_budget_signals = governance_budget_signals_enabled()
         self._governance_emit_retry_signals = governance_retry_signals_enabled()
         self._governance_emit_loop_signals = governance_loop_signals_enabled()
+        self._governance_ops_collector: FileOpsTelemetryCollector | None = None
         try:
             _raw_token_budget = int(os.environ.get("PLODDER_GOVERNANCE_TOKEN_BUDGET", "0") or "0")
         except ValueError:
@@ -4840,6 +4845,58 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
             "governance_signals": normalized,
         }
 
+    def _discover_repo_root_for_ops_telemetry(self) -> Path | None:
+        env_root = (os.environ.get("PLODDER_REPO_ROOT") or os.environ.get("MINI_DEVIN_REPO_ROOT") or "").strip()
+        if env_root:
+            candidate = Path(env_root).expanduser().resolve()
+            if candidate.exists():
+                return candidate
+        here = Path(__file__).resolve()
+        for parent in (here.parent, *here.parents):
+            if (parent / "pyproject.toml").is_file() and (parent / "mini_devin").is_dir():
+                return parent
+        return None
+
+    def _resolve_governance_ops_collector(self) -> FileOpsTelemetryCollector | None:
+        if self._governance_ops_collector is not None:
+            return self._governance_ops_collector
+        try:
+            root = self._discover_repo_root_for_ops_telemetry()
+            if root is None:
+                return None
+            telemetry_root = root / ".plodder" / "ops" / "telemetry"
+            self._governance_ops_collector = FileOpsTelemetryCollector(
+                events_file=telemetry_root / "events.jsonl",
+                state_file=telemetry_root / "state.json",
+                config=telemetry_config_from_env(),
+            )
+        except Exception:
+            self._governance_ops_collector = None
+        return self._governance_ops_collector
+
+    def _bridge_governance_signals_to_ops_telemetry(self, signals: list[dict[str, Any]]) -> None:
+        if not signals:
+            return
+        collector = self._resolve_governance_ops_collector()
+        if collector is None:
+            return
+        for row in signals:
+            if not isinstance(row, dict):
+                continue
+            try:
+                collector.record_governance_signal(
+                    str(row.get("signal_type") or "unknown"),
+                    str(row.get("status") or "unknown"),
+                    counters=row.get("counters") if isinstance(row.get("counters"), dict) else {},
+                    tags={
+                        "source": "agent.session_event",
+                        "session_id": self.state.session_id,
+                        "observe_only": bool(row.get("observe_only", True)),
+                    },
+                )
+            except Exception:
+                continue
+
     def _append_session_event(self, event: AgentStreamEvent) -> None:
         wd = self.working_directory
         if not wd:
@@ -4855,6 +4912,11 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 combined.update(llm_payload)
             if gov_payload:
                 combined.update(gov_payload)
+                self._bridge_governance_signals_to_ops_telemetry(
+                    gov_payload.get("governance_signals")
+                    if isinstance(gov_payload.get("governance_signals"), list)
+                    else []
+                )
             flat = combined if combined else None
         append_standard_event(
             wd,
