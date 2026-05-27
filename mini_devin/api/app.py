@@ -3130,6 +3130,12 @@ async def list_models():
 @app.get("/status")
 async def get_system_status():
     """Get system status with uptime and metrics."""
+    def _env_flag(name: str, default: bool = False) -> bool:
+        raw = (os.getenv(name) or "").strip().lower()
+        if not raw:
+            return default
+        return raw in {"1", "true", "yes", "on"}
+
     # Determine browser mode
     if os.getenv("BROWSERLESS_API_KEY") or os.getenv("BROWSERLESS_WS_URL"):
         browser_mode = "browserless"
@@ -3178,6 +3184,10 @@ async def get_system_status():
             "tavily_or_serpapi_set": bool(
                 (os.getenv("TAVILY_API_KEY") or "").strip() or (os.getenv("SERPAPI_API_KEY") or "").strip()
             ),
+            "governance_telemetry_enabled": _env_flag("PLODDER_GOVERNANCE_TELEMETRY", False),
+            "governance_emit_budget_signals": _env_flag("PLODDER_GOVERNANCE_EMIT_BUDGET_SIGNALS", True),
+            "governance_emit_retry_signals": _env_flag("PLODDER_GOVERNANCE_EMIT_RETRY_SIGNALS", True),
+            "governance_emit_loop_signals": _env_flag("PLODDER_GOVERNANCE_EMIT_LOOP_SIGNALS", True),
         },
     }
 
