@@ -142,6 +142,29 @@ class E2ESettings:
 
 
 @dataclass
+class GovernanceTelemetrySettings:
+    """Observe-only governance telemetry feature flags (no enforcement behavior)."""
+
+    enabled: bool = False
+    emit_budget_signals: bool = True
+    emit_retry_signals: bool = True
+    emit_loop_signals: bool = True
+    schema_version: str = "governance.telemetry.v1"
+
+    @classmethod
+    def from_env(cls) -> "GovernanceTelemetrySettings":
+        """Load governance telemetry settings from environment variables."""
+        enabled = os.environ.get("PLODDER_GOVERNANCE_TELEMETRY", "false").lower() == "true"
+        return cls(
+            enabled=enabled,
+            emit_budget_signals=os.environ.get("PLODDER_GOVERNANCE_EMIT_BUDGET_SIGNALS", "true").lower() == "true",
+            emit_retry_signals=os.environ.get("PLODDER_GOVERNANCE_EMIT_RETRY_SIGNALS", "true").lower() == "true",
+            emit_loop_signals=os.environ.get("PLODDER_GOVERNANCE_EMIT_LOOP_SIGNALS", "true").lower() == "true",
+            schema_version=os.environ.get("PLODDER_GOVERNANCE_SCHEMA_VERSION", "governance.telemetry.v1"),
+        )
+
+
+@dataclass
 class Settings:
     """
     Centralized settings for Plodder.
@@ -156,6 +179,7 @@ class Settings:
     browser: BrowserSettings = field(default_factory=BrowserSettings)
     artifacts: ArtifactSettings = field(default_factory=ArtifactSettings)
     e2e: E2ESettings = field(default_factory=E2ESettings)
+    governance: GovernanceTelemetrySettings = field(default_factory=GovernanceTelemetrySettings)
     workspace_dir: str = "/workspace"
     
     def __post_init__(self):
@@ -180,6 +204,7 @@ class Settings:
             browser=BrowserSettings.from_env(),
             artifacts=ArtifactSettings.from_env(),
             e2e=E2ESettings.from_env(),
+            governance=GovernanceTelemetrySettings.from_env(),
             workspace_dir=os.environ.get("WORKSPACE_DIR", "/workspace"),
         )
     
@@ -258,6 +283,13 @@ class Settings:
                 "e2e_required": self.e2e.e2e_required,
                 "e2e_timeout": self.e2e.e2e_timeout,
                 "e2e_report_dir": self.e2e.e2e_report_dir,
+            },
+            "governance": {
+                "enabled": self.governance.enabled,
+                "emit_budget_signals": self.governance.emit_budget_signals,
+                "emit_retry_signals": self.governance.emit_retry_signals,
+                "emit_loop_signals": self.governance.emit_loop_signals,
+                "schema_version": self.governance.schema_version,
             },
             "workspace_dir": self.workspace_dir,
         }

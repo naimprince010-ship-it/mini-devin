@@ -43,6 +43,26 @@ def runtime_contracts_enabled() -> bool:
     return any((typed_events_enabled(), schema_validation_enabled(), checkpointing_enabled(), trace_ids_enabled()))
 
 
+def governance_telemetry_enabled() -> bool:
+    """Global feature flag for observe-only governance telemetry emission."""
+    return _flag_enabled("PLODDER_GOVERNANCE_TELEMETRY")
+
+
+def governance_budget_signals_enabled() -> bool:
+    """Feature flag for budget-related governance signals."""
+    return _flag_enabled("PLODDER_GOVERNANCE_EMIT_BUDGET_SIGNALS", True)
+
+
+def governance_retry_signals_enabled() -> bool:
+    """Feature flag for retry-related governance signals."""
+    return _flag_enabled("PLODDER_GOVERNANCE_EMIT_RETRY_SIGNALS", True)
+
+
+def governance_loop_signals_enabled() -> bool:
+    """Feature flag for loop-proximity governance signals."""
+    return _flag_enabled("PLODDER_GOVERNANCE_EMIT_LOOP_SIGNALS", True)
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
