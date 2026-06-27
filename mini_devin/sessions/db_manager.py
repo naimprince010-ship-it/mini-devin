@@ -47,8 +47,14 @@ def _sanitize_user_summary(summary: str) -> str:
         return ""
 
     text = _SUMMARY_SECTION_RE.sub("", text).strip()
-    text = re.sub(r"(?im)^\s*\*\*(?:act|think|thought|reasoning|internal monologue)\s*:\*\*\s*", "", text)
-    text = re.sub(r"(?im)^\s*(?:act|think|thought|reasoning|internal monologue)\s*:\s*", "", text)
+    text = re.sub(
+        r"(?im)^\s*\*\*(?:act|think|thought|reasoning|internal monologue)\s*:\*\*\s*",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"(?im)^\s*(?:act|think|thought|reasoning|internal monologue)\s*:\s*", "", text
+    )
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
 
     if not text:
@@ -59,39 +65,47 @@ def _sanitize_user_summary(summary: str) -> str:
 class DatabaseSessionManager:
     """
     Database-backed session manager.
-    
+
     Provides persistent storage for sessions, tasks, and results using PostgreSQL.
     Maintains in-memory agent instances for active sessions.
     """
-    
+
     def __init__(
         self,
         artifacts_base_dir: str = "./runs",
         max_concurrent_sessions: int = 10,
     ):
-        self.artifacts_base_dir = self._ensure_writable_artifacts_dir(artifacts_base_dir)
+        self.artifacts_base_dir = self._ensure_writable_artifacts_dir(
+            artifacts_base_dir
+        )
         self.max_concurrent_sessions = max_concurrent_sessions
-        
+
         # In-memory agent instances (not persisted); Agent loaded lazily (see create_session / run_task)
         self._agents: dict[str, Any] = {}
         self._cancel_events: dict[str, asyncio.Event] = {}
-        self._running_tasks: dict[str, asyncio.Task] = {}  # Track asyncio Tasks for cancellation
+        self._running_tasks: dict[
+            str, asyncio.Task
+        ] = {}  # Track asyncio Tasks for cancellation
         self._session_titles: dict[str, str] = {}  # Cache titles in-memory
-        self._sandboxes: dict[str, Any] = {}  # Active DockerSandbox instances per session
-        
+        self._sandboxes: dict[
+            str, Any
+        ] = {}  # Active DockerSandbox instances per session
+
         # Statistics
         self._start_time = datetime.now(timezone.utc)
-        
+
         # Session maker
         self._session_maker = get_session_maker()
-        
+
         # Locks for thread safety
         self._session_lock = asyncio.Lock()
 
     @staticmethod
     def _ensure_writable_artifacts_dir(base_dir: str) -> Path:
         """Return a writable artifacts directory, falling back when needed."""
-        configured = (base_dir or os.environ.get("PLODDER_ARTIFACTS_BASE_DIR") or "./runs").strip()
+        configured = (
+            base_dir or os.environ.get("PLODDER_ARTIFACTS_BASE_DIR") or "./runs"
+        ).strip()
         candidate = Path(os.path.abspath(os.path.expanduser(configured)))
         try:
             candidate.mkdir(parents=True, exist_ok=True)
@@ -100,10 +114,13 @@ class DatabaseSessionManager:
             probe.rmdir()
             return candidate
         except (PermissionError, OSError):
-            fallback = os.environ.get(
-                "PLODDER_ARTIFACTS_BASE_DIR_FALLBACK",
-                "/var/tmp/plodder-runs",
-            ).strip() or "/var/tmp/plodder-runs"
+            fallback = (
+                os.environ.get(
+                    "PLODDER_ARTIFACTS_BASE_DIR_FALLBACK",
+                    "/var/tmp/plodder-runs",
+                ).strip()
+                or "/var/tmp/plodder-runs"
+            )
             fallback_path = Path(os.path.abspath(os.path.expanduser(fallback)))
             fallback_path.mkdir(parents=True, exist_ok=True)
             return fallback_path
@@ -145,7 +162,9 @@ class DatabaseSessionManager:
         except Exception as e:
             print(f"[Session] persist conversation/workspace: {e}")
 
-    async def get_stored_conversation_messages(self, session_id: str) -> list[dict[str, Any]]:
+    async def get_stored_conversation_messages(
+        self, session_id: str
+    ) -> list[dict[str, Any]]:
         """Load persisted chat messages when the in-memory agent is gone."""
         async with self._session_maker() as db:
             repo = SessionRepository(db)
@@ -157,11 +176,11 @@ class DatabaseSessionManager:
                 return data if isinstance(data, list) else []
             except json.JSONDecodeError:
                 return []
-    
+
     async def _get_db_session(self) -> AsyncSession:
         """Get a database session."""
         return self._session_maker()
-    
+
     async def create_session(
         self,
         working_directory: str = ".",
@@ -180,12 +199,14 @@ class DatabaseSessionManager:
         async with self._session_lock:
             async with self._session_maker() as db:
                 repo = SessionRepository(db)
-                
+
                 # Check concurrent session limit
                 active_count = await repo.count_active()
                 if active_count >= self.max_concurrent_sessions:
-                    raise RuntimeError(f"Maximum concurrent sessions ({self.max_concurrent_sessions}) reached")
-                
+                    raise RuntimeError(
+                        f"Maximum concurrent sessions ({self.max_concurrent_sessions}) reached"
+                    )
+
                 # Create database record
                 db_session = await repo.create(
                     working_directory=working_directory,
@@ -195,13 +216,14 @@ class DatabaseSessionManager:
                     workspace_id=workspace_id,
                 )
                 await db.commit()
-                
+
                 session_id = db_session.id
-                
+
                 # Create LLM client and agent (in-memory)
                 from ..core.llm_client import create_llm_client
+
                 llm_client = create_llm_client(model=model)
-                
+
                 # Build Docker sandbox if requested
                 sandbox = None
                 if use_sandbox:
@@ -210,7 +232,9 @@ class DatabaseSessionManager:
 
                         sandbox = create_execution_sandbox(repo_path=working_directory)
                     except Exception as e:
-                        print(f"[Session] Sandbox creation failed, running without sandbox: {e}")
+                        print(
+                            f"[Session] Sandbox creation failed, running without sandbox: {e}"
+                        )
 
                 from ..orchestrator.agent import Agent
 
@@ -231,10 +255,10 @@ class DatabaseSessionManager:
                     agent.bootstrap_ide_experience()
                 except Exception as _boot_e:
                     print(f"[Session] bootstrap_ide_experience: {_boot_e}")
-                
+
                 self._agents[session_id] = agent
                 self._cancel_events[session_id] = asyncio.Event()
-                
+
                 # Return Session object for API compatibility
                 return Session(
                     session_id=session_id,
@@ -246,7 +270,9 @@ class DatabaseSessionManager:
                     workspace_id=workspace_id,
                 )
 
-    async def set_session_model(self, session_id: str, model: str) -> tuple[bool, str | None]:
+    async def set_session_model(
+        self, session_id: str, model: str
+    ) -> tuple[bool, str | None]:
         """
         Update stored session model and swap the in-memory agent LLM when loaded.
 
@@ -284,38 +310,63 @@ class DatabaseSessionManager:
         async with self._session_maker() as db:
             repo = SessionRepository(db)
             db_session = await repo.get(session_id)
-            
+
             if not db_session:
                 return None
-            
+
             # Reconstruct Session object
             return self._db_to_session(db_session)
-    
+
     async def list_sessions(self) -> list[Session]:
-        """List all sessions with their tasks eagerly loaded."""
+        """List all sessions using lightweight aggregates.
+
+        Avoid loading full task->result->artifacts trees for the sessions list,
+        which can become expensive under frequent polling.
+        """
         async with self._session_maker() as db:
-            # Use selectinload to avoid MissingGreenlet error when accessing db_session.tasks
-            from sqlalchemy import select
-            from sqlalchemy.orm import selectinload
+            from sqlalchemy import func, select
             from ..database.models import SessionModel, TaskModel
-            
+
             result = await db.execute(
-                select(SessionModel)
-                .options(
-                    selectinload(SessionModel.tasks).selectinload(TaskModel.result),
-                    selectinload(SessionModel.tasks).selectinload(TaskModel.artifacts)
+                select(
+                    SessionModel,
+                    func.count(TaskModel.id).label("task_count"),
+                    func.max(TaskModel.id)
+                    .filter(TaskModel.status == DBTaskStatus.RUNNING)
+                    .label("running_task_id"),
                 )
+                .outerjoin(TaskModel, TaskModel.session_id == SessionModel.id)
+                .group_by(SessionModel.id)
                 .order_by(SessionModel.created_at.desc())
             )
-            db_sessions = result.scalars().all()
-            
-            # Explicitly initialize properties to avoid lazy loading issues
-            for s in db_sessions:
-                if not hasattr(s, 'tasks') or s.tasks is None:
-                    s.tasks = []
-                    
-            return [self._db_to_session(s) for s in db_sessions]
-    
+
+            status_map = {
+                DBSessionStatus.IDLE: SessionStatus.IDLE,
+                DBSessionStatus.RUNNING: SessionStatus.RUNNING,
+                DBSessionStatus.ERROR: SessionStatus.ERROR,
+                DBSessionStatus.TERMINATED: SessionStatus.STOPPED,
+            }
+
+            sessions: list[Session] = []
+            for db_session, task_count, running_task_id in result.all():
+                resolved_wd = self._resolve_workspace_for_db_session(db_session)
+                session = Session(
+                    session_id=db_session.id,
+                    working_directory=resolved_wd,
+                    model=db_session.model,
+                    max_iterations=db_session.max_iterations,
+                    status=status_map.get(db_session.status, SessionStatus.IDLE),
+                    created_at=db_session.created_at,
+                    iteration=db_session.iteration,
+                    total_tasks=int(task_count or 0),
+                    agent=self._agents.get(db_session.id),
+                    cancel_event=self._cancel_events.get(db_session.id),
+                    workspace_id=getattr(db_session, "workspace_id", None),
+                    current_task_id=str(running_task_id) if running_task_id else None,
+                )
+                sessions.append(session)
+            return sessions
+
     async def delete_session(self, session_id: str) -> bool:
         """Delete a session."""
         async with self._session_lock:
@@ -323,14 +374,14 @@ class DatabaseSessionManager:
             if session_id in self._cancel_events:
                 self._cancel_events[session_id].set()
                 del self._cancel_events[session_id]
-            
+
             # Clean up agent
             if session_id in self._agents:
                 agent = self._agents[session_id]
-                if hasattr(agent, 'cleanup') and callable(getattr(agent, 'cleanup')):
+                if hasattr(agent, "cleanup") and callable(getattr(agent, "cleanup")):
                     await agent.cleanup()
                 del self._agents[session_id]
-            
+
             # Delete from database
             async with self._session_maker() as db:
                 repo = SessionRepository(db)
@@ -343,24 +394,24 @@ class DatabaseSessionManager:
                 except Exception:
                     pass
                 return result
-    
+
     async def create_task(
         self,
         session_id: str,
         description: str,
         acceptance_criteria: list[str] | None = None,
-        connection_manager: 'ConnectionManager | None' = None,
+        connection_manager: "ConnectionManager | None" = None,
     ) -> Task:
         """Create a new task in a session."""
         async with self._session_maker() as db:
             session_repo = SessionRepository(db)
             task_repo = TaskRepository(db)
-            
+
             # Verify session exists
             db_session = await session_repo.get(session_id)
             if not db_session:
                 raise ValueError(f"Session {session_id} not found")
-            
+
             # Create task in database
             db_task = await task_repo.create(
                 session_id=session_id,
@@ -368,21 +419,23 @@ class DatabaseSessionManager:
                 acceptance_criteria=acceptance_criteria,
             )
             await db.commit()
-            
+
             # Create artifacts directory
             artifacts_dir = self.artifacts_base_dir / session_id / db_task.id
             artifacts_dir.mkdir(parents=True, exist_ok=True)
-            
+
             # Auto-generate title from first task
-            session_title = self._session_titles.get(session_id, '')
+            session_title = self._session_titles.get(session_id, "")
             if not session_title and description:
-                raw = description.strip().replace('\n', ' ')
-                session_title = raw[:60] + ('\u2026' if len(raw) > 60 else '')
+                raw = description.strip().replace("\n", " ")
+                session_title = raw[:60] + ("\u2026" if len(raw) > 60 else "")
                 self._session_titles[session_id] = session_title
                 # Emit WS event if connection_manager provided
                 if connection_manager:
                     try:
-                        await connection_manager.send_session_title_updated(session_id, session_title)
+                        await connection_manager.send_session_title_updated(
+                            session_id, session_title
+                        )
                     except Exception:
                         pass
 
@@ -395,11 +448,18 @@ class DatabaseSessionManager:
             return
         # Inject into the LLM conversation history so the next LLM call sees it
         try:
-            if hasattr(agent, 'llm') and agent.llm and hasattr(agent.llm, 'conversation'):
+            if (
+                hasattr(agent, "llm")
+                and agent.llm
+                and hasattr(agent.llm, "conversation")
+            ):
                 from ..core.llm_client import LLMMessage
-                agent.llm.conversation.append(LLMMessage(role='user', content=f'[User follow-up]: {message}'))
+
+                agent.llm.conversation.append(
+                    LLMMessage(role="user", content=f"[User follow-up]: {message}")
+                )
         except Exception as e:
-            print(f'inject_followup error: {e}')
+            print(f"inject_followup error: {e}")
 
     async def answer_clarification(self, session_id: str, answer: str) -> bool:
         """Provide an answer to a clarification question asked by the agent."""
@@ -412,7 +472,7 @@ class DatabaseSessionManager:
                 agent._clarification_event.set()
             return True
         except Exception as e:
-            print(f'answer_clarification error: {e}')
+            print(f"answer_clarification error: {e}")
             return False
 
     async def stop_session(self, session_id: str) -> bool:
@@ -463,7 +523,10 @@ class DatabaseSessionManager:
                     "backend": getattr(sandbox, "backend", "docker"),
                 }
             else:
-                return {"started": False, "error": "Docker failed to start the container"}
+                return {
+                    "started": False,
+                    "error": "Docker failed to start the container",
+                }
         except Exception as e:
             return {"started": False, "error": str(e)}
 
@@ -487,39 +550,39 @@ class DatabaseSessionManager:
                 return {"stopped": False, "error": "Failed to stop Docker container"}
         except Exception as e:
             return {"stopped": False, "error": str(e)}
-    
+
     async def get_task(self, session_id: str, task_id: str) -> Task | None:
         """Get a task by ID."""
         async with self._session_maker() as db:
             repo = TaskRepository(db)
             db_task = await repo.get(task_id)
-            
+
             if not db_task or db_task.session_id != session_id:
                 return None
-            
+
             artifacts_dir = self.artifacts_base_dir / session_id / task_id
             return self._db_to_task(db_task, artifacts_dir)
-    
+
     async def list_tasks(self, session_id: str) -> list[Task]:
         """List all tasks in a session."""
         async with self._session_maker() as db:
             repo = TaskRepository(db)
             db_tasks = await repo.list_by_session(session_id)
-            
+
             return [
                 self._db_to_task(t, self.artifacts_base_dir / session_id / t.id)
                 for t in db_tasks
             ]
-    
+
     async def get_task_result(self, session_id: str, task_id: str) -> TaskResult | None:
         """Get the result of a task."""
         async with self._session_maker() as db:
             repo = TaskRepository(db)
             db_result = await repo.get_result(task_id)
-            
+
             if not db_result:
                 return None
-            
+
             return TaskResult(
                 status="completed" if db_result.success else "failed",
                 summary=db_result.summary or "",
@@ -528,7 +591,7 @@ class DatabaseSessionManager:
                 total_tokens=0,
                 duration_seconds=db_result.duration_seconds or 0.0,
             )
-    
+
     async def run_task(
         self,
         session_id: str,
@@ -543,10 +606,10 @@ class DatabaseSessionManager:
             async with self._session_maker() as db:
                 repo = SessionRepository(db)
                 db_session = await repo.get(session_id)
-                
+
                 if not db_session:
                     raise ValueError(f"Session {session_id} not found")
-                
+
                 from ..core.llm_client import create_llm_client
                 from ..orchestrator.agent import Agent
 
@@ -563,36 +626,38 @@ class DatabaseSessionManager:
                 raw_conv = getattr(db_session, "conversation_json", None)
                 if raw_conv:
                     try:
-                        agent.llm.replace_conversation_from_api_messages(json.loads(raw_conv))
+                        agent.llm.replace_conversation_from_api_messages(
+                            json.loads(raw_conv)
+                        )
                     except Exception as _h:
                         print(f"[Session] hydrate conversation for {session_id}: {_h}")
 
                 self._agents[session_id] = agent
                 self._cancel_events[session_id] = asyncio.Event()
-        
+
         # Get task
         async with self._session_maker() as db:
             task_repo = TaskRepository(db)
             session_repo = SessionRepository(db)
-            
+
             db_task = await task_repo.get(task_id)
             if not db_task or db_task.session_id != session_id:
                 raise ValueError(f"Task {task_id} not found")
-            
+
             # Update status to running
             await task_repo.update_status(task_id, DBTaskStatus.RUNNING)
             await session_repo.update_status(session_id, DBSessionStatus.RUNNING)
             await db.commit()
-        
+
         # Notify via WebSocket
         if connection_manager:
             await connection_manager.send_task_started(
                 session_id, task_id, db_task.description
             )
-        
+
         start_time = datetime.now(timezone.utc)
         cancel_event = self._cancel_events.get(session_id, asyncio.Event())
-        
+
         # ── Auto Dependency Detection & Installation ──
         try:
             ws_dir = Path(db_task.description and agent.working_directory or ".")
@@ -603,35 +668,51 @@ class DatabaseSessionManager:
             dep_cmds: list[str] = []
             if (ws_dir / "requirements.txt").exists():
                 dep_cmds.append(f'"{_py}" -m pip install -r requirements.txt')
-            if (ws_dir / "pyproject.toml").exists() and not (ws_dir / "requirements.txt").exists():
+            if (ws_dir / "pyproject.toml").exists() and not (
+                ws_dir / "requirements.txt"
+            ).exists():
                 dep_cmds.append(f'"{_py}" -m pip install -e .')
             if (ws_dir / "package.json").exists():
                 dep_cmds.append("npm install --prefer-offline")
             if dep_cmds and connection_manager:
-                await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
-                    type=MessageType.TOOL_OUTPUT,
-                    data={"line": "[Auto] Detecting and installing dependencies..."},
-                    task_id=task_id,
-                ))
+                await connection_manager.broadcast_to_session(
+                    session_id,
+                    WebSocketMessage(
+                        type=MessageType.TOOL_OUTPUT,
+                        data={
+                            "line": "[Auto] Detecting and installing dependencies..."
+                        },
+                        task_id=task_id,
+                    ),
+                )
                 import asyncio as _asyncio
+
                 for dep_cmd in dep_cmds:
                     proc = await _asyncio.create_subprocess_shell(
-                        dep_cmd, cwd=str(ws_dir),
+                        dep_cmd,
+                        cwd=str(ws_dir),
                         stdout=_asyncio.subprocess.PIPE,
                         stderr=_asyncio.subprocess.STDOUT,
                     )
                     stdout_bytes, _ = await proc.communicate()
-                    out = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+                    out = (
+                        stdout_bytes.decode("utf-8", errors="replace")
+                        if stdout_bytes
+                        else ""
+                    )
                     for line in out.splitlines():
                         if connection_manager:
-                            await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
-                                type=MessageType.TOOL_OUTPUT,
-                                data={"line": line},
-                                task_id=task_id,
-                            ))
+                            await connection_manager.broadcast_to_session(
+                                session_id,
+                                WebSocketMessage(
+                                    type=MessageType.TOOL_OUTPUT,
+                                    data={"line": line},
+                                    task_id=task_id,
+                                ),
+                            )
         except Exception as dep_err:
             print(f"[Auto-deps] error: {dep_err}")
-        
+
         try:
             # Lock for serialized database updates in background tasks
             update_lock = asyncio.Lock()
@@ -643,7 +724,7 @@ class DatabaseSessionManager:
             async def on_update(update_type: str, data: dict[str, Any]) -> None:
                 if not connection_manager:
                     return
-                
+
                 try:
                     if update_type == "phase_changed":
                         await connection_manager.send_phase_changed(
@@ -651,13 +732,15 @@ class DatabaseSessionManager:
                         )
                     elif update_type == "tool_started":
                         await connection_manager.send_tool_started(
-                            session_id, task_id,
+                            session_id,
+                            task_id,
                             data.get("tool", ""),
                             data.get("input", {}),
                         )
                     elif update_type == "tool_completed":
                         await connection_manager.send_tool_completed(
-                            session_id, task_id,
+                            session_id,
+                            task_id,
                             data.get("tool", ""),
                             data.get("output", {}),
                             data.get("duration_ms", 0),
@@ -669,13 +752,16 @@ class DatabaseSessionManager:
                         now_m = time_module.monotonic()
                         if now_m - _last_usage_sent_at["t"] >= 1.0:
                             _last_usage_sent_at["t"] = now_m
-                            if agent and hasattr(agent, 'llm') and agent.llm:
+                            if agent and hasattr(agent, "llm") and agent.llm:
                                 usage = agent.llm.get_usage_stats()
-                                await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
-                                    type=MessageType.TOKEN_USAGE,
-                                    data=usage,
-                                    task_id=task_id,
-                                ))
+                                await connection_manager.broadcast_to_session(
+                                    session_id,
+                                    WebSocketMessage(
+                                        type=MessageType.TOKEN_USAGE,
+                                        data=usage,
+                                        task_id=task_id,
+                                    ),
+                                )
                     elif update_type == "thinking":
                         content = data.get("content", "")
                         if content:
@@ -691,11 +777,14 @@ class DatabaseSessionManager:
                         # Shell live streaming — emit a token-style line for the Shell tab
                         line = data.get("line", "")
                         if line:
-                            await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
-                                type=MessageType.TOOL_OUTPUT,
-                                data={"line": line},
-                                task_id=task_id,
-                            ))
+                            await connection_manager.broadcast_to_session(
+                                session_id,
+                                WebSocketMessage(
+                                    type=MessageType.TOOL_OUTPUT,
+                                    data={"line": line},
+                                    task_id=task_id,
+                                ),
+                            )
                     elif update_type == "browser_event":
                         await connection_manager.send_browser_event(
                             session_id,
@@ -719,7 +808,7 @@ class DatabaseSessionManager:
 
                 except Exception as e:
                     print(f"Error in background update: {e}")
-            
+
             # Create TaskState object for the agent
             task_state = TaskState(
                 task_id=task_id,
@@ -734,6 +823,7 @@ class DatabaseSessionManager:
             # IMPORTANT: The callbacks are called from synchronous context inside the agent,
             # so we use asyncio.ensure_future() to schedule the async on_update coroutine.
             main_loop = asyncio.get_running_loop()
+
             def _fire(coro):
                 """Schedule an async coroutine securely on the main event loop."""
                 try:
@@ -745,43 +835,84 @@ class DatabaseSessionManager:
                 "on_message": lambda token, is_token=False: _fire(
                     on_update("tokens" if is_token else "thinking", {"content": token})
                 ),
-                "on_tool_start": lambda name, args: _fire(on_update("tool_started", {"tool": name, "input": args})),
-                "on_tool_result": lambda name, args, output, duration: _fire(on_update("tool_completed", {"tool": name, "output": output, "duration_ms": duration})),
-                "on_phase_change": lambda phase: _fire(on_update("phase_changed", {"phase": phase})),
+                "on_tool_start": lambda name, args: _fire(
+                    on_update("tool_started", {"tool": name, "input": args})
+                ),
+                "on_tool_result": lambda name, args, output, duration: _fire(
+                    on_update(
+                        "tool_completed",
+                        {"tool": name, "output": output, "duration_ms": duration},
+                    )
+                ),
+                "on_phase_change": lambda phase: _fire(
+                    on_update("phase_changed", {"phase": phase})
+                ),
                 # on_clarification_needed: emit WS event so UI can show modal
                 # payload is now a dict with {question, options, context} or a plain string
                 "on_clarification_needed": lambda payload: asyncio.ensure_future(
-                    connection_manager.broadcast_to_session(session_id, WebSocketMessage(
-                        type=MessageType.CLARIFICATION_NEEDED,
-                        data=payload if isinstance(payload, dict) else {"question": payload, "options": [], "context": ""},
-                        task_id=task_id,
-                    ))
-                ) if connection_manager else None,
+                    connection_manager.broadcast_to_session(
+                        session_id,
+                        WebSocketMessage(
+                            type=MessageType.CLARIFICATION_NEEDED,
+                            data=payload
+                            if isinstance(payload, dict)
+                            else {"question": payload, "options": [], "context": ""},
+                            task_id=task_id,
+                        ),
+                    )
+                )
+                if connection_manager
+                else None,
                 # Shell live streaming with timestamp
-                "on_command_start": lambda cmd: _fire(on_update("tool_output", {
-                    "line": f"$ {cmd}",
-                    "type": "command",
-                    "ts": __import__("time").time(),
-                })),
+                "on_command_start": lambda cmd: _fire(
+                    on_update(
+                        "tool_output",
+                        {
+                            "line": f"$ {cmd}",
+                            "type": "command",
+                            "ts": __import__("time").time(),
+                        },
+                    )
+                ),
                 # Plan events
-                "on_plan_created": lambda steps: _fire(on_update("plan_created", {"steps": steps})),
-                "on_step_started": lambda idx, text="": _fire(on_update("step_started", {"index": idx, "text": text})),
-                "on_step_completed": lambda idx, text="": _fire(on_update("step_completed", {"index": idx, "text": text})),
-                "on_iteration": lambda iteration, max_iter: _fire(on_update("iteration", {"iteration": iteration, "max": max_iter})),
+                "on_plan_created": lambda steps: _fire(
+                    on_update("plan_created", {"steps": steps})
+                ),
+                "on_step_started": lambda idx, text="": _fire(
+                    on_update("step_started", {"index": idx, "text": text})
+                ),
+                "on_step_completed": lambda idx, text="": _fire(
+                    on_update("step_completed", {"index": idx, "text": text})
+                ),
+                "on_iteration": lambda iteration, max_iter: _fire(
+                    on_update("iteration", {"iteration": iteration, "max": max_iter})
+                ),
                 # Shell live streaming: each stdout line becomes a tool_output event
-                "on_command_output": lambda line: _fire(on_update("tool_output", {
-                    "line": line,
-                    "type": "output",
-                    "ts": __import__("time").time(),
-                })),
-                "on_browser_event": lambda payload: _fire(on_update(
-                    "browser_event",
-                    payload if isinstance(payload, dict) else {"event_type": "other"},
-                )),
+                "on_command_output": lambda line: _fire(
+                    on_update(
+                        "tool_output",
+                        {
+                            "line": line,
+                            "type": "output",
+                            "ts": __import__("time").time(),
+                        },
+                    )
+                ),
+                "on_browser_event": lambda payload: _fire(
+                    on_update(
+                        "browser_event",
+                        payload
+                        if isinstance(payload, dict)
+                        else {"event_type": "other"},
+                    )
+                ),
                 "on_file_changed": lambda path, content=None: _fire(
                     on_update(
                         "file_changed",
-                        {"path": path, "content": content if content is not None else ""},
+                        {
+                            "path": path,
+                            "content": content if content is not None else "",
+                        },
                     )
                 ),
             }
@@ -791,13 +922,13 @@ class DatabaseSessionManager:
             running = asyncio.ensure_future(coro)
             self._running_tasks[session_id] = running
             final_task_state = await running
-            
+
             # Check success: only COMPLETED = success, anything else = not success
             success = final_task_state.status == AgentTaskStatus.COMPLETED
-            
+
             # Get summary from last assistant message
             summary = ""
-            if agent.llm and hasattr(agent.llm, 'conversation'):
+            if agent.llm and hasattr(agent.llm, "conversation"):
                 for msg in reversed(agent.llm.conversation):
                     if msg.role == "assistant" and msg.content:
                         summary = msg.content
@@ -806,16 +937,28 @@ class DatabaseSessionManager:
             if not summary and success:
                 parts = ["Task completed successfully."]
                 if final_task_state.commands_executed:
-                    parts.append("Commands: " + ", ".join(final_task_state.commands_executed[-5:]))
+                    parts.append(
+                        "Commands: "
+                        + ", ".join(final_task_state.commands_executed[-5:])
+                    )
                 if final_task_state.files_changed:
                     parts.append(
-                        "Files changed: " + ", ".join(f.path for f in final_task_state.files_changed[-5:])
+                        "Files changed: "
+                        + ", ".join(f.path for f in final_task_state.files_changed[-5:])
                     )
                 summary = " ".join(parts)
-            
+
             # Create a simple result object that matches the code's expectations
             class AgentResult:
-                def __init__(self, success, summary, files_modified, commands_executed, total_tokens, error_message):
+                def __init__(
+                    self,
+                    success,
+                    summary,
+                    files_modified,
+                    commands_executed,
+                    total_tokens,
+                    error_message,
+                ):
                     self.success = success
                     self.summary = summary
                     self.files_modified = files_modified
@@ -830,24 +973,26 @@ class DatabaseSessionManager:
                 commands_executed=final_task_state.commands_executed,
                 total_tokens=final_task_state.total_tokens_used,
                 # Only treat last_error as an error if the task actually failed
-                error_message=final_task_state.last_error if not success else None
+                error_message=final_task_state.last_error if not success else None,
             )
-            
+
             # Calculate duration
             end_time = datetime.now(timezone.utc)
             duration = (end_time - start_time).total_seconds()
-            
+
             # Save result to database
             async with self._session_maker() as db:
                 task_repo = TaskRepository(db)
                 session_repo = SessionRepository(db)
                 artifact_repo = ArtifactRepository(db)
-                
+
                 # Update task status
-                status = DBTaskStatus.COMPLETED if result.success else DBTaskStatus.FAILED
+                status = (
+                    DBTaskStatus.COMPLETED if result.success else DBTaskStatus.FAILED
+                )
                 error_msg = None if result.success else result.error_message
                 await task_repo.update_status(task_id, status, error_message=error_msg)
-                
+
                 # Create result record
                 await task_repo.create_result(
                     task_id=task_id,
@@ -855,25 +1000,25 @@ class DatabaseSessionManager:
                     summary=result.summary,
                     files_modified=result.files_modified or [],
                     commands_executed=result.commands_executed or [],
-                    verification_passed=getattr(result, 'verification_passed', None),
-                    total_iterations=getattr(result, 'total_iterations', 0),
-                    total_tool_calls=getattr(result, 'total_tool_calls', 0),
+                    verification_passed=getattr(result, "verification_passed", None),
+                    total_iterations=getattr(result, "total_iterations", 0),
+                    total_tool_calls=getattr(result, "total_tool_calls", 0),
                     duration_seconds=duration,
                 )
-                
+
                 # Update session status
                 await session_repo.update_status(session_id, DBSessionStatus.IDLE)
-                
+
                 # Save artifacts metadata
                 artifacts_dir = self.artifacts_base_dir / session_id / task_id
                 artifacts_dir.mkdir(parents=True, exist_ok=True)
-                
+
                 await self._save_artifacts_to_db(
                     artifact_repo, task_id, artifacts_dir, result
                 )
-                
+
                 await db.commit()
-            
+
             # Create task result
             task_result = TaskResult(
                 status="completed" if result.success else "failed",
@@ -883,7 +1028,7 @@ class DatabaseSessionManager:
                 total_tokens=result.total_tokens or 0,
                 duration_seconds=duration,
             )
-            
+
             # Notify via WebSocket
             if connection_manager:
                 if result.success:
@@ -894,40 +1039,46 @@ class DatabaseSessionManager:
                     await connection_manager.send_task_failed(
                         session_id, task_id, result.error_message or "Unknown error"
                     )
-            
+
             return task_result
-            
+
         except asyncio.CancelledError:
             async with self._session_maker() as db:
                 task_repo = TaskRepository(db)
                 session_repo = SessionRepository(db)
-                await task_repo.update_status(task_id, DBTaskStatus.CANCELLED, error_message="Task cancelled")
+                await task_repo.update_status(
+                    task_id, DBTaskStatus.CANCELLED, error_message="Task cancelled"
+                )
                 await session_repo.update_status(session_id, DBSessionStatus.IDLE)
                 await db.commit()
-            
+
             return TaskResult(
                 status="cancelled",
                 summary="Task was cancelled",
-                duration_seconds=(datetime.now(timezone.utc) - start_time).total_seconds(),
+                duration_seconds=(
+                    datetime.now(timezone.utc) - start_time
+                ).total_seconds(),
             )
-            
+
         except Exception as e:
             async with self._session_maker() as db:
                 task_repo = TaskRepository(db)
                 session_repo = SessionRepository(db)
-                await task_repo.update_status(task_id, DBTaskStatus.FAILED, error_message=str(e))
+                await task_repo.update_status(
+                    task_id, DBTaskStatus.FAILED, error_message=str(e)
+                )
                 await session_repo.update_status(session_id, DBSessionStatus.IDLE)
                 await db.commit()
-            
+
             if connection_manager:
-                await connection_manager.send_task_failed(
-                    session_id, task_id, str(e)
-                )
-            
+                await connection_manager.send_task_failed(session_id, task_id, str(e))
+
             return TaskResult(
                 status="failed",
                 summary=f"Task failed: {e}",
-                duration_seconds=(datetime.now(timezone.utc) - start_time).total_seconds(),
+                duration_seconds=(
+                    datetime.now(timezone.utc) - start_time
+                ).total_seconds(),
             )
         finally:
             ag = self._agents.get(session_id)
@@ -936,23 +1087,23 @@ class DatabaseSessionManager:
                     await self._persist_agent_conversation(session_id, ag)
                 except Exception:
                     pass
-    
+
     async def cancel_task(self, session_id: str, task_id: str) -> bool:
         """Cancel a running task."""
         if session_id not in self._cancel_events:
             return False
-        
+
         async with self._session_maker() as db:
             repo = TaskRepository(db)
             db_task = await repo.get(task_id)
-            
+
             if not db_task or db_task.status != DBTaskStatus.RUNNING:
                 return False
-        
+
         # Signal cancellation
         self._cancel_events[session_id].set()
         return True
-    
+
     async def _save_artifacts_to_db(
         self,
         repo: ArtifactRepository,
@@ -962,9 +1113,9 @@ class DatabaseSessionManager:
     ) -> None:
         """Save task artifacts to disk and database."""
         import json
-        
+
         # Save plan
-        if hasattr(result, 'plan') and result.plan:
+        if hasattr(result, "plan") and result.plan:
             plan_file = artifacts_dir / "plan.json"
             content = json.dumps(result.plan, indent=2, default=str)
             plan_file.write_text(content)
@@ -975,9 +1126,9 @@ class DatabaseSessionManager:
                 file_path=str(plan_file),
                 size_bytes=len(content),
             )
-        
+
         # Save tool calls
-        if hasattr(result, 'tool_calls') and result.tool_calls:
+        if hasattr(result, "tool_calls") and result.tool_calls:
             calls_file = artifacts_dir / "tool_calls.json"
             content = json.dumps(result.tool_calls, indent=2, default=str)
             calls_file.write_text(content)
@@ -988,9 +1139,9 @@ class DatabaseSessionManager:
                 file_path=str(calls_file),
                 size_bytes=len(content),
             )
-        
+
         # Save verification results
-        if hasattr(result, 'verification_results') and result.verification_results:
+        if hasattr(result, "verification_results") and result.verification_results:
             verify_file = artifacts_dir / "verification_results.json"
             content = json.dumps(result.verification_results, indent=2, default=str)
             verify_file.write_text(content)
@@ -1001,9 +1152,9 @@ class DatabaseSessionManager:
                 file_path=str(verify_file),
                 size_bytes=len(content),
             )
-        
+
         # Save diff
-        if hasattr(result, 'diff') and result.diff:
+        if hasattr(result, "diff") and result.diff:
             diff_file = artifacts_dir / "diff.patch"
             diff_file.write_text(result.diff)
             await repo.create(
@@ -1013,7 +1164,7 @@ class DatabaseSessionManager:
                 file_path=str(diff_file),
                 size_bytes=len(result.diff),
             )
-        
+
         # Save summary
         summary_content = f"""# Task Summary
 
@@ -1041,42 +1192,46 @@ class DatabaseSessionManager:
             file_path=str(summary_file),
             size_bytes=len(summary_content),
         )
-    
+
     async def list_directory(self, session_id: str, directory: str = ".") -> list[dict]:
         """List files and directories in the session's working directory."""
         async with self._session_maker() as db:
             repo = SessionRepository(db)
             db_session = await repo.get(session_id)
-            
+
             if not db_session:
                 raise ValueError(f"Session {session_id} not found")
-            
-            base_path = Path(self._resolve_workspace_for_db_session(db_session)).resolve()
+
+            base_path = Path(
+                self._resolve_workspace_for_db_session(db_session)
+            ).resolve()
             target_path = (base_path / directory).resolve()
-            
+
             # Security check: ensure target_path is within base_path
             if not str(target_path).startswith(str(base_path)):
                 raise ValueError("Cannot access directories outside of workspace")
-            
+
             if not target_path.exists():
                 return []
-            
+
             nodes = []
             for item in target_path.iterdir():
                 # Skip hidden files and common exclusions
-                if item.name.startswith('.') and item.name != '.env':
+                if item.name.startswith(".") and item.name != ".env":
                     continue
-                if item.name == '__pycache__' or item.name == 'node_modules':
+                if item.name == "__pycache__" or item.name == "node_modules":
                     continue
-                
+
                 rel_path = str(item.relative_to(base_path))
-                nodes.append({
-                    "name": item.name,
-                    "path": rel_path,
-                    "isDir": item.is_dir(),
-                    "children": [] if item.is_dir() else None
-                })
-            
+                nodes.append(
+                    {
+                        "name": item.name,
+                        "path": rel_path,
+                        "isDir": item.is_dir(),
+                        "children": [] if item.is_dir() else None,
+                    }
+                )
+
             # Sort: directories first, then by name
             nodes.sort(key=lambda x: (not x["isDir"], x["name"].lower()))
             return nodes
@@ -1087,47 +1242,49 @@ class DatabaseSessionManager:
             repo = ArtifactRepository(db)
             artifacts = await repo.list_by_task(task_id)
             return [a.name for a in artifacts]
-    
-    async def get_artifact(self, session_id: str, task_id: str, artifact_name: str) -> str | None:
+
+    async def get_artifact(
+        self, session_id: str, task_id: str, artifact_name: str
+    ) -> str | None:
         """Get artifact content."""
         async with self._session_maker() as db:
             repo = ArtifactRepository(db)
             artifact = await repo.get_by_name(task_id, artifact_name)
-            
+
             if not artifact:
                 return None
-            
+
             if artifact.content:
                 return artifact.content
-            
+
             if artifact.file_path:
                 path = Path(artifact.file_path)
                 if path.exists():
                     return path.read_text()
-            
+
             return None
-    
+
     async def get_active_session_count(self) -> int:
         """Get number of active sessions."""
         async with self._session_maker() as db:
             repo = SessionRepository(db)
             return await repo.count_active()
-    
+
     async def get_total_tasks_completed(self) -> int:
         """Get total number of completed tasks."""
         async with self._session_maker() as db:
             repo = TaskRepository(db)
             return await repo.count_completed()
-    
+
     def get_uptime_seconds(self) -> float:
         """Get uptime in seconds."""
         return (datetime.now(timezone.utc) - self._start_time).total_seconds()
-    
+
     async def shutdown(self) -> None:
         """Shutdown all sessions."""
         for session_id in list(self._agents.keys()):
             await self.delete_session(session_id)
-    
+
     def _db_to_session(self, db_session: SessionModel) -> Session:
         """Convert database model to Session object."""
         status_map = {
@@ -1136,7 +1293,7 @@ class DatabaseSessionManager:
             DBSessionStatus.ERROR: SessionStatus.ERROR,
             DBSessionStatus.TERMINATED: SessionStatus.STOPPED,
         }
-        
+
         resolved_wd = self._resolve_workspace_for_db_session(db_session)
         session = Session(
             session_id=db_session.id,
@@ -1151,24 +1308,29 @@ class DatabaseSessionManager:
             cancel_event=self._cancel_events.get(db_session.id),
             workspace_id=getattr(db_session, "workspace_id", None),
         )
-        
+
         # Add tasks
         try:
             # Check if tasks relationship is loaded to avoid MissingGreenlet
             from sqlalchemy import inspect
+
             insp = inspect(db_session)
             if "tasks" not in insp.unloaded:
                 # Use getattr with None default for extra safety
                 tasks_list = getattr(db_session, "tasks", [])
                 if tasks_list:
                     for db_task in tasks_list:
-                        artifacts_dir = self.artifacts_base_dir / db_session.id / db_task.id
-                        session.tasks[db_task.id] = self._db_to_task(db_task, artifacts_dir)
+                        artifacts_dir = (
+                            self.artifacts_base_dir / db_session.id / db_task.id
+                        )
+                        session.tasks[db_task.id] = self._db_to_task(
+                            db_task, artifacts_dir
+                        )
         except Exception as e:
             print(f"Warning: Failed to load tasks for session {db_session.id}: {e}")
-        
+
         return session
-    
+
     def _db_to_task(self, db_task: TaskModel, artifacts_dir: Path) -> Task:
         """Convert database model to Task object."""
         status_map = {
@@ -1178,7 +1340,7 @@ class DatabaseSessionManager:
             DBTaskStatus.FAILED: TaskStatus.FAILED,
             DBTaskStatus.CANCELLED: TaskStatus.CANCELLED,
         }
-        
+
         task = Task(
             task_id=db_task.id,
             description=db_task.description,
@@ -1191,17 +1353,20 @@ class DatabaseSessionManager:
             error_message=db_task.error_message,
             artifacts_dir=artifacts_dir,
         )
-        
+
         # Add result if exists
         try:
             # Check if result relationship is loaded to avoid MissingGreenlet
             from sqlalchemy import inspect
+
             insp = inspect(db_task)
             if "result" not in insp.unloaded:
                 res = getattr(db_task, "result", None)
                 if res:
                     task.result = TaskResult(
-                        status="completed" if getattr(res, "success", False) else "failed",
+                        status="completed"
+                        if getattr(res, "success", False)
+                        else "failed",
                         summary=getattr(res, "summary", "") or "",
                         files_modified=getattr(res, "files_modified", []) or [],
                         commands_executed=getattr(res, "commands_executed", []) or [],
@@ -1210,5 +1375,5 @@ class DatabaseSessionManager:
                     )
         except Exception as e:
             print(f"Warning: Failed to load result for task {db_task.id}: {e}")
-        
+
         return task

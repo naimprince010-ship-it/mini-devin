@@ -22,15 +22,20 @@ router = APIRouter(tags=["api"])
 
 # Request/Response Models
 
+
 class CreateSessionRequest(BaseModel):
     """Request to create a new session."""
-    working_directory: str = Field(default=".", description="Working directory for the session")
+
+    working_directory: str = Field(
+        default=".", description="Working directory for the session"
+    )
     model: str = Field(default="gpt-4o", description="LLM model to use")
     max_iterations: int = Field(default=50, description="Maximum iterations per task")
 
 
 class CreateSessionResponse(BaseModel):
     """Response from creating a session."""
+
     session_id: str
     created_at: str
     status: str
@@ -38,6 +43,7 @@ class CreateSessionResponse(BaseModel):
 
 class SessionInfo(BaseModel):
     """Information about a session."""
+
     session_id: str
     created_at: str
     status: str
@@ -50,12 +56,16 @@ class SessionInfo(BaseModel):
 
 class CreateTaskRequest(BaseModel):
     """Request to create a new task."""
+
     description: str = Field(..., description="Task description")
-    acceptance_criteria: list[str] = Field(default_factory=list, description="Acceptance criteria")
+    acceptance_criteria: list[str] = Field(
+        default_factory=list, description="Acceptance criteria"
+    )
 
 
 class CreateTaskResponse(BaseModel):
     """Response from creating a task."""
+
     task_id: str
     session_id: str
     status: str
@@ -64,6 +74,7 @@ class CreateTaskResponse(BaseModel):
 
 class TaskInfo(BaseModel):
     """Information about a task."""
+
     task_id: str
     session_id: str
     description: str
@@ -78,6 +89,7 @@ class TaskInfo(BaseModel):
 
 class TaskResult(BaseModel):
     """Result of a completed task."""
+
     task_id: str
     status: str
     summary: str
@@ -89,6 +101,7 @@ class TaskResult(BaseModel):
 
 class SystemStatus(BaseModel):
     """System status information."""
+
     status: str
     version: str
     active_sessions: int
@@ -98,17 +111,18 @@ class SystemStatus(BaseModel):
 
 # Session Endpoints
 
+
 @router.post("/sessions", response_model=CreateSessionResponse)
 async def create_session(request: CreateSessionRequest, req: Request):
     """Create a new agent session."""
     session_manager = req.app.state.session_manager
-    
+
     session = await session_manager.create_session(
         working_directory=request.working_directory,
         model=request.model,
         max_iterations=request.max_iterations,
     )
-    
+
     return CreateSessionResponse(
         session_id=session.session_id,
         created_at=session.created_at.isoformat(),
@@ -122,22 +136,26 @@ async def list_sessions(req: Request):
     try:
         session_manager = req.app.state.session_manager
         sessions = await session_manager.list_sessions()
-        
+
         return [
             SessionInfo(
                 session_id=s.session_id,
                 created_at=s.created_at.isoformat(),
-                status=s.status.value if hasattr(s.status, 'value') else str(s.status),
+                status=s.status.value if hasattr(s.status, "value") else str(s.status),
                 working_directory=s.working_directory,
-                current_task=getattr(s, 'current_task_id', None),
+                current_task=(
+                    getattr(s, "current_task_id", None)
+                    or (s.active_task_id() if hasattr(s, "active_task_id") else None)
+                ),
                 iteration=s.iteration,
                 total_tasks=s.total_tasks,
-                title=getattr(s, 'title', ''),
+                title=getattr(s, "title", ""),
             )
             for s in sessions
         ]
     except Exception as e:
         import traceback
+
         error_details = traceback.format_exc()
         print(f"Error in list_sessions: {error_details}")
         raise HTTPException(status_code=500, detail=f"Error listing sessions: {str(e)}")
@@ -148,19 +166,26 @@ async def get_session(session_id: str, req: Request):
     """Get information about a specific session."""
     session_manager = req.app.state.session_manager
     session = await session_manager.get_session(session_id)
-    
+
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     return SessionInfo(
         session_id=session.session_id,
         created_at=session.created_at.isoformat(),
-        status=session.status.value if hasattr(session.status, 'value') else str(session.status),
+        status=session.status.value
+        if hasattr(session.status, "value")
+        else str(session.status),
         working_directory=session.working_directory,
-        current_task=getattr(session, 'current_task_id', None),
+        current_task=(
+            getattr(session, "current_task_id", None)
+            or (
+                session.active_task_id() if hasattr(session, "active_task_id") else None
+            )
+        ),
         iteration=session.iteration,
         total_tasks=session.total_tasks,
-        title=getattr(session, 'title', ''),
+        title=getattr(session, "title", ""),
     )
 
 
@@ -169,10 +194,10 @@ async def delete_session(session_id: str, req: Request):
     """Delete a session."""
     session_manager = req.app.state.session_manager
     success = await session_manager.delete_session(session_id)
-    
+
     if not success:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     return {"status": "deleted", "session_id": session_id}
 
 
@@ -191,6 +216,7 @@ async def list_workspace_files(session_id: str, req: Request, directory: str = "
 
 # Task Endpoints
 
+
 @router.post("/sessions/{session_id}/tasks", response_model=CreateTaskResponse)
 async def create_task(
     session_id: str,
@@ -201,11 +227,11 @@ async def create_task(
     """Create and start a new task in a session."""
     session_manager = req.app.state.session_manager
     connection_manager = req.app.state.connection_manager
-    
+
     session = await session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     # Create the task
     task = await session_manager.create_task(
         session_id=session_id,
@@ -213,7 +239,7 @@ async def create_task(
         acceptance_criteria=request.acceptance_criteria,
         connection_manager=connection_manager,
     )
-    
+
     # Start the task in the background
     background_tasks.add_task(
         session_manager.run_task,
@@ -221,11 +247,11 @@ async def create_task(
         task.task_id,
         connection_manager,
     )
-    
+
     return CreateTaskResponse(
         task_id=task.task_id,
         session_id=session_id,
-        status=task.status.value if hasattr(task.status, 'value') else str(task.status),
+        status=task.status.value if hasattr(task.status, "value") else str(task.status),
         created_at=task.created_at.isoformat(),
     )
 
@@ -234,31 +260,39 @@ async def create_task(
 async def list_tasks(session_id: str, req: Request):
     """List all tasks in a session."""
     session_manager = req.app.state.session_manager
-    
+
     session = await session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     try:
         tasks = await session_manager.list_tasks(session_id)
-        
+
         task_infos = []
         for t in tasks:
             try:
                 # Safely get result summary if available
                 res_summary = None
-                if hasattr(t, 'result') and t.result is not None:
-                    res_summary = getattr(t.result, 'summary', None)
-                
+                if hasattr(t, "result") and t.result is not None:
+                    res_summary = getattr(t.result, "summary", None)
+
                 task_infos.append(
                     TaskInfo(
                         task_id=t.task_id,
                         session_id=session_id,
                         description=t.description,
-                        status=t.status.value if hasattr(t.status, 'value') else str(t.status),
-                        created_at=t.created_at.isoformat() if hasattr(t.created_at, 'isoformat') else str(t.created_at),
-                        started_at=t.started_at.isoformat() if t.started_at and hasattr(t.started_at, 'isoformat') else None,
-                        completed_at=t.completed_at.isoformat() if t.completed_at and hasattr(t.completed_at, 'isoformat') else None,
+                        status=t.status.value
+                        if hasattr(t.status, "value")
+                        else str(t.status),
+                        created_at=t.created_at.isoformat()
+                        if hasattr(t.created_at, "isoformat")
+                        else str(t.created_at),
+                        started_at=t.started_at.isoformat()
+                        if t.started_at and hasattr(t.started_at, "isoformat")
+                        else None,
+                        completed_at=t.completed_at.isoformat()
+                        if t.completed_at and hasattr(t.completed_at, "isoformat")
+                        else None,
                         iteration=t.iteration,
                         error_message=t.error_message,
                         summary=res_summary,
@@ -269,9 +303,9 @@ async def list_tasks(session_id: str, req: Request):
                 # Still add basic info if possible
                 task_infos.append(
                     TaskInfo(
-                        task_id=getattr(t, 'task_id', 'unknown'),
+                        task_id=getattr(t, "task_id", "unknown"),
                         session_id=session_id,
-                        description=getattr(t, 'description', ''),
+                        description=getattr(t, "description", ""),
                         status="error",
                         created_at=datetime.now(timezone.utc).isoformat(),
                         iteration=0,
@@ -281,6 +315,7 @@ async def list_tasks(session_id: str, req: Request):
         return task_infos
     except Exception as e:
         import traceback
+
         print(f"Error in list_tasks API: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error listing tasks: {str(e)}")
 
@@ -289,22 +324,24 @@ async def list_tasks(session_id: str, req: Request):
 async def get_task(session_id: str, task_id: str, req: Request):
     """Get information about a specific task."""
     session_manager = req.app.state.session_manager
-    
+
     task = await session_manager.get_task(session_id, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    
+
     return TaskInfo(
         task_id=task.task_id,
         session_id=session_id,
         description=task.description,
-        status=task.status.value if hasattr(task.status, 'value') else str(task.status),
+        status=task.status.value if hasattr(task.status, "value") else str(task.status),
         created_at=task.created_at.isoformat(),
         started_at=task.started_at.isoformat() if task.started_at else None,
         completed_at=task.completed_at.isoformat() if task.completed_at else None,
         iteration=task.iteration,
         error_message=task.error_message,
-        summary=task.result.summary if hasattr(task, 'result') and task.result else None,
+        summary=task.result.summary
+        if hasattr(task, "result") and task.result
+        else None,
     )
 
 
@@ -312,11 +349,11 @@ async def get_task(session_id: str, task_id: str, req: Request):
 async def get_task_result(session_id: str, task_id: str, req: Request):
     """Get the result of a completed task."""
     session_manager = req.app.state.session_manager
-    
+
     result = await session_manager.get_task_result(session_id, task_id)
     if not result:
         raise HTTPException(status_code=404, detail="Task result not found")
-    
+
     return TaskResult(
         task_id=task_id,
         status=result.status,
@@ -332,11 +369,11 @@ async def get_task_result(session_id: str, task_id: str, req: Request):
 async def cancel_task(session_id: str, task_id: str, req: Request):
     """Cancel a running task."""
     session_manager = req.app.state.session_manager
-    
+
     success = await session_manager.cancel_task(session_id, task_id)
     if not success:
         raise HTTPException(status_code=404, detail="Task not found or not running")
-    
+
     return {"status": "cancelled", "task_id": task_id}
 
 
@@ -352,15 +389,16 @@ async def stop_session(session_id: str, req: Request):
 
 # Artifact Endpoints
 
+
 @router.get("/sessions/{session_id}/tasks/{task_id}/artifacts")
 async def list_artifacts(session_id: str, task_id: str, req: Request):
     """List artifacts for a task."""
     session_manager = req.app.state.session_manager
-    
+
     artifacts = await session_manager.list_artifacts(session_id, task_id)
     if artifacts is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    
+
     return {"artifacts": artifacts}
 
 
@@ -368,24 +406,25 @@ async def list_artifacts(session_id: str, task_id: str, req: Request):
 async def get_artifact(session_id: str, task_id: str, artifact_name: str, req: Request):
     """Get a specific artifact."""
     session_manager = req.app.state.session_manager
-    
+
     content = await session_manager.get_artifact(session_id, task_id, artifact_name)
     if content is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
-    
+
     return {"name": artifact_name, "content": content}
 
 
 # System Endpoints
 
+
 @router.get("/status", response_model=SystemStatus)
 async def get_status(req: Request):
     """Get system status."""
     session_manager = req.app.state.session_manager
-    
+
     active_sessions = await session_manager.get_active_session_count()
     total_completed = await session_manager.get_total_tasks_completed()
-    
+
     return SystemStatus(
         status="running",
         version="1.0.0",
@@ -403,29 +442,29 @@ async def list_models(
 ):
     """
     List available LLM models.
-    
+
     Args:
         provider: Filter by provider (openai, anthropic, ollama, azure)
         supports_tools: Filter by tool support capability
         only_configured: Only return models from configured providers
     """
     from mini_devin.core.providers import get_model_registry, Provider
-    
+
     registry = get_model_registry()
-    
+
     provider_enum = None
     if provider:
         try:
             provider_enum = Provider(provider)
         except ValueError:
             pass
-    
+
     models = registry.list_models(
         provider=provider_enum,
         supports_tools=supports_tools,
         only_configured=only_configured,
     )
-    
+
     return {
         "models": [
             {
@@ -451,37 +490,41 @@ async def trigger_self_evolution(req: Request, background_tasks: BackgroundTasks
     """
     session_manager = req.app.state.session_manager
     connection_manager = req.app.state.connection_manager
-    
+
     # Create a specialized session for self-development
     session = await session_manager.create_session(
         working_directory=".",
-        model="gpt-4o", # Default high-power model for self-dev
+        model="gpt-4o",  # Default high-power model for self-dev
         max_iterations=100,
     )
-    
+
     # In a real implementation, we would use the SelfDeveloperAgent here.
     # For now, we seed the session with a self-audit task description.
     audit_task_desc = "Perform a self-audit of the 'mini_devin' directory and implement one high-priority improvement found."
-    
+
     task = await session_manager.create_task(
         session_id=session.session_id,
         description=audit_task_desc,
-        acceptance_criteria=["Improvement implemented", "Tests pass", "Code remains functional"],
+        acceptance_criteria=[
+            "Improvement implemented",
+            "Tests pass",
+            "Code remains functional",
+        ],
         connection_manager=connection_manager,
     )
-    
+
     background_tasks.add_task(
         session_manager.run_task,
         session.session_id,
         task.task_id,
         connection_manager,
     )
-    
+
     return {
         "status": "started",
         "session_id": session.session_id,
         "task_id": task.task_id,
-        "message": "Self-evolution loop initiated with a self-audit task."
+        "message": "Self-evolution loop initiated with a self-audit task.",
     }
 
 
@@ -494,28 +537,35 @@ async def restart_system():
     try:
         with open(".restart_flag", "w") as f:
             f.write("restart")
-        return {"status": "success", "message": "Restart signal sent. System will reboot shortly."}
+        return {
+            "status": "success",
+            "message": "Restart signal sent. System will reboot shortly.",
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to send restart signal: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to send restart signal: {str(e)}"
+        )
 
 
 @router.get("/providers")
 async def list_providers():
     """List all providers and their configuration status."""
     from mini_devin.core.providers import get_model_registry, Provider
-    
+
     registry = get_model_registry()
-    
+
     providers = []
     for p in Provider:
         config = registry.get_provider_config(p)
-        providers.append({
-            "id": p.value,
-            "name": p.name,
-            "configured": registry.is_provider_configured(p),
-            "enabled": config.enabled if config else False,
-        })
-    
+        providers.append(
+            {
+                "id": p.value,
+                "name": p.name,
+                "configured": registry.is_provider_configured(p),
+                "enabled": config.enabled if config else False,
+            }
+        )
+
     return {
         "providers": providers,
         "default_model": registry.get_default_model(),
@@ -524,8 +574,10 @@ async def list_providers():
 
 # Skills Endpoints
 
+
 class CreateSkillRequest(BaseModel):
     """Request to create a custom skill."""
+
     name: str = Field(..., description="Unique skill name")
     description: str = Field(..., description="Skill description")
     steps: list[dict] = Field(..., description="List of skill steps")
@@ -535,6 +587,7 @@ class CreateSkillRequest(BaseModel):
 
 class UpdateSkillRequest(BaseModel):
     """Request to update a custom skill."""
+
     description: str | None = Field(None, description="Skill description")
     steps: list[dict] | None = Field(None, description="List of skill steps")
     parameters: list[dict] | None = Field(None, description="Skill parameters")
@@ -543,6 +596,7 @@ class UpdateSkillRequest(BaseModel):
 
 class SkillInfo(BaseModel):
     """Information about a skill."""
+
     name: str
     description: str
     version: str
@@ -554,9 +608,12 @@ class SkillInfo(BaseModel):
 
 class ExecuteSkillRequest(BaseModel):
     """Request to execute a skill."""
+
     parameters: dict = Field(default_factory=dict, description="Skill parameters")
     workspace_path: str = Field(default=".", description="Workspace path")
-    dry_run: bool = Field(default=False, description="Preview changes without executing")
+    dry_run: bool = Field(
+        default=False, description="Preview changes without executing"
+    )
 
 
 @router.get("/skills")
@@ -568,7 +625,7 @@ async def list_skills(
 ):
     """
     List available skills.
-    
+
     Args:
         tag: Filter by tag
         search: Search by name or description
@@ -576,33 +633,37 @@ async def list_skills(
         include_custom: Include custom user-created skills
     """
     from mini_devin.skills.registry import get_registry
-    
+
     registry = get_registry()
-    
+
     if tag:
         skill_names = registry.list_by_tag(tag)
     elif search:
         skill_names = registry.search(search)
     else:
         skill_names = registry.list_skills()
-    
+
     skills = []
     custom_skills = _get_custom_skills()
-    
+
     for name in skill_names:
         info = registry.get_skill_info(name)
         if info:
             if include_builtin:
                 skills.append({**info, "is_custom": False})
-    
+
     if include_custom:
         for skill in custom_skills.values():
             if tag and tag not in skill.get("tags", []):
                 continue
-            if search and search.lower() not in skill["name"].lower() and search.lower() not in skill.get("description", "").lower():
+            if (
+                search
+                and search.lower() not in skill["name"].lower()
+                and search.lower() not in skill.get("description", "").lower()
+            ):
                 continue
             skills.append({**skill, "is_custom": True})
-    
+
     return {"skills": skills, "total": len(skills)}
 
 
@@ -610,15 +671,15 @@ async def list_skills(
 async def list_skill_tags():
     """List all available skill tags."""
     from mini_devin.skills.registry import get_registry
-    
+
     registry = get_registry()
     builtin_tags = registry.list_tags()
-    
+
     custom_skills = _get_custom_skills()
     custom_tags = set()
     for skill in custom_skills.values():
         custom_tags.update(skill.get("tags", []))
-    
+
     all_tags = list(set(builtin_tags) | custom_tags)
     return {"tags": sorted(all_tags)}
 
@@ -627,17 +688,17 @@ async def list_skill_tags():
 async def get_skill(skill_name: str):
     """Get detailed information about a skill."""
     from mini_devin.skills.registry import get_registry
-    
+
     registry = get_registry()
-    
+
     custom_skills = _get_custom_skills()
     if skill_name in custom_skills:
         return {**custom_skills[skill_name], "is_custom": True}
-    
+
     info = registry.get_skill_info(skill_name)
     if not info:
         raise HTTPException(status_code=404, detail="Skill not found")
-    
+
     return {**info, "is_custom": False}
 
 
@@ -645,16 +706,20 @@ async def get_skill(skill_name: str):
 async def create_skill(request: CreateSkillRequest):
     """Create a new custom skill."""
     from mini_devin.skills.registry import get_registry
-    
+
     registry = get_registry()
-    
+
     if registry.get(request.name):
-        raise HTTPException(status_code=400, detail="A built-in skill with this name already exists")
-    
+        raise HTTPException(
+            status_code=400, detail="A built-in skill with this name already exists"
+        )
+
     custom_skills = _get_custom_skills()
     if request.name in custom_skills:
-        raise HTTPException(status_code=400, detail="A custom skill with this name already exists")
-    
+        raise HTTPException(
+            status_code=400, detail="A custom skill with this name already exists"
+        )
+
     skill_data = {
         "name": request.name,
         "description": request.description,
@@ -664,10 +729,10 @@ async def create_skill(request: CreateSkillRequest):
         "tags": request.tags,
         "required_tools": _extract_required_tools(request.steps),
     }
-    
+
     custom_skills[request.name] = skill_data
     _save_custom_skills(custom_skills)
-    
+
     return SkillInfo(
         name=skill_data["name"],
         description=skill_data["description"],
@@ -683,16 +748,17 @@ async def create_skill(request: CreateSkillRequest):
 async def update_skill(skill_name: str, request: UpdateSkillRequest):
     """Update a custom skill."""
     custom_skills = _get_custom_skills()
-    
+
     if skill_name not in custom_skills:
         from mini_devin.skills.registry import get_registry
+
         registry = get_registry()
         if registry.get(skill_name):
             raise HTTPException(status_code=400, detail="Cannot modify built-in skills")
         raise HTTPException(status_code=404, detail="Skill not found")
-    
+
     skill = custom_skills[skill_name]
-    
+
     if request.description is not None:
         skill["description"] = request.description
     if request.steps is not None:
@@ -702,13 +768,13 @@ async def update_skill(skill_name: str, request: UpdateSkillRequest):
         skill["parameters"] = request.parameters
     if request.tags is not None:
         skill["tags"] = request.tags
-    
+
     version_parts = skill.get("version", "1.0.0").split(".")
     version_parts[-1] = str(int(version_parts[-1]) + 1)
     skill["version"] = ".".join(version_parts)
-    
+
     _save_custom_skills(custom_skills)
-    
+
     return {**skill, "is_custom": True}
 
 
@@ -716,17 +782,18 @@ async def update_skill(skill_name: str, request: UpdateSkillRequest):
 async def delete_skill(skill_name: str):
     """Delete a custom skill."""
     custom_skills = _get_custom_skills()
-    
+
     if skill_name not in custom_skills:
         from mini_devin.skills.registry import get_registry
+
         registry = get_registry()
         if registry.get(skill_name):
             raise HTTPException(status_code=400, detail="Cannot delete built-in skills")
         raise HTTPException(status_code=404, detail="Skill not found")
-    
+
     del custom_skills[skill_name]
     _save_custom_skills(custom_skills)
-    
+
     return {"status": "deleted", "skill_name": skill_name}
 
 
@@ -740,9 +807,9 @@ async def execute_skill(
     """Execute a skill."""
     from mini_devin.skills.registry import get_registry
     from mini_devin.skills.base import SkillContext
-    
+
     registry = get_registry()
-    
+
     custom_skills = _get_custom_skills()
     if skill_name in custom_skills:
         execution_id = _execute_custom_skill(
@@ -757,28 +824,29 @@ async def execute_skill(
             "status": "started",
             "dry_run": request.dry_run,
         }
-    
+
     skill = registry.get(skill_name)
     if not skill:
         raise HTTPException(status_code=404, detail="Skill not found")
-    
+
     context = SkillContext(
         workspace_path=request.workspace_path,
         dry_run=request.dry_run,
     )
-    
+
     import uuid
+
     execution_id = str(uuid.uuid4())
-    
+
     async def run_skill():
         try:
             result = await registry.execute(skill_name, context, **request.parameters)
             _store_execution_result(execution_id, result)
         except Exception as e:
             _store_execution_error(execution_id, str(e))
-    
+
     background_tasks.add_task(run_skill)
-    
+
     return {
         "execution_id": execution_id,
         "skill_name": skill_name,
@@ -836,8 +904,9 @@ def _execute_custom_skill(
 ) -> str:
     """Execute a custom skill and return execution ID."""
     import uuid
+
     execution_id = str(uuid.uuid4())
-    
+
     _EXECUTIONS[execution_id] = {
         "execution_id": execution_id,
         "skill_name": skill["name"],
@@ -849,7 +918,7 @@ def _execute_custom_skill(
         "result": None,
         "error": None,
     }
-    
+
     if dry_run:
         _EXECUTIONS[execution_id]["status"] = "completed"
         _EXECUTIONS[execution_id]["result"] = {
@@ -857,14 +926,16 @@ def _execute_custom_skill(
             "message": "Dry run completed - no changes made",
             "steps_preview": skill.get("steps", []),
         }
-    
+
     return execution_id
 
 
 def _store_execution_result(execution_id: str, result) -> None:
     """Store execution result."""
     if execution_id in _EXECUTIONS:
-        _EXECUTIONS[execution_id]["status"] = "completed" if result.success else "failed"
+        _EXECUTIONS[execution_id]["status"] = (
+            "completed" if result.success else "failed"
+        )
         _EXECUTIONS[execution_id]["result"] = {
             "success": result.success,
             "message": result.message,

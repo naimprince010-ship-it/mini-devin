@@ -16,7 +16,14 @@ import asyncio
 import sys
 import threading
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, BackgroundTasks
+from fastapi import (
+    FastAPI,
+    WebSocket,
+    WebSocketDisconnect,
+    HTTPException,
+    Request,
+    BackgroundTasks,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -40,8 +47,7 @@ from mini_devin.core.providers import Provider, get_model_registry
 def _legacy_openai_toggle_env_set() -> bool:
     """Some deployments used ``Plodder`` / ``MiniDevin`` env vars alongside API keys."""
     return bool(
-        (os.getenv("Plodder") or "").strip()
-        or (os.getenv("MiniDevin") or "").strip()
+        (os.getenv("Plodder") or "").strip() or (os.getenv("MiniDevin") or "").strip()
     )
 
 
@@ -52,7 +58,9 @@ def _available_ollama_model_ids() -> set[str]:
 
     import urllib.request
 
-    api_base = (os.getenv("OLLAMA_API_BASE") or "http://localhost:11434").strip().rstrip("/")
+    api_base = (
+        (os.getenv("OLLAMA_API_BASE") or "http://localhost:11434").strip().rstrip("/")
+    )
     timeout_raw = (os.getenv("OLLAMA_DISCOVERY_TIMEOUT_SEC") or "2").strip()
     try:
         timeout = max(0.2, float(timeout_raw))
@@ -60,7 +68,9 @@ def _available_ollama_model_ids() -> set[str]:
         timeout = 2.0
 
     try:
-        with urllib.request.urlopen(f"{api_base}/api/tags", timeout=timeout) as response:
+        with urllib.request.urlopen(
+            f"{api_base}/api/tags", timeout=timeout
+        ) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except Exception as exc:
         print(f"[API] Ollama model discovery failed: {exc}")
@@ -80,7 +90,11 @@ def _available_ollama_model_ids() -> set[str]:
 def _discover_repo_root() -> str:
     """Find project root (folder with pyproject.toml + mini_devin/). Works for editable installs,
     non-editable installs under ``<repo>/.venv/.../site-packages``, and odd cwd."""
-    env_root = (os.environ.get("PLODDER_REPO_ROOT") or os.environ.get("MINI_DEVIN_REPO_ROOT") or "").strip()
+    env_root = (
+        os.environ.get("PLODDER_REPO_ROOT")
+        or os.environ.get("MINI_DEVIN_REPO_ROOT")
+        or ""
+    ).strip()
     if env_root:
         abs_env = os.path.abspath(env_root)
         if os.path.isfile(os.path.join(abs_env, "pyproject.toml")) and os.path.isdir(
@@ -89,13 +103,17 @@ def _discover_repo_root() -> str:
             return abs_env
 
     cwd = os.path.abspath(os.getcwd())
-    if os.path.isfile(os.path.join(cwd, "pyproject.toml")) and os.path.isdir(os.path.join(cwd, "mini_devin")):
+    if os.path.isfile(os.path.join(cwd, "pyproject.toml")) and os.path.isdir(
+        os.path.join(cwd, "mini_devin")
+    ):
         return cwd
 
     here = os.path.abspath(os.path.dirname(__file__))
     p = here
     for _ in range(16):
-        if os.path.isfile(os.path.join(p, "pyproject.toml")) and os.path.isdir(os.path.join(p, "mini_devin")):
+        if os.path.isfile(os.path.join(p, "pyproject.toml")) and os.path.isdir(
+            os.path.join(p, "mini_devin")
+        ):
             return p
         parent = os.path.dirname(p)
         if parent == p:
@@ -195,11 +213,15 @@ def _validate_model_scope(model: str, *, scope: str) -> str:
         allow = _csv_env("CHAT_MODEL_ALLOWLIST", "auto,openai/qwen3-coder-flash")
         deny = _csv_env("CHAT_MODEL_DENYLIST", "openai/gpt-5.3-codex")
     else:
-        allow = _csv_env("BENCHMARK_MODEL_ALLOWLIST", "openai/gpt-5.3-codex,openai/qwen3-coder-flash")
+        allow = _csv_env(
+            "BENCHMARK_MODEL_ALLOWLIST", "openai/gpt-5.3-codex,openai/qwen3-coder-flash"
+        )
         deny = _csv_env("BENCHMARK_MODEL_DENYLIST", "")
 
     if normalized in deny:
-        raise HTTPException(status_code=400, detail=f"model `{model}` is blocked for {scope} scope")
+        raise HTTPException(
+            status_code=400, detail=f"model `{model}` is blocked for {scope} scope"
+        )
 
     if "*" not in allow and normalized not in allow:
         raise HTTPException(
@@ -227,6 +249,7 @@ def _load_benchmark_lessons_context(max_chars: int = 8000) -> str:
         return ""
     return text[:max_chars]
 
+
 def _check_rate_limit(key: str, max_calls: int, window_seconds: int = 60) -> bool:
     """Returns True if allowed, False if rate limited."""
     now = time.time()
@@ -242,7 +265,9 @@ def _check_rate_limit(key: str, max_calls: int, window_seconds: int = 60) -> boo
 
 
 def _browser_trace_file_path() -> Path:
-    trace_dir = (os.getenv("PLODDER_BROWSER_TRACE_DIR") or "/var/tmp/plodder-browser-traces").strip()
+    trace_dir = (
+        os.getenv("PLODDER_BROWSER_TRACE_DIR") or "/var/tmp/plodder-browser-traces"
+    ).strip()
     return Path(trace_dir).expanduser().resolve() / "browser-actions.jsonl"
 
 
@@ -338,7 +363,9 @@ def _workspace_slug_from_git_url(url: str) -> str:
     return slug[:48] or "repo"
 
 
-def _new_startup_status(preflight: StartupPreflightReport | None = None) -> dict[str, Any]:
+def _new_startup_status(
+    preflight: StartupPreflightReport | None = None,
+) -> dict[str, Any]:
     checks = preflight.to_dict() if preflight is not None else None
     preflight_mode = checks.get("startup_mode") if checks else "normal"
     return {
@@ -352,7 +379,9 @@ def _new_startup_status(preflight: StartupPreflightReport | None = None) -> dict
     }
 
 
-def _record_startup_issue(app: FastAPI, code: str, message: str, *, severity: str = "warning") -> None:
+def _record_startup_issue(
+    app: FastAPI, code: str, message: str, *, severity: str = "warning"
+) -> None:
     status = getattr(app.state, "startup_status", None)
     if not isinstance(status, dict):
         return
@@ -367,7 +396,9 @@ def _record_startup_issue(app: FastAPI, code: str, message: str, *, severity: st
     if severity in {"warning", "error"}:
         status["degraded"] = True
     try:
-        _ensure_ops_telemetry(app).record_warning(code=code, message=message, severity=severity)
+        _ensure_ops_telemetry(app).record_warning(
+            code=code, message=message, severity=severity
+        )
     except Exception:
         pass
 
@@ -398,7 +429,9 @@ def _ensure_incident_tracker(app: FastAPI) -> RuntimeIncidentTracker:
     tracker = RuntimeIncidentTracker(
         crash_loop_file=ops_root / "crash_loop_state.json",
         threshold=max(2, int(os.getenv("PLODDER_CRASH_LOOP_THRESHOLD", "3"))),
-        window_seconds=max(30, int(os.getenv("PLODDER_CRASH_LOOP_WINDOW_SECONDS", "300"))),
+        window_seconds=max(
+            30, int(os.getenv("PLODDER_CRASH_LOOP_WINDOW_SECONDS", "300"))
+        ),
     )
     app.state.incident_tracker = tracker
     return tracker
@@ -561,7 +594,9 @@ async def _background_startup(app: FastAPI) -> None:
             app.state.startup_status["db_last_error"] = None
         _record_startup_stage(app, "db.init.complete")
     except asyncio.TimeoutError:
-        print(f"[API] Database init timed out after {init_timeout}s (DATABASE_INIT_TIMEOUT).")
+        print(
+            f"[API] Database init timed out after {init_timeout}s (DATABASE_INIT_TIMEOUT)."
+        )
         if isinstance(getattr(app.state, "startup_status", None), dict):
             app.state.startup_status["db_ready"] = False
             app.state.startup_status["db_last_error"] = "database_init_timeout"
@@ -571,7 +606,11 @@ async def _background_startup(app: FastAPI) -> None:
             f"Database init timed out after {init_timeout}s.",
             severity="error",
         )
-        tracker.record_failure("startup.db.timeout", f"Database init timed out after {init_timeout}s.", severity="error")
+        tracker.record_failure(
+            "startup.db.timeout",
+            f"Database init timed out after {init_timeout}s.",
+            severity="error",
+        )
     except Exception as e:
         print(f"[API] Error initializing database: {e}")
         traceback.print_exc()
@@ -584,7 +623,11 @@ async def _background_startup(app: FastAPI) -> None:
             f"Database init failed: {type(e).__name__}: {e}",
             severity="error",
         )
-        tracker.record_failure("startup.db.exception", f"Database init failed: {type(e).__name__}: {e}", severity="error")
+        tracker.record_failure(
+            "startup.db.exception",
+            f"Database init failed: {type(e).__name__}: {e}",
+            severity="error",
+        )
 
     try:
         from sqlalchemy import update
@@ -595,12 +638,18 @@ async def _background_startup(app: FastAPI) -> None:
         async with get_session_maker()() as db:
             result = await db.execute(
                 update(SessionModel)
-                .where(SessionModel.status.in_([DBSessionStatus.IDLE, DBSessionStatus.RUNNING]))
+                .where(
+                    SessionModel.status.in_(
+                        [DBSessionStatus.IDLE, DBSessionStatus.RUNNING]
+                    )
+                )
                 .values(status=DBSessionStatus.TERMINATED)
             )
             await db.commit()
             if result.rowcount > 0:
-                print(f"[API] Reset {result.rowcount} stale session(s) from previous run.")
+                print(
+                    f"[API] Reset {result.rowcount} stale session(s) from previous run."
+                )
         _record_startup_stage(app, "session.cleanup.complete")
     except Exception as cleanup_err:
         print(f"[API] Warning: Could not reset stale sessions: {cleanup_err}")
@@ -619,7 +668,9 @@ async def _background_startup(app: FastAPI) -> None:
     try:
         from ..integrations.monitor import register_heal_callback
 
-        async def _auto_heal(app_name: str, logs_excerpt: str, heal_session_id: str | None):
+        async def _auto_heal(
+            app_name: str, logs_excerpt: str, heal_session_id: str | None
+        ):
             """When a crash is detected, create an agent task to diagnose and fix it."""
             print(f"[monitor] Auto-heal triggered for {app_name}")
             task_description = (
@@ -628,7 +679,11 @@ async def _background_startup(app: FastAPI) -> None:
                 "Please diagnose the root cause, fix the code, and redeploy."
             )
             try:
-                target_session = await session_manager.get_session(heal_session_id) if heal_session_id else None
+                target_session = (
+                    await session_manager.get_session(heal_session_id)
+                    if heal_session_id
+                    else None
+                )
                 if target_session is None:
                     target_session = await session_manager.create_session()
                 task = await session_manager.create_task(
@@ -643,7 +698,9 @@ async def _background_startup(app: FastAPI) -> None:
                         connection_manager=connection_manager,
                     )
                 )
-                print(f"[monitor] Heal task created: session={target_session.session_id} task={task.task_id}")
+                print(
+                    f"[monitor] Heal task created: session={target_session.session_id} task={task.task_id}"
+                )
             except Exception as heal_err:
                 print(f"[monitor] Failed to create heal task: {heal_err}")
 
@@ -667,8 +724,12 @@ async def _background_startup(app: FastAPI) -> None:
     startup_state = _startup_state_snapshot(app)
     if startup_state.get("ready", False):
         _record_startup_stage(app, "ready")
-        tracker.record_recovery("startup.db.timeout", "Database initialized after prior timeout.")
-        tracker.record_recovery("startup.db.exception", "Database initialized after prior exception.")
+        tracker.record_recovery(
+            "startup.db.timeout", "Database initialized after prior timeout."
+        )
+        tracker.record_recovery(
+            "startup.db.exception", "Database initialized after prior exception."
+        )
         tracker.note_startup_success()
 
 
@@ -721,7 +782,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     yield
 
-    print(f"[API] Shutting down Plodder API at {datetime.now(timezone.utc).isoformat()}")
+    print(
+        f"[API] Shutting down Plodder API at {datetime.now(timezone.utc).isoformat()}"
+    )
     _ensure_ops_telemetry(app).record_deployment_event("deploy.shutdown")
     startup_task.cancel()
     try:
@@ -786,9 +849,6 @@ app.include_router(auth_router, prefix="/api")
 app.include_router(integrations_router, prefix="/api")
 
 
-
-
-
 @app.get("/health")
 async def health(request: Request):
     startup = _startup_state_snapshot(request.app)
@@ -807,8 +867,16 @@ def _build_health_payload(app: FastAPI) -> dict[str, Any]:
     tracker = _ensure_incident_tracker(app)
     incident_diag = tracker.diagnostics()
     readiness = bool(startup.get("ready", False))
-    degraded = bool(startup.get("degraded", False)) or queue_status.degraded or bool(incident_diag["crash_loop"].get("active"))
-    status = "healthy" if readiness and not degraded else ("degraded" if readiness else "starting")
+    degraded = (
+        bool(startup.get("degraded", False))
+        or queue_status.degraded
+        or bool(incident_diag["crash_loop"].get("active"))
+    )
+    status = (
+        "healthy"
+        if readiness and not degraded
+        else ("degraded" if readiness else "starting")
+    )
 
     oa = (os.environ.get("OPENAI_API_KEY") or "").strip()
     payload = {
@@ -834,7 +902,9 @@ def _build_health_payload(app: FastAPI) -> dict[str, Any]:
     try:
         collector = _ensure_ops_telemetry(app)
         if collector.should_capture_snapshot():
-            collector.record_runtime_snapshot(payload, resources=_runtime_resource_snapshot())
+            collector.record_runtime_snapshot(
+                payload, resources=_runtime_resource_snapshot()
+            )
     except Exception:
         pass
 
@@ -873,7 +943,13 @@ async def ops_deploy_preflight(request: Request):
         mode=os.getenv("PLODDER_DEPLOY_MODE", "local"),
     )
     payload = report.to_dict()
-    status_code = 503 if report.has_errors and os.getenv("PLODDER_PREFLIGHT_HTTP_STRICT", "false").lower() in {"1", "true", "yes", "on"} else 200
+    status_code = (
+        503
+        if report.has_errors
+        and os.getenv("PLODDER_PREFLIGHT_HTTP_STRICT", "false").lower()
+        in {"1", "true", "yes", "on"}
+        else 200
+    )
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -971,7 +1047,9 @@ async def ops_action_get(request: Request, action_id: str):
     intake = _ensure_ops_action_intake(request.app)
     row = intake.get_action(action_id)
     if row is None:
-        raise HTTPException(status_code=404, detail=f"operator action not found: {action_id}")
+        raise HTTPException(
+            status_code=404, detail=f"operator action not found: {action_id}"
+        )
     return row
 
 
@@ -983,7 +1061,9 @@ def _dashboard_window_payload(window) -> DashboardWindowModel:
     )
 
 
-def _dashboard_pagination_payload(pagination: DashboardPaginationModel) -> DashboardPaginationModel:
+def _dashboard_pagination_payload(
+    pagination: DashboardPaginationModel,
+) -> DashboardPaginationModel:
     return pagination
 
 
@@ -1045,14 +1125,22 @@ async def ops_dashboard_timeline(
     if kind in {"all", "runtime_health"}:
         events.extend(
             [
-                DashboardTimelineEvent(kind="runtime_health", time=item.time, payload=item.model_dump(mode="json"))
+                DashboardTimelineEvent(
+                    kind="runtime_health",
+                    time=item.time,
+                    payload=item.model_dump(mode="json"),
+                )
                 for item in runtime_rows
             ]
         )
     if kind in {"all", "deployment_event"}:
         events.extend(
             [
-                DashboardTimelineEvent(kind="deployment_event", time=item.time, payload=item.model_dump(mode="json"))
+                DashboardTimelineEvent(
+                    kind="deployment_event",
+                    time=item.time,
+                    payload=item.model_dump(mode="json"),
+                )
                 for item in deploy_rows
             ]
         )
@@ -1070,7 +1158,11 @@ async def ops_dashboard_timeline(
     if kind in {"all", "incident_lifecycle"}:
         events.extend(
             [
-                DashboardTimelineEvent(kind="incident_lifecycle", time=item.time, payload=item.model_dump(mode="json"))
+                DashboardTimelineEvent(
+                    kind="incident_lifecycle",
+                    time=item.time,
+                    payload=item.model_dump(mode="json"),
+                )
                 for item in incident_rows
             ]
         )
@@ -1098,7 +1190,10 @@ async def ops_dashboard_timeline(
     )
 
 
-@app.get("/api/ops/dashboard/timeline/runtime-health", response_model=DashboardRuntimeTimelineResponse)
+@app.get(
+    "/api/ops/dashboard/timeline/runtime-health",
+    response_model=DashboardRuntimeTimelineResponse,
+)
 async def ops_dashboard_runtime_timeline(
     request: Request,
     hours: int = 24,
@@ -1128,7 +1223,10 @@ async def ops_dashboard_runtime_timeline(
     )
 
 
-@app.get("/api/ops/dashboard/timeline/deployments", response_model=DashboardDeploymentTimelineResponse)
+@app.get(
+    "/api/ops/dashboard/timeline/deployments",
+    response_model=DashboardDeploymentTimelineResponse,
+)
 async def ops_dashboard_deployment_timeline(
     request: Request,
     hours: int = 24,
@@ -1158,7 +1256,10 @@ async def ops_dashboard_deployment_timeline(
     )
 
 
-@app.get("/api/ops/dashboard/timeline/queue-degradation", response_model=DashboardQueueTimelineResponse)
+@app.get(
+    "/api/ops/dashboard/timeline/queue-degradation",
+    response_model=DashboardQueueTimelineResponse,
+)
 async def ops_dashboard_queue_timeline(
     request: Request,
     hours: int = 24,
@@ -1188,7 +1289,10 @@ async def ops_dashboard_queue_timeline(
     )
 
 
-@app.get("/api/ops/dashboard/timeline/incidents", response_model=DashboardIncidentTimelineResponse)
+@app.get(
+    "/api/ops/dashboard/timeline/incidents",
+    response_model=DashboardIncidentTimelineResponse,
+)
 async def ops_dashboard_incident_timeline(
     request: Request,
     hours: int = 24,
@@ -1218,7 +1322,10 @@ async def ops_dashboard_incident_timeline(
     )
 
 
-@app.get("/api/ops/dashboard/timeline/operator-actions", response_model=DashboardTimelineResponse)
+@app.get(
+    "/api/ops/dashboard/timeline/operator-actions",
+    response_model=DashboardTimelineResponse,
+)
 async def ops_dashboard_operator_action_timeline(
     request: Request,
     hours: int = 24,
@@ -1266,7 +1373,10 @@ async def ops_dashboard_operator_action_timeline(
     )
 
 
-@app.get("/api/ops/dashboard/trends/score-history", response_model=DashboardScoreHistoryResponse)
+@app.get(
+    "/api/ops/dashboard/trends/score-history",
+    response_model=DashboardScoreHistoryResponse,
+)
 async def ops_dashboard_score_history(
     request: Request,
     hours: int = 24,
@@ -1296,7 +1406,10 @@ async def ops_dashboard_score_history(
     )
 
 
-@app.get("/api/ops/dashboard/trends/warning-frequency", response_model=DashboardWarningTrendResponse)
+@app.get(
+    "/api/ops/dashboard/trends/warning-frequency",
+    response_model=DashboardWarningTrendResponse,
+)
 async def ops_dashboard_warning_trend(
     request: Request,
     hours: int = 24,
@@ -1315,7 +1428,9 @@ async def ops_dashboard_warning_trend(
         end_time=end_time,
         now=generated_at,
     )
-    points = serialize_warning_frequency_trend(rows, resolution_seconds=resolution_seconds)
+    points = serialize_warning_frequency_trend(
+        rows, resolution_seconds=resolution_seconds
+    )
     points.sort(key=lambda item: item.bucket_start, reverse=True)
     page_items, pagination = paginate_items(points, page=page, page_size=page_size)
     return DashboardWarningTrendResponse(
@@ -1327,7 +1442,10 @@ async def ops_dashboard_warning_trend(
     )
 
 
-@app.get("/api/ops/dashboard/trends/restart-loops", response_model=DashboardRestartTrendResponse)
+@app.get(
+    "/api/ops/dashboard/trends/restart-loops",
+    response_model=DashboardRestartTrendResponse,
+)
 async def ops_dashboard_restart_trend(
     request: Request,
     hours: int = 24,
@@ -1382,15 +1500,22 @@ async def test_sandbox_route():
 # In-memory repo registry (persists until server restart)
 _repos: dict[str, dict] = {}
 
+
 def _get_repos_root() -> str:
-    _mini_devin_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    repos_root = os.path.join(os.path.dirname(_mini_devin_root), "agent-workspace", "repos")
+    _mini_devin_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    repos_root = os.path.join(
+        os.path.dirname(_mini_devin_root), "agent-workspace", "repos"
+    )
     os.makedirs(repos_root, exist_ok=True)
     return repos_root
+
 
 def _parse_github_url(url: str) -> tuple[str, str]:
     """Extract owner and repo_name from a GitHub URL."""
     import re
+
     url = url.strip().rstrip("/").replace(".git", "")
     match = re.search(r"github\.com[:/]([^/]+)/([^/]+)", url)
     if not match:
@@ -1432,7 +1557,9 @@ def _build_issue_automation_prompt(
     issue_number = issue.get("number")
     issue_title = (issue.get("title") or "").strip()
     issue_body = (issue.get("body") or "").strip() or "No issue body provided."
-    labels = [label.get("name") for label in issue.get("labels", []) if label.get("name")]
+    labels = [
+        label.get("name") for label in issue.get("labels", []) if label.get("name")
+    ]
     label_line = ", ".join(labels) if labels else "No labels"
 
     comment_blocks: list[str] = []
@@ -1473,9 +1600,11 @@ Execution requirements:
 
 Finish only when the fix is verified locally, and if possible, a PR has been created."""
 
+
 @app.get("/api/repos")
 async def list_repos():
     return {"repos": list(_repos.values()), "total": len(_repos)}
+
 
 @app.post("/api/repos")
 async def add_repo(request: Request):
@@ -1520,10 +1649,12 @@ async def add_repo(request: Request):
     asyncio.create_task(_clone_repo_bg(repo_id, clone_url, local_path, branch))
     return {k: v for k, v in repo_info.items() if not k.startswith("_")}
 
+
 async def _run_git(*args, cwd=None, timeout=60) -> tuple[int, str, str]:
     """Run a git command asynchronously without blocking the event loop."""
     proc = await asyncio.create_subprocess_exec(
-        "git", *args,
+        "git",
+        *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
@@ -1533,13 +1664,19 @@ async def _run_git(*args, cwd=None, timeout=60) -> tuple[int, str, str]:
     except asyncio.TimeoutError:
         proc.kill()
         return -1, "", "timeout"
-    return proc.returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace")
+    return (
+        proc.returncode,
+        stdout.decode(errors="replace"),
+        stderr.decode(errors="replace"),
+    )
 
 
 async def _clone_repo_bg(repo_id: str, clone_url: str, local_path: str, branch: str):
     """Clone a repo in the background and update status."""
     try:
-        if os.path.exists(local_path) and os.path.exists(os.path.join(local_path, ".git")):
+        if os.path.exists(local_path) and os.path.exists(
+            os.path.join(local_path, ".git")
+        ):
             await _run_git("-C", local_path, "pull", timeout=60)
             if repo_id in _repos:
                 _repos[repo_id]["status"] = "cloned"
@@ -1548,7 +1685,9 @@ async def _clone_repo_bg(repo_id: str, clone_url: str, local_path: str, branch: 
             return
 
         # Try clone with specified branch first
-        rc, _, stderr1 = await _run_git("clone", "--depth", "1", "-b", branch, clone_url, local_path, timeout=60)
+        rc, _, stderr1 = await _run_git(
+            "clone", "--depth", "1", "-b", branch, clone_url, local_path, timeout=60
+        )
         if rc == 0:
             if repo_id in _repos:
                 _repos[repo_id]["status"] = "cloned"
@@ -1558,9 +1697,12 @@ async def _clone_repo_bg(repo_id: str, clone_url: str, local_path: str, branch: 
 
         # Remove partial clone and try without branch
         import shutil
+
         if os.path.exists(local_path):
             shutil.rmtree(local_path, ignore_errors=True)
-        rc2, _, stderr2 = await _run_git("clone", "--depth", "1", clone_url, local_path, timeout=60)
+        rc2, _, stderr2 = await _run_git(
+            "clone", "--depth", "1", clone_url, local_path, timeout=60
+        )
         if rc2 == 0 and repo_id in _repos:
             _repos[repo_id]["status"] = "cloned"
             _repos[repo_id]["local_path"] = local_path
@@ -1569,19 +1711,32 @@ async def _clone_repo_bg(repo_id: str, clone_url: str, local_path: str, branch: 
 
         # Both failed — check if empty repo
         combined_err = (stderr1 + stderr2).lower()
-        is_empty = any(k in combined_err for k in ("empty", "did not", "no branch", "remote head", "warning: you appear"))
+        is_empty = any(
+            k in combined_err
+            for k in (
+                "empty",
+                "did not",
+                "no branch",
+                "remote head",
+                "warning: you appear",
+            )
+        )
         if is_empty or rc2 != 0:
             # Empty repo — init a fresh local workspace and point remote to GitHub
             os.makedirs(local_path, exist_ok=True)
             await _run_git("init", cwd=local_path)
             await _run_git("remote", "add", "origin", clone_url, cwd=local_path)
-            await _run_git("config", "user.email", "agent@plodder.local", cwd=local_path)
+            await _run_git(
+                "config", "user.email", "agent@plodder.local", cwd=local_path
+            )
             await _run_git("config", "user.name", "Plodder Agent", cwd=local_path)
             if repo_id in _repos:
                 _repos[repo_id]["status"] = "cloned"
                 _repos[repo_id]["local_path"] = local_path
                 _repos[repo_id]["last_synced"] = datetime.now(timezone.utc).isoformat()
-                _repos[repo_id]["note"] = "Empty repo — local workspace initialized, remote linked"
+                _repos[repo_id][
+                    "note"
+                ] = "Empty repo — local workspace initialized, remote linked"
         else:
             if repo_id in _repos:
                 _repos[repo_id]["status"] = "clone_failed"
@@ -1591,29 +1746,38 @@ async def _clone_repo_bg(repo_id: str, clone_url: str, local_path: str, branch: 
             _repos[repo_id]["status"] = "clone_failed"
         print(f"[Repos] Clone failed for {repo_id}: {e}")
 
+
 @app.post("/api/repos/{repo_id}/clone")
 async def clone_repo(repo_id: str):
     if repo_id not in _repos:
         raise HTTPException(status_code=404, detail="Repository not found")
     repo = _repos[repo_id]
-    asyncio.create_task(_clone_repo_bg(
-        repo_id, repo.get("_clone_url", repo["repo_url"]),
-        repo.get("_local_target", repo["local_path"] or ""),
-        repo["default_branch"]
-    ))
+    asyncio.create_task(
+        _clone_repo_bg(
+            repo_id,
+            repo.get("_clone_url", repo["repo_url"]),
+            repo.get("_local_target", repo["local_path"] or ""),
+            repo["default_branch"],
+        )
+    )
     return {"status": "cloning", "repo_id": repo_id}
+
 
 @app.post("/api/repos/{repo_id}/pull")
 async def pull_repo(repo_id: str):
     if repo_id not in _repos:
         raise HTTPException(status_code=404, detail="Repository not found")
     repo = _repos[repo_id]
-    asyncio.create_task(_clone_repo_bg(
-        repo_id, repo.get("_clone_url", repo["repo_url"]),
-        repo.get("_local_target", repo["local_path"] or ""),
-        repo["default_branch"]
-    ))
+    asyncio.create_task(
+        _clone_repo_bg(
+            repo_id,
+            repo.get("_clone_url", repo["repo_url"]),
+            repo.get("_local_target", repo["local_path"] or ""),
+            repo["default_branch"],
+        )
+    )
     return {"status": "pulling", "repo_id": repo_id}
+
 
 @app.delete("/api/repos/{repo_id}")
 async def delete_repo(repo_id: str):
@@ -1624,8 +1788,10 @@ async def delete_repo(repo_id: str):
     local_path = repo.get("local_path")
     if local_path and os.path.exists(local_path):
         import shutil
+
         shutil.rmtree(local_path, ignore_errors=True)
     return {"status": "deleted", "repo_id": repo_id}
+
 
 @app.get("/api/github/oauth/status")
 async def github_oauth_status():
@@ -1674,24 +1840,38 @@ async def github_oauth_result(state: str = ""):
         raise HTTPException(status_code=400, detail="state is required")
     tok = oauth_consume_result(state)
     if not tok:
-        raise HTTPException(status_code=404, detail="token not ready or already consumed")
+        raise HTTPException(
+            status_code=404, detail="token not ready or already consumed"
+        )
     return {"access_token": tok, "token_type": "bearer"}
+
 
 # ── GitHub API (token-based) ──────────────────────────────────────────────────
 # All GitHub operations using a Personal Access Token stored per-repo.
 
+
 def _gh_headers(token: str) -> dict:
-    return {"Authorization": f"token {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    return {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
 
 def _get_repo_token(repo_id: str) -> str:
     repo = _repos.get(repo_id, {})
     token = repo.get("_token") or os.getenv("GITHUB_TOKEN", "")
     if not token:
-        raise HTTPException(status_code=400, detail="GitHub token required. Add the repo with a token, or set GITHUB_TOKEN env var.")
+        raise HTTPException(
+            status_code=400,
+            detail="GitHub token required. Add the repo with a token, or set GITHUB_TOKEN env var.",
+        )
     return token
+
 
 async def _gh_get(url: str, token: str) -> dict:
     import urllib.request
+
     req = urllib.request.Request(url, headers=_gh_headers(token))
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -1699,10 +1879,17 @@ async def _gh_get(url: str, token: str) -> dict:
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"GitHub API error: {e}")
 
+
 async def _gh_post(url: str, token: str, data: dict) -> dict:
     import urllib.request
+
     body = json.dumps(data).encode()
-    req = urllib.request.Request(url, data=body, headers={**_gh_headers(token), "Content-Type": "application/json"}, method="POST")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={**_gh_headers(token), "Content-Type": "application/json"},
+        method="POST",
+    )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read())
@@ -1711,6 +1898,7 @@ async def _gh_post(url: str, token: str, data: dict) -> dict:
         raise HTTPException(status_code=e.code, detail=f"GitHub API: {body[:300]}")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"GitHub API error: {e}")
+
 
 @app.post("/api/repos/{repo_id}/token")
 async def set_repo_token(repo_id: str, request: Request):
@@ -1725,6 +1913,7 @@ async def set_repo_token(repo_id: str, request: Request):
     _repos[repo_id]["has_token"] = True
     return {"status": "ok"}
 
+
 # ── Branches ──────────────────────────────────────────────────────────────────
 @app.get("/api/repos/{repo_id}/branches")
 async def list_branches(repo_id: str):
@@ -1735,6 +1924,7 @@ async def list_branches(repo_id: str):
     owner, name = repo["owner"], repo["repo_name"]
     data = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/branches", token)
     return {"branches": [b["name"] for b in data]}
+
 
 @app.post("/api/repos/{repo_id}/branches")
 async def create_branch(repo_id: str, request: Request):
@@ -1749,17 +1939,23 @@ async def create_branch(repo_id: str, request: Request):
         raise HTTPException(status_code=400, detail="branch_name required")
     owner, name = repo["owner"], repo["repo_name"]
     # Get SHA of from_branch
-    ref_data = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/git/ref/heads/{from_branch}", token)
+    ref_data = await _gh_get(
+        f"https://api.github.com/repos/{owner}/{name}/git/ref/heads/{from_branch}",
+        token,
+    )
     sha = ref_data["object"]["sha"]
-    result = await _gh_post(f"https://api.github.com/repos/{owner}/{name}/git/refs", token, {
-        "ref": f"refs/heads/{branch_name}", "sha": sha
-    })
+    result = await _gh_post(
+        f"https://api.github.com/repos/{owner}/{name}/git/refs",
+        token,
+        {"ref": f"refs/heads/{branch_name}", "sha": sha},
+    )
     # Also create local branch
     local_path = repo.get("local_path")
     if local_path and os.path.exists(local_path):
         await _run_git("fetch", "origin", cwd=local_path)
         await _run_git("checkout", "-b", branch_name, cwd=local_path)
     return {"branch": branch_name, "sha": sha, "status": "created"}
+
 
 # ── Pull Requests ──────────────────────────────────────────────────────────────
 @app.get("/api/repos/{repo_id}/pulls")
@@ -1769,11 +1965,25 @@ async def list_pulls(repo_id: str, state: str = "open"):
     repo = _repos[repo_id]
     token = _get_repo_token(repo_id)
     owner, name = repo["owner"], repo["repo_name"]
-    data = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/pulls?state={state}&per_page=20", token)
-    return {"pulls": [{"number": p["number"], "title": p["title"], "state": p["state"],
-                        "url": p["html_url"], "author": p["user"]["login"],
-                        "head": p["head"]["ref"], "base": p["base"]["ref"],
-                        "created_at": p["created_at"]} for p in data]}
+    data = await _gh_get(
+        f"https://api.github.com/repos/{owner}/{name}/pulls?state={state}&per_page=20",
+        token,
+    )
+    return {
+        "pulls": [
+            {
+                "number": p["number"],
+                "title": p["title"],
+                "state": p["state"],
+                "url": p["html_url"],
+                "author": p["user"]["login"],
+                "head": p["head"]["ref"],
+                "base": p["base"]["ref"],
+                "created_at": p["created_at"],
+            }
+            for p in data
+        ]
+    }
 
 
 @app.get("/api/repos/{repo_id}/pulls/{pr_number}")
@@ -1783,8 +1993,12 @@ async def get_pull_request_details(repo_id: str, pr_number: int):
     repo = _repos[repo_id]
     token = _get_repo_token(repo_id)
     owner, name = repo["owner"], repo["repo_name"]
-    pr = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/pulls/{pr_number}", token)
-    issue = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/issues/{pr_number}", token)
+    pr = await _gh_get(
+        f"https://api.github.com/repos/{owner}/{name}/pulls/{pr_number}", token
+    )
+    issue = await _gh_get(
+        f"https://api.github.com/repos/{owner}/{name}/issues/{pr_number}", token
+    )
     comments = await _gh_get(
         f"https://api.github.com/repos/{owner}/{name}/issues/{pr_number}/comments?per_page=50",
         token,
@@ -1817,6 +2031,7 @@ async def get_pull_request_details(repo_id: str, pr_number: int):
         "updated_at": pr["updated_at"],
     }
 
+
 @app.post("/api/repos/{repo_id}/pulls")
 async def create_pull_request(repo_id: str, request: Request):
     if repo_id not in _repos:
@@ -1825,13 +2040,23 @@ async def create_pull_request(repo_id: str, request: Request):
     token = _get_repo_token(repo_id)
     body = await request.json()
     owner, name = repo["owner"], repo["repo_name"]
-    result = await _gh_post(f"https://api.github.com/repos/{owner}/{name}/pulls", token, {
-        "title": body.get("title", "Automated PR by Plodder"),
-        "body": body.get("body", "Created by Plodder AI agent."),
-        "head": body.get("head"),
-        "base": body.get("base", repo["default_branch"]),
-    })
-    return {"number": result["number"], "url": result["html_url"], "title": result["title"], "state": result["state"]}
+    result = await _gh_post(
+        f"https://api.github.com/repos/{owner}/{name}/pulls",
+        token,
+        {
+            "title": body.get("title", "Automated PR by Plodder"),
+            "body": body.get("body", "Created by Plodder AI agent."),
+            "head": body.get("head"),
+            "base": body.get("base", repo["default_branch"]),
+        },
+    )
+    return {
+        "number": result["number"],
+        "url": result["html_url"],
+        "title": result["title"],
+        "state": result["state"],
+    }
+
 
 # ── Issues ────────────────────────────────────────────────────────────────────
 @app.get("/api/repos/{repo_id}/issues")
@@ -1841,11 +2066,25 @@ async def list_issues(repo_id: str, state: str = "open"):
     repo = _repos[repo_id]
     token = _get_repo_token(repo_id)
     owner, name = repo["owner"], repo["repo_name"]
-    data = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/issues?state={state}&per_page=20", token)
-    return {"issues": [{"number": i["number"], "title": i["title"], "state": i["state"],
-                         "url": i["html_url"], "author": i["user"]["login"],
-                         "created_at": i["created_at"],
-                         "labels": [l["name"] for l in i.get("labels", [])]} for i in data if "pull_request" not in i]}
+    data = await _gh_get(
+        f"https://api.github.com/repos/{owner}/{name}/issues?state={state}&per_page=20",
+        token,
+    )
+    return {
+        "issues": [
+            {
+                "number": i["number"],
+                "title": i["title"],
+                "state": i["state"],
+                "url": i["html_url"],
+                "author": i["user"]["login"],
+                "created_at": i["created_at"],
+                "labels": [l["name"] for l in i.get("labels", [])],
+            }
+            for i in data
+            if "pull_request" not in i
+        ]
+    }
 
 
 @app.get("/api/repos/{repo_id}/issues/{issue_number}")
@@ -1855,9 +2094,13 @@ async def get_issue_details(repo_id: str, issue_number: int):
     repo = _repos[repo_id]
     token = _get_repo_token(repo_id)
     owner, name = repo["owner"], repo["repo_name"]
-    issue = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/issues/{issue_number}", token)
+    issue = await _gh_get(
+        f"https://api.github.com/repos/{owner}/{name}/issues/{issue_number}", token
+    )
     if "pull_request" in issue:
-        raise HTTPException(status_code=400, detail="Requested item is a pull request, not an issue")
+        raise HTTPException(
+            status_code=400, detail="Requested item is a pull request, not an issue"
+        )
     comments = await _gh_get(
         f"https://api.github.com/repos/{owner}/{name}/issues/{issue_number}/comments?per_page=50",
         token,
@@ -1885,6 +2128,7 @@ async def get_issue_details(repo_id: str, issue_number: int):
         "updated_at": issue["updated_at"],
     }
 
+
 @app.post("/api/repos/{repo_id}/issues")
 async def create_issue(repo_id: str, request: Request):
     if repo_id not in _repos:
@@ -1893,12 +2137,21 @@ async def create_issue(repo_id: str, request: Request):
     token = _get_repo_token(repo_id)
     body = await request.json()
     owner, name = repo["owner"], repo["repo_name"]
-    result = await _gh_post(f"https://api.github.com/repos/{owner}/{name}/issues", token, {
-        "title": body.get("title", ""),
-        "body": body.get("body", ""),
-        "labels": body.get("labels", []),
-    })
-    return {"number": result["number"], "url": result["html_url"], "title": result["title"]}
+    result = await _gh_post(
+        f"https://api.github.com/repos/{owner}/{name}/issues",
+        token,
+        {
+            "title": body.get("title", ""),
+            "body": body.get("body", ""),
+            "labels": body.get("labels", []),
+        },
+    )
+    return {
+        "number": result["number"],
+        "url": result["html_url"],
+        "title": result["title"],
+    }
+
 
 # ── Create new GitHub Repo ────────────────────────────────────────────────────
 @app.post("/api/github/create-repo")
@@ -1907,14 +2160,23 @@ async def create_github_repo(request: Request):
     token = body.get("token") or os.getenv("GITHUB_TOKEN", "")
     if not token:
         raise HTTPException(status_code=400, detail="GitHub token required")
-    result = await _gh_post("https://api.github.com/user/repos", token, {
-        "name": body.get("name", ""),
-        "description": body.get("description", "Created by Plodder"),
-        "private": body.get("private", False),
-        "auto_init": body.get("auto_init", True),
-    })
-    return {"repo_url": result["html_url"], "clone_url": result["clone_url"],
-            "name": result["name"], "full_name": result["full_name"]}
+    result = await _gh_post(
+        "https://api.github.com/user/repos",
+        token,
+        {
+            "name": body.get("name", ""),
+            "description": body.get("description", "Created by Plodder"),
+            "private": body.get("private", False),
+            "auto_init": body.get("auto_init", True),
+        },
+    )
+    return {
+        "repo_url": result["html_url"],
+        "clone_url": result["clone_url"],
+        "name": result["name"],
+        "full_name": result["full_name"],
+    }
+
 
 # ── Commits ───────────────────────────────────────────────────────────────────
 @app.get("/api/repos/{repo_id}/commits")
@@ -1925,10 +2187,21 @@ async def list_commits(repo_id: str, branch: str = ""):
     token = _get_repo_token(repo_id)
     owner, name = repo["owner"], repo["repo_name"]
     b = branch or repo["default_branch"]
-    data = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/commits?sha={b}&per_page=15", token)
-    return {"commits": [{"sha": c["sha"][:7], "message": c["commit"]["message"].split("\n")[0],
-                          "author": c["commit"]["author"]["name"],
-                          "date": c["commit"]["author"]["date"]} for c in data]}
+    data = await _gh_get(
+        f"https://api.github.com/repos/{owner}/{name}/commits?sha={b}&per_page=15",
+        token,
+    )
+    return {
+        "commits": [
+            {
+                "sha": c["sha"][:7],
+                "message": c["commit"]["message"].split("\n")[0],
+                "author": c["commit"]["author"]["name"],
+                "date": c["commit"]["author"]["date"],
+            }
+            for c in data
+        ]
+    }
 
 
 @app.get("/api/repos/{repo_id}/metadata")
@@ -1939,7 +2212,9 @@ async def get_repo_metadata(repo_id: str):
     token = _get_repo_token(repo_id)
     owner, name = repo["owner"], repo["repo_name"]
     repo_data = await _gh_get(f"https://api.github.com/repos/{owner}/{name}", token)
-    labels = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/labels?per_page=100", token)
+    labels = await _gh_get(
+        f"https://api.github.com/repos/{owner}/{name}/labels?per_page=100", token
+    )
     return {
         "name": repo_data["name"],
         "full_name": repo_data["full_name"],
@@ -1983,31 +2258,88 @@ async def start_issue_automation(
     owner, name = repo["owner"], repo["repo_name"]
     repo_full_name = f"{owner}/{name}"
 
-    issue = await _gh_get(f"https://api.github.com/repos/{owner}/{name}/issues/{issue_number}", token)
+    issue = await _gh_get(
+        f"https://api.github.com/repos/{owner}/{name}/issues/{issue_number}", token
+    )
     if "pull_request" in issue:
-        raise HTTPException(status_code=400, detail="Requested item is a pull request, not an issue")
+        raise HTTPException(
+            status_code=400, detail="Requested item is a pull request, not an issue"
+        )
     comments = await _gh_get(
         f"https://api.github.com/repos/{owner}/{name}/issues/{issue_number}/comments?per_page=50",
         token,
     )
 
     requested_dir = (
-        repo.get("local_path")
-        or repo.get("_clone_url")
-        or repo.get("repo_url")
-        or ""
+        repo.get("local_path") or repo.get("_clone_url") or repo.get("repo_url") or ""
     )
     if not requested_dir:
-        raise HTTPException(status_code=400, detail="Repository does not have a usable local path or clone URL")
+        raise HTTPException(
+            status_code=400,
+            detail="Repository does not have a usable local path or clone URL",
+        )
 
     model = _validate_model_scope(body.model or "auto", scope="chat")
 
+    from ..sessions.workspace_paths import get_agent_workspaces_root
+
+    _workspaces_root = get_agent_workspaces_root()
+    try:
+        os.makedirs(_workspaces_root, exist_ok=True)
+    except PermissionError:
+        _workspaces_root = os.environ.get(
+            "PLODDER_AGENT_WORKSPACE_ROOT_FALLBACK", "/var/tmp/agent-workspace"
+        )
+        os.makedirs(_workspaces_root, exist_ok=True)
+
+    new_session_id = str(uuid.uuid4())[:8]
+    workspace_id = None
+    working_dir = requested_dir
+
+    if _is_git_remote_url(requested_dir):
+        workspace_id = (
+            f"{_workspace_slug_from_git_url(requested_dir)}-{uuid.uuid4().hex[:8]}"
+        )
+        working_dir = os.path.join(_workspaces_root, workspace_id)
+        if os.path.isdir(working_dir):
+            shutil.rmtree(working_dir, ignore_errors=True)
+        os.makedirs(working_dir, exist_ok=True)
+        clone_url = _git_clone_url_with_token(requested_dir)
+        clone_timeout = int(os.getenv("GIT_CLONE_TIMEOUT_SEC", "240"))
+        try:
+            r = subprocess.run(
+                ["git", "clone", "--depth", "1", clone_url, "."],
+                cwd=working_dir,
+                capture_output=True,
+                text=True,
+                timeout=clone_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            shutil.rmtree(working_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=400, detail="git clone timed out."
+            ) from None
+        if r.returncode != 0:
+            shutil.rmtree(working_dir, ignore_errors=True)
+            err = (r.stderr or r.stdout or "").strip()[:800]
+            raise HTTPException(
+                status_code=400, detail=f"Could not clone URL. Git: {err}"
+            )
+    else:
+        working_dir = os.path.abspath(os.path.expanduser(requested_dir.strip()))
+        if not os.path.isdir(working_dir):
+            raise HTTPException(
+                status_code=400, detail=f"Not a folder on the server: {working_dir}."
+            )
+
     session = await session_manager.create_session(
-        working_directory=requested_dir,
+        working_directory=working_dir,
         model=model,
         max_iterations=body.max_iterations,
         auto_git_commit=body.auto_git_commit,
         git_push=body.git_push,
+        session_id=new_session_id,
+        workspace_id=workspace_id,
     )
     task_prompt = _build_issue_automation_prompt(
         repo_full_name=repo_full_name,
@@ -2038,7 +2370,9 @@ async def start_issue_automation(
         "task": {
             "task_id": task.task_id,
             "description": task.description,
-            "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+            "status": task.status.value
+            if hasattr(task.status, "value")
+            else str(task.status),
         },
         "issue": {
             "number": issue["number"],
@@ -2051,6 +2385,8 @@ async def start_issue_automation(
             "default_branch": repo.get("default_branch", "main"),
         },
     }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -2058,6 +2394,7 @@ async def start_issue_automation(
 async def browse_directory(path: str = "."):
     """Browse server filesystem directories for the folder picker UI."""
     import pathlib
+
     try:
         target = pathlib.Path(path).resolve()
         if not target.exists() or not target.is_dir():
@@ -2067,16 +2404,20 @@ async def browse_directory(path: str = "."):
         # Add parent navigation (go up one level)
         parent = str(target.parent) if target != target.parent else None
 
-        for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
-            if entry.name.startswith('.') and entry.name not in ('.env',):
+        for entry in sorted(
+            target.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())
+        ):
+            if entry.name.startswith(".") and entry.name not in (".env",):
                 continue
-            if entry.name in ('__pycache__', 'node_modules', '.git'):
+            if entry.name in ("__pycache__", "node_modules", ".git"):
                 continue
-            entries.append({
-                "name": entry.name,
-                "path": str(entry),
-                "is_directory": entry.is_dir(),
-            })
+            entries.append(
+                {
+                    "name": entry.name,
+                    "path": str(entry),
+                    "is_directory": entry.is_dir(),
+                }
+            )
 
         return {
             "current": str(target),
@@ -2104,7 +2445,15 @@ async def get_repos():
 @app.get("/api/sessions")
 @app.get("/sessions")
 async def list_sessions():
-    sessions = await session_manager.list_sessions()
+    try:
+        sessions = await asyncio.wait_for(
+            session_manager.list_sessions(),
+            timeout=float(os.environ.get("PLODDER_LIST_SESSIONS_TIMEOUT_SEC", "8")),
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=503, detail="Session list timed out; retry shortly"
+        )
     return [
         {
             "session_id": s.session_id,
@@ -2113,14 +2462,15 @@ async def list_sessions():
             "working_directory": s.working_directory,
             "workspace_path": s.working_directory,
             "workspace_id": getattr(s, "workspace_id", None),
-            "current_task": s.current_task_id,
+            "current_task": s.current_task_id or s.active_task_id(),
             "iteration": s.iteration,
             "total_tasks": s.total_tasks,
-            "title": getattr(s, 'title', ''),
-            "model": getattr(s, 'model', 'gpt-4o'),
+            "title": getattr(s, "title", ""),
+            "model": getattr(s, "model", "gpt-4o"),
         }
         for s in sessions
     ]
+
 
 class CreateSessionRequest(BaseModel):
     working_directory: str = "."
@@ -2129,13 +2479,19 @@ class CreateSessionRequest(BaseModel):
     auto_git_commit: bool = False
     git_push: bool = False
 
+
 @app.post("/api/sessions")
 @app.post("/sessions")
 async def create_session(raw_request: Request):
     # Simple rate limiting: 10 sessions/minute per IP
     client_ip = raw_request.client.host if raw_request.client else "unknown"
-    if not _check_rate_limit(f"create_session:{client_ip}", max_calls=10, window_seconds=60):
-        raise HTTPException(status_code=429, detail="Too many requests. Please wait before creating another session.")
+    if not _check_rate_limit(
+        f"create_session:{client_ip}", max_calls=10, window_seconds=60
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please wait before creating another session.",
+        )
 
     await _await_app_db_startup(raw_request)
 
@@ -2165,7 +2521,9 @@ async def create_session(raw_request: Request):
     model = (str(raw_model).strip() if raw_model is not None else "") or "auto"
     model = _validate_model_scope(model, scope="chat")
     try:
-        max_iterations = int(body.get("max_iterations", DEFAULT_MAX_ITERATIONS) or DEFAULT_MAX_ITERATIONS)
+        max_iterations = int(
+            body.get("max_iterations", DEFAULT_MAX_ITERATIONS) or DEFAULT_MAX_ITERATIONS
+        )
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="max_iterations must be an integer")
     auto_git_commit = bool(body.get("auto_git_commit", False))
@@ -2174,13 +2532,17 @@ async def create_session(raw_request: Request):
 
     requested_is_git_remote = _is_git_remote_url(requested_dir)
     if requested_is_git_remote:
-        workspace_id = f"{_workspace_slug_from_git_url(requested_dir)}-{uuid.uuid4().hex[:8]}"
+        workspace_id = (
+            f"{_workspace_slug_from_git_url(requested_dir)}-{uuid.uuid4().hex[:8]}"
+        )
 
     # Determine working directory (empty = fresh folder; URL = git clone like a local IDE repo)
     try:
         os.makedirs(_workspaces_root, exist_ok=True)
     except PermissionError:
-        fallback_root = os.environ.get("PLODDER_AGENT_WORKSPACE_ROOT_FALLBACK", "/var/tmp/agent-workspace")
+        fallback_root = os.environ.get(
+            "PLODDER_AGENT_WORKSPACE_ROOT_FALLBACK", "/var/tmp/agent-workspace"
+        )
         os.makedirs(fallback_root, exist_ok=True)
         print(
             f"[API] create_session: workspace root '{_workspaces_root}' not writable; "
@@ -2190,6 +2552,49 @@ async def create_session(raw_request: Request):
     if requested_dir in ("", ".", "./"):
         working_dir = os.path.join(_workspaces_root, workspace_id)
         os.makedirs(working_dir, exist_ok=True)
+
+        # Seed workspace with the project source code
+        project_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        print(f"[API] Seeding workspace {working_dir} from {project_root}")
+
+        def ignore_patterns(d, files):
+            return [
+                f
+                for f in files
+                if f
+                in (
+                    ".git",
+                    "agent-workspace",
+                    "__pycache__",
+                    "node_modules",
+                    "dist",
+                    "build",
+                    "venv",
+                    ".venv",
+                )
+            ]
+
+        for item in os.listdir(project_root):
+            if item in (
+                ".git",
+                "agent-workspace",
+                "__pycache__",
+                "node_modules",
+                "dist",
+                "build",
+                "venv",
+                ".venv",
+            ):
+                continue
+            s = os.path.join(project_root, item)
+            d = os.path.join(working_dir, item)
+            if os.path.isdir(s):
+                shutil.copytree(s, d, ignore=ignore_patterns)
+            else:
+                shutil.copy2(s, d)
+
         _init_git_workspace(working_dir)
     elif requested_is_git_remote:
         working_dir = os.path.join(_workspaces_root, workspace_id)
@@ -2219,8 +2624,7 @@ async def create_session(raw_request: Request):
                 status_code=400,
                 detail=(
                     "Could not clone that URL. Use public https://… or git@…, "
-                    "or set GITHUB_TOKEN for private GitHub. Git: "
-                    + err
+                    "or set GITHUB_TOKEN for private GitHub. Git: " + err
                 ),
             )
         print(f"[API] create_session: cloned repo into {working_dir}")
@@ -2250,6 +2654,7 @@ async def create_session(raw_request: Request):
         )
     except Exception as e:
         import traceback
+
         print(f"[API] create_session ERROR: {e}")
         traceback.print_exc()
         raise HTTPException(
@@ -2265,11 +2670,14 @@ async def create_session(raw_request: Request):
             # Inject project context into agent's initial system context
             try:
                 from ..integrations.project_memory import get_project_memory
+
                 pm = get_project_memory()
                 ctx = pm.get_context_for_task(project_id, "", max_tokens=600)
                 if ctx:
                     agent._project_context_injection = ctx
-                    print(f"[API] Injected project memory for project '{project_id}' into session {session.session_id}")
+                    print(
+                        f"[API] Injected project memory for project '{project_id}' into session {session.session_id}"
+                    )
             except Exception as e:
                 print(f"[API] Could not inject project memory: {e}")
 
@@ -2293,6 +2701,7 @@ async def create_session(raw_request: Request):
         project_id=project_id or None,
     )
 
+
 @app.get("/api/sessions/{session_id}")
 @app.get("/sessions/{session_id}")
 async def get_session(session_id: str):
@@ -2306,10 +2715,10 @@ async def get_session(session_id: str):
         "working_directory": s.working_directory,
         "workspace_path": s.working_directory,
         "workspace_id": getattr(s, "workspace_id", None),
-        "current_task": s.current_task_id,
+        "current_task": s.active_task_id(),
         "iteration": s.iteration,
         "total_tasks": s.total_tasks,
-        "title": getattr(s, 'title', ''),
+        "title": getattr(s, "title", ""),
         "model": getattr(s, "model", "auto"),
     }
 
@@ -2327,7 +2736,9 @@ async def patch_session(session_id: str, body: PatchSessionRequest, request: Req
     await _await_app_db_startup(request)
 
     if body.model is None:
-        raise HTTPException(status_code=400, detail="No updatable fields (send {\"model\": \"...\"})")
+        raise HTTPException(
+            status_code=400, detail='No updatable fields (send {"model": "..."})'
+        )
 
     ok, err = await session_manager.set_session_model(session_id, body.model)
     if not ok:
@@ -2347,7 +2758,7 @@ async def patch_session(session_id: str, body: PatchSessionRequest, request: Req
         "working_directory": s.working_directory,
         "workspace_path": s.working_directory,
         "workspace_id": getattr(s, "workspace_id", None),
-        "current_task": s.current_task_id,
+        "current_task": s.active_task_id(),
         "iteration": s.iteration,
         "total_tasks": s.total_tasks,
         "title": getattr(s, "title", ""),
@@ -2363,6 +2774,7 @@ async def delete_session(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     return {"status": "deleted", "session_id": session_id}
 
+
 @app.post("/api/sessions/{session_id}/answer")
 @app.post("/sessions/{session_id}/answer")
 async def answer_clarification(session_id: str, request: Request):
@@ -2373,7 +2785,9 @@ async def answer_clarification(session_id: str, request: Request):
         raise HTTPException(status_code=400, detail="Missing 'answer' field")
     ok = await session_manager.answer_clarification(session_id, answer)
     if not ok:
-        raise HTTPException(status_code=404, detail="No pending clarification for this session")
+        raise HTTPException(
+            status_code=404, detail="No pending clarification for this session"
+        )
     return {"status": "answered", "session_id": session_id}
 
 
@@ -2390,10 +2804,9 @@ async def issue_bridge_token(session_id: str, request: Request):
             status_code=503,
             detail="BRIDGE_ISSUE_SECRET is not set — cannot issue local bridge tokens.",
         )
-    hdr = (
-        (request.headers.get("x-plodder-bridge-secret") or "").strip()
-        or (request.headers.get("x-minidevin-bridge-secret") or "").strip()
-    )
+    hdr = (request.headers.get("x-plodder-bridge-secret") or "").strip() or (
+        request.headers.get("x-minidevin-bridge-secret") or ""
+    ).strip()
     if hdr != secret:
         raise HTTPException(
             status_code=401,
@@ -2420,7 +2833,10 @@ async def bridge_status(session_id: str):
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     bm = get_bridge_manager()
-    return {"session_id": session_id, "local_bridge_connected": bm.is_connected(session_id)}
+    return {
+        "session_id": session_id,
+        "local_bridge_connected": bm.is_connected(session_id),
+    }
 
 
 @app.post("/api/sessions/{session_id}/sandbox/start")
@@ -2429,12 +2845,21 @@ async def start_sandbox(session_id: str):
     """Start a Docker sandbox for the given session."""
     result = await session_manager.start_sandbox(session_id)
     if not result.get("started"):
-        raise HTTPException(status_code=500, detail=result.get("error", "Failed to start sandbox"))
+        raise HTTPException(
+            status_code=500, detail=result.get("error", "Failed to start sandbox")
+        )
     # Broadcast sandbox_started event over WebSocket
-    await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
-        type=MessageType.STATUS,
-        data={"event": "sandbox_started", "container_id": result.get("container_id"), "status": result.get("status")},
-    ))
+    await connection_manager.broadcast_to_session(
+        session_id,
+        WebSocketMessage(
+            type=MessageType.STATUS,
+            data={
+                "event": "sandbox_started",
+                "container_id": result.get("container_id"),
+                "status": result.get("status"),
+            },
+        ),
+    )
     return result
 
 
@@ -2444,22 +2869,28 @@ async def stop_sandbox(session_id: str):
     """Stop the Docker sandbox for the given session."""
     result = await session_manager.stop_sandbox(session_id)
     if not result.get("stopped"):
-        raise HTTPException(status_code=500, detail=result.get("error", "Failed to stop sandbox"))
+        raise HTTPException(
+            status_code=500, detail=result.get("error", "Failed to stop sandbox")
+        )
     # Broadcast sandbox_stopped event over WebSocket
-    await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
-        type=MessageType.STATUS,
-        data={"event": "sandbox_stopped"},
-    ))
+    await connection_manager.broadcast_to_session(
+        session_id,
+        WebSocketMessage(
+            type=MessageType.STATUS,
+            data={"event": "sandbox_stopped"},
+        ),
+    )
     return result
-
 
 
 @app.post("/api/sandbox/build")
 async def build_sandbox_image_endpoint():
     """Trigger a build of the plodder-sandbox Docker image (runs in background)."""
+
     async def _do_build():
         try:
             from ..sandbox.docker_sandbox import build_sandbox_from_repo
+
             ok = await build_sandbox_from_repo()
             print(f"[API] Sandbox image build {'succeeded' if ok else 'failed'}")
         except Exception as e:
@@ -2480,33 +2911,37 @@ async def list_workspace_files(session_id: str, directory: str = "."):
     session = await session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     base_dir = session.working_directory or "."
     target_dir = os.path.join(base_dir, directory)
-    
+
     try:
         abs_target = os.path.abspath(target_dir)
         if not os.path.exists(abs_target):
-            raise HTTPException(status_code=404, detail=f"Directory not found: {directory}")
-        
+            raise HTTPException(
+                status_code=404, detail=f"Directory not found: {directory}"
+            )
+
         entries = []
         for entry in os.scandir(abs_target):
             if entry.name.startswith("."):
                 continue
-                
+
             is_dir = entry.is_dir()
             stat = entry.stat()
-            entries.append({
-                "name": entry.name,
-                "path": os.path.join(directory, entry.name),
-                "is_directory": is_dir,
-                "size": stat.st_size if not is_dir else 0,
-                "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-            })
-            
+            entries.append(
+                {
+                    "name": entry.name,
+                    "path": os.path.join(directory, entry.name),
+                    "is_directory": is_dir,
+                    "size": stat.st_size if not is_dir else 0,
+                    "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                }
+            )
+
         entries.sort(key=lambda x: (not x["is_directory"], x["name"].lower()))
         return entries
-        
+
     except Exception as e:
         print(f"Error listing directory {target_dir}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -2519,16 +2954,16 @@ async def read_file_content(session_id: str, path: str):
     session = await session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     base_dir = os.path.abspath(session.working_directory or ".")
     target = os.path.abspath(os.path.join(base_dir, path))
     if not target.startswith(base_dir):
         raise HTTPException(status_code=403, detail="Access denied")
     if not os.path.exists(target) or os.path.isdir(target):
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     try:
-        with open(target, 'r', encoding='utf-8', errors='replace') as f:
+        with open(target, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
         return {"path": path, "content": content}
     except Exception as e:
@@ -2555,7 +2990,9 @@ async def download_workspace_zip(session_id: str):
         archive_path = shutil.make_archive(archive_base, "zip", root_dir=base_dir)
     except Exception as exc:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        raise HTTPException(status_code=500, detail=f"Failed to create workspace zip: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"Failed to create workspace zip: {exc}"
+        ) from exc
 
     return FileResponse(
         path=archive_path,
@@ -2596,18 +3033,32 @@ async def _live_preview_proxy_impl(session_id: str, path: str, request: Request)
     sess = await session_manager.get_session(session_id)
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
-    return await proxy_live_preview(session_id, path, request, get_port=get_session_preview_port)
+    return await proxy_live_preview(
+        session_id, path, request, get_port=get_session_preview_port
+    )
 
 
-@app.api_route("/api/sessions/{session_id}/live-preview", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-@app.api_route("/sessions/{session_id}/live-preview", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+@app.api_route(
+    "/api/sessions/{session_id}/live-preview",
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+@app.api_route(
+    "/sessions/{session_id}/live-preview",
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
 async def live_preview_proxy_root(session_id: str, request: Request):
     """Proxy root when URL has no trailing segment (``/live-preview``)."""
     return await _live_preview_proxy_impl(session_id, "", request)
 
 
-@app.api_route("/api/sessions/{session_id}/live-preview/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-@app.api_route("/sessions/{session_id}/live-preview/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+@app.api_route(
+    "/api/sessions/{session_id}/live-preview/{path:path}",
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+@app.api_route(
+    "/sessions/{session_id}/live-preview/{path:path}",
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
 async def live_preview_proxy_route(session_id: str, path: str, request: Request):
     """Reverse-proxy to ``127.0.0.1:{port}`` (Vite default 5173, etc.)."""
     return await _live_preview_proxy_impl(session_id, path, request)
@@ -2657,7 +3108,9 @@ async def get_session_activity_feed(session_id: str, limit: int = 500):
     """
     Return parsed ``.plodder/session_events.jsonl`` rows for the session workspace (agent timeline).
     """
-    if not _check_rate_limit(f"activity_feed:{session_id}", max_calls=120, window_seconds=60):
+    if not _check_rate_limit(
+        f"activity_feed:{session_id}", max_calls=120, window_seconds=60
+    ):
         raise HTTPException(status_code=429, detail="Too many activity-feed requests")
     session = await session_manager.get_session(session_id)
     if not session:
@@ -2728,19 +3181,19 @@ async def write_file_content(session_id: str, req: Request):
     session = await session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     body = await req.json()
     path = body.get("path", "")
     content = body.get("content", "")
-    
+
     base_dir = os.path.abspath(session.working_directory or ".")
     target = os.path.abspath(os.path.join(base_dir, path))
     if not target.startswith(base_dir):
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
     try:
         os.makedirs(os.path.dirname(target), exist_ok=True)
-        with open(target, 'w', encoding='utf-8') as f:
+        with open(target, "w", encoding="utf-8") as f:
             f.write(content)
         return {"path": path, "saved": True}
     except Exception as e:
@@ -2790,7 +3243,9 @@ async def session_lsp_hover(session_id: str, body: LspHoverRequest):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     base_dir = os.path.abspath(session.working_directory or ".")
-    if not _check_rate_limit(f"lsp:hover:{session_id}", max_calls=120, window_seconds=60):
+    if not _check_rate_limit(
+        f"lsp:hover:{session_id}", max_calls=120, window_seconds=60
+    ):
         raise HTTPException(status_code=429, detail="Too many hover requests")
     try:
         from ..lsp.hover import collect_hover
@@ -2831,7 +3286,9 @@ async def open_session_workspace(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     path = os.path.abspath(os.path.expanduser(session.working_directory or "."))
     if not os.path.isdir(path):
-        raise HTTPException(status_code=404, detail=f"Workspace folder not found: {path}")
+        raise HTTPException(
+            status_code=404, detail=f"Workspace folder not found: {path}"
+        )
     try:
         if os.name == "nt":
             os.startfile(path)  # type: ignore[attr-defined]
@@ -2840,7 +3297,9 @@ async def open_session_workspace(session_id: str):
         else:
             subprocess.Popen(["xdg-open", path])
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Could not open workspace: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"Could not open workspace: {exc}"
+        ) from exc
     return {"opened": True, "path": path}
 
 
@@ -2871,7 +3330,9 @@ async def get_session_history(session_id: str):
 
         return text
 
-    def _augment_with_task_descriptions(messages: list[dict], tasks: list[Any]) -> list[dict]:
+    def _augment_with_task_descriptions(
+        messages: list[dict], tasks: list[Any]
+    ) -> list[dict]:
         """Ensure user-entered task texts appear in history even if prompt wrappers hid them."""
         seen_user_texts = {
             (m.get("content") or "").strip().lower()
@@ -2913,8 +3374,12 @@ async def get_session_history(session_id: str):
                 tool_calls_out = []
                 for tc in msg.tool_calls:
                     if isinstance(tc, dict):
-                        name = tc.get("function", {}).get("name", "") or tc.get("name", "")
-                        args = tc.get("function", {}).get("arguments", {}) or tc.get("args", {})
+                        name = tc.get("function", {}).get("name", "") or tc.get(
+                            "name", ""
+                        )
+                        args = tc.get("function", {}).get("arguments", {}) or tc.get(
+                            "args", {}
+                        )
                     else:
                         fn = getattr(tc, "function", None) or tc
                         name = getattr(fn, "name", "") or getattr(tc, "name", "")
@@ -2959,17 +3424,29 @@ async def get_session_history(session_id: str):
                     try:
                         import json as _json
 
-                        args = _json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                        args = (
+                            _json.loads(raw_args)
+                            if isinstance(raw_args, str)
+                            else raw_args
+                        )
                     except Exception:
                         args = {"raw": raw_args}
                     tool_calls_out.append({"name": name, "args": args})
                 else:
-                    tool_calls_out.append({"name": str(tc.get("name", "")), "args": tc.get("args", {})})
+                    tool_calls_out.append(
+                        {"name": str(tc.get("name", "")), "args": tc.get("args", {})}
+                    )
             entry["tool_calls"] = tool_calls_out
         messages.append(entry)
     tasks = await session_manager.list_tasks(session_id)
     messages = _augment_with_task_descriptions(messages, tasks)
-    return {"messages": messages, "session_id": session_id, "total": len(messages), "source": "database"}
+    return {
+        "messages": messages,
+        "session_id": session_id,
+        "total": len(messages),
+        "source": "database",
+    }
+
 
 @app.get("/api/sessions/{session_id}/tasks")
 @app.get("/sessions/{session_id}/tasks")
@@ -2991,6 +3468,7 @@ async def list_tasks(session_id: str):
         for t in tasks
     ]
 
+
 @app.get("/api/sessions/{session_id}/tasks/{task_id}")
 @app.get("/sessions/{session_id}/tasks/{task_id}")
 async def get_task(session_id: str, task_id: str):
@@ -3011,6 +3489,7 @@ async def get_task(session_id: str, task_id: str):
         "completed_at": t.completed_at.isoformat() if t.completed_at else None,
     }
 
+
 @app.get("/api/sessions/{session_id}/tasks/{task_id}/result")
 @app.get("/sessions/{session_id}/tasks/{task_id}/result")
 async def get_task_result(session_id: str, task_id: str):
@@ -3029,6 +3508,7 @@ async def get_task_result(session_id: str, task_id: str):
         "duration_ms": int(duration_seconds * 1000),
     }
 
+
 @app.get("/api/sessions/{session_id}/tasks/{task_id}/artifacts")
 @app.get("/sessions/{session_id}/tasks/{task_id}/artifacts")
 async def list_artifacts(session_id: str, task_id: str):
@@ -3044,6 +3524,7 @@ async def list_artifacts(session_id: str, task_id: str):
         for a in artifacts
     ]
 
+
 @app.get("/api/providers")
 @app.get("/providers")
 async def list_providers():
@@ -3054,7 +3535,10 @@ async def list_providers():
     available_ollama_models = _available_ollama_model_ids()
     models_by_provider: dict[str, list[str]] = {}
     for model in registry.list_models(only_configured=True):
-        if model.provider == Provider.OLLAMA and model.id not in available_ollama_models:
+        if (
+            model.provider == Provider.OLLAMA
+            and model.id not in available_ollama_models
+        ):
             continue
         pid = model.provider.value
         models_by_provider.setdefault(pid, []).append(model.id)
@@ -3090,6 +3574,7 @@ async def list_providers():
     ]
     return {"providers": providers}
 
+
 @app.get("/api/models")
 @app.get("/models")
 async def list_models():
@@ -3105,31 +3590,65 @@ async def list_models():
         or model.get("id") in available_ollama_models
     ]
 
-    if _legacy_openai_toggle_env_set() and not any(m.get("provider") == "openai" for m in models):
-        models.extend([
-            {"id": "gpt-4o", "name": "GPT-4o", "provider": "openai",
-             "context_window": 128000, "supports_tools": True, "supports_vision": True,
-             "max_output_tokens": 16384, "description": "Most capable GPT-4 model"},
-            {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "provider": "openai",
-             "context_window": 128000, "supports_tools": True, "supports_vision": True,
-             "max_output_tokens": 16384, "description": "Faster, cheaper GPT-4o"},
-            {"id": "gpt-4-turbo", "name": "GPT-4 Turbo", "provider": "openai",
-             "context_window": 128000, "supports_tools": True, "supports_vision": True,
-             "max_output_tokens": 4096, "description": "Powerful GPT-4 with vision"},
-        ])
+    if _legacy_openai_toggle_env_set() and not any(
+        m.get("provider") == "openai" for m in models
+    ):
+        models.extend(
+            [
+                {
+                    "id": "gpt-4o",
+                    "name": "GPT-4o",
+                    "provider": "openai",
+                    "context_window": 128000,
+                    "supports_tools": True,
+                    "supports_vision": True,
+                    "max_output_tokens": 16384,
+                    "description": "Most capable GPT-4 model",
+                },
+                {
+                    "id": "gpt-4o-mini",
+                    "name": "GPT-4o Mini",
+                    "provider": "openai",
+                    "context_window": 128000,
+                    "supports_tools": True,
+                    "supports_vision": True,
+                    "max_output_tokens": 16384,
+                    "description": "Faster, cheaper GPT-4o",
+                },
+                {
+                    "id": "gpt-4-turbo",
+                    "name": "GPT-4 Turbo",
+                    "provider": "openai",
+                    "context_window": 128000,
+                    "supports_tools": True,
+                    "supports_vision": True,
+                    "max_output_tokens": 4096,
+                    "description": "Powerful GPT-4 with vision",
+                },
+            ]
+        )
     if not models:
         # Fallback defaults so UI always has something to show
         models = [
-            {"id": "llama-3.3-70b-versatile", "name": "Llama 3.3 70B Versatile (Groq)", "provider": "groq",
-             "context_window": 131072, "supports_tools": True, "supports_vision": False,
-             "max_output_tokens": 4096, "description": "Requires GROQ_API_KEY"},
+            {
+                "id": "llama-3.3-70b-versatile",
+                "name": "Llama 3.3 70B Versatile (Groq)",
+                "provider": "groq",
+                "context_window": 131072,
+                "supports_tools": True,
+                "supports_vision": False,
+                "max_output_tokens": 4096,
+                "description": "Requires GROQ_API_KEY",
+            },
         ]
     return {"models": models}
+
 
 @app.get("/api/status")
 @app.get("/status")
 async def get_system_status():
     """Get system status with uptime and metrics."""
+
     def _env_flag(name: str, default: bool = False) -> bool:
         raw = (os.getenv(name) or "").strip().lower()
         if not raw:
@@ -3141,15 +3660,29 @@ async def get_system_status():
         browser_mode = "browserless"
     else:
         import shutil
-        browser_mode = "local" if shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome") else "unavailable"
+
+        browser_mode = (
+            "local"
+            if shutil.which("chromium")
+            or shutil.which("chromium-browser")
+            or shutil.which("google-chrome")
+            else "unavailable"
+        )
 
     from mini_devin.api.live_preview_state import allowed_ports
-    from mini_devin.sandbox.process_execution_sandbox import use_host_process_terminal_for_tooling
+    from mini_devin.sandbox.process_execution_sandbox import (
+        use_host_process_terminal_for_tooling,
+    )
 
     groq_on = bool((os.getenv("GROQ_API_KEY") or "").strip())
-    openai_on = bool((os.getenv("OPENAI_API_KEY") or "").strip()) or _legacy_openai_toggle_env_set()
+    openai_on = (
+        bool((os.getenv("OPENAI_API_KEY") or "").strip())
+        or _legacy_openai_toggle_env_set()
+    )
     anthropic_on = bool((os.getenv("ANTHROPIC_API_KEY") or "").strip())
-    gemini_on = bool((os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip())
+    gemini_on = bool(
+        (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+    )
     llm_ok = groq_on or openai_on or anthropic_on or gemini_on
 
     return {
@@ -3174,20 +3707,34 @@ async def get_system_status():
             "run_mode": (os.getenv("RUN_MODE") or "offline").strip().lower(),
             "llm_model": (os.getenv("LLM_MODEL") or "").strip() or None,
             "groq_api_base": (os.getenv("GROQ_API_BASE") or "").strip() or None,
-            "railway_environment_set": bool((os.getenv("RAILWAY_ENVIRONMENT") or "").strip()),
+            "railway_environment_set": bool(
+                (os.getenv("RAILWAY_ENVIRONMENT") or "").strip()
+            ),
             "host_process_terminal": use_host_process_terminal_for_tooling(),
             "live_preview_allowed_port_count": len(allowed_ports()),
-            "live_preview_probe_ports_custom": bool((os.getenv("LIVE_PREVIEW_PROBE_PORTS") or "").strip()),
+            "live_preview_probe_ports_custom": bool(
+                (os.getenv("LIVE_PREVIEW_PROBE_PORTS") or "").strip()
+            ),
             "browserless_configured": bool(
-                (os.getenv("BROWSERLESS_API_KEY") or "").strip() or (os.getenv("BROWSERLESS_WS_URL") or "").strip()
+                (os.getenv("BROWSERLESS_API_KEY") or "").strip()
+                or (os.getenv("BROWSERLESS_WS_URL") or "").strip()
             ),
             "tavily_or_serpapi_set": bool(
-                (os.getenv("TAVILY_API_KEY") or "").strip() or (os.getenv("SERPAPI_API_KEY") or "").strip()
+                (os.getenv("TAVILY_API_KEY") or "").strip()
+                or (os.getenv("SERPAPI_API_KEY") or "").strip()
             ),
-            "governance_telemetry_enabled": _env_flag("PLODDER_GOVERNANCE_TELEMETRY", False),
-            "governance_emit_budget_signals": _env_flag("PLODDER_GOVERNANCE_EMIT_BUDGET_SIGNALS", True),
-            "governance_emit_retry_signals": _env_flag("PLODDER_GOVERNANCE_EMIT_RETRY_SIGNALS", True),
-            "governance_emit_loop_signals": _env_flag("PLODDER_GOVERNANCE_EMIT_LOOP_SIGNALS", True),
+            "governance_telemetry_enabled": _env_flag(
+                "PLODDER_GOVERNANCE_TELEMETRY", False
+            ),
+            "governance_emit_budget_signals": _env_flag(
+                "PLODDER_GOVERNANCE_EMIT_BUDGET_SIGNALS", True
+            ),
+            "governance_emit_retry_signals": _env_flag(
+                "PLODDER_GOVERNANCE_EMIT_RETRY_SIGNALS", True
+            ),
+            "governance_emit_loop_signals": _env_flag(
+                "PLODDER_GOVERNANCE_EMIT_LOOP_SIGNALS", True
+            ),
         },
     }
 
@@ -3212,7 +3759,9 @@ async def get_browser_trace(trace_id: str):
     """Return one browser trace entry by trace_id."""
     entry = _find_browser_trace_by_id(trace_id)
     if not entry:
-        raise HTTPException(status_code=404, detail=f"browser trace not found: {trace_id}")
+        raise HTTPException(
+            status_code=404, detail=f"browser trace not found: {trace_id}"
+        )
     return {
         "trace_file": str(_browser_trace_file_path()),
         "entry": entry,
@@ -3250,6 +3799,7 @@ async def list_skills():
 # Browser-Based UI Testing + Visual Regression endpoints
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class UITestRequest(BaseModel):
     suite_name: str = "UI Test"
     url: str
@@ -3276,6 +3826,7 @@ class VisualRegressionCompareRequest(BaseModel):
 async def run_ui_test(req: UITestRequest):
     """Run a structured browser UI test suite via Playwright."""
     from ..tools.browser.ui_tester import UITestRunner, steps_from_spec
+
     steps = steps_from_spec(req.steps)
     runner = UITestRunner(working_dir=req.working_dir, headless=True)
     result = await runner.run(
@@ -3291,6 +3842,7 @@ async def run_ui_test(req: UITestRequest):
 async def vr_list_baselines(working_dir: str = "."):
     """List all stored visual regression baselines."""
     from ..tools.browser.visual_regression import get_engine
+
     engine = get_engine(working_dir)
     return {"baselines": engine.list_baselines()}
 
@@ -3299,15 +3851,23 @@ async def vr_list_baselines(working_dir: str = "."):
 async def vr_set_baseline(req: VisualRegressionSetBaselineRequest):
     """Store a screenshot as the new visual baseline."""
     from ..tools.browser.visual_regression import get_engine
+
     engine = get_engine(req.working_dir)
-    rec = engine.save_screenshot_b64(req.name, req.screenshot_b64, url=req.url, set_as_baseline=True)
-    return {"message": f"Baseline set for '{req.name}'", "width": rec.width, "height": rec.height}
+    rec = engine.save_screenshot_b64(
+        req.name, req.screenshot_b64, url=req.url, set_as_baseline=True
+    )
+    return {
+        "message": f"Baseline set for '{req.name}'",
+        "width": rec.width,
+        "height": rec.height,
+    }
 
 
 @app.post("/api/visual-regression/compare")
 async def vr_compare(req: VisualRegressionCompareRequest):
     """Compare a screenshot against the stored baseline."""
     from ..tools.browser.visual_regression import get_engine
+
     engine = get_engine(req.working_dir)
     try:
         diff = engine.compare_b64(req.name, req.screenshot_b64, req.threshold_percent)
@@ -3320,6 +3880,7 @@ async def vr_compare(req: VisualRegressionCompareRequest):
 async def vr_history(name: str, working_dir: str = "."):
     """Get the test history for a named page."""
     from ..tools.browser.visual_regression import get_engine
+
     engine = get_engine(working_dir)
     return engine.get_history(name)
 
@@ -3328,6 +3889,7 @@ async def vr_history(name: str, working_dir: str = "."):
 async def vr_delete_baseline(name: str, working_dir: str = "."):
     """Delete a stored baseline."""
     from ..tools.browser.visual_regression import get_engine
+
     engine = get_engine(working_dir)
     removed = engine.delete_baseline(name)
     return {"removed": removed}
@@ -3337,6 +3899,7 @@ async def vr_delete_baseline(name: str, working_dir: str = "."):
 async def vr_screenshot(rel_path: str, working_dir: str = "."):
     """Return a stored screenshot as base64."""
     from ..tools.browser.visual_regression import get_engine
+
     engine = get_engine(working_dir)
     b64 = engine.get_screenshot_b64(rel_path)
     if b64:
@@ -3347,6 +3910,7 @@ async def vr_screenshot(rel_path: str, working_dir: str = "."):
 # ──────────────────────────────────────────────────────────────────────────────
 # Self-Healing Monitor endpoints
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class MonitorRegisterRequest(BaseModel):
     name: str
@@ -3362,6 +3926,7 @@ class MonitorRegisterRequest(BaseModel):
 async def monitor_status():
     """Return current state of all monitored apps + recent history."""
     from ..integrations.monitor import get_status
+
     return get_status()
 
 
@@ -3369,6 +3934,7 @@ async def monitor_status():
 async def monitor_register(req: MonitorRegisterRequest):
     """Register an app for continuous health monitoring."""
     from ..integrations.monitor import MonitoredApp, register_app, start_monitor
+
     app_cfg = MonitoredApp(
         name=req.name,
         health_url=req.health_url,
@@ -3387,6 +3953,7 @@ async def monitor_register(req: MonitorRegisterRequest):
 async def monitor_unregister(app_name: str):
     """Remove an app from continuous monitoring."""
     from ..integrations.monitor import unregister_app
+
     removed = unregister_app(app_name)
     return {"removed": removed}
 
@@ -3395,6 +3962,7 @@ async def monitor_unregister(app_name: str):
 async def monitor_one_shot(url: str):
     """One-shot health check for any URL."""
     from ..integrations.monitor import check_app_health
+
     return await check_app_health(url)
 
 
@@ -3402,6 +3970,7 @@ async def monitor_one_shot(url: str):
 async def monitor_start():
     """Start the background monitor loop."""
     from ..integrations.monitor import start_monitor
+
     start_monitor()
     return {"message": "Monitor started"}
 
@@ -3410,14 +3979,18 @@ async def monitor_start():
 async def monitor_stop():
     """Stop the background monitor loop."""
     from ..integrations.monitor import stop_monitor
+
     stop_monitor()
     return {"message": "Monitor stopped"}
 
 
 @app.post("/api/monitor/fetch-logs")
-async def monitor_fetch_logs(platform: str = "docker", lines: int = 50, config: dict = {}):
+async def monitor_fetch_logs(
+    platform: str = "docker", lines: int = 50, config: dict = {}
+):
     """Fetch recent logs from a cloud platform or Docker container."""
     from ..integrations.monitor import fetch_app_logs
+
     logs = await fetch_app_logs(platform, config, lines)
     return {"logs": logs}
 
@@ -3425,6 +3998,7 @@ async def monitor_fetch_logs(platform: str = "docker", lines: int = 50, config: 
 # ──────────────────────────────────────────────────────────────────────────────
 # Project Memory endpoints
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class CreateProjectRequest(BaseModel):
     name: str
@@ -3522,6 +4096,7 @@ async def create_project(req: CreateProjectRequest):
 @app.get("/api/projects")
 async def list_projects():
     from ..integrations.project_memory import get_project_memory
+
     pm = get_project_memory()
     return {"projects": [p.to_dict() for p in pm.list_projects()]}
 
@@ -3544,7 +4119,9 @@ async def search_project_retrieval(req: ProjectRetrievalSearchRequest):
 
     scorer = (req.scorer or "hybrid").strip().lower()
     if scorer not in {"hybrid", "semantic", "lexical"}:
-        raise HTTPException(status_code=400, detail="scorer must be hybrid, semantic, or lexical")
+        raise HTTPException(
+            status_code=400, detail="scorer must be hybrid, semantic, or lexical"
+        )
 
     index_file = Path(
         req.index_file
@@ -3577,6 +4154,7 @@ async def search_project_retrieval(req: ProjectRetrievalSearchRequest):
 @app.get("/api/projects/{project_id}")
 async def get_project(project_id: str):
     from ..integrations.project_memory import get_project_memory
+
     pm = get_project_memory()
     proj = pm.get_project(project_id)
     if not proj:
@@ -3587,6 +4165,7 @@ async def get_project(project_id: str):
 @app.delete("/api/projects/{project_id}")
 async def delete_project(project_id: str):
     from ..integrations.project_memory import get_project_memory
+
     pm = get_project_memory()
     ok = pm.delete_project(project_id)
     return {"deleted": ok}
@@ -3595,6 +4174,7 @@ async def delete_project(project_id: str):
 @app.post("/api/projects/{project_id}/memory")
 async def add_memory(project_id: str, req: MemoryEntryRequest):
     from ..integrations.project_memory import get_project_memory, MemoryCategory
+
     pm = get_project_memory()
     try:
         cat = MemoryCategory(req.category)
@@ -3613,8 +4193,11 @@ async def add_memory(project_id: str, req: MemoryEntryRequest):
 
 
 @app.get("/api/projects/{project_id}/memory")
-async def list_memory(project_id: str, category: Optional[str] = None, min_importance: int = 1):
+async def list_memory(
+    project_id: str, category: Optional[str] = None, min_importance: int = 1
+):
     from ..integrations.project_memory import get_project_memory, MemoryCategory
+
     pm = get_project_memory()
     cat = MemoryCategory(category) if category else None
     entries = pm.list_entries(project_id, category=cat, min_importance=min_importance)
@@ -3624,6 +4207,7 @@ async def list_memory(project_id: str, category: Optional[str] = None, min_impor
 @app.post("/api/projects/{project_id}/memory/search")
 async def search_memory(project_id: str, req: MemorySearchRequest):
     from ..integrations.project_memory import get_project_memory, MemoryCategory
+
     pm = get_project_memory()
     cat = MemoryCategory(req.category) if req.category else None
     results = pm.search(
@@ -3639,6 +4223,7 @@ async def search_memory(project_id: str, req: MemorySearchRequest):
 @app.get("/api/projects/{project_id}/memory/context")
 async def get_memory_context(project_id: str, task: str = ""):
     from ..integrations.project_memory import get_project_memory
+
     pm = get_project_memory()
     ctx = pm.get_context_for_task(project_id, task)
     return {"context": ctx}
@@ -3658,7 +4243,10 @@ async def ingest_project_repo_snapshot(project_id: str, req: IngestRepoRequest):
     from pathlib import Path
 
     from ..integrations.project_memory import MemoryCategory, get_project_memory
-    from ..integrations.repo_ingest import build_repo_digest, is_path_allowed_for_repo_ingest
+    from ..integrations.repo_ingest import (
+        build_repo_digest,
+        is_path_allowed_for_repo_ingest,
+    )
 
     pm = get_project_memory()
     if not pm.get_project(project_id):
@@ -3677,11 +4265,20 @@ async def ingest_project_repo_snapshot(project_id: str, req: IngestRepoRequest):
     try:
         if ru:
             if not _is_git_remote_url(ru):
-                raise HTTPException(status_code=400, detail="repo_url must be a git HTTPS or SSH remote URL")
-            _mini_devin_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            _workspaces_root = os.path.join(os.path.dirname(_mini_devin_root), "agent-workspace")
+                raise HTTPException(
+                    status_code=400,
+                    detail="repo_url must be a git HTTPS or SSH remote URL",
+                )
+            _mini_devin_root = os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            )
+            _workspaces_root = os.path.join(
+                os.path.dirname(_mini_devin_root), "agent-workspace"
+            )
             os.makedirs(_workspaces_root, exist_ok=True)
-            clone_dir = os.path.join(_workspaces_root, "project-ingest", project_id, str(uuid.uuid4())[:10])
+            clone_dir = os.path.join(
+                _workspaces_root, "project-ingest", project_id, str(uuid.uuid4())[:10]
+            )
             if os.path.isdir(clone_dir):
                 shutil.rmtree(clone_dir, ignore_errors=True)
             os.makedirs(clone_dir, exist_ok=True)
@@ -3715,7 +4312,9 @@ async def ingest_project_repo_snapshot(project_id: str, req: IngestRepoRequest):
             except OSError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid path: {e}") from e
             if not root.is_dir():
-                raise HTTPException(status_code=400, detail="repo_path is not a directory")
+                raise HTTPException(
+                    status_code=400, detail="repo_path is not a directory"
+                )
             if not is_path_allowed_for_repo_ingest(root):
                 raise HTTPException(
                     status_code=403,
@@ -3732,7 +4331,12 @@ async def ingest_project_repo_snapshot(project_id: str, req: IngestRepoRequest):
 
         if req.dry_run:
             prev = data["markdown"]
-            preview = prev if len(prev) <= 65536 else prev[:65536] + "\n\n…(preview truncated — full text saved on confirm)\n"
+            preview = (
+                prev
+                if len(prev) <= 65536
+                else prev[:65536]
+                + "\n\n…(preview truncated — full text saved on confirm)\n"
+            )
             out: dict = {
                 "dry_run": True,
                 "preview": preview,
@@ -3768,7 +4372,9 @@ async def ingest_project_repo_snapshot(project_id: str, req: IngestRepoRequest):
                     return out_dup
 
         src = ru if ru else rp
-        source_tag = f"ingest-src:{hashlib.sha256(src.encode('utf-8')).hexdigest()[:16]}"
+        source_tag = (
+            f"ingest-src:{hashlib.sha256(src.encode('utf-8')).hexdigest()[:16]}"
+        )
         tags = ["auto-ingest", "repo-snapshot", digest_tag, source_tag]
 
         entry = pm.add_entry(
@@ -3806,6 +4412,7 @@ async def ingest_project_repo_snapshot(project_id: str, req: IngestRepoRequest):
 @app.delete("/api/memory/{entry_id}")
 async def delete_memory_entry(entry_id: str):
     from ..integrations.project_memory import get_project_memory
+
     pm = get_project_memory()
     ok = pm.delete_entry(entry_id)
     return {"deleted": ok}
@@ -3814,6 +4421,7 @@ async def delete_memory_entry(entry_id: str):
 # ──────────────────────────────────────────────────────────────────────────────
 # Hierarchical Project Plan endpoints
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class CreatePlanRequest(BaseModel):
     project_id: str
@@ -3835,7 +4443,11 @@ async def create_plan(req: CreatePlanRequest):
     planner = get_planner()
     try:
         pm = get_project_memory()
-        ctx = pm.get_context_for_task(req.project_id, req.goal, max_tokens=400) if pm.get_project(req.project_id) else ""
+        ctx = (
+            pm.get_context_for_task(req.project_id, req.goal, max_tokens=400)
+            if pm.get_project(req.project_id)
+            else ""
+        )
     except Exception:
         ctx = ""
     try:
@@ -3863,6 +4475,7 @@ async def create_plan(req: CreatePlanRequest):
 @app.get("/api/project-plans")
 async def list_plans(project_id: Optional[str] = None):
     from ..integrations.hierarchical_planner import get_planner
+
     planner = get_planner()
     plans = planner.list_plans(project_id)
     return {"plans": [p.to_dict() for p in plans]}
@@ -3871,6 +4484,7 @@ async def list_plans(project_id: Optional[str] = None):
 @app.get("/api/project-plans/{plan_id}")
 async def get_plan(plan_id: str):
     from ..integrations.hierarchical_planner import get_planner
+
     planner = get_planner()
     plan = planner.get_plan(plan_id)
     if not plan:
@@ -3881,6 +4495,7 @@ async def get_plan(plan_id: str):
 @app.delete("/api/project-plans/{plan_id}")
 async def delete_plan(plan_id: str):
     from ..integrations.hierarchical_planner import get_planner
+
     planner = get_planner()
     ok = planner.delete_plan(plan_id)
     return {"deleted": ok}
@@ -3890,6 +4505,7 @@ async def delete_plan(plan_id: str):
 async def execute_plan(plan_id: str):
     """Start executing remaining milestones as sub-agent tasks."""
     from ..integrations.hierarchical_planner import get_planner
+
     planner = get_planner()
     plan = planner.get_plan(plan_id)
     if not plan:
@@ -3908,6 +4524,7 @@ async def execute_plan(plan_id: str):
 @app.post("/api/project-plans/{plan_id}/retry")
 async def retry_milestone_endpoint(plan_id: str, req: RetryMilestoneRequest):
     from ..integrations.hierarchical_planner import get_planner
+
     planner = get_planner()
     ok = planner.retry_milestone(plan_id, req.milestone_id)
     return {"reset": ok}
@@ -3916,6 +4533,7 @@ async def retry_milestone_endpoint(plan_id: str, req: RetryMilestoneRequest):
 # ──────────────────────────────────────────────────────────────────────────────
 # Environment Parity endpoints
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class EnvDiffRequest(BaseModel):
     project_root: str = "."
@@ -3953,6 +4571,7 @@ async def env_parity_diff(req: EnvDiffRequest):
     """Compare local .env with production environment."""
     from ..integrations.env_parity import diff_environments
     import os as _os
+
     full_env = str(_os.path.join(req.project_root, req.env_file))
     return diff_environments(local_env_file=full_env, production_env=req.production_env)
 
@@ -3961,6 +4580,7 @@ async def env_parity_diff(req: EnvDiffRequest):
 async def env_parity_dockerfile(req: GenerateDockerfileRequest):
     """Generate a production-ready Dockerfile for the project."""
     from ..integrations.env_parity import generate_dockerfile
+
     content, path = generate_dockerfile(
         req.project_root,
         project_type=req.project_type,
@@ -3977,6 +4597,7 @@ async def env_parity_dockerfile(req: GenerateDockerfileRequest):
 async def env_parity_env_example(req: GenerateEnvExampleRequest):
     """Generate .env.example from an existing .env file."""
     from ..integrations.env_parity import generate_env_example
+
     content, path = generate_env_example(
         req.project_root,
         source_env_file=req.source_env_file,
@@ -3990,6 +4611,7 @@ async def env_parity_env_example(req: GenerateEnvExampleRequest):
 async def env_parity_compose(req: GenerateComposeRequest):
     """Generate a docker-compose.yml for local dev parity."""
     from ..integrations.env_parity import generate_docker_compose
+
     content, path = generate_docker_compose(
         req.project_root,
         port=req.port,
@@ -4183,26 +4805,32 @@ async def post_session_agent_message(session_id: str, body: SessionAgentMessageR
     session = await session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    st = session.status.value if hasattr(session.status, "value") else str(session.status)
+    st = (
+        session.status.value
+        if hasattr(session.status, "value")
+        else str(session.status)
+    )
     casual_reply = _casual_reply_for_message(text)
     if casual_reply and st != "running":
+        active_task_id = session.active_task_id()
         await connection_manager.broadcast_to_session(
             session_id,
             WebSocketMessage(
                 type=MessageType.TOKEN,
                 data={"content": casual_reply},
-                task_id=session.current_task_id,
+                task_id=active_task_id,
             ),
         )
         return {"ok": True, "mode": "chat", "reply": casual_reply}
     if st == "running":
         await session_manager.inject_followup(session_id, text)
+        active_task_id = session.active_task_id()
         await connection_manager.broadcast_to_session(
             session_id,
             WebSocketMessage(
                 type=MessageType.TOKEN,
                 data={"content": f"\n\n**[Follow-up received]** {text}\n\n"},
-                task_id=session.current_task_id,
+                task_id=active_task_id,
             ),
         )
         return {"ok": True, "mode": "followup"}
@@ -4260,45 +4888,55 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         while True:
             data = await websocket.receive_text()
             print(f"Received from {session_id}: {data}")
-            
+
             # Check if session exists, create if not
             session = await session_manager.get_session(session_id)
             if not session:
                 session = await session_manager.create_session(session_id=session_id)
                 session_id = session.session_id
-            
+
             casual_reply = _casual_reply_for_message(data)
-            if casual_reply and session.status.value != 'running':
-                await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
-                    type=MessageType.TOKEN,
-                    data={"content": casual_reply},
-                    task_id=session.current_task_id,
-                ))
+            if casual_reply and session.status.value != "running":
+                active_task_id = session.active_task_id()
+                await connection_manager.broadcast_to_session(
+                    session_id,
+                    WebSocketMessage(
+                        type=MessageType.TOKEN,
+                        data={"content": casual_reply},
+                        task_id=active_task_id,
+                    ),
+                )
                 continue
 
             # If agent is currently running -> inject as follow-up
-            if session.status.value == 'running':
+            if session.status.value == "running":
                 await session_manager.inject_followup(session_id, data)
                 # Acknowledge to UI
-                await connection_manager.broadcast_to_session(session_id, WebSocketMessage(
-                    type=MessageType.TOKEN,
-                    data={"content": f"\n\n**[Follow-up received]** {data}\n\n"},
-                    task_id=session.current_task_id,
-                ))
+                active_task_id = session.active_task_id()
+                await connection_manager.broadcast_to_session(
+                    session_id,
+                    WebSocketMessage(
+                        type=MessageType.TOKEN,
+                        data={"content": f"\n\n**[Follow-up received]** {data}\n\n"},
+                        task_id=active_task_id,
+                    ),
+                )
                 continue
-            
+
             # Create a new task
             task = await session_manager.create_task(
                 session_id=session_id,
                 description=data,
                 connection_manager=connection_manager,
             )
-            
-            asyncio.create_task(session_manager.run_task(
-                session_id=session_id,
-                task_id=task.task_id,
-                connection_manager=connection_manager
-            ))
+
+            asyncio.create_task(
+                session_manager.run_task(
+                    session_id=session_id,
+                    task_id=task.task_id,
+                    connection_manager=connection_manager,
+                )
+            )
 
     except WebSocketDisconnect:
         connection_manager.disconnect(websocket)
@@ -4311,6 +4949,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 # SWE-bench Benchmarking endpoints
 # (SPA static mount + catch-all route are registered at end of file after all /api routes.)
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class BenchmarkRunRequest(BaseModel):
     split: str = "lite"
@@ -4347,14 +4986,18 @@ async def get_code_benchmark_run(run_id: str):
 
 
 @app.post("/api/code-benchmark/runs")
-async def start_code_benchmark_run(req: CodeBenchmarkRunRequest, background_tasks: BackgroundTasks):
+async def start_code_benchmark_run(
+    req: CodeBenchmarkRunRequest, background_tasks: BackgroundTasks
+):
     import uuid
 
     from ..integrations.code_bench import run_code_benchmark
 
     benchmark = (req.benchmark or "humaneval").strip().lower()
     if benchmark not in {"humaneval", "mbpp"}:
-        raise HTTPException(status_code=400, detail="benchmark must be humaneval or mbpp")
+        raise HTTPException(
+            status_code=400, detail="benchmark must be humaneval or mbpp"
+        )
     mode = (req.mode or "canonical").strip().lower()
     if mode not in {"canonical", "litellm"}:
         raise HTTPException(status_code=400, detail="mode must be canonical or litellm")
@@ -4396,6 +5039,7 @@ async def list_benchmark_tasks(
 ):
     """List available SWE-bench tasks (preview, no run)."""
     from ..integrations.swe_bench import load_tasks
+
     tasks = load_tasks(split=split, limit=limit, repo_filter=repo_filter)
     return {"tasks": [t.to_dict() for t in tasks], "total": len(tasks)}
 
@@ -4403,12 +5047,14 @@ async def list_benchmark_tasks(
 @app.get("/api/benchmark/runs")
 async def list_benchmark_runs():
     from ..integrations.swe_bench import get_runner
+
     return {"runs": get_runner().list_runs()}
 
 
 @app.get("/api/benchmark/runs/{run_id}")
 async def get_benchmark_run(run_id: str):
     from ..integrations.swe_bench import get_runner
+
     run = get_runner().get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -4418,13 +5064,17 @@ async def get_benchmark_run(run_id: str):
 @app.get("/api/benchmark/runs/{run_id}/results")
 async def get_benchmark_run_results(run_id: str):
     from ..integrations.swe_bench import get_runner
+
     results = get_runner().get_run_results(run_id)
     return {"results": results}
 
 
 @app.post("/api/benchmark/runs")
-async def start_benchmark_run(req: BenchmarkRunRequest, background_tasks: BackgroundTasks):
+async def start_benchmark_run(
+    req: BenchmarkRunRequest, background_tasks: BackgroundTasks
+):
     from ..integrations.swe_bench import get_runner, make_agent_runner
+
     runner = get_runner()
     agent_fn = make_agent_runner(session_manager) if req.use_agent else None
 
@@ -4443,6 +5093,7 @@ async def start_benchmark_run(req: BenchmarkRunRequest, background_tasks: Backgr
     # Return a preview run object immediately
     from ..integrations.swe_bench import BenchmarkRun
     from ..integrations.swe_bench import load_tasks
+
     tasks = load_tasks(split=req.split, limit=req.limit, repo_filter=req.repo_filter)
     preview = BenchmarkRun(
         name=req.name or f"SWE-bench {req.split} × {len(tasks)}",
@@ -4459,6 +5110,7 @@ async def start_benchmark_run(req: BenchmarkRunRequest, background_tasks: Backgr
 @app.delete("/api/benchmark/runs/{run_id}")
 async def delete_benchmark_run(run_id: str):
     from ..integrations.swe_bench import get_runner
+
     ok = get_runner().delete_run(run_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -4468,6 +5120,7 @@ async def delete_benchmark_run(run_id: str):
 @app.post("/api/benchmark/runs/cancel")
 async def cancel_benchmark_run():
     from ..integrations.swe_bench import get_runner
+
     get_runner().cancel_run()
     return {"cancelled": True}
 
@@ -4476,6 +5129,7 @@ async def cancel_benchmark_run():
 async def benchmark_stats():
     """Aggregate stats across all runs."""
     from ..integrations.swe_bench import get_runner
+
     runner = get_runner()
     runs = runner.list_runs()
     completed = [r for r in runs if r["status"] == "completed"]
@@ -4486,8 +5140,12 @@ async def benchmark_stats():
         "completed_runs": len(completed),
         "total_tasks_evaluated": total_tasks,
         "total_resolved": total_resolved,
-        "overall_resolve_rate": round(total_resolved / total_tasks * 100, 1) if total_tasks > 0 else 0.0,
-        "best_run": max(completed, key=lambda r: r["resolve_rate"])["run_id"] if completed else None,
+        "overall_resolve_rate": round(total_resolved / total_tasks * 100, 1)
+        if total_tasks > 0
+        else 0.0,
+        "best_run": max(completed, key=lambda r: r["resolve_rate"])["run_id"]
+        if completed
+        else None,
     }
 
 
@@ -4501,11 +5159,16 @@ _FRONTEND_DIST = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dis
 _FRONTEND_ASSETS = _FRONTEND_DIST / "assets"
 _FRONTEND_INDEX = _FRONTEND_DIST / "index.html"
 _SKIP_FRONTEND_STATIC = (
-    os.getenv("PLODDER_SKIP_FRONTEND_STATIC", "").strip().lower() in {"1", "true", "yes", "on"}
+    os.getenv("PLODDER_SKIP_FRONTEND_STATIC", "").strip().lower()
+    in {"1", "true", "yes", "on"}
     or "pytest" in sys.modules
 )
 
-if (not _SKIP_FRONTEND_STATIC) and _FRONTEND_ASSETS.exists() and _FRONTEND_INDEX.exists():
+if (
+    (not _SKIP_FRONTEND_STATIC)
+    and _FRONTEND_ASSETS.exists()
+    and _FRONTEND_INDEX.exists()
+):
     app.mount("/assets", StaticFiles(directory=str(_FRONTEND_ASSETS)), name="assets")
 
     @app.get("/")
@@ -4522,4 +5185,5 @@ if (not _SKIP_FRONTEND_STATIC) and _FRONTEND_ASSETS.exists() and _FRONTEND_INDEX
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
