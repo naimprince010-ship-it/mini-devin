@@ -54,6 +54,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      - PORT=8080
       # Database Configuration
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-plodder}
       
