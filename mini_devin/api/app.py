@@ -421,7 +421,9 @@ def _ensure_incident_tracker(app: FastAPI) -> RuntimeIncidentTracker:
     tracker = getattr(app.state, "incident_tracker", None)
     if isinstance(tracker, RuntimeIncidentTracker):
         return tracker
-    ops_root = Path(_REPO_ROOT) / ".plodder" / "ops"
+    import os
+    artifact_dir = os.environ.get("ARTIFACT_DIR", "/workspace/runs")
+    ops_root = Path(artifact_dir) / ".plodder" / "ops"
     tracker = RuntimeIncidentTracker(
         crash_loop_file=ops_root / "crash_loop_state.json",
         threshold=max(2, int(os.getenv("PLODDER_CRASH_LOOP_THRESHOLD", "3"))),
