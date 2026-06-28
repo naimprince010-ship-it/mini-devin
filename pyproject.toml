@@ -9,6 +9,8 @@ packages = [{include = "mini_devin"}, {include = "plodder"}]
 [tool.poetry.scripts]
 plodder = "mini_devin.cli:main"
 mini-devin = "mini_devin.cli:main"
+plodder-desktop-dev = "mini_devin.cli_desktop:run_desktop_dev"
+plodder-desktop = "mini_devin.cli_desktop:run_desktop_prod"
 
 [tool.poetry.dependencies]
 python = "^3.11"

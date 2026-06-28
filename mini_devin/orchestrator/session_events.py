@@ -126,6 +126,14 @@ def estimate_llm_cost_usd(
         ("claude-3-opus", 15.0, 75.0),
         ("claude-3-haiku", 0.25, 1.25),
         ("claude-3-sonnet", 3.0, 15.0),
+        # OSS / hosted-inference models (e.g. DigitalOcean inference) — rough public rates
+        ("qwen3-coder", 0.2, 0.8),
+        ("qwen", 0.2, 0.8),
+        ("deepseek-r1", 0.55, 2.19),
+        ("deepseek", 0.27, 1.1),
+        ("llama-4", 0.2, 0.8),
+        ("llama-3", 0.2, 0.8),
+        ("llama", 0.2, 0.8),
     ]
     for key, pi, po in table:
         if key in m:

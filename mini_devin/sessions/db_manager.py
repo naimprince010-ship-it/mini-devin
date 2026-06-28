@@ -134,7 +134,7 @@ class DatabaseSessionManager:
         )
 
     async def _persist_agent_conversation(self, session_id: str, agent: Any) -> None:
-        """Write LLM messages + current workspace path to the DB (Railway-friendly)."""
+        """Write LLM messages + current workspace path to the DB."""
         if not agent or not getattr(agent, "llm", None):
             return
         try:

@@ -137,6 +137,24 @@ class TestTerminalTool:
         assert "package.json" in result.error_message.lower()
         assert "create `package.json` first" in result.stderr.lower() or "none found" in result.stderr.lower()
 
+    def test_npm_commands_get_workspace_local_cache(self, tmp_path, monkeypatch):
+        """npm should not default to unwritable global cache paths in POSIX sandboxes."""
+        monkeypatch.setattr(terminal_module, "_IS_WINDOWS", False)
+        env = {}
+
+        terminal_module._ensure_workspace_npm_cache("npm install --save-dev jest", str(tmp_path), env)
+
+        assert env["NPM_CONFIG_CACHE"] == str(tmp_path / "npm-cache")
+        assert (tmp_path / "npm-cache").is_dir()
+
+    def test_explicit_npm_cache_is_preserved(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(terminal_module, "_IS_WINDOWS", False)
+        env = {"NPM_CONFIG_CACHE": "/custom/cache"}
+
+        terminal_module._ensure_workspace_npm_cache("npx jest", str(tmp_path), env)
+
+        assert env["NPM_CONFIG_CACHE"] == "/custom/cache"
+
 
 class TestTerminalToolSafety:
     """Safety-focused tests for TerminalTool."""

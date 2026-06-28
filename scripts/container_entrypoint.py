@@ -1,5 +1,5 @@
 """
-Railway / Docker entry: optional Postgres migrations in background, then exec uvicorn as PID 1.
+Generic container entrypoint: optional Postgres migrations in background, then exec uvicorn as PID 1.
 
 Uses Python (not shell) so Windows CRLF in repo checkouts cannot break the container CMD.
 """
@@ -15,7 +15,7 @@ APP = "mini_devin.api:app"
 
 
 def _listen_port() -> str:
-    """Match ``scripts/bootstrap._resolve_listen_port`` (Railway ``PORT`` quirks)."""
+    """Resolve a single numeric listen port from PORT, falling back to 8000."""
     raw = (os.environ.get("PORT") or "").strip()
     if not raw:
         return "8000"
@@ -23,25 +23,25 @@ def _listen_port() -> str:
     for tok in first.replace(",", " ").split():
         if tok.isdigit():
             return tok
-    print(f"[railway-entrypoint] invalid PORT={raw!r}; using 8000", flush=True)
+    print(f"[container-entrypoint] invalid PORT={raw!r}; using 8000", flush=True)
     return "8000"
 
 
 def _maybe_alembic_background() -> None:
     if os.getenv("SKIP_ALEMBIC_UPGRADE", "").strip().lower() in ("1", "true", "yes", "on"):
-        print("[railway-entrypoint] SKIP_ALEMBIC_UPGRADE set", flush=True)
+        print("[container-entrypoint] SKIP_ALEMBIC_UPGRADE set", flush=True)
         return
     dbr = (os.getenv("DATABASE_URL") or "").strip().lower()
     if not dbr or "postgres" not in dbr:
-        print("[railway-entrypoint] skip alembic (no postgres DATABASE_URL)", flush=True)
+        print("[container-entrypoint] skip alembic (no postgres DATABASE_URL)", flush=True)
         return
 
     def _run() -> None:
         env = os.environ.copy()
         env["PYTHONPATH"] = "." + os.pathsep + env.get("PYTHONPATH", "").strip(os.pathsep)
-        print("[railway-entrypoint] alembic upgrade head (background)", flush=True)
+        print("[container-entrypoint] alembic upgrade head (background)", flush=True)
         try:
-            r = subprocess.run(
+            result = subprocess.run(
                 [sys.executable, "-m", "alembic", "upgrade", "head"],
                 cwd="/app",
                 env=env,
@@ -49,16 +49,16 @@ def _maybe_alembic_background() -> None:
                 text=True,
                 timeout=float(os.getenv("ALEMBIC_UPGRADE_TIMEOUT", "300")),
             )
-            if r.stdout:
-                print(r.stdout.rstrip(), flush=True)
-            if r.stderr:
-                print(r.stderr.rstrip(), flush=True)
-            if r.returncode != 0:
-                print(f"[railway-entrypoint] alembic failed exit={r.returncode}", flush=True)
+            if result.stdout:
+                print(result.stdout.rstrip(), flush=True)
+            if result.stderr:
+                print(result.stderr.rstrip(), flush=True)
+            if result.returncode != 0:
+                print(f"[container-entrypoint] alembic failed exit={result.returncode}", flush=True)
             else:
-                print("[railway-entrypoint] alembic: ok", flush=True)
-        except Exception as e:
-            print(f"[railway-entrypoint] alembic error: {e}", flush=True)
+                print("[container-entrypoint] alembic: ok", flush=True)
+        except Exception as exc:
+            print(f"[container-entrypoint] alembic error: {exc}", flush=True)
             traceback.print_exc()
 
     threading.Thread(target=_run, daemon=True, name="alembic").start()
@@ -70,11 +70,10 @@ def main() -> None:
     os.environ["PYTHONPATH"] = "." + (os.pathsep + pyp if pyp else "")
     port = _listen_port()
     os.environ["PORT"] = port
-    print(f"[railway-entrypoint] cwd={os.getcwd()} PORT={port!r}", flush=True)
+    print(f"[container-entrypoint] cwd={os.getcwd()} PORT={port!r}", flush=True)
 
     _maybe_alembic_background()
 
-    # Railway terminates TLS at the edge; forwarded headers help clients see correct scheme/host.
     args = [
         sys.executable,
         "-m",
@@ -90,7 +89,7 @@ def main() -> None:
         "--forwarded-allow-ips",
         "*",
     ]
-    print(f"[railway-entrypoint] exec uvicorn port={port}", flush=True)
+    print(f"[container-entrypoint] exec uvicorn port={port}", flush=True)
     os.execvpe(sys.executable, args, os.environ)
 
 

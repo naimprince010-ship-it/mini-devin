@@ -46,6 +46,17 @@ def test_terminal_recovery_hint() -> None:
     assert h and "npm" in h.lower()
 
 
+def test_terminal_recovery_hint_for_npm_cache_eacces() -> None:
+    h = terminal_recovery_hint(
+        1,
+        "npm error code EACCES\nnpm error path /.npm\nnpm error Your cache folder contains root-owned files",
+        command="npm install --save-dev @babel/core",
+    )
+
+    assert h and "workspace-local cache" in h
+    assert "--cache ./npm-cache" in h
+
+
 def test_sidecar_snapshot(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("x", encoding="utf-8")
     sc = WorkspaceSidecar(tmp_path)

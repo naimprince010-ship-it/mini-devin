@@ -378,6 +378,52 @@ def coerce_messages_openai_strict(messages: list[dict[str, Any]]) -> list[dict[s
     return system_msgs + rest
 
 
+def _model_supports_anthropic_cache(model: str) -> bool:
+    """True for Anthropic Claude models (direct, Bedrock, or Vertex) where explicit
+    ``cache_control`` prompt-cache breakpoints are honored via LiteLLM."""
+    m = (model or "").lower()
+    return "claude" in m or m.startswith("anthropic/") or "/anthropic" in m
+
+
+def apply_prompt_cache_markers(
+    messages: list[dict[str, Any]], model: str
+) -> list[dict[str, Any]]:
+    """Mark the system prompt as a prompt-cache breakpoint for supported providers.
+
+    Anthropic caches the prefix up to and including the marked block (system + tools),
+    so repeated turns reuse it at a large discount. Only applied for Claude-family
+    models — other providers (OpenAI/DeepSeek) cache automatically and would reject the
+    ``cache_control`` field. Disable via ``LLM_PROMPT_CACHE=false``.
+    """
+    if os.environ.get("LLM_PROMPT_CACHE", "true").strip().lower() in ("0", "false", "no"):
+        return messages
+    if not _model_supports_anthropic_cache(model):
+        return messages
+    out = [dict(m) for m in messages]
+    sys_idx = None
+    for i, m in enumerate(out):
+        if m.get("role") == "system":
+            sys_idx = i
+    if sys_idx is None:
+        return out
+    content = out[sys_idx].get("content")
+    if isinstance(content, str) and content.strip():
+        out[sys_idx] = {
+            **out[sys_idx],
+            "content": [
+                {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+            ],
+        }
+    elif isinstance(content, list) and content:
+        new_content = [dict(b) if isinstance(b, dict) else b for b in content]
+        for b in reversed(new_content):
+            if isinstance(b, dict) and b.get("type") == "text":
+                b["cache_control"] = {"type": "ephemeral"}
+                break
+        out[sys_idx] = {**out[sys_idx], "content": new_content}
+    return out
+
+
 def _tail_trim_non_system_openai_safe(
     full_rest: list[dict[str, Any]],
     cap: int,
@@ -802,7 +848,14 @@ class LLMClient:
             "timeout": self.config.timeout,
             "stream": stream,
         }
-        
+
+        # Streaming responses omit token usage unless explicitly requested. OpenAI-compatible
+        # providers (incl. DigitalOcean inference, Groq) return a final usage-only chunk when
+        # ``stream_options.include_usage`` is set, so telemetry/cost tracking stays accurate.
+        if stream and os.environ.get("LLM_STREAM_USAGE", "true").strip().lower() not in ("0", "false", "no"):
+            if self.config.provider in (Provider.OPENAI, Provider.GROQ):
+                kwargs["stream_options"] = {"include_usage": True}
+
         if tools:
             kwargs["tools"] = [
                 {
@@ -827,8 +880,8 @@ class LLMClient:
 
         # Make the API call. OpenAI-compatible proxy endpoints can intermittently
         # return rate-limit, connection, or 5xx errors, so retry transient failures.
-        retry_count = max(1, int(os.environ.get("LLM_API_MAX_ATTEMPTS", "3")))
-        retry_delay = max(0.0, float(os.environ.get("LLM_API_RETRY_DELAY_SECONDS", "2")))
+        retry_count = max(1, int(os.environ.get("LLM_API_MAX_ATTEMPTS", "7")))
+        retry_delay = max(0.0, float(os.environ.get("LLM_API_RETRY_DELAY_SECONDS", "5")))
         response = None
         last_error_msg = ""
         rate_limited = False
@@ -836,6 +889,7 @@ class LLMClient:
         for model_index, candidate_model in enumerate(model_candidates, start=1):
             model_name = candidate_model
             kwargs["model"] = model_name
+            kwargs["messages"] = apply_prompt_cache_markers(messages, model_name)
             kwargs.pop("safety_settings", None)
             _apply_gemini_safety_override(kwargs, model_name)
 
@@ -919,6 +973,15 @@ class LLMClient:
         
         if stream:
             async for chunk in response:
+                # The final streaming chunk carries token usage but no choices, so read
+                # usage before skipping choice-less chunks (otherwise tokens stay 0).
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage:
+                    usage = {
+                        "prompt_tokens": getattr(chunk_usage, "prompt_tokens", 0) or 0,
+                        "completion_tokens": getattr(chunk_usage, "completion_tokens", 0) or 0,
+                        "total_tokens": getattr(chunk_usage, "total_tokens", 0) or 0,
+                    }
                 if not getattr(chunk, "choices", None):
                     continue
                     

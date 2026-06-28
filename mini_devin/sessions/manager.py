@@ -101,6 +101,21 @@ class Session:
     cancel_event: asyncio.Event | None = None
     _running_task: asyncio.Task | None = None
 
+    def active_task_id(self) -> str | None:
+        """Return the tracked running task, repairing stale/missing pointers."""
+        if self.current_task_id:
+            task = self.tasks.get(self.current_task_id)
+            if task and task.status == TaskStatus.RUNNING:
+                return self.current_task_id
+
+        for task_id, task in self.tasks.items():
+            if task.status == TaskStatus.RUNNING:
+                self.current_task_id = task_id
+                return task_id
+
+        self.current_task_id = None
+        return None
+
 
 class SessionManager:
     """
@@ -179,7 +194,7 @@ class SessionManager:
             from ..core.llm_client import create_llm_client
             llm_client = create_llm_client(model=model)
             
-            # Create agent (lazy import keeps API process startup fast on Railway)
+            # Create agent (lazy import keeps API process startup fast on constrained hosts)
             from ..orchestrator.agent import Agent
 
             agent = Agent(
@@ -676,8 +691,9 @@ class SessionManager:
         session = self.sessions.get(session_id)
         if not session or session.status != SessionStatus.RUNNING:
             return False
-        if session.current_task_id:
-            return await self.cancel_task(session_id, session.current_task_id)
+        active_task_id = session.active_task_id()
+        if active_task_id:
+            return await self.cancel_task(session_id, active_task_id)
         return False
     
     def _save_artifacts(self, task: Task, result: Any) -> None:

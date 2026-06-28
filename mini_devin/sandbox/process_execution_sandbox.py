@@ -107,7 +107,7 @@ def _port_open(port: int, *, host: str = "127.0.0.1", timeout: float = 0.25) -> 
 
 class ProcessExecutionSandbox:
     """
-    Host-side execution for ``sandbox_run`` / ``sandbox_shell`` (Railway, no Docker).
+    Host-side execution for ``sandbox_run`` / ``sandbox_shell`` when Docker is unavailable.
 
     Exposes the same image-related attributes as ``ExecutionSandbox`` so
     ``plan_container_run`` and ``container_verify`` can reuse defaults.
@@ -160,7 +160,7 @@ class ProcessExecutionSandbox:
         timeout_sec: int | None = None,
     ) -> SandboxResult:
         """
-        Run an arbitrary shell command in the workspace via host bash (Railway / no Docker).
+        Run an arbitrary shell command in the workspace via host bash when Docker is unavailable.
 
         ``workdir`` is passed to :class:`ProcessSandbox` (``None`` or ``\".\"`` → workspace root).
         """
@@ -471,8 +471,8 @@ def use_host_process_terminal_for_tooling() -> bool:
     True when terminal commands should use :meth:`ProcessExecutionSandbox.exec_shell`
     (host bash) instead of Docker.
 
-    Enabled when ``RAILWAY_ENVIRONMENT`` is set, or ``USE_PROCESS_EXECUTION_SANDBOX=1``
-    (``true``/``yes``/``on``). Disabled on Windows or when explicitly turned ``off``.
+    Enabled when ``USE_PROCESS_EXECUTION_SANDBOX=1`` (``true``/``yes``/``on``).
+    Disabled on Windows or when explicitly turned ``off``.
     """
     if os.name == "nt":
         return False
@@ -481,4 +481,4 @@ def use_host_process_terminal_for_tooling() -> bool:
         return False
     if v in ("1", "true", "yes", "on"):
         return True
-    return bool((os.environ.get("RAILWAY_ENVIRONMENT") or "").strip())
+    return False

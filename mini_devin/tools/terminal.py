@@ -26,6 +26,33 @@ from ..schemas.tools import TerminalInput, TerminalOutput, ToolStatus
 _IS_WINDOWS = sys.platform == "win32"
 
 
+def _command_invokes_npm(command: str) -> bool:
+    """Return True when a shell command invokes npm/npx in any simple segment."""
+    return bool(re.search(r"(^|[;&|]\s*)(?:npm|npx)(\s|$)", command))
+
+
+def _ensure_workspace_npm_cache(command: str, working_dir: str, env: dict[str, str]) -> None:
+    """
+    Keep npm from falling back to unwritable global cache locations in sandboxes.
+
+    Some container images report ``/.npm`` as the default cache. When the agent
+    installs a missing package, that produces EACCES and can trap recovery loops.
+    Setting a per-workspace cache preserves normal npm behavior while keeping
+    writes inside the project workspace.
+    """
+    if _IS_WINDOWS or not _command_invokes_npm(command):
+        return
+    if "NPM_CONFIG_CACHE" in env or "npm_config_cache" in env:
+        return
+
+    cache_dir = os.path.join(working_dir, "npm-cache")
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+    except OSError:
+        return
+    env["NPM_CONFIG_CACHE"] = cache_dir
+
+
 def _split_compound_command(cmd: str) -> list[str]:
     """
     Split on ';' and '&&' so each clause can be translated separately.
@@ -424,6 +451,7 @@ Output is captured and returned. Long outputs are truncated."""
         # Prepare environment
         env = os.environ.copy()
         env.update(input_data.env_vars)
+        _ensure_workspace_npm_cache(input_data.command, working_dir, env)
 
         # Translate Linux commands to Windows equivalents when on Windows
         command = _translate_for_windows(input_data.command)

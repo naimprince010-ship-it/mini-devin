@@ -89,17 +89,26 @@ export function SessionList({
     }
   }, [api, fetchSessionTitle]);
 
+  // Keep a stable ref to the latest loadSessions so polling effects below
+  // don't re-subscribe on every render. `api` from useApi() is a new object
+  // each render, which would otherwise recreate loadSessions and cause this
+  // effect to re-run + immediately refetch on every render (a fetch flood).
+  const loadSessionsRef = useRef(loadSessions);
   useEffect(() => {
-    void loadSessions();
-    const interval = setInterval(loadSessions, 5000);
-    return () => clearInterval(interval);
+    loadSessionsRef.current = loadSessions;
   }, [loadSessions]);
 
   useEffect(() => {
+    void loadSessionsRef.current();
+    const interval = setInterval(() => void loadSessionsRef.current(), 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
     if (refreshTrigger > 0) {
-      void loadSessions();
+      void loadSessionsRef.current();
     }
-  }, [refreshTrigger, loadSessions]);
+  }, [refreshTrigger]);
 
   useEffect(() => {
     if (showSearch && searchRef.current) {

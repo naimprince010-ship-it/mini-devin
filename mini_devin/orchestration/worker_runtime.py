@@ -37,7 +37,7 @@ class WorkerRuntime:
     """
     Thin factory for worker sessions — analogous to ``Runtime`` + sandbox hooks in OpenHands.
 
-    We do not start a new Docker container per sub-task by default (heavy on Railway); callers
+    We do not start a new Docker container per sub-task by default (heavy on small hosts); callers
     can enable ``use_sandbox`` via ``ORCHESTRATOR_WORKER_USE_SANDBOX=1`` to match container isolation.
     """
 

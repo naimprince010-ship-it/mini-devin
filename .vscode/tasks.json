@@ -16,13 +16,6 @@
       "options": { "cwd": "${workspaceFolder}/frontend" },
       "problemMatcher": [],
       "presentation": { "reveal": "always", "panel": "dedicated", "focus": true }
-    },
-    {
-      "label": "Railway: probe public URL (/api/health, /, /app)",
-      "type": "shell",
-      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${workspaceFolder}/scripts/check_railway_public.ps1\"",
-      "problemMatcher": [],
-      "presentation": { "reveal": "always", "panel": "dedicated", "focus": true }
     }
   ]
 }

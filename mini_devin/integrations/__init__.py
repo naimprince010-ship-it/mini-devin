@@ -1,6 +1,6 @@
 """
 Integrations package for Plodder
-Provides integration with external services like GitHub, Vercel, Railway, etc.
+Provides integration with external services like GitHub, Vercel, Netlify, etc.
 """
 
 from importlib import import_module

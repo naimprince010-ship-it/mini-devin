@@ -109,7 +109,7 @@ class SessionModel(Base):
     id = Column(String(36), primary_key=True)
     user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     working_directory = Column(String(1024), nullable=False, default=".")
-    # Stable id for on-disk workspace under PLODDER_AGENT_WORKSPACE_ROOT (survives Railway redeploys when DB + volume match).
+    # Stable id for on-disk workspace under PLODDER_AGENT_WORKSPACE_ROOT (survives redeploys when DB + volume match).
     workspace_id = Column(String(64), nullable=True, unique=True, index=True)
     # Serialized agent chat (OpenAI-style message dicts) for history after process restart.
     conversation_json = Column(Text, nullable=True)

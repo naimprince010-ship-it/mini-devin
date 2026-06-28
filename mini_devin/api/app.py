@@ -137,10 +137,6 @@ from ..auth.routes import router as auth_router
 from .integration_routes import router as integrations_router
 from ..bridge.manager import get_bridge_manager
 from ..database.config import init_db
-from ..sandbox.railway_process_sandbox_test import (
-    allow_test_sandbox_http_route,
-    run_railway_process_sandbox_check,
-)
 from ..sessions.db_manager import DatabaseSessionManager
 from ..reliability.startup_guard import StartupPreflightReport, run_startup_preflight
 from ..orchestration.task_queue import queue_backend_status
@@ -578,7 +574,7 @@ install_streaming_patch()
 
 
 async def _background_startup(app: FastAPI) -> None:
-    """DB init + hooks that must not block HTTP readiness (Railway health checks / 502)."""
+    """DB init + hooks that must not block HTTP readiness."""
     import traceback
 
     init_timeout = float(os.getenv("DATABASE_INIT_TIMEOUT", "120"))
@@ -1474,23 +1470,6 @@ async def ops_dashboard_restart_trend(
         pagination=_dashboard_pagination_payload(pagination),
         items=page_items,
     )
-
-
-@app.get("/test-sandbox")
-async def test_sandbox_route():
-    """
-    Railway-only (or ``ALLOW_TEST_SANDBOX_ROUTE=1``) smoke test: ``ProcessSandbox``
-    runs ``whoami`` / ``pwd`` / ``python3 --version``, writes a probe file, ``cat`` it.
-    Logs each step to stdout for Railway log drains.
-    """
-    if not allow_test_sandbox_http_route():
-        raise HTTPException(
-            status_code=404,
-            detail="test-sandbox disabled. Set ALLOW_TEST_SANDBOX_ROUTE=1 or deploy on Railway.",
-        )
-    payload = await asyncio.to_thread(run_railway_process_sandbox_check, _REPO_ROOT)
-    status = 200 if payload.get("ok") else 500
-    return JSONResponse(payload, status_code=status)
 
 
 # ── Repo management endpoints ─────────────────────────────────────────────────
@@ -3696,7 +3675,7 @@ async def get_system_status():
         "default_model": os.getenv("LLM_MODEL", "auto"),
         "free_mode": "flash-lite" in os.getenv("LLM_MODEL", "").lower(),
         "browser_mode": browser_mode,
-        # Safe booleans for Railway / preview deploy checks (no secret values).
+        # Safe booleans for preview deploy checks (no secret values).
         "deployment_env": {
             "groq_api_key_set": groq_on,
             "openai_api_key_set": bool((os.getenv("OPENAI_API_KEY") or "").strip()),
@@ -3707,9 +3686,6 @@ async def get_system_status():
             "run_mode": (os.getenv("RUN_MODE") or "offline").strip().lower(),
             "llm_model": (os.getenv("LLM_MODEL") or "").strip() or None,
             "groq_api_base": (os.getenv("GROQ_API_BASE") or "").strip() or None,
-            "railway_environment_set": bool(
-                (os.getenv("RAILWAY_ENVIRONMENT") or "").strip()
-            ),
             "host_process_terminal": use_host_process_terminal_for_tooling(),
             "live_preview_allowed_port_count": len(allowed_ports()),
             "live_preview_probe_ports_custom": bool(

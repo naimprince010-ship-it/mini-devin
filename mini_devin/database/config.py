@@ -13,7 +13,7 @@ class Base(DeclarativeBase):
 
 
 def _normalize_async_database_url(url: str) -> str:
-    """Railway/Heroku often set postgres:// or postgresql:// without a SQLAlchemy async driver."""
+    """Some hosting platforms set postgres:// or postgresql:// without a SQLAlchemy async driver."""
     if not url or url.startswith("sqlite"):
         return url
     if "+asyncpg" in url or "+psycopg" in url or "+psycopg2" in url:

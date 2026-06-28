@@ -43,16 +43,23 @@ def terminal_recovery_hint(
     if exit_code == 127 or "enoent" in text:
         return "**Hint**: Exit 127 often means missing executable — check PATH and spelling."
 
-    if "permission denied" in text or "eacces" in text:
-        return "**Hint**: Permission denied — try a user-writable directory or adjust file modes (`chmod` / ACL)."
-
     if "npm err" in text or "npm error" in text:
         if "package.json" in text and "enoent" in text:
             return (
                 "**Hint**: `npm install` is running in the wrong directory or before `package.json` exists. "
                 "Run `pwd` and `ls`, create/read `package.json` first, then retry `npm install` only from the app folder."
             )
+        if ("permission denied" in text or "eacces" in text) and (
+            "/.npm" in text or "cache folder" in text or "/usr/etc" in text
+        ):
+            return (
+                "**Hint**: npm cannot write its global cache/config. Retry with a workspace-local cache, "
+                "for example `npm install --cache ./npm-cache`, instead of using `--global` config."
+            )
         return "**Hint**: npm failure — try `npm ci` vs `npm install`, delete `node_modules` + lockfile mismatch, or check Node version."
+
+    if "permission denied" in text or "eacces" in text:
+        return "**Hint**: Permission denied — try a user-writable directory or adjust file modes (`chmod` / ACL)."
 
     if (
         "eaddrinuse" in text

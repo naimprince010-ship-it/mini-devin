@@ -511,7 +511,7 @@ class Agent:
         self.use_sandbox = use_sandbox
         self._sandbox = None  # Initialized lazily per task
         self._pex_terminal: Any | None = (
-            None  # ProcessExecutionSandbox for Railway-style host bash
+            None  # ProcessExecutionSandbox for host-bash execution
         )
         # Last (prompt, completion) totals when we wrote think/observe — for per-event deltas in JSONL
         self._last_event_llm_tokens: tuple[int, int] | None = None
@@ -1805,9 +1805,9 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                     "HMR WebSockets may not tunnel through this proxy—reload still works when files change. "
                     "**Not for external sites**: Live Preview cannot open arbitrary public URLs (e.g. user says 'open example.com'). "
                     "Use **browser_playwright** or **browser_fetch** with the full https URL instead. "
-                    "On Railway, **PORT** (often 8080) is usually this API — probing it does not load a third-party domain. "
+                    "On hosted platforms, **PORT** (often 8080) is usually this API — probing it does not load a third-party domain. "
                     "**Host reachability**: The dev server must listen on **127.0.0.1** where this API process can see it "
-                    "(e.g. Railway injects `RAILWAY_ENVIRONMENT`, or set `USE_PROCESS_EXECUTION_SANDBOX=1` for a host-side terminal). "
+                    "(set `USE_PROCESS_EXECUTION_SANDBOX=1` for a host-side terminal when needed). "
                     "A terminal confined to an isolated one-shot Docker exec typically cannot register those ports here without extra port forwarding."
                 ),
                 "parameters": {
@@ -2207,14 +2207,13 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                         },
                         "platform": {
                             "type": "string",
-                            "enum": ["digitalocean", "railway", "docker", "generic"],
+                            "enum": ["digitalocean", "docker", "generic"],
                             "description": "Platform for fetch_logs or register",
                         },
                         "config": {
                             "type": "object",
                             "description": (
-                                "Platform config dict. DO: {do_token, app_id}. "
-                                "Railway: {railway_token, service_id}. Docker: {container_name}."
+                                "Platform config dict. DO: {do_token, app_id}. Docker: {container_name}."
                             ),
                         },
                         "lines": {
@@ -2576,7 +2575,6 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 "monitor",
                 "health check",
                 "production",
-                "railway",
                 "digitalocean",
                 "kubernetes",
                 "container",
@@ -2989,8 +2987,8 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                         )
                         self._artifact_logger.add_command_executed(command)
 
-                # ── ProcessExecutionSandbox first (Railway / USE_PROCESS_EXECUTION_SANDBOX) ──
-                # Avoid touching Docker when the daemon/socket is absent (typical Railway layout).
+                # ── ProcessExecutionSandbox first (USE_PROCESS_EXECUTION_SANDBOX) ──
+                # Avoid touching Docker when the daemon/socket is absent.
                 if self._should_use_process_execution_terminal():
                     work_dir = arguments.get("working_directory", ".")
                     workdir_ps = None if work_dir in (".", "", None) else work_dir
@@ -3126,7 +3124,7 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                         plan_step=plan_step,
                     )
 
-                # ── Docker Sandbox Execution (optional; skipped on Railway when block above runs) ──
+                # ── Docker Sandbox Execution (optional; skipped when host-process execution runs) ──
                 if self.use_sandbox and self._sandbox is not None:
                     try:
                         if not self._sandbox.is_running():

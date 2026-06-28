@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Must be set before `poetry install`: playwright is a dependency and otherwise
-# tries to download browser binaries during install (fails / OOM on Railway).
+# tries to download browser binaries during install.
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -37,15 +37,15 @@ RUN poetry config virtualenvs.create false && \
 # Copy frontend and build it
 COPY frontend/ ./frontend/
 WORKDIR /app/frontend
-# Large Vite bundle: avoid OOM on small Railway builders
+# Large Vite bundle: avoid OOM on small builders
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi \
     && NODE_OPTIONS=--max-old-space-size=4096 npm run build
 
-# Copy rest of the app (includes ``scripts/railway_entrypoint.py``)
+# Copy rest of the app (includes ``scripts/container_entrypoint.py``)
 WORKDIR /app
 COPY . .
 
-# Do not set PORT here — Railway injects PORT at runtime (often 8080). EXPOSE documents typical PaaS port.
+# Do not hardcode PORT here; the hosting platform may inject it at runtime.
 EXPOSE 8080
 
 # Environment hardening
@@ -54,4 +54,4 @@ ENV PYTHONIOENCODING=UTF-8
 
 # Python entrypoint avoids CRLF/shebang issues with ``.sh`` from Windows checkouts.
 # Local watchdog: ``python scripts/bootstrap.py``
-CMD ["python", "/app/scripts/railway_entrypoint.py"]
+CMD ["python", "/app/scripts/container_entrypoint.py"]

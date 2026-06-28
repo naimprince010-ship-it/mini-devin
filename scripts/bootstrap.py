@@ -20,7 +20,7 @@ RESTART_FLAG = Path(".restart_flag")
 
 
 def _run_alembic_upgrade_if_applicable() -> None:
-    """Apply DB migrations before uvicorn (Railway/Postgres). Skipped for SQLite or unset URL."""
+    """Apply DB migrations before uvicorn when Postgres is configured. Skipped for SQLite or unset URL."""
     if os.getenv("SKIP_ALEMBIC_UPGRADE", "").strip().lower() in ("1", "true", "yes", "on"):
         print("[Bootstrap] SKIP_ALEMBIC_UPGRADE set; skipping alembic upgrade head.")
         return
@@ -63,7 +63,7 @@ def _run_alembic_upgrade_if_applicable() -> None:
 
 
 def _resolve_listen_port() -> str:
-    """Pick a single numeric port from PORT (Railway injects this).
+    """Pick a single numeric port from PORT.
 
     Duplicate ``PORT`` rows or copy-paste mistakes can produce multiline / comma-separated
     values; ``str.isdigit()`` then fails and we used to fall back to 8000 while the edge
@@ -76,11 +76,10 @@ def _resolve_listen_port() -> str:
     parts = [p.strip() for p in first_line.replace(",", " ").split() if p.strip()]
     for token in parts:
         if token.isdigit():
-            if raw != token and os.getenv("RAILWAY_ENVIRONMENT_ID"):
+            if raw != token:
                 print(
                     "[Bootstrap] Warning: PORT env had extra characters; "
-                    f"using first integer token {token!r} from raw {raw!r}. "
-                    "Remove duplicate/custom PORT variables in Railway."
+                    f"using first integer token {token!r} from raw {raw!r}."
                 )
             return token
     print(f"[Bootstrap] Invalid PORT={raw!r}, falling back to 8000")
@@ -107,18 +106,10 @@ def run_server():
     # Ensure current directory is in PYTHONPATH
     env = os.environ.copy()
     env["PYTHONPATH"] = f".{os.pathsep}{env.get('PYTHONPATH', '')}"
-    # Child must see the same port Railway expects (some platforms pass PORT only to PID 1).
+    # Child must see the same port the hosting platform expects.
     env["PORT"] = port
 
-    if os.getenv("RAILWAY_ENVIRONMENT_ID"):
-        port_keys = sorted(k for k in os.environ if "PORT" in k.upper())
-        print(f"[Bootstrap] Railway env keys containing PORT: {port_keys}")
-        print(
-            "[Bootstrap] Railway: Public Networking → domain → Target port must equal this "
-            f"listen port ({port}) or the edge returns 502."
-        )
-
-    # Run DB migrations without blocking the first uvicorn bind. Railway (and similar)
+    # Run DB migrations without blocking the first uvicorn bind. Some hosted Postgres setups
     # healthchecks hit /api/health soon after the container starts; ``alembic upgrade head``
     # can legitimately take minutes on cold Postgres and used to starve the listener.
     migrations_started = False

@@ -1,5 +1,5 @@
 """
-Stable workspace paths for Railway and local dev.
+Stable workspace paths for hosted containers and local dev.
 
 Set ``PLODDER_AGENT_WORKSPACE_ROOT`` to a persistent volume mount so session files
 survive redeploys. Each session uses a unique ``workspace_id`` subdirectory.
@@ -31,7 +31,7 @@ def get_agent_workspaces_root() -> str:
     """
     Root directory for per-session agent workspaces.
 
-    - If ``PLODDER_AGENT_WORKSPACE_ROOT`` is set, use it (Railway volume, etc.).
+    - If ``PLODDER_AGENT_WORKSPACE_ROOT`` is set, use it (persistent volume, etc.).
     - Otherwise mirror ``mini_devin.api.app`` layout: sibling ``agent-workspace``
       of the ``mini_devin`` package checkout.
     """

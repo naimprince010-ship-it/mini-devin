@@ -1,6 +1,6 @@
 """
 Deployment Integration for Plodder
-Supports Vercel, Railway, and other deployment platforms
+Supports Vercel, Netlify, and other deployment platforms
 """
 
 import os
@@ -60,11 +60,6 @@ class DeploymentManager:
                     'team_id': os.getenv('VERCEL_TEAM_ID'),
                     'project_id': os.getenv('VERCEL_PROJECT_ID')
                 },
-                'railway': {
-                    'token': os.getenv('RAILWAY_TOKEN'),
-                    'project_id': os.getenv('RAILWAY_PROJECT_ID'),
-                    'environment_id': os.getenv('RAILWAY_ENVIRONMENT_ID')
-                },
                 'netlify': {
                     'token': os.getenv('NETLIFY_TOKEN'),
                     'site_id': os.getenv('NETLIFY_SITE_ID')
@@ -78,12 +73,6 @@ class DeploymentManager:
             if self.deployment_configs.get('vercel', {}).get('token'):
                 self.platform_clients['vercel'] = VercelDeployment(
                     self.deployment_configs['vercel']
-                )
-            
-            # Initialize Railway client
-            if self.deployment_configs.get('railway', {}).get('token'):
-                self.platform_clients['railway'] = RailwayDeployment(
-                    self.deployment_configs['railway']
                 )
             
             # Initialize Netlify client
@@ -442,181 +431,6 @@ class VercelDeployment:
                 deployments.append({
                     'url': url,
                     'status': 'ready',
-                    'created': 'recently'
-                })
-        return deployments
-
-class RailwayDeployment:
-    """Railway deployment client"""
-    
-    def __init__(self, config: Dict[str, Any]):
-        self.token = config.get('token')
-        self.project_id = config.get('project_id')
-        self.environment_id = config.get('environment_id')
-    
-    async def deploy(self, project_path: str, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Deploy to Railway"""
-        try:
-            # Check if Railway CLI is installed
-            if not await self._check_railway_cli():
-                return {'success': False, 'error': 'Railway CLI not installed'}
-            
-            # Login to Railway
-            if not await self._login():
-                return {'success': False, 'error': 'Railway login failed'}
-            
-            # Deploy project
-            deploy_cmd = ['railway', 'up']
-            
-            result = await self._run_command(deploy_cmd, cwd=project_path)
-            
-            if result['exit_code'] == 0:
-                url = self._extract_railway_url(result['stdout'])
-                
-                return {
-                    'success': True,
-                    'url': url,
-                    'deployment_id': self._extract_deployment_id(result['stdout']),
-                    'logs': result['stdout']
-                }
-            else:
-                return {
-                    'success': False,
-                    'error': result['stderr'],
-                    'logs': result['stdout']
-                }
-                
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-    
-    async def get_deployment_status(self, deployment_id: str) -> Dict[str, Any]:
-        """Get Railway deployment status"""
-        try:
-            result = await self._run_command(['railway', 'status'])
-            
-            if result['exit_code'] == 0:
-                return self._parse_railway_status(result['stdout'])
-            else:
-                return {'error': result['stderr']}
-                
-        except Exception as e:
-            return {'error': str(e)}
-    
-    async def rollback(self, deployment_id: str) -> Dict[str, Any]:
-        """Rollback Railway deployment"""
-        try:
-            # Railway rollback would involve redeploying a previous commit
-            result = await self._run_command(['railway', 'rollback', deployment_id])
-            
-            return {
-                'success': result['exit_code'] == 0,
-                'logs': result['stdout'],
-                'error': result['stderr'] if result['exit_code'] != 0 else None
-            }
-            
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-    
-    async def list_deployments(self, limit: int) -> List[Dict[str, Any]]:
-        """List Railway deployments"""
-        try:
-            result = await self._run_command(['railway', 'logs', '--limit', str(limit)])
-            
-            if result['exit_code'] == 0:
-                return self._parse_railway_logs(result['stdout'])
-            else:
-                return []
-                
-        except Exception as e:
-            logger.error(f"Failed to list Railway deployments: {e}")
-            return []
-    
-    async def setup_project(self, project_name: str, project_type: str) -> Dict[str, Any]:
-        """Setup Railway project"""
-        try:
-            result = await self._run_command(['railway', 'init', '--name', project_name])
-            
-            return {
-                'success': result['exit_code'] == 0,
-                'project_id': f'railway-project-{project_name}',
-                'logs': result['stdout']
-            }
-            
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-    
-    async def _check_railway_cli(self) -> bool:
-        """Check if Railway CLI is installed"""
-        try:
-            result = await self._run_command(['railway', '--version'])
-            return result['exit_code'] == 0
-        except:
-            return False
-    
-    async def _login(self) -> bool:
-        """Login to Railway"""
-        try:
-            result = await self._run_command(['railway', 'login', '--token', self.token])
-            return result['exit_code'] == 0
-        except:
-            return False
-    
-    async def _run_command(self, cmd: List[str], cwd: str = ".") -> Dict[str, Any]:
-        """Run a command and capture output"""
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=cwd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await process.communicate()
-            
-            return {
-                'exit_code': process.returncode,
-                'stdout': stdout.decode('utf-8', errors='ignore'),
-                'stderr': stderr.decode('utf-8', errors='ignore')
-            }
-        except Exception as e:
-            return {
-                'exit_code': -1,
-                'stdout': '',
-                'stderr': str(e)
-            }
-    
-    def _extract_railway_url(self, output: str) -> str:
-        """Extract Railway URL from output"""
-        import re
-        url_pattern = r'https://[a-zA-Z0-9-]+\.railway\.app'
-        match = re.search(url_pattern, output)
-        return match.group(0) if match else ''
-    
-    def _extract_deployment_id(self, output: str) -> str:
-        """Extract deployment ID from Railway output"""
-        import re
-        id_pattern = r'[a-f0-9-]{36}'  # UUID pattern
-        match = re.search(id_pattern, output)
-        return match.group(0) if match else ''
-    
-    def _parse_railway_status(self, output: str) -> Dict[str, Any]:
-        """Parse Railway status output"""
-        return {
-            'status': 'running',
-            'url': self._extract_railway_url(output),
-            'service': 'web'
-        }
-    
-    def _parse_railway_logs(self, output: str) -> List[Dict[str, Any]]:
-        """Parse Railway logs output"""
-        deployments = []
-        lines = output.split('\n')
-        for line in lines:
-            if 'railway.app' in line:
-                url = self._extract_railway_url(line)
-                deployments.append({
-                    'url': url,
-                    'status': 'running',
                     'created': 'recently'
                 })
         return deployments

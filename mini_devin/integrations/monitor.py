@@ -42,7 +42,7 @@ class MonitoredApp:
     name: str
     health_url: str
     logs_url: Optional[str] = None          # Cloud provider log endpoint
-    platform: str = "generic"               # digitalocean | railway | docker | generic
+    platform: str = "generic"               # digitalocean | docker | generic
     platform_config: Dict[str, Any] = field(default_factory=dict)
     check_interval_seconds: int = 60
     failure_threshold: int = 3              # Consecutive failures before auto-heal
@@ -149,8 +149,6 @@ async def _fetch_logs(app: MonitoredApp, session: aiohttp.ClientSession, lines: 
             return await _fetch_do_logs(app, session, lines)
         elif platform == "docker":
             return await _fetch_docker_logs(app, lines)
-        elif platform == "railway":
-            return await _fetch_railway_logs(app, session, lines)
         elif app.logs_url:
             async with session.get(app.logs_url, timeout=aiohttp.ClientTimeout(total=20)) as r:
                 return (await r.text())[-4000:]
@@ -197,30 +195,6 @@ async def _fetch_docker_logs(app: MonitoredApp, lines: int) -> str:
         return out.decode(errors="replace")
     except Exception as exc:
         return f"[docker logs error: {exc}]"
-
-
-async def _fetch_railway_logs(app: MonitoredApp, session: aiohttp.ClientSession, lines: int) -> str:
-    """Railway GraphQL API for deployment logs."""
-    token = app.platform_config.get("railway_token") or os.getenv("RAILWAY_TOKEN", "")
-    service_id = app.platform_config.get("service_id") or os.getenv("RAILWAY_SERVICE_ID", "")
-    if not token or not service_id:
-        return "[Railway: RAILWAY_TOKEN or RAILWAY_SERVICE_ID not configured]"
-
-    query = """
-    query Logs($serviceId: String!) {
-      serviceDeploymentLogs(serviceId: $serviceId, limit: 50) { message timestamp }
-    }"""
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload = {"query": query, "variables": {"serviceId": service_id}}
-    try:
-        async with session.post("https://backboard.railway.app/graphql/v2",
-                                json=payload, headers=headers,
-                                timeout=aiohttp.ClientTimeout(total=20)) as r:
-            data = await r.json()
-            logs = data.get("data", {}).get("serviceDeploymentLogs", [])
-            return "\n".join(f"[{l['timestamp']}] {l['message']}" for l in logs[-lines:])
-    except Exception as exc:
-        return f"[Railway log error: {exc}]"
 
 
 # ---------------------------------------------------------------------------

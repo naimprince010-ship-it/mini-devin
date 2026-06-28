@@ -214,7 +214,6 @@ export default function MonitorPanel() {
             >
               <option value="generic">Generic</option>
               <option value="digitalocean">DigitalOcean</option>
-              <option value="railway">Railway</option>
               <option value="docker">Docker</option>
             </select>
             <input

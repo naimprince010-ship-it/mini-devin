@@ -33,8 +33,13 @@ class TestHealthEndpoint:
 
 
 class TestProjectRetrievalEndpoint:
-    def test_global_project_retrieval_uses_chunk_index(self, client, monkeypatch, tmp_path: Path):
-        from mini_devin.integrations.project_retrieval_index import RetrievalDoc, save_index
+    def test_global_project_retrieval_uses_chunk_index(
+        self, client, monkeypatch, tmp_path: Path
+    ):
+        from mini_devin.integrations.project_retrieval_index import (
+            RetrievalDoc,
+            save_index,
+        )
 
         index_path = tmp_path / "project_retrieval_index.json"
         save_index(
@@ -159,7 +164,7 @@ class TestProvidersEndpoint:
 
 class TestSessionsEndpoint:
     """Tests for /sessions endpoints.
-    
+
     Note: These tests may fail if the app state is not properly initialized
     with session_manager. In production, this is done during app startup.
     In unit tests without full app initialization, these endpoints will raise
@@ -215,7 +220,7 @@ class TestSessionsEndpoint:
 
 class TestTasksEndpoint:
     """Tests for /tasks endpoints.
-    
+
     Note: The /api/tasks endpoint may not be registered in all configurations.
     """
 
@@ -330,13 +335,20 @@ class TestGitHubIssueAutomationEndpoint:
         run_task = AsyncMock(return_value=None)
         monkeypatch.setattr(app_module, "_gh_get", fake_gh_get)
         monkeypatch.setattr(app_module, "_get_repo_token", lambda repo_id: "secret")
-        monkeypatch.setattr(app_module.session_manager, "create_session", create_session)
+        monkeypatch.setattr(
+            app_module.session_manager, "create_session", create_session
+        )
         monkeypatch.setattr(app_module.session_manager, "create_task", create_task)
         monkeypatch.setattr(app_module.session_manager, "run_task", run_task)
 
         response = client.post(
             "/api/repos/repo123/issues/42/run",
-            json={"model": "auto", "max_iterations": 80, "auto_git_commit": False, "git_push": False},
+            json={
+                "model": "auto",
+                "max_iterations": 80,
+                "auto_git_commit": False,
+                "git_push": False,
+            },
         )
 
         assert response.status_code == 200
@@ -404,17 +416,25 @@ class TestSessionAgentMessage:
         broadcast = AsyncMock()
         monkeypatch.setattr(app_module.session_manager, "get_session", get_session)
         monkeypatch.setattr(app_module.session_manager, "create_task", create_task)
-        monkeypatch.setattr(app_module.connection_manager, "broadcast_to_session", broadcast)
+        monkeypatch.setattr(
+            app_module.connection_manager, "broadcast_to_session", broadcast
+        )
 
-        response = client.post("/api/sessions/sess1234/agent/message", json={"message": message})
+        response = client.post(
+            "/api/sessions/sess1234/agent/message", json={"message": message}
+        )
 
         assert response.status_code == 200
         assert response.json()["mode"] == "chat"
         create_task.assert_not_awaited()
         broadcast.assert_awaited_once()
 
-    @pytest.mark.parametrize("message", ["hi", "tumi ki ki korte paro", "eta possible naki"])
-    def test_chatty_message_over_websocket_does_not_create_task(self, client, monkeypatch, message):
+    @pytest.mark.parametrize(
+        "message", ["hi", "tumi ki ki korte paro", "eta possible naki"]
+    )
+    def test_chatty_message_over_websocket_does_not_create_task(
+        self, client, monkeypatch, message
+    ):
         """The live browser chat uses WebSockets, so it needs the same shortcut."""
         mock_session = SimpleNamespace(
             session_id="sess1234",
@@ -422,7 +442,11 @@ class TestSessionAgentMessage:
             current_task_id=None,
         )
         create_task = AsyncMock()
-        monkeypatch.setattr(app_module.session_manager, "get_session", AsyncMock(return_value=mock_session))
+        monkeypatch.setattr(
+            app_module.session_manager,
+            "get_session",
+            AsyncMock(return_value=mock_session),
+        )
         monkeypatch.setattr(app_module.session_manager, "create_task", create_task)
 
         with client.websocket_connect("/api/ws/sess1234") as websocket:
@@ -451,13 +475,19 @@ class TestSessionAgentMessage:
             current_task_id=None,
         )
         mock_task = SimpleNamespace(task_id="task1234")
-        monkeypatch.setattr(app_module.session_manager, "get_session", AsyncMock(return_value=mock_session))
+        monkeypatch.setattr(
+            app_module.session_manager,
+            "get_session",
+            AsyncMock(return_value=mock_session),
+        )
         create_task = AsyncMock(return_value=mock_task)
         run_task = AsyncMock(return_value=None)
         monkeypatch.setattr(app_module.session_manager, "create_task", create_task)
         monkeypatch.setattr(app_module.session_manager, "run_task", run_task)
 
-        response = client.post("/api/sessions/sess1234/agent/message", json={"message": message})
+        response = client.post(
+            "/api/sessions/sess1234/agent/message", json={"message": message}
+        )
 
         assert response.status_code == 200
         assert response.json()["mode"] == "new_task"

@@ -98,7 +98,7 @@ def probe_local_ports_sync(ports: list[int]) -> list[int]:
 
 def live_preview_probe_hints(*, listening_ports: list[int]) -> dict[str, Any]:
     """
-    Extra JSON fields for ``live_preview`` **probe** so models do not treat Railway ``PORT``
+    Extra JSON fields for ``live_preview`` **probe** so models do not treat platform ``PORT``
     (this API process) as a user's dev UI, and do not use Live Preview for external domains.
     """
     hints: dict[str, Any] = {
@@ -113,7 +113,7 @@ def live_preview_probe_hints(*, listening_ports: list[int]) -> dict[str, Any]:
         pe = int(raw)
         if pe in listening_ports:
             hints["platform_bind_warning"] = (
-                f"Port {pe} matches the service PORT env — usually **this** Plodder/API process (e.g. Railway), "
+                f"Port {pe} matches the service PORT env — usually **this** Plodder/API process, "
                 "not a site the user asked to 'preview' by domain name. Registering it loads this app in the iframe."
             )
     return hints
