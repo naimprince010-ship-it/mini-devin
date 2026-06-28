@@ -437,7 +437,9 @@ def _ensure_ops_telemetry(app: FastAPI) -> FileOpsTelemetryCollector:
     collector = getattr(app.state, "ops_telemetry", None)
     if isinstance(collector, FileOpsTelemetryCollector):
         return collector
-    telemetry_root = Path("/tmp/.plodder") / "ops" / "telemetry"
+    import os
+    artifact_dir = os.environ.get("ARTIFACT_DIR", "/workspace/runs")
+    telemetry_root = Path(artifact_dir) / ".plodder" / "ops" / "telemetry"
     collector = FileOpsTelemetryCollector(
         events_file=telemetry_root / "events.jsonl",
         state_file=telemetry_root / "state.json",
@@ -451,7 +453,9 @@ def _ensure_ops_action_intake(app: FastAPI) -> FileOperatorActionIntake:
     intake = getattr(app.state, "ops_action_intake", None)
     if isinstance(intake, FileOperatorActionIntake):
         return intake
-    action_root = Path("/tmp/.plodder") / "ops" / "actions"
+    import os
+    artifact_dir = os.environ.get("ARTIFACT_DIR", "/workspace/runs")
+    action_root = Path(artifact_dir) / ".plodder" / "ops" / "actions"
     intake = FileOperatorActionIntake(
         events_file=action_root / "events.jsonl",
         state_file=action_root / "state.json",
