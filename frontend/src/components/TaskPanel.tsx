@@ -680,9 +680,9 @@ export function TaskPanel({
         </div>
 
         {/* LLM switch (chat) — PATCH /sessions/:id */}
-        <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-2">
+        <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-2 flex-wrap">
           <span className="text-[10px] uppercase tracking-wider text-[#525252] font-bold shrink-0">
-            Chat model
+            AI Model *
           </span>
           <div className="flex-1 min-w-0 max-w-md">
             <ModelSelector
@@ -691,10 +691,14 @@ export function TaskPanel({
               onChange={handleModelPick}
               disabled={isStreaming || modelBusy}
               className="text-left"
+              showDetails={false}
             />
           </div>
           {modelBusy && (
-            <span className="text-[10px] text-[#737373]">Saving…</span>
+            <div className="flex items-center gap-1.5 text-[10px] text-[#737373]">
+              <Loader2 size={12} className="animate-spin" />
+              <span>Updating…</span>
+            </div>
           )}
         </div>
 
@@ -900,11 +904,15 @@ export function TaskPanel({
         ))}
 
         {tasks.length === 0 && (
-          <div className="h-full flex flex-col items-center justify-center text-center space-y-4 opacity-40">
+          <div className="h-full flex flex-col items-center justify-center text-center space-y-4 opacity-60">
             <Bot size={64} className="text-[#262626]" />
-            <div className="space-y-1">
-              <p className="text-sm font-medium">No messages yet</p>
-              <p className="text-xs text-[#a3a3a3]">Send a message to start working</p>
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Welcome to Plodder</p>
+              <div className="space-y-1.5 text-xs text-[#a3a3a3]">
+                <p>1. Select an AI model above</p>
+                <p>2. Type your task in the input below</p>
+                <p>3. Press Enter or click Send</p>
+              </div>
             </div>
           </div>
         )}
@@ -933,16 +941,21 @@ export function TaskPanel({
             {/* Send / follow-up button */}
             <button
               onClick={handleSubmitTask}
-              disabled={!taskDescription.trim()}
-              className={`p-2 rounded-full transition-all ${taskDescription.trim()
+              disabled={!taskDescription.trim() || modelBusy}
+              className={`p-2 rounded-full transition-all ${taskDescription.trim() && !modelBusy
                 ? isStreaming
                   ? 'bg-[#00ff99]/20 text-[#00ff99] border border-[#00ff99]/30 hover:bg-[#00ff99]/30'
                   : 'bg-[#00ff99] text-[#0f0f0f] hover:scale-110'
                 : 'bg-[#262626] text-[#737373] cursor-not-allowed'
                 }`}
-              title={isStreaming ? 'Send follow-up' : 'Send task'}
+              title={modelBusy ? 'Wait for model to load' : isStreaming ? 'Send follow-up' : 'Send task'}
+              aria-label="Send message"
             >
-              <Send size={16} />
+              {modelBusy ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Send size={16} />
+              )}
             </button>
             {/* Stop button — only when streaming */}
             {isStreaming && (

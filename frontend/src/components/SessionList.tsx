@@ -268,16 +268,16 @@ export function SessionList({
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <StatusIcon status={session.status} />
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       {title ? (
                         <>
                           <div className={`text-xs font-semibold truncate leading-tight ${isSelected ? 'text-white' : 'text-[#d1d1d1]'}`}>
                             {title}
                           </div>
-                          <div className="text-[9px] text-[#525252] font-mono mt-0.5">#{session.session_id}</div>
+                          <div className="text-[9px] text-[#525252] font-mono mt-0.5 truncate" title={`#${session.session_id}`}>#{session.session_id}</div>
                         </>
                       ) : (
-                        <span className={`text-xs font-semibold font-mono ${isSelected ? 'text-white' : 'text-[#d1d1d1]'}`}>
+                        <span className={`text-xs font-semibold font-mono truncate block ${isSelected ? 'text-white' : 'text-[#d1d1d1]'}`} title={session.session_id}>
                           {session.session_id}
                         </span>
                       )}

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { ChevronDown, Cpu, Cloud, Server, Zap, CheckCircle2 } from 'lucide-react';
+import { ChevronDown, Cpu, Cloud, Server, Zap, CheckCircle2, Loader2 } from 'lucide-react';
 import { fetchJsonWithTimeout } from '../utils/fetchWithTimeout';
 import { getApiBase } from '../config/apiBase';
 
@@ -102,8 +102,9 @@ export function ModelSelector({
 
   if (loading) {
     return (
-      <div className={`px-3 py-2 bg-[#1a1a1a] text-[#737373] rounded-lg border border-[#262626] text-sm ${className}`}>
-        Loading models...
+      <div className={`px-3 py-2 bg-[#1a1a1a] text-[#737373] rounded-lg border border-[#262626] text-sm flex items-center gap-2 ${className}`}>
+        <Loader2 size={14} className="animate-spin flex-shrink-0" />
+        <span>Loading models…</span>
       </div>
     );
   }
