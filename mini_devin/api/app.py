@@ -3563,10 +3563,15 @@ async def list_providers():
 @app.get("/api/models")
 @app.get("/models")
 async def list_models():
-    """List available LLM models based on configured API keys."""
+    """List available LLM models - only DigitalOcean (OpenAI provider)."""
     registry = get_model_registry()
     registry.configure_from_env()
+    # Only show models from configured providers (DigitalOcean/OpenAI)
     models = registry.to_api_format(only_configured=True)
+    
+    # Explicitly filter to only OpenAI provider (DigitalOcean endpoint)
+    models = [m for m in models if m.get("provider") == "openai"]
+    
     available_ollama_models = _available_ollama_model_ids()
     models = [
         model
