@@ -2538,48 +2538,11 @@ async def create_session(raw_request: Request):
         working_dir = os.path.join(_workspaces_root, workspace_id)
         os.makedirs(working_dir, exist_ok=True)
 
-        # Seed workspace with the project source code
-        project_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        )
-        print(f"[API] Seeding workspace {working_dir} from {project_root}")
-
-        def ignore_patterns(d, files):
-            return [
-                f
-                for f in files
-                if f
-                in (
-                    ".git",
-                    "agent-workspace",
-                    "__pycache__",
-                    "node_modules",
-                    "dist",
-                    "build",
-                    "venv",
-                    ".venv",
-                )
-            ]
-
-        for item in os.listdir(project_root):
-            if item in (
-                ".git",
-                "agent-workspace",
-                "__pycache__",
-                "node_modules",
-                "dist",
-                "build",
-                "venv",
-                ".venv",
-            ):
-                continue
-            s = os.path.join(project_root, item)
-            d = os.path.join(working_dir, item)
-            if os.path.isdir(s):
-                shutil.copytree(s, d, ignore=ignore_patterns)
-            else:
-                shutil.copy2(s, d)
-
+        # Empty = fresh, clean workspace. Do NOT seed the Plodder codebase here:
+        # copying ~1k source files makes startup indexing peg CPU and stalls the
+        # agent before the first iteration. Sessions start empty unless a git URL
+        # or existing directory is requested.
+        print(f"[API] Creating fresh empty workspace {working_dir}")
         _init_git_workspace(working_dir)
     elif requested_is_git_remote:
         working_dir = os.path.join(_workspaces_root, workspace_id)

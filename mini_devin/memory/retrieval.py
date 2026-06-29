@@ -6,6 +6,7 @@ lexical search (ripgrep), structural search (symbol index), or
 semantic search (vector embeddings).
 """
 
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -232,16 +233,32 @@ class RetrievalManager:
         # Index symbols
         symbol_count = self.symbol_index.index_directory()
         
+        # Cap the number of files we index per run so an unexpectedly large
+        # workspace can't peg CPU and stall the agent before the first iteration.
+        try:
+            max_files = int(os.environ.get("WORKSPACE_INDEX_MAX_FILES", "400"))
+        except (TypeError, ValueError):
+            max_files = 400
+
         # Index files for vector store (line chunks + optional Tree-sitter symbol chunks for RAG)
         doc_count = 0
         ast_chunk_count = 0
+        files_indexed = 0
+        capped = False
         for ext in [".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".md", ".txt"]:
+            if capped:
+                break
             for file_path in self.workspace_path.rglob(f"*{ext}"):
                 # Skip non-source directories
                 if any(part.startswith(".") or part in ["node_modules", "__pycache__", "venv", ".venv", "dist", "build"]
                        for part in file_path.parts):
                     continue
-                
+
+                if max_files > 0 and files_indexed >= max_files:
+                    capped = True
+                    break
+                files_indexed += 1
+
                 try:
                     documents = Document.from_file(str(file_path))
                     self.vector_store.add_batch(documents)
@@ -269,6 +286,8 @@ class RetrievalManager:
             "symbols_indexed": symbol_count,
             "documents_indexed": doc_count,
             "ast_chunks_indexed": ast_chunk_count,
+            "files_indexed": files_indexed,
+            "index_capped": capped,
         }
     
     def retrieve(
