@@ -206,11 +206,11 @@ def _validate_model_scope(model: str, *, scope: str) -> str:
         return model
 
     if scope == "chat":
-        allow = _csv_env("CHAT_MODEL_ALLOWLIST", "auto,openai/gpt-4o,openai/llama3.3-70b-instruct")
+        allow = _csv_env("CHAT_MODEL_ALLOWLIST", "auto,openai/llama-4-maverick,openai/llama3.3-70b-instruct,openai/gpt-4o,openai/deepseek-r1-distill-llama-70b")
         deny = _csv_env("CHAT_MODEL_DENYLIST", "")
     else:
         allow = _csv_env(
-            "BENCHMARK_MODEL_ALLOWLIST", "openai/gpt-4o,openai/llama3.3-70b-instruct"
+            "BENCHMARK_MODEL_ALLOWLIST", "openai/llama-4-maverick,openai/llama3.3-70b-instruct,openai/gpt-4o,openai/deepseek-r1-distill-llama-70b"
         )
         deny = _csv_env("BENCHMARK_MODEL_DENYLIST", "")
 
