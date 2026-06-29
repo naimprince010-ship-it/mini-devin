@@ -193,9 +193,18 @@ class DatabaseSessionManager:
         git_push: bool = False,
     ) -> Session:
         """Create a new agent session with database persistence."""
-        from ..core.providers import resolve_tool_capable_model
+        from ..core.providers import resolve_tool_capable_model, get_model_registry
 
-        model = resolve_tool_capable_model(model)
+        # If model is explicitly provided and is valid/tool-capable, use it directly.
+        # Only apply fallback resolution if model is invalid or doesn't support tools.
+        registry = get_model_registry()
+        model_info = registry.get_model(model) if model else None
+        if model_info and model_info.supports_tools:
+            # Model is valid and tool-capable, use it directly
+            pass
+        else:
+            # Model is missing, invalid, or doesn't support tools - apply resolution
+            model = resolve_tool_capable_model(model)
         async with self._session_lock:
             async with self._session_maker() as db:
                 repo = SessionRepository(db)
