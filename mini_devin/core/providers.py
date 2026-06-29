@@ -614,7 +614,7 @@ class ModelRegistry:
 
         candidates = [
             os.environ.get("LLM_TOOL_MODEL", "").strip(),
-            "openai/qwen3-coder-flash",
+            "openai/gpt-4o",
             os.environ.get("LLM_MODEL", "").strip(),
             self.get_default_model(),
         ]
@@ -628,7 +628,7 @@ class ModelRegistry:
             if info is None:
                 return candidate
             if info.supports_tools and (
-                self.is_provider_configured(info.provider) or candidate == "openai/qwen3-coder-flash"
+                self.is_provider_configured(info.provider) or candidate == "openai/gpt-4o"
             ):
                 return candidate
         return requested
