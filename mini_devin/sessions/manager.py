@@ -172,6 +172,10 @@ class SessionManager:
         working_directory: str = ".",
         model: str = "gpt-4o",
         max_iterations: int = int(os.environ.get("DEFAULT_MAX_ITERATIONS", "200")),
+        auto_git_commit: bool = False,
+        git_push: bool = False,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> Session:
         """
         Create a new agent session.
@@ -188,7 +192,7 @@ class SessionManager:
             if len(self.sessions) >= self.max_concurrent_sessions:
                 raise RuntimeError(f"Maximum concurrent sessions ({self.max_concurrent_sessions}) reached")
             
-            session_id = str(uuid.uuid4())[:8]
+            computed_session_id = session_id or str(uuid.uuid4())[:8]
             
             # Create LLM client with specified model
             from ..core.llm_client import create_llm_client
@@ -202,7 +206,7 @@ class SessionManager:
                 working_directory=working_directory,
                 max_iterations=max_iterations,
                 artifact_dir=str(self.artifacts_base_dir),
-                session_id=session_id,
+                session_id=computed_session_id,
             )
             try:
                 agent.bootstrap_ide_experience()
@@ -210,15 +214,16 @@ class SessionManager:
                 print(f"[Session] bootstrap_ide_experience: {_boot_e}")
 
             session = Session(
-                session_id=session_id,
+                session_id=computed_session_id,
                 working_directory=working_directory,
                 model=model,
                 max_iterations=max_iterations,
                 agent=agent,
                 cancel_event=asyncio.Event(),
+                workspace_id=workspace_id,
             )
             
-            self.sessions[session_id] = session
+            self.sessions[computed_session_id] = session
             
             return session
     
