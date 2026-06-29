@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, Fragment } from 'react
 import { Session, Task, WebSocketMessage } from '../types';
 import { useApi } from '../hooks/useApi';
 import { useSessionStream } from '../hooks/useSessionStream';
-import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target, Coins, HelpCircle, X, DollarSign, Cpu, Download, FolderOpen, RotateCcw } from 'lucide-react';
+import { Send, Bot, User, AlertCircle, Square, ChevronRight, Target, Coins, HelpCircle, X, DollarSign, Cpu, Download, FolderOpen, RotateCcw, Loader2 } from 'lucide-react';
 import { StreamingOutput } from './StreamingOutput';
 import { useSessionEvents } from '../contexts/SessionEventsContext';
 import { PlanStepsView } from './PlanStepsView';
