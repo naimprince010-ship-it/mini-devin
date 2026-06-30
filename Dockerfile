@@ -2,19 +2,36 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Must be set before `poetry install`: playwright is a dependency and otherwise
-# tries to download browser binaries during install.
+# Skip auto-download during poetry install; we install Chromium explicitly below.
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV POETRY_HTTP_TIMEOUT=300
 ENV POETRY_NO_INTERACTION=1
 
-# Install system dependencies — git, curl, Node.js
+# Install system dependencies — git, curl, Node.js + Chromium system libs
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
     git \
+    # Chromium / Playwright runtime dependencies
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libdbus-1-3 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libpangocairo-1.0-0 \
+    libcairo-gobject2 \
+    libgtk-3-0 \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -33,6 +50,11 @@ RUN pip install \
 COPY pyproject.toml poetry.lock* ./
 RUN poetry config virtualenvs.create false && \
     poetry install --only main --no-interaction --no-ansi --no-root
+
+# Install Playwright Chromium browser binary (needed for browser_playwright tool)
+# PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 was set for poetry install only; now we
+# explicitly fetch the binary so the agent can automate real websites.
+RUN python -m playwright install chromium
 
 # Copy frontend and build it
 COPY frontend/ ./frontend/
