@@ -462,6 +462,7 @@ function SweBenchmarkView() {
   const [benchmarkConfirmed, setBenchmarkConfirmed] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [startError, setStartError] = useState('');
 
   const fetchRuns = useCallback(async () => {
     const data = await readJson<{ runs: BenchmarkRun[] }>('/benchmark/runs');
@@ -524,15 +525,9 @@ function SweBenchmarkView() {
   };
 
   const handleStartRun = async () => {
-    if (formUseAgent && !benchmarkConfirmed) {
-      window.alert('SWE-bench can spend a lot of LLM tokens. Confirm the warning before starting.');
-      return;
-    }
-    if (formUseAgent && formLimit > 3) {
-      const ok = window.confirm(`This will run ${formLimit} agent tasks and may spend quota quickly. Continue?`);
-      if (!ok) return;
-    }
+    if (formUseAgent && !benchmarkConfirmed) return;
     setIsStarting(true);
+    setStartError('');
     try {
       await readJson('/benchmark/runs', {
         method: 'POST',
@@ -548,7 +543,9 @@ function SweBenchmarkView() {
       setFormName('');
       setFormRepo('');
       setBenchmarkConfirmed(false);
-      await fetchRuns();
+      await Promise.all([fetchRuns(), fetchStats()]);
+    } catch (e) {
+      setStartError(e instanceof Error ? e.message : 'Failed to start benchmark run');
     } finally {
       setIsStarting(false);
     }
@@ -567,7 +564,8 @@ function SweBenchmarkView() {
     void fetchStats();
   };
 
-  const handleCancelRun = async () => {
+  const handleCancelRun = async (e: React.MouseEvent) => {
+    e.stopPropagation();
     await readJson('/benchmark/runs/cancel', { method: 'POST' });
     void fetchRuns();
   };
@@ -581,201 +579,484 @@ function SweBenchmarkView() {
     }
   };
 
+  const hasRunning = runs.some((r) => r.status === 'running' || r.status === 'pending');
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center justify-between border-b border-[#1a1a1a] px-5 py-3">
+
+      {/* ── Top bar ─────────────────────────────────────────────────── */}
+      <div className="flex flex-shrink-0 items-center justify-between gap-3 border-b border-[#1a1a1a] px-5 py-3">
         <div>
-          <h3 className="text-sm font-bold text-white">SWE-bench</h3>
-          <p className="text-[10px] text-[#525252]">Real GitHub issue repair benchmark</p>
+          <h3 className="text-sm font-bold text-white">SWE-bench Dashboard</h3>
+          <p className="text-[10px] text-[#525252]">Real GitHub issue repair benchmark · Plodder agent</p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={handleRefresh} className="rounded-md p-1.5 text-[#525252] transition-colors hover:bg-[#1a1a1a] hover:text-[#a3a3a3]">
+          <button
+            onClick={handleRefresh}
+            title="Refresh"
+            className="rounded-lg border border-[#1e1e1e] p-2 text-[#525252] transition-colors hover:border-[#2a2a2a] hover:text-[#a3a3a3]"
+          >
             <RefreshCw size={13} className={isRefreshing ? 'animate-spin' : ''} />
           </button>
-          <button onClick={() => setFormOpen((value) => !value)} className="inline-flex items-center gap-1.5 rounded-lg bg-[#00ff99] px-3 py-1.5 text-xs font-bold text-black hover:bg-[#00e588]">
+          <button
+            onClick={() => { setFormOpen((v) => !v); setStartError(''); }}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-colors ${
+              formOpen
+                ? 'border border-[#2a2a2a] bg-[#1a1a1a] text-[#a3a3a3] hover:text-white'
+                : 'bg-[#00ff99] text-black hover:bg-[#00e588]'
+            }`}
+          >
             <Play size={11} />
-            New Run
+            {formOpen ? 'Cancel' : 'New Run'}
           </button>
         </div>
       </div>
 
+      {/* ── Stats overview bar ──────────────────────────────────────── */}
       {stats && (
-        <div className="flex items-center gap-4 border-b border-[#1a1a1a] bg-[#0a0a0a] px-5 py-2">
-          <div className="text-center">
-            <p className="text-lg font-bold text-white">{stats.overall_resolve_rate}%</p>
-            <p className="text-[9px] uppercase tracking-wider text-[#525252]">Overall</p>
+        <div className="flex flex-shrink-0 flex-wrap items-center gap-x-6 gap-y-2 border-b border-[#1a1a1a] bg-[#080808] px-5 py-2.5">
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-2xl font-black text-[#00ff99]">
+              {stats.overall_resolve_rate.toFixed(1)}
+              <span className="text-sm text-[#00ff99]/60">%</span>
+            </span>
+            <span className="text-[9px] font-bold uppercase tracking-wider text-[#525252]">Overall Score</span>
           </div>
-          <div className="h-8 w-px bg-[#1a1a1a]" />
-          <div className="text-center">
-            <p className="text-sm font-bold text-white">{stats.total_resolved}</p>
-            <p className="text-[9px] uppercase tracking-wider text-[#525252]">Resolved</p>
-          </div>
-          <div className="text-center">
-            <p className="text-sm font-bold text-white">{stats.total_tasks_evaluated}</p>
-            <p className="text-[9px] uppercase tracking-wider text-[#525252]">Evaluated</p>
-          </div>
-          <div className="text-center">
-            <p className="text-sm font-bold text-white">{stats.completed_runs}</p>
-            <p className="text-[9px] uppercase tracking-wider text-[#525252]">Runs</p>
-          </div>
+          <div className="h-6 w-px bg-[#1e1e1e]" />
+          {[
+            { label: 'Resolved', value: stats.total_resolved, accent: true },
+            { label: 'Evaluated', value: stats.total_tasks_evaluated, accent: false },
+            { label: 'Completed Runs', value: stats.completed_runs, accent: false },
+            { label: 'Total Runs', value: stats.total_runs, accent: false },
+          ].map(({ label, value, accent }) => (
+            <div key={label} className="flex flex-col">
+              <span className={`text-base font-bold ${accent ? 'text-[#00ff99]' : 'text-white'}`}>{value}</span>
+              <span className="text-[9px] uppercase tracking-wider text-[#525252]">{label}</span>
+            </div>
+          ))}
+          {hasRunning && (
+            <div className="ml-auto flex items-center gap-1.5">
+              <span className="h-2 w-2 animate-ping rounded-full bg-yellow-400" />
+              <span className="text-[10px] font-bold uppercase tracking-wide text-yellow-400">Run in progress</span>
+            </div>
+          )}
         </div>
       )}
 
+      {/* ── Start Benchmark Form ────────────────────────────────────── */}
       {formOpen && (
-        <div className="space-y-3 border-b border-[#1a1a1a] bg-[#111] px-5 py-4">
-          <div className="flex items-start gap-2 rounded-lg border border-yellow-500/25 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200">
-            <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
-            <span>SWE-bench starts full agent loops. Start with 1-3 tasks.</span>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <select value={formSplit} onChange={(e) => setFormSplit(e.target.value)} className="rounded-lg border border-[#2a2a2a] bg-[#0f0f0f] px-3 py-2 text-xs text-white outline-none">
-              <option value="lite">SWE-bench Lite</option>
-              <option value="full">SWE-bench Full</option>
-            </select>
-            <input type="number" min={1} max={formUseAgent ? 10 : 50} value={formLimit} onChange={(e) => setFormLimit(Math.max(1, Math.min(formUseAgent ? 10 : 50, Number(e.target.value) || 1)))} className="rounded-lg border border-[#2a2a2a] bg-[#0f0f0f] px-3 py-2 text-xs text-white outline-none" />
-            <input placeholder="Repo filter" value={formRepo} onChange={(e) => setFormRepo(e.target.value)} className="rounded-lg border border-[#2a2a2a] bg-[#0f0f0f] px-3 py-2 text-xs text-white outline-none placeholder:text-[#3a3a3a]" />
-            <input placeholder="Run name" value={formName} onChange={(e) => setFormName(e.target.value)} className="rounded-lg border border-[#2a2a2a] bg-[#0f0f0f] px-3 py-2 text-xs text-white outline-none placeholder:text-[#3a3a3a]" />
-          </div>
-          <div className="flex flex-wrap items-center gap-4">
-            <label className="flex cursor-pointer items-center gap-2 text-xs text-[#a3a3a3]">
-              <input type="checkbox" checked={formUseAgent} onChange={(e) => setFormUseAgent(e.target.checked)} className="accent-[#00ff99]" />
-              Run Plodder agent
-            </label>
-            {formUseAgent && (
-              <label className="flex cursor-pointer items-center gap-2 text-xs text-[#a3a3a3]">
-                <input type="checkbox" checked={benchmarkConfirmed} onChange={(e) => setBenchmarkConfirmed(e.target.checked)} className="accent-yellow-400" />
-                I understand token usage
+        <div className="flex-shrink-0 border-b border-[#1a1a1a] bg-gradient-to-b from-[#0d1117] to-[#0a0a0a] px-5 py-5">
+          <div className="mx-auto max-w-2xl space-y-4">
+            {/* Warning */}
+            <div className="flex items-start gap-2.5 rounded-xl border border-yellow-500/20 bg-yellow-500/5 px-4 py-3">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0 text-yellow-400" />
+              <div className="text-xs text-yellow-200/80 leading-relaxed">
+                <span className="font-bold text-yellow-300">Token usage warning: </span>
+                Each SWE-bench task runs a full Plodder agent loop. Start with 1–3 tasks to estimate cost.
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              {/* Split */}
+              <div className="space-y-1.5">
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-[#525252]">Split</label>
+                <select
+                  value={formSplit}
+                  onChange={(e) => setFormSplit(e.target.value)}
+                  className="w-full rounded-lg border border-[#2a2a2a] bg-[#111] px-3 py-2.5 text-sm text-white outline-none focus:border-[#00ff99]/40 transition-colors"
+                >
+                  <option value="lite">SWE-bench Lite (300 tasks)</option>
+                  <option value="full">SWE-bench Full (2294 tasks)</option>
+                </select>
+              </div>
+
+              {/* Limit */}
+              <div className="space-y-1.5">
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-[#525252]">
+                  Limit
+                  <span className="ml-1 font-normal normal-case text-[#3a3a3a]">(max {formUseAgent ? 10 : 50})</span>
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={formUseAgent ? 10 : 50}
+                  value={formLimit}
+                  onChange={(e) => setFormLimit(Math.max(1, Math.min(formUseAgent ? 10 : 50, Number(e.target.value) || 1)))}
+                  className="w-full rounded-lg border border-[#2a2a2a] bg-[#111] px-3 py-2.5 text-sm text-white outline-none focus:border-[#00ff99]/40 transition-colors"
+                />
+              </div>
+
+              {/* Run name */}
+              <div className="space-y-1.5">
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-[#525252]">Run Name <span className="font-normal normal-case text-[#3a3a3a]">(optional)</span></label>
+                <input
+                  placeholder="e.g. gpt-4o-mini baseline"
+                  value={formName}
+                  onChange={(e) => setFormName(e.target.value)}
+                  className="w-full rounded-lg border border-[#2a2a2a] bg-[#111] px-3 py-2.5 text-sm text-white outline-none placeholder:text-[#3a3a3a] focus:border-[#00ff99]/40 transition-colors"
+                />
+              </div>
+
+              {/* Repo filter */}
+              <div className="space-y-1.5">
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-[#525252]">Repo Filter <span className="font-normal normal-case text-[#3a3a3a]">(optional)</span></label>
+                <input
+                  placeholder="e.g. django/django"
+                  value={formRepo}
+                  onChange={(e) => setFormRepo(e.target.value)}
+                  className="w-full rounded-lg border border-[#2a2a2a] bg-[#111] px-3 py-2.5 text-sm text-white outline-none placeholder:text-[#3a3a3a] focus:border-[#00ff99]/40 transition-colors"
+                />
+              </div>
+            </div>
+
+            {/* Checkboxes + submit */}
+            <div className="flex flex-wrap items-center gap-4 rounded-xl border border-[#1e1e1e] bg-[#0d0d0d] px-4 py-3">
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-[#a3a3a3] hover:text-white transition-colors">
+                <input type="checkbox" checked={formUseAgent} onChange={(e) => setFormUseAgent(e.target.checked)} className="accent-[#00ff99]" />
+                Run with Plodder agent
               </label>
+              {formUseAgent && (
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-yellow-300 hover:text-yellow-200 transition-colors">
+                  <input type="checkbox" checked={benchmarkConfirmed} onChange={(e) => setBenchmarkConfirmed(e.target.checked)} className="accent-yellow-400" />
+                  I understand token usage
+                </label>
+              )}
+              <button
+                onClick={handleStartRun}
+                disabled={isStarting || (formUseAgent && !benchmarkConfirmed)}
+                className="ml-auto inline-flex items-center gap-2 rounded-lg bg-[#00ff99] px-5 py-2 text-xs font-bold text-black transition-all hover:bg-[#00e588] disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {isStarting
+                  ? <><RefreshCw size={12} className="animate-spin" />Starting…</>
+                  : <><Play size={12} />Start Benchmark</>
+                }
+              </button>
+            </div>
+
+            {startError && (
+              <div className="rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-xs text-red-300">
+                {startError}
+              </div>
             )}
-            <button onClick={handleStartRun} disabled={isStarting || (formUseAgent && !benchmarkConfirmed)} className="inline-flex items-center gap-1.5 rounded-lg bg-[#00ff99] px-4 py-2 text-xs font-bold text-black hover:bg-[#00e588] disabled:opacity-50">
-              {isStarting ? <RefreshCw size={11} className="animate-spin" /> : <Play size={11} />}
-              Start Benchmark
-            </button>
           </div>
         </div>
       )}
 
-      <div className="flex gap-1 border-b border-[#1a1a1a] px-4 pt-3">
+      {/* ── Tab bar ─────────────────────────────────────────────────── */}
+      <div className="flex flex-shrink-0 gap-1 border-b border-[#1a1a1a] px-4 pt-3">
         {(['runs', 'tasks', 'stats'] as const).map((item) => (
-          <button key={item} onClick={() => setTab(item)} className={`rounded-t-md border-b-2 px-3 py-1.5 text-xs font-medium transition-all ${tab === item ? 'border-[#00ff99] text-white' : 'border-transparent text-[#525252] hover:text-[#a3a3a3]'}`}>
-            {item === 'runs' ? 'Runs' : item === 'tasks' ? 'Task Browser' : 'Stats'}
+          <button
+            key={item}
+            onClick={() => setTab(item)}
+            className={`rounded-t-md border-b-2 px-3 py-1.5 text-xs font-semibold transition-all ${
+              tab === item ? 'border-[#00ff99] text-white' : 'border-transparent text-[#525252] hover:text-[#a3a3a3]'
+            }`}
+          >
+            {item === 'runs' ? `Runs${runs.length ? ` (${runs.length})` : ''}` : item === 'tasks' ? 'Task Browser' : 'Stats'}
           </button>
         ))}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-4 custom-scrollbar">
+      {/* ── Tab content ─────────────────────────────────────────────── */}
+      <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar">
+
+        {/* RUNS TAB */}
         {tab === 'runs' && (
-          <div className="space-y-2">
+          <div className="p-4">
             {runs.length === 0 ? (
-              <div className="py-16 text-center text-sm text-[#525252]">No SWE-bench runs yet.</div>
-            ) : runs.map((run) => (
-              <div key={run.run_id} className="overflow-hidden rounded-xl border border-[#1e1e1e]">
-                <div className="flex cursor-pointer items-center gap-3 bg-[#111] px-4 py-3 transition-colors hover:bg-[#141414]" onClick={() => void toggleRun(run.run_id)}>
-                  {expandedRun === run.run_id ? <ChevronDown size={14} className="text-[#525252]" /> : <ChevronRight size={14} className="text-[#525252]" />}
-                  <div className="min-w-0 flex-1">
-                    <div className="mb-1 flex items-center gap-2">
-                      <span className="truncate text-xs font-semibold text-white">{run.name}</span>
-                      <StatusBadge status={run.status} />
-                    </div>
-                    <div className="text-[10px] font-mono text-[#525252]">{run.run_id} · {run.split} · {run.total} tasks</div>
-                  </div>
-                  <div className="w-36 flex-shrink-0">
-                    <ScoreBar value={run.resolve_rate} label={`${run.resolved}/${run.total}`} />
-                  </div>
-                  {run.status === 'running' && (
-                    <button onClick={(e) => { e.stopPropagation(); void handleCancelRun(); }} className="rounded p-1 text-red-400 hover:bg-red-500/10" title="Cancel run">
-                      <StopCircle size={13} />
-                    </button>
-                  )}
-                  <button onClick={(e) => void handleDeleteRun(run.run_id, e)} className="rounded p-1 text-[#3a3a3a] hover:bg-red-500/10 hover:text-red-400">
-                    <Trash2 size={13} />
-                  </button>
+              <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
+                <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-[#1e1e1e] bg-[#0d0d0d]">
+                  <FlaskConical size={32} className="text-[#2a2a2a]" />
                 </div>
-                {expandedRun === run.run_id && (
-                  <div className="divide-y divide-[#1a1a1a] border-t border-[#1a1a1a]">
-                    {!runResults[run.run_id] ? (
-                      <div className="px-4 py-3 text-xs italic text-[#525252]">Loading results...</div>
-                    ) : runResults[run.run_id].length === 0 ? (
-                      <div className="px-4 py-3 text-xs italic text-[#525252]">No results yet.</div>
-                    ) : runResults[run.run_id].map((result) => (
-                      <div key={result.result_id}>
-                        <div className="flex cursor-pointer items-center gap-3 px-4 py-2.5 transition-colors hover:bg-[#0d0d0d]" onClick={() => setExpandedResult(expandedResult === result.result_id ? null : result.result_id)}>
-                          {expandedResult === result.result_id ? <ChevronDown size={12} className="text-[#525252]" /> : <ChevronRight size={12} className="text-[#525252]" />}
-                          <StatusBadge status={result.status} />
-                          <span className="min-w-0 flex-1 truncate text-xs font-mono text-[#a3a3a3]">{result.instance_id}</span>
-                          <span className="text-[10px] text-[#525252]">{result.duration_s}s</span>
-                        </div>
-                        {expandedResult === result.result_id && (
-                          <div className="space-y-3 bg-[#080808] px-4 pb-4 pt-2">
-                            {result.error && <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-[10px] text-red-300">{result.error}</div>}
-                            {result.agent_log && <pre className="max-h-24 overflow-auto rounded-lg bg-[#0f0f0f] p-3 text-[11px] text-[#a3a3a3] custom-scrollbar">{result.agent_log}</pre>}
-                            {result.patch && <pre className="max-h-40 overflow-auto rounded-lg bg-[#050505] p-3 text-[10px] leading-5 text-[#a3a3a3] custom-scrollbar">{result.patch}</pre>}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <div>
+                  <p className="text-sm font-semibold text-[#737373]">No SWE-bench runs yet</p>
+                  <p className="mt-1 text-xs text-[#3a3a3a]">Start a run to evaluate Plodder on real GitHub issues.</p>
+                </div>
+                <button
+                  onClick={() => setFormOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-[#00ff99] px-5 py-2.5 text-sm font-bold text-black hover:bg-[#00e588] transition-colors"
+                >
+                  <Play size={14} />
+                  Start First Run
+                </button>
               </div>
-            ))}
+            ) : (
+              <div className="space-y-3">
+                {/* Table header */}
+                <div className="hidden grid-cols-[1fr_80px_100px_110px_90px_60px] items-center gap-3 rounded-lg border border-[#1a1a1a] bg-[#090909] px-4 py-2 text-[9px] font-bold uppercase tracking-wider text-[#404040] sm:grid">
+                  <span>Run</span>
+                  <span>Split</span>
+                  <span>Status</span>
+                  <span>Tasks</span>
+                  <span className="text-center">Score</span>
+                  <span />
+                </div>
+
+                {runs.map((run) => {
+                  const rate = Number(run.resolve_rate) || 0;
+                  const rateColor = rate >= 30 ? 'text-[#00ff99]' : rate >= 15 ? 'text-yellow-400' : 'text-[#737373]';
+                  const isExpanded = expandedRun === run.run_id;
+                  return (
+                    <div key={run.run_id} className={`overflow-hidden rounded-xl border transition-colors ${
+                      isExpanded ? 'border-[#00ff99]/20 bg-[#050f05]' : 'border-[#1e1e1e] bg-[#0d0d0d] hover:border-[#2a2a2a]'
+                    }`}>
+                      {/* Run row */}
+                      <div
+                        className="grid cursor-pointer grid-cols-[1fr_auto] items-center gap-3 px-4 py-3.5 sm:grid-cols-[1fr_80px_100px_110px_90px_60px]"
+                        onClick={() => void toggleRun(run.run_id)}
+                      >
+                        {/* Name + ID */}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            {isExpanded ? <ChevronDown size={13} className="flex-shrink-0 text-[#525252]" /> : <ChevronRight size={13} className="flex-shrink-0 text-[#525252]" />}
+                            <span className="truncate text-sm font-semibold text-white">
+                              {run.name || `Run ${run.run_id.slice(0, 8)}`}
+                            </span>
+                          </div>
+                          <p className="ml-5 mt-0.5 font-mono text-[10px] text-[#404040]">{run.run_id.slice(0, 12)}…</p>
+                        </div>
+
+                        {/* Split badge */}
+                        <span className={`hidden rounded-full border px-2 py-0.5 text-center text-[10px] font-bold sm:inline-block ${
+                          run.split === 'full' ? 'border-purple-500/30 text-purple-400' : 'border-sky-500/30 text-sky-400'
+                        }`}>
+                          {run.split === 'full' ? 'Full' : 'Lite'}
+                        </span>
+
+                        {/* Status */}
+                        <div className="hidden sm:block">
+                          <StatusBadge status={run.status} />
+                        </div>
+
+                        {/* Tasks */}
+                        <div className="hidden items-baseline gap-1 sm:flex">
+                          <span className="text-sm font-bold text-white">{run.resolved}</span>
+                          <span className="text-xs text-[#404040]">/</span>
+                          <span className="text-sm text-[#737373]">{run.total}</span>
+                          <span className="text-[9px] text-[#3a3a3a]">tasks</span>
+                        </div>
+
+                        {/* Score % */}
+                        <div className="flex flex-col items-center justify-center">
+                          <span className={`text-lg font-black leading-none ${rateColor}`}>
+                            {rate.toFixed(1)}<span className="text-xs font-bold opacity-60">%</span>
+                          </span>
+                          <span className="mt-0.5 text-[8px] uppercase tracking-wider text-[#3a3a3a]">score</span>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                          {run.status === 'running' && (
+                            <button onClick={handleCancelRun} className="rounded-md p-1.5 text-yellow-400/60 hover:bg-yellow-500/10 hover:text-yellow-300 transition-colors" title="Cancel run">
+                              <StopCircle size={13} />
+                            </button>
+                          )}
+                          <button onClick={(e) => void handleDeleteRun(run.run_id, e)} className="rounded-md p-1.5 text-[#3a3a3a] hover:bg-red-500/10 hover:text-red-400 transition-colors" title="Delete run">
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Resolve rate mini-bar */}
+                      <div className="mx-4 mb-3 -mt-1 hidden h-0.5 overflow-hidden rounded-full bg-[#1a1a1a] sm:block">
+                        <div
+                          className={`h-full rounded-full transition-all duration-700 ${
+                            rate >= 30 ? 'bg-[#00ff99]/60' : rate >= 15 ? 'bg-yellow-400/60' : 'bg-[#3a3a3a]'
+                          }`}
+                          style={{ width: `${Math.min(100, rate)}%` }}
+                        />
+                      </div>
+
+                      {/* Expanded: task results */}
+                      {isExpanded && (
+                        <div className="border-t border-[#1a1a1a]">
+                          {!runResults[run.run_id] ? (
+                            <div className="flex items-center gap-2 px-5 py-4 text-xs italic text-[#525252]">
+                              <RefreshCw size={12} className="animate-spin" />
+                              Loading task results…
+                            </div>
+                          ) : runResults[run.run_id].length === 0 ? (
+                            <p className="px-5 py-4 text-xs italic text-[#3a3a3a]">No results recorded yet.</p>
+                          ) : (
+                            <div className="divide-y divide-[#111]">
+                              {/* Results sub-header */}
+                              <div className="grid grid-cols-[1fr_90px_80px_50px] gap-3 px-5 py-2 text-[9px] font-bold uppercase tracking-wider text-[#3a3a3a]">
+                                <span>Instance</span>
+                                <span>Status</span>
+                                <span>Repo</span>
+                                <span className="text-right">Duration</span>
+                              </div>
+                              {runResults[run.run_id].map((result) => {
+                                const isOpen = expandedResult === result.result_id;
+                                return (
+                                  <div key={result.result_id}>
+                                    <div
+                                      className="grid cursor-pointer grid-cols-[1fr_90px_80px_50px] items-center gap-3 px-5 py-2.5 transition-colors hover:bg-[#0a0f0a]"
+                                      onClick={() => setExpandedResult(isOpen ? null : result.result_id)}
+                                    >
+                                      <div className="flex items-center gap-2 min-w-0">
+                                        {isOpen ? <ChevronDown size={11} className="flex-shrink-0 text-[#3a3a3a]" /> : <ChevronRight size={11} className="flex-shrink-0 text-[#3a3a3a]" />}
+                                        <span className="truncate font-mono text-[11px] text-[#a3a3a3]">{result.instance_id}</span>
+                                      </div>
+                                      <div><StatusBadge status={result.status} /></div>
+                                      <span className="truncate text-[10px] text-[#525252]">{result.repo?.split('/')[1] || result.repo}</span>
+                                      <span className="text-right font-mono text-[10px] text-[#3a3a3a]">{Number(result.duration_s).toFixed(1)}s</span>
+                                    </div>
+                                    {isOpen && (
+                                      <div className="space-y-3 bg-[#060c06] px-5 pb-4 pt-2">
+                                        {result.error && (
+                                          <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-[11px] text-red-300">{result.error}</div>
+                                        )}
+                                        {result.agent_log && (
+                                          <div>
+                                            <p className="mb-1 text-[9px] font-bold uppercase tracking-wider text-[#3a3a3a]">Agent log</p>
+                                            <pre className="max-h-28 overflow-auto rounded-lg bg-[#050505] p-3 text-[10px] leading-relaxed text-[#737373] custom-scrollbar">{result.agent_log}</pre>
+                                          </div>
+                                        )}
+                                        {result.patch && (
+                                          <div>
+                                            <p className="mb-1 text-[9px] font-bold uppercase tracking-wider text-[#3a3a3a]">Patch</p>
+                                            <pre className="max-h-48 overflow-auto rounded-lg bg-[#050505] p-3 text-[10px] leading-relaxed text-[#a3a3a3] custom-scrollbar">{result.patch}</pre>
+                                          </div>
+                                        )}
+                                        {result.test_output && (
+                                          <div>
+                                            <p className="mb-1 text-[9px] font-bold uppercase tracking-wider text-[#3a3a3a]">Test output</p>
+                                            <pre className="max-h-28 overflow-auto rounded-lg bg-[#050505] p-3 text-[10px] leading-relaxed text-[#737373] custom-scrollbar">{result.test_output}</pre>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
+        {/* TASKS BROWSER TAB */}
         {tab === 'tasks' && (
-          <div>
+          <div className="p-4">
             <div className="mb-4 flex items-center gap-2">
-              <Filter size={12} className="text-[#525252]" />
-              <input value={taskFilter} onChange={(e) => setTaskFilter(e.target.value)} placeholder="Filter by repo..." className="flex-1 rounded-lg border border-[#1e1e1e] bg-[#111] px-3 py-2 text-xs text-white outline-none placeholder:text-[#3a3a3a] focus:border-[#00ff99]/30" />
-              <button onClick={() => void fetchTasks()} className="rounded-lg p-2 text-[#525252] transition-colors hover:bg-[#1a1a1a] hover:text-[#a3a3a3]">
+              <div className="relative flex-1">
+                <Filter size={11} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#3a3a3a]" />
+                <input
+                  value={taskFilter}
+                  onChange={(e) => setTaskFilter(e.target.value)}
+                  placeholder="Filter by repo (e.g. django/django)…"
+                  className="w-full rounded-lg border border-[#1e1e1e] bg-[#0d0d0d] py-2 pl-8 pr-3 text-xs text-white outline-none placeholder:text-[#3a3a3a] focus:border-[#00ff99]/30 transition-colors"
+                />
+              </div>
+              <button onClick={() => void fetchTasks()} className="rounded-lg border border-[#1e1e1e] p-2 text-[#525252] transition-colors hover:border-[#2a2a2a] hover:text-[#a3a3a3]">
                 <RefreshCw size={12} className={loadingTasks ? 'animate-spin' : ''} />
               </button>
             </div>
-            <div className="space-y-2">
-              {tasks.length === 0 && !loadingTasks ? (
-                <p className="py-8 text-center text-xs italic text-[#3a3a3a]">No tasks found.</p>
-              ) : tasks.map((task) => (
-                <div key={task.task_id} className="space-y-2 rounded-xl border border-[#1e1e1e] bg-[#111] p-4">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <p className="font-mono text-xs font-bold text-white">{task.instance_id}</p>
-                      <p className="text-[10px] text-[#525252]">{task.repo} · v{task.version}</p>
+            {loadingTasks ? (
+              <div className="flex items-center justify-center gap-2 py-16 text-xs text-[#525252]">
+                <RefreshCw size={14} className="animate-spin" /> Loading tasks…
+              </div>
+            ) : tasks.length === 0 ? (
+              <p className="py-16 text-center text-xs italic text-[#3a3a3a]">No tasks found.</p>
+            ) : (
+              <div className="space-y-2">
+                {tasks.map((task) => (
+                  <div key={task.task_id} className="rounded-xl border border-[#1e1e1e] bg-[#0d0d0d] p-4 transition-colors hover:border-[#2a2a2a]">
+                    <div className="mb-2 flex items-start justify-between gap-2">
+                      <div>
+                        <p className="font-mono text-xs font-bold text-white">{task.instance_id}</p>
+                        <p className="mt-0.5 text-[10px] text-[#525252]">{task.repo} · v{task.version}</p>
+                      </div>
+                      <a href={`https://github.com/${task.repo}/issues`} target="_blank" rel="noreferrer" className="text-[#3a3a3a] transition-colors hover:text-[#737373]">
+                        <ExternalLink size={12} />
+                      </a>
                     </div>
-                    <a href={`https://github.com/${task.repo}/issues`} target="_blank" rel="noreferrer" className="text-[#525252] transition-colors hover:text-[#a3a3a3]">
-                      <ExternalLink size={12} />
-                    </a>
+                    <p className="line-clamp-3 text-[11px] leading-relaxed text-[#737373]">{task.problem_statement}</p>
+                    {task.fail_to_pass.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {task.fail_to_pass.slice(0, 4).map((t) => (
+                          <span key={t} className="rounded bg-[#1a1a1a] px-1.5 py-0.5 font-mono text-[9px] text-[#525252]">{t.split('::').pop()}</span>
+                        ))}
+                        {task.fail_to_pass.length > 4 && (
+                          <span className="rounded bg-[#1a1a1a] px-1.5 py-0.5 text-[9px] text-[#3a3a3a]">+{task.fail_to_pass.length - 4} more</span>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <p className="max-h-16 overflow-hidden text-[11px] leading-relaxed text-[#a3a3a3]">{task.problem_statement}</p>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
+        {/* STATS TAB */}
         {tab === 'stats' && (
-          <div className="space-y-6 p-2">
-            <div className="space-y-1 text-center">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-[#525252]">Plodder SWE Score</p>
-              <p className="text-5xl font-black text-white">{stats?.overall_resolve_rate ?? 0}<span className="text-2xl text-[#525252]">%</span></p>
-              <p className="text-xs text-[#525252]">{stats?.total_resolved ?? 0} of {stats?.total_tasks_evaluated ?? 0} tasks resolved</p>
-            </div>
-            <div className="overflow-hidden rounded-xl border border-[#1e1e1e]">
-              <div className="border-b border-[#1e1e1e] bg-[#111] px-4 py-2">
-                <p className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-[#525252]"><BarChart3 size={10} /> Reference comparison</p>
+          <div className="space-y-6 p-5">
+            {/* Big score */}
+            <div className="rounded-2xl border border-[#1e1e1e] bg-gradient-to-b from-[#050f05] to-[#0a0a0a] p-8 text-center">
+              <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.2em] text-[#525252]">Plodder · SWE-bench Resolve Rate</p>
+              <p className="text-6xl font-black text-[#00ff99]">
+                {stats?.overall_resolve_rate.toFixed(1) ?? '0.0'}
+                <span className="text-2xl text-[#00ff99]/50">%</span>
+              </p>
+              <p className="mt-2 text-xs text-[#525252]">
+                {stats?.total_resolved ?? 0} of {stats?.total_tasks_evaluated ?? 0} tasks resolved
+              </p>
+              <div className="mx-auto mt-4 h-1.5 max-w-xs overflow-hidden rounded-full bg-[#1a1a1a]">
+                <div
+                  className="h-full rounded-full bg-[#00ff99] transition-all duration-700"
+                  style={{ width: `${stats?.overall_resolve_rate ?? 0}%` }}
+                />
               </div>
-              {[
-                { name: 'Devin 2.0', pct: 55 },
-                { name: 'Claude Sonnet', pct: 49 },
-                { name: 'OpenHands', pct: 38 },
-                { name: 'Plodder', pct: stats?.overall_resolve_rate ?? 0 },
-              ].map((entry) => (
-                <div key={entry.name} className={`flex items-center gap-3 border-b border-[#1a1a1a] px-4 py-2.5 last:border-b-0 ${entry.name === 'Plodder' ? 'bg-[#00ff99]/5' : ''}`}>
-                  <span className={`min-w-0 flex-1 truncate text-xs font-semibold ${entry.name === 'Plodder' ? 'text-[#00ff99]' : 'text-white'}`}>{entry.name}</span>
-                  <div className="h-1.5 w-28 overflow-hidden rounded-full bg-[#1a1a1a]">
-                    <div className={`h-full rounded-full ${entry.name === 'Plodder' ? 'bg-[#00ff99]' : 'bg-[#525252]'}`} style={{ width: `${(entry.pct / 60) * 100}%` }} />
-                  </div>
-                  <span className={`w-10 text-right text-xs font-bold ${entry.name === 'Plodder' ? 'text-[#00ff99]' : 'text-white'}`}>{entry.pct}%</span>
-                </div>
-              ))}
+            </div>
+
+            {/* Leaderboard comparison */}
+            <div className="overflow-hidden rounded-2xl border border-[#1e1e1e]">
+              <div className="border-b border-[#1e1e1e] bg-[#0d0d0d] px-5 py-3">
+                <p className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-[#525252]">
+                  <BarChart3 size={11} /> Industry comparison (SWE-bench Lite)
+                </p>
+              </div>
+              <div className="divide-y divide-[#111]">
+                {[
+                  { name: 'Devin 2.0', pct: 55.0, org: 'Cognition' },
+                  { name: 'Claude Sonnet 3.7', pct: 49.0, org: 'Anthropic' },
+                  { name: 'OpenHands', pct: 38.0, org: 'All-Hands' },
+                  { name: 'SWE-agent', pct: 23.7, org: 'Princeton' },
+                  { name: 'Plodder', pct: stats?.overall_resolve_rate ?? 0, org: 'You', isUs: true },
+                ].map((entry) => {
+                  const w = (entry.pct / 60) * 100;
+                  return (
+                    <div
+                      key={entry.name}
+                      className={`flex items-center gap-4 px-5 py-3 ${(entry as { isUs?: boolean }).isUs ? 'bg-[#00ff99]/5' : ''}`}
+                    >
+                      <div className="w-32 flex-shrink-0">
+                        <p className={`text-xs font-semibold ${(entry as { isUs?: boolean }).isUs ? 'text-[#00ff99]' : 'text-white'}`}>{entry.name}</p>
+                        <p className="text-[9px] text-[#3a3a3a]">{entry.org}</p>
+                      </div>
+                      <div className="flex-1">
+                        <div className="h-2 overflow-hidden rounded-full bg-[#1a1a1a]">
+                          <div
+                            className={`h-full rounded-full transition-all duration-700 ${(entry as { isUs?: boolean }).isUs ? 'bg-[#00ff99]' : 'bg-[#404040]'}`}
+                            style={{ width: `${w}%` }}
+                          />
+                        </div>
+                      </div>
+                      <span className={`w-12 text-right text-sm font-bold ${(entry as { isUs?: boolean }).isUs ? 'text-[#00ff99]' : 'text-white'}`}>
+                        {entry.pct.toFixed(1)}%
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
         )}
