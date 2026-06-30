@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Copy, Check, FileText } from 'lucide-react';
+import { Copy, Check, FileText, Terminal } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -11,6 +11,106 @@ interface StreamingOutputProps {
   sessionId?: string; // Reserved for potential backends
 }
 
+// ── Terminal shell languages that should render as a terminal window ──────────
+const TERMINAL_LANGS = new Set(['bash', 'sh', 'shell', 'zsh', 'terminal', 'console', 'cmd', 'powershell', 'ps1', 'fish']);
+
+// ── Detect command-like patterns (lines starting with $ or >) ────────────────
+function looksLikeShellOutput(text: string): boolean {
+  const lines = text.split('\n').filter(l => l.trim());
+  if (lines.length === 0) return false;
+  const commandLines = lines.filter(l => /^(\$|>|#)\s/.test(l.trim()));
+  return commandLines.length > 0;
+}
+
+// ── Colourize a single line for the terminal display ────────────────────────
+function TerminalLine({ line }: { line: string }) {
+  const trimmed = line.trimStart();
+  // Command prompts
+  if (/^(\$|>|#)\s/.test(trimmed)) {
+    const [prompt, ...rest] = line.split(/\s+/);
+    return (
+      <div className="flex gap-2">
+        <span className="text-[#00ff99] font-bold select-none flex-shrink-0">{prompt}</span>
+        <span className="text-[#e2e8f0]">{rest.join(' ')}</span>
+      </div>
+    );
+  }
+  // Error / warning patterns
+  if (/error|traceback|exception|fatal|fail/i.test(trimmed) && !/✓|success/i.test(trimmed)) {
+    return <div className="text-red-400/90">{line}</div>;
+  }
+  // Warning patterns
+  if (/warning|warn:/i.test(trimmed)) {
+    return <div className="text-yellow-400/90">{line}</div>;
+  }
+  // Success patterns
+  if (/✓|success|done|complete|built|compiled|passed/i.test(trimmed)) {
+    return <div className="text-[#00ff99]/80">{line}</div>;
+  }
+  // Info / numbered lines (e.g. "added 123 packages")
+  if (/^added \d+|^found \d+|^\d+ packages|^npm warn/i.test(trimmed)) {
+    return <div className="text-[#94a3b8]">{line}</div>;
+  }
+  return <div className="text-[#cbd5e1]">{line}</div>;
+}
+
+// ── Terminal window component ────────────────────────────────────────────────
+function TerminalBlock({ children, language }: { children: string; language?: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(children).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const lines = children.split('\n');
+  // Remove trailing blank line that code blocks usually have
+  if (lines[lines.length - 1] === '') lines.pop();
+
+  const label = language && language !== 'terminal' && language !== 'console' ? language : 'Terminal';
+
+  return (
+    <div className="my-4 rounded-xl overflow-hidden border border-[#1e2a1e] shadow-[0_0_24px_rgba(0,255,153,0.04)] bg-[#050f05]">
+      {/* Title bar */}
+      <div className="flex items-center justify-between px-4 py-2.5 bg-[#0a140a] border-b border-[#1e2a1e]">
+        <div className="flex items-center gap-3">
+          {/* Traffic light dots */}
+          <div className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-[#ff5f57] shadow-[0_0_4px_#ff5f57]" />
+            <span className="w-2.5 h-2.5 rounded-full bg-[#febc2e] shadow-[0_0_4px_#febc2e]" />
+            <span className="w-2.5 h-2.5 rounded-full bg-[#28c840] shadow-[0_0_4px_#28c840]" />
+          </div>
+          <div className="flex items-center gap-1.5 text-[#3a5a3a]">
+            <Terminal size={11} />
+            <span className="text-[10px] font-bold uppercase tracking-[0.15em] font-mono">{label}</span>
+          </div>
+        </div>
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[#3a5a3a] hover:text-[#00ff99] hover:bg-[#00ff99]/5 transition-all text-[10px] font-bold uppercase tracking-wide"
+          title="Copy terminal output"
+        >
+          {copied
+            ? <><Check size={11} /><span>Copied</span></>
+            : <><Copy size={11} /><span>Copy</span></>
+          }
+        </button>
+      </div>
+
+      {/* Output body */}
+      <div className="p-4 overflow-x-auto custom-scrollbar max-h-[480px] overflow-y-auto">
+        <pre className="text-[12.5px] leading-[1.65] font-mono m-0">
+          {lines.map((line, i) => (
+            <TerminalLine key={i} line={line} />
+          ))}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
 function CodeBlock({ language, children }: { language: string; children: string }) {
   const [copied, setCopied] = useState(false);
 
@@ -19,6 +119,11 @@ function CodeBlock({ language, children }: { language: string; children: string 
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  // Delegate terminal-like languages to TerminalBlock
+  if (TERMINAL_LANGS.has(language.toLowerCase()) || looksLikeShellOutput(children)) {
+    return <TerminalBlock language={language}>{children}</TerminalBlock>;
+  }
 
   return (
     <div className="relative group my-4 overflow-hidden rounded-xl border border-[#262626] shadow-md bg-[#000000]">

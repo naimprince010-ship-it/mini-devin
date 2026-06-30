@@ -1,5 +1,5 @@
-import React from 'react';
-import { CheckCircle2, XCircle, Loader2, Terminal, FileText, Globe, Search, Code2, Wrench } from 'lucide-react';
+import React, { useState } from 'react';
+import { CheckCircle2, XCircle, Loader2, Terminal, FileText, Globe, Search, Code2, Wrench, Copy, Check, ChevronDown, ChevronRight } from 'lucide-react';
 import { ToolCallEntry } from '../contexts/SessionEventsContext';
 
 interface ToolCallLogProps {
@@ -74,6 +74,86 @@ function getSuccessDetails(output: Record<string, unknown> | undefined): string[
     return details.slice(0, 3);
 }
 
+// ── Inline terminal output panel ─────────────────────────────────────────────
+function TerminalOutputPanel({ output }: { output: Record<string, unknown> }) {
+    const [expanded, setExpanded] = useState(false);
+    const [copied, setCopied] = useState(false);
+
+    const stdout = (output.stdout as string) || (output.output as string) || '';
+    const stderr = (output.stderr as string) || '';
+    const exitCode = output.exit_code != null ? Number(output.exit_code) : null;
+    const combined = [stdout, stderr].filter(Boolean).join('\n').trim();
+
+    if (!combined) return null;
+
+    const lines = combined.split('\n');
+    const preview = lines.slice(0, 2).join('\n');
+    const hasMore = lines.length > 2;
+
+    const handleCopy = () => {
+        navigator.clipboard.writeText(combined).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        });
+    };
+
+    return (
+        <div className="mt-2 rounded-lg overflow-hidden border border-[#1e2a1e] bg-[#050f05]">
+            {/* Mini title bar */}
+            <div className="flex items-center justify-between px-2.5 py-1.5 bg-[#0a140a] border-b border-[#1e2a1e]">
+                <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-[#ff5f57]" />
+                        <span className="w-2 h-2 rounded-full bg-[#febc2e]" />
+                        <span className="w-2 h-2 rounded-full bg-[#28c840]" />
+                    </div>
+                    <span className="text-[9px] font-bold uppercase tracking-[0.15em] font-mono text-[#3a5a3a]">
+                        stdout
+                        {exitCode !== null && (
+                            <span className={`ml-1.5 ${exitCode === 0 ? 'text-[#00ff99]/50' : 'text-red-500/70'}`}>
+                                exit {exitCode}
+                            </span>
+                        )}
+                    </span>
+                </div>
+                <div className="flex items-center gap-1">
+                    <button
+                        onClick={handleCopy}
+                        className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[#3a5a3a] hover:text-[#00ff99] transition-colors text-[9px] font-bold uppercase"
+                        title="Copy output"
+                    >
+                        {copied ? <><Check size={9} /><span>Copied</span></> : <><Copy size={9} /><span>Copy</span></>}
+                    </button>
+                    {hasMore && (
+                        <button
+                            onClick={() => setExpanded(e => !e)}
+                            className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[#3a5a3a] hover:text-[#00ff99] transition-colors text-[9px]"
+                        >
+                            {expanded ? <ChevronDown size={9} /> : <ChevronRight size={9} />}
+                        </button>
+                    )}
+                </div>
+            </div>
+            {/* Content */}
+            <div className={`px-3 py-2 overflow-x-auto ${expanded ? 'max-h-64 overflow-y-auto' : 'max-h-14 overflow-hidden'} transition-all duration-200`}>
+                <pre className="text-[11px] leading-relaxed font-mono text-[#7cbb7c] whitespace-pre-wrap">
+                    {expanded ? combined : preview}
+                    {!expanded && hasMore && (
+                        <span className="text-[#3a5a3a] cursor-pointer" onClick={() => setExpanded(true)}>
+                            {' '}…{lines.length - 2} more line{lines.length - 2 !== 1 ? 's' : ''}
+                        </span>
+                    )}
+                </pre>
+            </div>
+        </div>
+    );
+}
+
+function isTerminalTool(toolName: string): boolean {
+    const n = toolName.toLowerCase();
+    return n.includes('terminal') || n.includes('bash') || n.includes('shell') || n.includes('command') || n.includes('run');
+}
+
 export const ToolCallLog: React.FC<ToolCallLogProps> = ({ toolCalls }) => {
     if (toolCalls.length === 0) {
         return (
@@ -128,7 +208,10 @@ export const ToolCallLog: React.FC<ToolCallLogProps> = ({ toolCalls }) => {
                                 {String(entry.output.error)}
                             </div>
                         )}
-                        {entry.status === 'completed' && getSuccessDetails(entry.output).length > 0 && (
+                        {entry.status === 'completed' && isTerminalTool(entry.tool) && entry.output && (
+                            <TerminalOutputPanel output={entry.output} />
+                        )}
+                        {entry.status === 'completed' && !isTerminalTool(entry.tool) && getSuccessDetails(entry.output).length > 0 && (
                             <div className="mt-1 space-y-0.5">
                                 {getSuccessDetails(entry.output).map((detail) => (
                                     <div key={detail} className="text-[11px] text-[#9ae6b4] truncate">
