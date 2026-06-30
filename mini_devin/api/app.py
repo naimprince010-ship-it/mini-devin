@@ -135,6 +135,7 @@ from .streaming_patch import install_streaming_patch
 from .websocket import ConnectionManager, WebSocketMessage, MessageType
 from ..auth.routes import router as auth_router
 from .integration_routes import router as integrations_router
+from .orchestration_routes import build_orchestration_router
 from ..bridge.manager import get_bridge_manager
 from ..database.config import init_db
 from ..sessions.db_manager import DatabaseSessionManager
@@ -849,6 +850,8 @@ app.add_middleware(AppApiPrefixMiddleware)
 
 app.include_router(auth_router, prefix="/api")
 app.include_router(integrations_router, prefix="/api")
+app.include_router(build_orchestration_router(session_manager, connection_manager), prefix="/api")
+app.state.orchestration_routes_mounted = True
 
 
 @app.get("/health")

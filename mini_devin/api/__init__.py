@@ -23,10 +23,12 @@ def _mount_orchestration_routes() -> None:
     from .app import app, connection_manager, session_manager
     from .orchestration_routes import build_orchestration_router
 
-    app.include_router(
-        build_orchestration_router(session_manager, connection_manager),
-        prefix="/api",
-    )
+    if not getattr(app.state, "orchestration_routes_mounted", False):
+        app.include_router(
+            build_orchestration_router(session_manager, connection_manager),
+            prefix="/api",
+        )
+        app.state.orchestration_routes_mounted = True
     _orch_mounted = True
 
 
