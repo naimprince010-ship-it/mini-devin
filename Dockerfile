@@ -52,9 +52,10 @@ RUN poetry config virtualenvs.create false && \
     poetry install --only main --no-interaction --no-ansi --no-root
 
 # Install Playwright Chromium browser binary (needed for browser_playwright tool)
-# PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 was set for poetry install only; now we
-# explicitly fetch the binary so the agent can automate real websites.
-RUN python -m playwright install chromium
+# Store binaries in /ms-playwright so all UIDs can access them (not /root/.cache)
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN python -m playwright install chromium \
+    && chmod -R 755 /ms-playwright
 
 # Copy frontend and build it
 COPY frontend/ ./frontend/
