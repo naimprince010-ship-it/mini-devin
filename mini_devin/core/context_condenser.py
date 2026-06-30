@@ -104,15 +104,15 @@ async def condense_chat_messages(
     min_m = min_messages
     if min_m is None:
         raw_m = (os.environ.get("LLM_CONDENSE_MIN_MESSAGES") or "").strip()
-        min_m = int(raw_m) if raw_m.isdigit() else 20
+        min_m = int(raw_m) if raw_m.isdigit() else 10
 
     min_c = min_chars
     if min_c is None:
         raw_c = (os.environ.get("LLM_CONDENSE_MIN_CHARS") or "").strip()
-        min_c = int(raw_c) if raw_c.isdigit() else 40_000
+        min_c = int(raw_c) if raw_c.isdigit() else 16_000
 
     raw_t = (os.environ.get("LLM_CONDENSE_MIN_TOKENS") or "").strip()
-    min_t = int(raw_t) if raw_t.isdigit() else 12_000
+    min_t = int(raw_t) if raw_t.isdigit() else 6_000
 
     suffix_start = find_suffix_start_for_last_n_tool_observations(messages, last_n=n_obs)
     if suffix_start is None:

@@ -129,7 +129,11 @@ _REPO_ROOT = _discover_repo_root()
 load_dotenv(os.path.join(_REPO_ROOT, ".env"), override=True)
 load_dotenv(override=True)  # optional: cwd `.env` wins for local overrides
 
-DEFAULT_MAX_ITERATIONS = int(os.getenv("DEFAULT_MAX_ITERATIONS", "200"))
+def _get_default_max_iterations() -> int:
+    """Read at call time so .env changes take effect without process restart."""
+    return int(os.getenv("DEFAULT_MAX_ITERATIONS", "20"))
+
+DEFAULT_MAX_ITERATIONS = _get_default_max_iterations()
 
 from .streaming_patch import install_streaming_patch
 from .websocket import ConnectionManager, WebSocketMessage, MessageType
@@ -2227,7 +2231,7 @@ async def get_repo_metadata(repo_id: str):
 
 class StartIssueAutomationRequest(BaseModel):
     model: str = "auto"
-    max_iterations: int = DEFAULT_MAX_ITERATIONS
+    max_iterations: int = Field(default_factory=_get_default_max_iterations)
     auto_git_commit: bool = False
     git_push: bool = False
 
@@ -2463,7 +2467,7 @@ async def list_sessions():
 class CreateSessionRequest(BaseModel):
     working_directory: str = "."
     model: str = "auto"
-    max_iterations: int = DEFAULT_MAX_ITERATIONS
+    max_iterations: int = Field(default_factory=_get_default_max_iterations)
     auto_git_commit: bool = False
     git_push: bool = False
 
@@ -2493,7 +2497,8 @@ async def create_session(raw_request: Request):
     workspace_id = uuid.uuid4().hex
 
     model = "auto"
-    max_iterations = DEFAULT_MAX_ITERATIONS
+    _dyn_max_iter = _get_default_max_iterations()
+    max_iterations = _dyn_max_iter
     auto_git_commit = False
     git_push = False
     requested_dir = ""
@@ -2510,7 +2515,7 @@ async def create_session(raw_request: Request):
     model = _validate_model_scope(model, scope="chat")
     try:
         max_iterations = int(
-            body.get("max_iterations", DEFAULT_MAX_ITERATIONS) or DEFAULT_MAX_ITERATIONS
+            body.get("max_iterations", _dyn_max_iter) or _dyn_max_iter
         )
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="max_iterations must be an integer")

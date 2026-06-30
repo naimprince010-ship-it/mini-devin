@@ -605,9 +605,12 @@ def create_terminal_tool(
     on_output_line: Callable[[str], None] | None = None,
 ) -> TerminalTool:
     """Create a terminal tool with default settings."""
+    _raw_cap = (os.environ.get("TERMINAL_MAX_OUTPUT_CHARS") or "").strip()
+    _cap = int(_raw_cap) if _raw_cap.isdigit() and int(_raw_cap) > 0 else 8_000
     return TerminalTool(
         working_directory=working_directory,
         blocked_commands=blocked_commands,
+        max_output_length=_cap,
         bridge_session_id=bridge_session_id,
         on_output_line=on_output_line,
     )
