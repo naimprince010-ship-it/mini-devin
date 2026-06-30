@@ -156,6 +156,8 @@ def _make_system_prompt() -> str:
         "- If user gives an issue number like ``#123``, treat it as the source spec and align implementation + commit/PR text to that issue.\n"
         "- Before merge-ready claims, verify branch status and CI/test outputs; do not claim merge-ready without evidence.\n"
         "- Do not push or merge unless asked (or unless task explicitly requires it).\n"
+        "- **PR review comments**: If a PR has review comments (``changes_requested`` in ``get_pr_status``), call ``github`` **get_pr_comments** (``action: get_pr_comments``, ``pr_number: N``) to read every inline and thread comment before making any code changes. Address each reviewer comment explicitly.\n"
+        "- **CI/CD failures**: If a workflow run fails (visible in ``get_pr_status`` → ``check_runs`` with ``conclusion: failure``), call ``github`` **get_action_logs** (``action: get_action_logs``, ``run_id: <id>``) to fetch the exact failed-job log text. Read the error output, fix the root cause in code, then push again. Do not guess at CI failures without reading the logs.\n"
     )
     if has_github_token:
         github_note += (

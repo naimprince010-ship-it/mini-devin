@@ -526,6 +526,137 @@ class GitHubIntegration:
             logger.error(f"Failed to list pull requests: {e}")
             return []
 
+    async def get_pr_review_comments(self, pr_number: int) -> Dict[str, Any]:
+        """Fetch all review (inline code) comments and general PR comments.
+
+        Returns a dict with two lists:
+          - ``review_comments``: inline code review comments (created via the
+            "Files changed" tab, attached to a specific line).
+          - ``issue_comments``: general discussion comments on the PR thread.
+        """
+        try:
+            if not self.repo:
+                return {"review_comments": [], "issue_comments": []}
+            pr = self.repo.get_pull(pr_number)
+
+            def _ser_review_comment(c: Any) -> Dict[str, Any]:
+                user = getattr(c, "user", None)
+                return {
+                    "id": getattr(c, "id", None),
+                    "author": getattr(user, "login", None),
+                    "body": getattr(c, "body", ""),
+                    "path": getattr(c, "path", None),
+                    "line": getattr(c, "line", None) or getattr(c, "original_line", None),
+                    "diff_hunk": getattr(c, "diff_hunk", None),
+                    "html_url": getattr(c, "html_url", None),
+                    "created_at": (
+                        c.created_at.isoformat() if getattr(c, "created_at", None) else None
+                    ),
+                }
+
+            review_comments = [
+                _ser_review_comment(c)
+                for c in _iter_paginated_items(pr.get_review_comments(), 100)
+            ]
+            issue_comments = [
+                _serialize_issue_comment(c)
+                for c in _iter_paginated_items(pr.as_issue().get_comments(), 100)
+            ]
+            return {
+                "pr_number": pr_number,
+                "title": pr.title,
+                "html_url": pr.html_url,
+                "review_comments": review_comments,
+                "review_comments_count": len(review_comments),
+                "issue_comments": issue_comments,
+                "issue_comments_count": len(issue_comments),
+            }
+        except GithubException as e:
+            logger.error(f"Failed to get PR review comments for #{pr_number}: {e}")
+            return {"review_comments": [], "issue_comments": []}
+
+    async def get_action_run_logs(self, run_id: int) -> Dict[str, Any]:
+        """Fetch workflow run details, per-job step structure, and text logs for failed jobs.
+
+        Uses the PyGithub WorkflowRun/WorkflowJob APIs for structure, then makes a
+        direct authenticated GET to the GitHub Jobs logs endpoint for the log text of
+        any job that concluded as failure or timed_out.
+        """
+        import urllib.request as _urllib_req
+        import urllib.error as _urllib_err
+
+        try:
+            if not self.repo:
+                return {}
+            run = self.repo.get_workflow_run(run_id)
+
+            jobs_data: list[Dict[str, Any]] = []
+            failed_logs: Dict[str, str] = {}
+
+            for job in _iter_paginated_items(run.jobs(), 30):
+                steps = [
+                    {
+                        "number": getattr(step, "number", None),
+                        "name": getattr(step, "name", ""),
+                        "status": getattr(step, "status", None),
+                        "conclusion": getattr(step, "conclusion", None),
+                    }
+                    for step in (getattr(job, "steps", None) or [])
+                ]
+                jobs_data.append(
+                    {
+                        "id": job.id,
+                        "name": job.name,
+                        "status": job.status,
+                        "conclusion": job.conclusion,
+                        "html_url": job.html_url,
+                        "steps": steps,
+                    }
+                )
+
+                # Fetch text logs for failed / timed-out jobs
+                if job.conclusion in ("failure", "timed_out") and self.github_token:
+                    log_url = (
+                        f"https://api.github.com/repos/{self.repo.full_name}"
+                        f"/actions/jobs/{job.id}/logs"
+                    )
+                    try:
+                        req = _urllib_req.Request(
+                            log_url,
+                            headers={
+                                "Authorization": f"token {self.github_token}",
+                                "Accept": "application/vnd.github+json",
+                                "User-Agent": "Plodder-Agent/1.0",
+                            },
+                        )
+                        with _urllib_req.urlopen(req, timeout=20) as resp:
+                            raw = resp.read().decode("utf-8", errors="replace")
+                            # Keep the last 8 000 chars — most relevant errors are at the end
+                            failed_logs[job.name] = raw[-8_000:] if len(raw) > 8_000 else raw
+                    except _urllib_err.HTTPError as http_err:
+                        failed_logs[job.name] = (
+                            f"[Could not fetch logs: HTTP {http_err.code} {http_err.reason}]"
+                        )
+                    except Exception as log_err:
+                        failed_logs[job.name] = f"[Could not fetch logs: {log_err}]"
+
+            return {
+                "run_id": run.id,
+                "name": run.name,
+                "status": run.status,
+                "conclusion": run.conclusion,
+                "html_url": run.html_url,
+                "head_branch": run.head_branch,
+                "head_sha": run.head_sha,
+                "created_at": run.created_at.isoformat() if run.created_at else None,
+                "updated_at": run.updated_at.isoformat() if run.updated_at else None,
+                "jobs": jobs_data,
+                "failed_job_logs": failed_logs,
+            }
+        except GithubException as e:
+            logger.error(f"Failed to get action run #{run_id}: {e}")
+            return {}
+
 # Example usage and helper functions
 async def create_automated_pr_workflow(
     hosting: Any,

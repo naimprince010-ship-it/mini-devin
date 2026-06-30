@@ -640,22 +640,53 @@ async def _background_startup(app: FastAPI) -> None:
         from sqlalchemy import update
 
         from ..database.config import get_session_maker
-        from ..database.models import SessionModel, SessionStatus as DBSessionStatus
+        from ..database.models import (
+            SessionModel,
+            SessionStatus as DBSessionStatus,
+            TaskModel,
+            TaskStatus as DBTaskStatus,
+        )
 
+        _orphan_msg = "Task interrupted due to server restart."
         async with get_session_maker()() as db:
-            result = await db.execute(
+            # Mark any sessions that were actively RUNNING as ERROR (orphaned).
+            run_result = await db.execute(
                 update(SessionModel)
-                .where(
-                    SessionModel.status.in_(
-                        [DBSessionStatus.IDLE, DBSessionStatus.RUNNING]
-                    )
-                )
+                .where(SessionModel.status == DBSessionStatus.RUNNING)
+                .values(status=DBSessionStatus.ERROR)
+            )
+            # Mark truly idle sessions as TERMINATED (no in-flight work was lost).
+            idle_result = await db.execute(
+                update(SessionModel)
+                .where(SessionModel.status == DBSessionStatus.IDLE)
                 .values(status=DBSessionStatus.TERMINATED)
             )
+            # Mark any tasks that were still in RUNNING or PENDING state as FAILED.
+            task_result = await db.execute(
+                update(TaskModel)
+                .where(
+                    TaskModel.status.in_(
+                        [DBTaskStatus.RUNNING, DBTaskStatus.PENDING]
+                    )
+                )
+                .values(
+                    status=DBTaskStatus.FAILED,
+                    error_message=_orphan_msg,
+                )
+            )
             await db.commit()
-            if result.rowcount > 0:
+            if run_result.rowcount > 0:
                 print(
-                    f"[API] Reset {result.rowcount} stale session(s) from previous run."
+                    f"[API] Marked {run_result.rowcount} orphaned running session(s) "
+                    f"as ERROR — {_orphan_msg}"
+                )
+            if idle_result.rowcount > 0:
+                print(
+                    f"[API] Terminated {idle_result.rowcount} stale idle session(s)."
+                )
+            if task_result.rowcount > 0:
+                print(
+                    f"[API] Marked {task_result.rowcount} interrupted task(s) as FAILED."
                 )
         _record_startup_stage(app, "session.cleanup.complete")
     except Exception as cleanup_err:

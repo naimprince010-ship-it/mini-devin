@@ -44,6 +44,8 @@ class GitHubAction(str, Enum):
     AUTOMATED_WORKFLOW = "automated_workflow"
     GET_PR_STATUS = "get_pr_status"
     MERGE_PR = "merge_pr"
+    GET_PR_COMMENTS = "get_pr_comments"
+    GET_ACTION_LOGS = "get_action_logs"
 
 
 class GitHubToolInput(BaseToolInput):
@@ -76,11 +78,12 @@ class GitHubToolInput(BaseToolInput):
     )
     limit: int = Field(default=20, ge=1, le=100, description="Max results for list actions")
 
-    pr_number: Optional[int] = Field(default=None, description="Pull request number (get_pr_status, merge_pr)")
+    pr_number: Optional[int] = Field(default=None, description="Pull request number (get_pr_status, merge_pr, get_pr_comments)")
     merge_method: Optional[str] = Field(
         default="squash",
         description="For merge_pr: squash | merge | rebase (repo rules permitting)",
     )
+    run_id: Optional[int] = Field(default=None, description="GitHub Actions workflow run ID for get_action_logs")
     draft: bool = Field(default=False, description="For create_pr: open as draft PR")
     assignees: Optional[List[str]] = Field(default=None, description="GitHub usernames to assign after create_pr")
     linked_issues: Optional[List[int]] = Field(
@@ -112,7 +115,9 @@ class GitHubTool(BaseTool[GitHubToolInput, GitHubToolOutput]):
 - list_issues / get_issue: Fetch issue context with labels/comments
 - list_pull_requests / get_pull_request: Fetch PR context with comments/review signals
 - automated_workflow: Branch -> commit -> PR/MR in one shot
-- get_pr_status: JSON status for a PR/MR number
+- get_pr_status: JSON status for a PR/MR number (CI checks, mergeable state)
+- get_pr_comments: Fetch all inline code review comments + general PR thread comments
+- get_action_logs: Fetch a GitHub Actions workflow run — job/step structure + failed-job log text
 - merge_pr: Merge (squash by default). Bitbucket remotes are not supported."""
     
     input_schema = GitHubToolInput
@@ -482,6 +487,58 @@ class GitHubTool(BaseTool[GitHubToolInput, GitHubToolOutput]):
                     execution_time_ms=0,
                     success=ok,
                     message=f"Merged PR #{input_data.pr_number} ({method})" if ok else f"Could not merge PR #{input_data.pr_number}",
+                )
+
+            elif input_data.action == GitHubAction.GET_PR_COMMENTS:
+                if input_data.pr_number is None:
+                    raise ValueError("pr_number is required for get_pr_comments")
+                if not _supports("get_pr_review_comments"):
+                    return GitHubToolOutput(
+                        status=ToolStatus.FAILURE,
+                        execution_time_ms=0,
+                        success=False,
+                        message="get_pr_comments is only supported for GitHub repositories.",
+                    )
+                data = await backend.get_pr_review_comments(input_data.pr_number)
+                rc = data.get("review_comments_count", 0)
+                ic = data.get("issue_comments_count", 0)
+                return GitHubToolOutput(
+                    status=ToolStatus.SUCCESS,
+                    execution_time_ms=0,
+                    success=True,
+                    message=f"PR #{input_data.pr_number}: {rc} inline review comment(s), {ic} thread comment(s)",
+                    data=data,
+                )
+
+            elif input_data.action == GitHubAction.GET_ACTION_LOGS:
+                if input_data.run_id is None:
+                    raise ValueError("run_id is required for get_action_logs")
+                if not _supports("get_action_run_logs"):
+                    return GitHubToolOutput(
+                        status=ToolStatus.FAILURE,
+                        execution_time_ms=0,
+                        success=False,
+                        message="get_action_logs is only supported for GitHub repositories.",
+                    )
+                data = await backend.get_action_run_logs(input_data.run_id)
+                if not data:
+                    return GitHubToolOutput(
+                        status=ToolStatus.FAILURE,
+                        execution_time_ms=0,
+                        success=False,
+                        message=f"Could not fetch workflow run {input_data.run_id} (check run_id and token permissions).",
+                    )
+                conclusion = data.get("conclusion") or "unknown"
+                failed_count = len(data.get("failed_job_logs", {}))
+                return GitHubToolOutput(
+                    status=ToolStatus.SUCCESS,
+                    execution_time_ms=0,
+                    success=True,
+                    message=(
+                        f"Run {input_data.run_id}: {conclusion}. "
+                        f"{len(data.get('jobs', []))} job(s), {failed_count} with log(s) captured."
+                    ),
+                    data=data,
                 )
 
             return GitHubToolOutput(
