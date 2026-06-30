@@ -14,6 +14,7 @@ import {
 import type { Session } from '../types';
 import { TaskPanel } from './TaskPanel';
 import { WorkspacePanel, type WorkspacePanelTab } from './WorkspacePanel';
+import { WorkerPoolStatusCard } from './WorkerPoolStatusCard';
 import { ErrorBoundary } from './ErrorBoundary';
 import { useApi } from '../hooks/useApi';
 import { useToast } from './Toast';
@@ -162,6 +163,9 @@ export function SessionWorkspaceShell({
         </div>
 
         <div className="flex flex-wrap items-center justify-start gap-1.5 sm:justify-end lg:gap-2">
+          <div className="hidden lg:block">
+            <WorkerPoolStatusCard sessionId={session.session_id} isDark={isDark} />
+          </div>
           {ALL_TABS.map((id) => {
             const active = workspaceTab === id;
             return (

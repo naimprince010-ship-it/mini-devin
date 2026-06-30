@@ -24,6 +24,7 @@ from .autonomous_coordination import (
     AutonomousCoordinatorRuntime,
     autonomous_coordination_enabled,
 )
+from .capability_router import SpecialistRole, route_specialist, specialist_prompt
 from .task_queue import (
     create_queue_transport,
     TaskQueueCoordinator,
@@ -43,6 +44,7 @@ from .task_scheduler import (
     transitive_descendants,
 )
 from .worker_runtime import WorkerRuntime
+from .worker_pools import SpecialistWorkerPoolManager
 
 
 @dataclass
@@ -142,6 +144,10 @@ class PlodderOrchestrator:
             if playbook_tags is not None
             else playbook_tags_from_env()
         )
+        self._worker_pools = SpecialistWorkerPoolManager.from_env()
+
+    def worker_pool_snapshot(self) -> dict[str, dict[str, object]]:
+        return self._worker_pools.snapshot()
 
     def _parse_subtasks(self, raw: dict[str, Any]) -> list[SchedulableUnit]:
         out: list[SchedulableUnit] = []
@@ -195,100 +201,118 @@ class PlodderOrchestrator:
         worker_session_id = ""
         sandbox_coordinator: SandboxIsolationCoordinator | None = None
         sandbox_context: TaskSandboxContext | None = None
+        specialist_role = route_specialist(unit)
+        act.params["specialist_role"] = specialist_role.value
+        act.params["worker_pool_limits"] = self._worker_pools.snapshot()
         if sandbox_hardening_enabled():
             sandbox_coordinator = SandboxIsolationCoordinator(
                 workspace,
                 checkpoint_store=JsonlCheckpointStore(workspace),
             )
-        for attempt in range(self._max_retries + 1):
-            desc = self._worker_task_prompt(unit, prior, attempt, last_err, workspace=workspace)
-            try:
-                worker_session = await WorkerRuntime.create_worker_session(
-                    self._session_manager,
-                    shared_workspace=workspace,
-                    model=getattr(parent, "model", None),
-                    max_iterations=getattr(parent, "max_iterations", None),
+        async with self._worker_pools.acquire(specialist_role, unit.id) as lease:
+            act.params["worker_pool_lease"] = lease.to_dict()
+            for attempt in range(self._max_retries + 1):
+                desc = self._worker_task_prompt(
+                    unit,
+                    prior,
+                    attempt,
+                    last_err,
+                    workspace=workspace,
+                    specialist_role=specialist_role,
                 )
-                worker_session_id = worker_session.session_id
-                if sandbox_coordinator is not None:
-                    sandbox_context = sandbox_coordinator.prepare(
-                        task_id=unit.id,
-                        session_id=worker_session.session_id,
-                        secret_scope=TaskSecretScope(task_id=unit.id),
-                        metadata={
-                            "worker_action_id": act.id,
-                            "workspace": workspace,
-                            "attempt": attempt,
-                        },
+                try:
+                    worker_session = await WorkerRuntime.create_worker_session(
+                        self._session_manager,
+                        shared_workspace=workspace,
+                        model=getattr(parent, "model", None),
+                        max_iterations=getattr(parent, "max_iterations", None),
                     )
-                    sandbox_context = sandbox_coordinator.activate(
-                        sandbox_context,
-                        metadata={"worker_session_id": worker_session.session_id, "attempt": attempt},
-                    )
-                task = await self._session_manager.create_task(
-                    session_id=worker_session.session_id,
-                    description=desc,
-                    connection_manager=connection_manager,
-                )
-                await self._session_manager.run_task(
-                    session_id=worker_session.session_id,
-                    task_id=task.task_id,
-                    connection_manager=connection_manager,
-                )
-                final = await self._session_manager.get_task(worker_session.session_id, task.task_id)
-                success, summary, err = self._classify_task_outcome(final)
-                obs = WorkerObservation.from_task_outcome(
-                    act.id,
-                    unit.id,
-                    success=success,
-                    summary=summary,
-                    worker_session_id=worker_session.session_id,
-                    task_id=task.task_id,
-                    error=err,
-                )
-                if success:
-                    if sandbox_coordinator is not None and sandbox_context is not None:
-                        sandbox_context = sandbox_coordinator.release(
-                            sandbox_context,
-                            metadata={"worker_session_id": worker_session.session_id, "success": success},
+                    worker_session_id = worker_session.session_id
+                    if sandbox_coordinator is not None:
+                        sandbox_context = sandbox_coordinator.prepare(
+                            task_id=unit.id,
+                            session_id=worker_session.session_id,
+                            secret_scope=TaskSecretScope(task_id=unit.id),
+                            metadata={
+                                "worker_action_id": act.id,
+                                "workspace": workspace,
+                                "attempt": attempt,
+                                "specialist_role": specialist_role.value,
+                            },
                         )
-                    return obs
-                if attempt >= self._max_retries:
+                        sandbox_context = sandbox_coordinator.activate(
+                            sandbox_context,
+                            metadata={"worker_session_id": worker_session.session_id, "attempt": attempt},
+                        )
+                    task = await self._session_manager.create_task(
+                        session_id=worker_session.session_id,
+                        description=desc,
+                        connection_manager=connection_manager,
+                    )
+                    await self._session_manager.run_task(
+                        session_id=worker_session.session_id,
+                        task_id=task.task_id,
+                        connection_manager=connection_manager,
+                    )
+                    final = await self._session_manager.get_task(worker_session.session_id, task.task_id)
+                    success, summary, err = self._classify_task_outcome(final)
+                    obs = WorkerObservation.from_task_outcome(
+                        act.id,
+                        unit.id,
+                        success=success,
+                        summary=summary,
+                        worker_session_id=worker_session.session_id,
+                        task_id=task.task_id,
+                        error=err,
+                    )
+                    obs.result["specialist_role"] = specialist_role.value
+                    obs.result["worker_pool"] = lease.to_dict()
+                    if success:
+                        if sandbox_coordinator is not None and sandbox_context is not None:
+                            sandbox_context = sandbox_coordinator.release(
+                                sandbox_context,
+                                metadata={"worker_session_id": worker_session.session_id, "success": success},
+                            )
+                        return obs
+                    if attempt >= self._max_retries:
+                        if sandbox_coordinator is not None and sandbox_context is not None:
+                            sandbox_context = sandbox_coordinator.quarantine(
+                                sandbox_context,
+                                reason=err or "worker execution failed",
+                                metadata={"attempt": attempt, "worker_session_id": worker_session.session_id},
+                            )
+                        return obs
+                    last_err = err or "worker failed"
                     if sandbox_coordinator is not None and sandbox_context is not None:
                         sandbox_context = sandbox_coordinator.quarantine(
                             sandbox_context,
-                            reason=err or "worker execution failed",
+                            reason=last_err,
                             metadata={"attempt": attempt, "worker_session_id": worker_session.session_id},
                         )
-                    return obs
-                last_err = err or "worker failed"
-                if sandbox_coordinator is not None and sandbox_context is not None:
-                    sandbox_context = sandbox_coordinator.quarantine(
-                        sandbox_context,
-                        reason=last_err,
-                        metadata={"attempt": attempt, "worker_session_id": worker_session.session_id},
-                    )
-                    sandbox_context = sandbox_coordinator.recover_quarantined_context(sandbox_context)
-            except Exception as e:  # noqa: BLE001
-                last_err = str(e)
-                if sandbox_coordinator is not None and sandbox_context is not None:
-                    sandbox_context = sandbox_coordinator.record_crash(
-                        sandbox_context,
-                        reason=last_err,
-                        metadata={"attempt": attempt, "worker_session_id": worker_session_id or ""},
-                    )
-                    if attempt < self._max_retries:
                         sandbox_context = sandbox_coordinator.recover_quarantined_context(sandbox_context)
-                if attempt >= self._max_retries:
-                    return WorkerObservation.from_task_outcome(
-                        act.id,
-                        unit.id,
-                        success=False,
-                        summary="",
-                        worker_session_id=worker_session_id or "?",
-                        task_id="",
-                        error=last_err,
-                    )
+                except Exception as e:  # noqa: BLE001
+                    last_err = str(e)
+                    if sandbox_coordinator is not None and sandbox_context is not None:
+                        sandbox_context = sandbox_coordinator.record_crash(
+                            sandbox_context,
+                            reason=last_err,
+                            metadata={"attempt": attempt, "worker_session_id": worker_session_id or ""},
+                        )
+                        if attempt < self._max_retries:
+                            sandbox_context = sandbox_coordinator.recover_quarantined_context(sandbox_context)
+                    if attempt >= self._max_retries:
+                        obs = WorkerObservation.from_task_outcome(
+                            act.id,
+                            unit.id,
+                            success=False,
+                            summary="",
+                            worker_session_id=worker_session_id or "?",
+                            task_id="",
+                            error=last_err,
+                        )
+                        obs.result["specialist_role"] = specialist_role.value
+                        obs.result["worker_pool"] = lease.to_dict()
+                        return obs
         raise RuntimeError("unreachable worker loop")
 
     async def run_goal(
@@ -674,12 +698,20 @@ class PlodderOrchestrator:
         last_error: str | None,
         *,
         workspace: str,
+        specialist_role: SpecialistRole,
     ) -> str:
         from ..skills.playbook import format_playbooks_for_prompt
 
         base = _prior_context(prior_obs)
         ac = "\n".join(f"- {c}" for c in unit.acceptance_criteria) or "- Complete the sub-goal."
-        hdr = f"[Orchestrator sub-task {unit.id}]\n\nPrimary goal:\n{unit.goal}\n\nAcceptance:\n{ac}\n"
+        role_line = f"Specialist role: {specialist_role.value}"
+        role_prompt = specialist_prompt(specialist_role)
+        hdr = (
+            f"[Orchestrator sub-task {unit.id}]\n\n"
+            f"{role_line}\n"
+            f"{role_prompt}\n\n"
+            f"Primary goal:\n{unit.goal}\n\nAcceptance:\n{ac}\n"
+        )
         if base:
             hdr += f"\n{base}\n"
         if attempt > 0 and last_error:

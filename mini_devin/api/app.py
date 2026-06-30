@@ -3259,12 +3259,31 @@ async def write_file_content(session_id: str, req: Request):
         os.makedirs(os.path.dirname(target), exist_ok=True)
         with open(target, "w", encoding="utf-8") as f:
             f.write(content)
+        try:
+            from ..lsp.runtime import get_or_create_session_runtime
+
+            runtime = await get_or_create_session_runtime(
+                session_id=session_id,
+                workspace_path=base_dir,
+            )
+            await runtime.refresh_file(path, content)
+        except Exception as _lsp_e:
+            print(f"[LSP] write_file refresh warning: {_lsp_e}")
         return {"path": path, "saved": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 class LspDiagnosticsRequest(BaseModel):
+    path: str
+    content: Optional[str] = None
+
+
+class LspStartRequest(BaseModel):
+    languages: Optional[list[str]] = None
+
+
+class LspRefreshRequest(BaseModel):
     path: str
     content: Optional[str] = None
 
@@ -3290,10 +3309,14 @@ async def session_lsp_diagnostics(session_id: str, body: LspDiagnosticsRequest):
     if not _check_rate_limit(f"lsp:diag:{session_id}", max_calls=60, window_seconds=60):
         raise HTTPException(status_code=429, detail="Too many diagnostics requests")
     try:
-        from ..lsp.diagnostics import collect_diagnostics
+        from ..lsp.runtime import get_or_create_session_runtime
 
-        items, source = collect_diagnostics(base_dir, body.path, body.content)
-        return {"path": body.path, "diagnostics": items, "source": source}
+        runtime = await get_or_create_session_runtime(
+            session_id=session_id,
+            workspace_path=base_dir,
+        )
+        result = await runtime.refresh_file(body.path, body.content)
+        return result
     except Exception as e:
         print(f"[LSP] diagnostics error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -3329,8 +3352,97 @@ async def lsp_capabilities():
         "diagnostics": True,
         "hover": True,
         "completion": False,
-        "note": "Diagnostics use Pyright/basedpyright when installed; TS/JS uses npx tsc.",
+        "persistent_runtime": True,
+        "note": "Diagnostics prefer persistent language servers (session runtime), fallback to Pyright/basedpyright + tsc/syntax.",
     }
+
+
+@app.post("/api/sessions/{session_id}/lsp/start")
+@app.post("/sessions/{session_id}/lsp/start")
+async def session_lsp_start(session_id: str, body: LspStartRequest | None = None):
+    """Start (or ensure) persistent LSP runtime for a session."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    base_dir = os.path.abspath(session.working_directory or ".")
+    try:
+        from ..lsp.runtime import get_or_create_session_runtime
+
+        runtime = await get_or_create_session_runtime(
+            session_id=session_id,
+            workspace_path=base_dir,
+            auto_start=False,
+        )
+        started = await runtime.start((body.languages if body else None))
+        return {"session_id": session_id, **started}
+    except Exception as e:
+        print(f"[LSP] start error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/sessions/{session_id}/lsp/stop")
+@app.post("/sessions/{session_id}/lsp/stop")
+async def session_lsp_stop(session_id: str):
+    """Stop persistent LSP runtime for a session."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        from ..lsp.runtime import stop_session_runtime
+
+        await stop_session_runtime(session_id)
+        return {"session_id": session_id, "stopped": True}
+    except Exception as e:
+        print(f"[LSP] stop error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/sessions/{session_id}/lsp/status")
+@app.get("/sessions/{session_id}/lsp/status")
+async def session_lsp_status(session_id: str):
+    """Return persistent LSP runtime status and cache info for a session."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    base_dir = os.path.abspath(session.working_directory or ".")
+    try:
+        from ..lsp.runtime import get_or_create_session_runtime
+
+        runtime = await get_or_create_session_runtime(
+            session_id=session_id,
+            workspace_path=base_dir,
+            auto_start=False,
+        )
+        return {
+            "session_id": session_id,
+            "status": runtime.status(),
+            "cache": runtime.get_cached(),
+        }
+    except Exception as e:
+        print(f"[LSP] status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/sessions/{session_id}/lsp/refresh")
+@app.post("/sessions/{session_id}/lsp/refresh")
+async def session_lsp_refresh(session_id: str, body: LspRefreshRequest):
+    """Force diagnostics refresh for one file via the persistent LSP runtime."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    base_dir = os.path.abspath(session.working_directory or ".")
+    try:
+        from ..lsp.runtime import get_or_create_session_runtime
+
+        runtime = await get_or_create_session_runtime(
+            session_id=session_id,
+            workspace_path=base_dir,
+        )
+        result = await runtime.refresh_file(body.path, body.content)
+        return result
+    except Exception as e:
+        print(f"[LSP] refresh error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/sessions/{session_id}/stop")

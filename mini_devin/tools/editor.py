@@ -53,6 +53,17 @@ async def _acquire_file_lock(path: str) -> asyncio.Lock:
         return lock
 
 
+async def _notify_lsp_file_changed(workspace_path: str, file_path: str) -> None:
+    """Best-effort LSP runtime notification after successful file mutations."""
+    try:
+        from ..lsp.runtime import notify_workspace_file_changed
+
+        await notify_workspace_file_changed(workspace_path, file_path)
+    except Exception:
+        # Never fail an editor mutation because runtime diagnostics couldn't refresh.
+        return
+
+
 
 class EditorTool(BaseTool[ReadFileInput, ReadFileOutput]):
     """
@@ -251,6 +262,8 @@ Use this tool for all file operations during development."""
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(input_data.content)
 
+            await _notify_lsp_file_changed(self.working_directory, path)
+
             bytes_written = len(input_data.content.encode("utf-8"))
             
             return WriteFileOutput(
@@ -317,6 +330,8 @@ Use this tool for all file operations during development."""
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(new_content)
 
+            await _notify_lsp_file_changed(self.working_directory, path)
+
             return StrReplaceOutput(
                 status=ToolStatus.SUCCESS,
                 replacements_made=count if input_data.allow_multiple else 1,
@@ -381,6 +396,8 @@ Use this tool for all file operations during development."""
                 # Write the patched content
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(new_content)
+
+            await _notify_lsp_file_changed(self.working_directory, path)
 
             return ApplyPatchOutput(
                 status=ToolStatus.SUCCESS,

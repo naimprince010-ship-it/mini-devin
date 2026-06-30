@@ -268,6 +268,17 @@ class DatabaseSessionManager:
                 self._agents[session_id] = agent
                 self._cancel_events[session_id] = asyncio.Event()
 
+                # Boot a session-scoped persistent LSP runtime (best-effort).
+                try:
+                    from ..lsp.runtime import get_or_create_session_runtime
+
+                    await get_or_create_session_runtime(
+                        session_id=session_id,
+                        workspace_path=working_directory,
+                    )
+                except Exception as _lsp_e:
+                    print(f"[Session] LSP runtime init skipped: {_lsp_e}")
+
                 # Return Session object for API compatibility
                 return Session(
                     session_id=session_id,
@@ -379,6 +390,13 @@ class DatabaseSessionManager:
     async def delete_session(self, session_id: str) -> bool:
         """Delete a session."""
         async with self._session_lock:
+            try:
+                from ..lsp.runtime import remove_session_runtime
+
+                await remove_session_runtime(session_id)
+            except Exception:
+                pass
+
             # Cancel any running task
             if session_id in self._cancel_events:
                 self._cancel_events[session_id].set()

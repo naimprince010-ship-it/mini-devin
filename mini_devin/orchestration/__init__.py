@@ -57,6 +57,7 @@ from .hitl_governance import (
     governance_enabled,
     governance_safe_mode_enabled,
 )
+from .worker_pools import SpecialistWorkerPoolManager, WorkerPoolLease
 
 __all__ = [
     "OrchestratorRunResult",
@@ -100,4 +101,6 @@ __all__ = [
     "RiskLevel",
     "governance_enabled",
     "governance_safe_mode_enabled",
+    "SpecialistWorkerPoolManager",
+    "WorkerPoolLease",
 ]

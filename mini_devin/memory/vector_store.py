@@ -8,6 +8,7 @@ Supports multiple embedding providers and storage backends.
 import hashlib
 import json
 import math
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -385,6 +386,302 @@ class VectorStore:
             "total_documents": len(self.documents),
             "embedding_dimension": self.embedding_provider.dimension,
             "persist_path": str(self.persist_path) if self.persist_path else None,
+            "backend": "local",
+        }
+
+
+class ChromaVectorStore(VectorStore):
+    """ChromaDB-backed store with the same public interface as ``VectorStore``."""
+
+    def __init__(
+        self,
+        embedding_provider: Optional[EmbeddingProvider] = None,
+        persist_path: Optional[str] = None,
+        collection_name: str = "plodder_memory",
+    ):
+        super().__init__(embedding_provider=embedding_provider, persist_path=None)
+        self.persist_path = Path(persist_path) if persist_path else (Path.home() / ".mini-devin" / "chroma")
+        self.collection_name = collection_name
+        self._client = None
+        self._collection = None
+        self._init_error: str | None = None
+        try:
+            import chromadb
+
+            self.persist_path.mkdir(parents=True, exist_ok=True)
+            self._client = chromadb.PersistentClient(path=str(self.persist_path))
+            self._collection = self._client.get_or_create_collection(name=self.collection_name)
+        except Exception as e:
+            self._init_error = str(e)
+
+    @property
+    def _available(self) -> bool:
+        return self._collection is not None
+
+    def add(self, document: Document) -> None:
+        self.add_batch([document])
+
+    def add_batch(self, documents: list[Document]) -> None:
+        if not documents:
+            return
+        if not self._available:
+            for doc in documents:
+                super().add(doc)
+            return
+
+        texts_to_embed: list[str] = []
+        idxs: list[int] = []
+        for i, doc in enumerate(documents):
+            if doc.embedding is None:
+                texts_to_embed.append(doc.content)
+                idxs.append(i)
+        if texts_to_embed:
+            embeddings = self.embedding_provider.embed_batch(texts_to_embed)
+            for i, emb in zip(idxs, embeddings):
+                documents[i].embedding = emb
+
+        ids = [doc.id for doc in documents]
+        vectors = [doc.embedding or self.embedding_provider.embed(doc.content) for doc in documents]
+        docs = [doc.content for doc in documents]
+        metas = []
+        for doc in documents:
+            meta = dict(doc.metadata or {})
+            if not meta:
+                meta = {"_plodder": "1"}
+            metas.append(meta)
+        self._collection.upsert(ids=ids, embeddings=vectors, documents=docs, metadatas=metas)
+
+    def remove(self, doc_id: str) -> bool:
+        if not self._available:
+            return super().remove(doc_id)
+        self._collection.delete(ids=[doc_id])
+        return True
+
+    def get(self, doc_id: str) -> Optional[Document]:
+        if not self._available:
+            return super().get(doc_id)
+        row = self._collection.get(ids=[doc_id], include=["documents", "metadatas", "embeddings"])
+        ids = row.get("ids") or []
+        if not ids:
+            return None
+        docs = row.get("documents") or [[]]
+        metas = row.get("metadatas") or [[]]
+        embs = row.get("embeddings") or [[]]
+        content = docs[0] if isinstance(docs, list) and docs else ""
+        if isinstance(content, list):
+            content = content[0] if content else ""
+        metadata = metas[0] if isinstance(metas, list) and metas else {}
+        if isinstance(metadata, list):
+            metadata = metadata[0] if metadata else {}
+        emb = embs[0] if isinstance(embs, list) and embs else None
+        if isinstance(emb, list) and emb and isinstance(emb[0], (list, tuple)):
+            emb = emb[0]
+        return Document(id=doc_id, content=str(content or ""), metadata=dict(metadata or {}), embedding=emb)
+
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        min_score: float = 0.0,
+        filter_metadata: Optional[dict[str, Any]] = None,
+    ) -> list[SearchResult]:
+        if not self._available:
+            return super().search(query, limit=limit, min_score=min_score, filter_metadata=filter_metadata)
+
+        query_embedding = self.embedding_provider.embed(query)
+        kwargs: dict[str, Any] = {
+            "query_embeddings": [query_embedding],
+            "n_results": max(1, int(limit)),
+            "include": ["documents", "metadatas", "distances", "embeddings"],
+        }
+        if filter_metadata:
+            kwargs["where"] = filter_metadata
+        row = self._collection.query(**kwargs)
+
+        ids = (row.get("ids") or [[]])[0]
+        docs = (row.get("documents") or [[]])[0]
+        metas = (row.get("metadatas") or [[]])[0]
+        dists = (row.get("distances") or [[]])[0]
+        embs = (row.get("embeddings") or [[]])[0]
+
+        out: list[SearchResult] = []
+        for i, doc_id in enumerate(ids):
+            dist = float(dists[i]) if i < len(dists) else 1.0
+            score = max(0.0, min(1.0, 1.0 - dist))
+            if score < min_score:
+                continue
+            metadata = dict(metas[i] or {}) if i < len(metas) else {}
+            metadata.pop("_plodder", None)
+            doc = Document(
+                id=str(doc_id),
+                content=str(docs[i]) if i < len(docs) else "",
+                metadata=metadata,
+                embedding=embs[i] if i < len(embs) else None,
+            )
+            out.append(SearchResult(document=doc, score=score, rank=len(out) + 1))
+        return out[:limit]
+
+    def clear(self) -> None:
+        if not self._available:
+            super().clear()
+            return
+        try:
+            self._client.delete_collection(self.collection_name)
+        except Exception:
+            pass
+        self._collection = self._client.get_or_create_collection(name=self.collection_name)
+
+    def get_statistics(self) -> dict:
+        if not self._available:
+            stats = super().get_statistics()
+            stats["backend"] = "local_fallback"
+            stats["backend_error"] = self._init_error
+            return stats
+        return {
+            "total_documents": int(self._collection.count()),
+            "embedding_dimension": self.embedding_provider.dimension,
+            "persist_path": str(self.persist_path),
+            "backend": "chroma",
+            "collection_name": self.collection_name,
+        }
+
+
+class PineconeVectorStore(VectorStore):
+    """Pinecone-backed store with local fallback when the backend is unavailable."""
+
+    def __init__(
+        self,
+        embedding_provider: Optional[EmbeddingProvider] = None,
+        persist_path: Optional[str] = None,
+        index_name: Optional[str] = None,
+        namespace: Optional[str] = None,
+    ):
+        super().__init__(embedding_provider=embedding_provider, persist_path=persist_path)
+        self.index_name = index_name or os.environ.get("PINECONE_INDEX", "")
+        self.namespace = namespace or os.environ.get("PINECONE_NAMESPACE", "default")
+        self._pc = None
+        self._index = None
+        self._init_error: str | None = None
+        try:
+            from pinecone import Pinecone
+
+            api_key = os.environ.get("PINECONE_API_KEY", "")
+            if not api_key or not self.index_name:
+                raise RuntimeError("PINECONE_API_KEY or PINECONE_INDEX is missing")
+            self._pc = Pinecone(api_key=api_key)
+            self._index = self._pc.Index(self.index_name)
+        except Exception as e:
+            self._init_error = str(e)
+
+    @property
+    def _available(self) -> bool:
+        return self._index is not None
+
+    def add(self, document: Document) -> None:
+        self.add_batch([document])
+
+    def add_batch(self, documents: list[Document]) -> None:
+        if not documents:
+            return
+        if not self._available:
+            super().add_batch(documents)
+            return
+
+        texts_to_embed: list[str] = []
+        idxs: list[int] = []
+        for i, doc in enumerate(documents):
+            if doc.embedding is None:
+                texts_to_embed.append(doc.content)
+                idxs.append(i)
+        if texts_to_embed:
+            embeddings = self.embedding_provider.embed_batch(texts_to_embed)
+            for i, emb in zip(idxs, embeddings):
+                documents[i].embedding = emb
+
+        vectors = []
+        for doc in documents:
+            emb = doc.embedding or self.embedding_provider.embed(doc.content)
+            metadata = dict(doc.metadata or {})
+            metadata["content"] = doc.content
+            vectors.append({"id": doc.id, "values": emb, "metadata": metadata})
+        self._index.upsert(vectors=vectors, namespace=self.namespace)
+
+    def remove(self, doc_id: str) -> bool:
+        if not self._available:
+            return super().remove(doc_id)
+        self._index.delete(ids=[doc_id], namespace=self.namespace)
+        return True
+
+    def get(self, doc_id: str) -> Optional[Document]:
+        if not self._available:
+            return super().get(doc_id)
+        row = self._index.fetch(ids=[doc_id], namespace=self.namespace)
+        vectors = (row.get("vectors") or {}) if isinstance(row, dict) else {}
+        item = vectors.get(doc_id)
+        if not item:
+            return None
+        meta = dict(item.get("metadata") or {})
+        content = str(meta.pop("content", ""))
+        emb = item.get("values")
+        return Document(id=doc_id, content=content, metadata=meta, embedding=emb)
+
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        min_score: float = 0.0,
+        filter_metadata: Optional[dict[str, Any]] = None,
+    ) -> list[SearchResult]:
+        if not self._available:
+            return super().search(query, limit=limit, min_score=min_score, filter_metadata=filter_metadata)
+
+        query_embedding = self.embedding_provider.embed(query)
+        row = self._index.query(
+            vector=query_embedding,
+            top_k=max(1, int(limit)),
+            namespace=self.namespace,
+            filter=filter_metadata,
+            include_metadata=True,
+            include_values=True,
+        )
+        matches = row.get("matches") if isinstance(row, dict) else getattr(row, "matches", [])
+        out: list[SearchResult] = []
+        for i, m in enumerate(matches or []):
+            score = float(m.get("score") if isinstance(m, dict) else getattr(m, "score", 0.0) or 0.0)
+            if score < min_score:
+                continue
+            metadata = dict(m.get("metadata") if isinstance(m, dict) else getattr(m, "metadata", {}) or {})
+            content = str(metadata.pop("content", ""))
+            doc_id = str(m.get("id") if isinstance(m, dict) else getattr(m, "id", ""))
+            values = m.get("values") if isinstance(m, dict) else getattr(m, "values", None)
+            out.append(
+                SearchResult(
+                    document=Document(id=doc_id, content=content, metadata=metadata, embedding=values),
+                    score=score,
+                    rank=i + 1,
+                )
+            )
+        return out
+
+    def clear(self) -> None:
+        if not self._available:
+            super().clear()
+            return
+        self._index.delete(delete_all=True, namespace=self.namespace)
+
+    def get_statistics(self) -> dict:
+        if not self._available:
+            stats = super().get_statistics()
+            stats["backend"] = "local_fallback"
+            stats["backend_error"] = self._init_error
+            return stats
+        return {
+            "total_documents": len(self.documents),
+            "embedding_dimension": self.embedding_provider.dimension,
+            "persist_path": str(self.persist_path) if self.persist_path else None,
+            "backend": "pinecone",
+            "index_name": self.index_name,
+            "namespace": self.namespace,
         }
 
 
@@ -420,6 +717,7 @@ def create_vector_store(
     persist_path: Optional[str] = None,
     use_openai: bool = False,
     api_key: Optional[str] = None,
+    backend: Optional[str] = None,
 ) -> VectorStore:
     """
     Create a new vector store.
@@ -436,5 +734,19 @@ def create_vector_store(
         provider = OpenAIEmbeddingProvider(api_key=api_key)
     else:
         provider = SimpleEmbeddingProvider()
-    
+
+    selected = (backend or os.environ.get("PLODDER_VECTOR_BACKEND") or "local").strip().lower()
+    if selected == "chroma":
+        return ChromaVectorStore(
+            embedding_provider=provider,
+            persist_path=persist_path,
+            collection_name=os.environ.get("PLODDER_CHROMA_COLLECTION", "plodder_memory"),
+        )
+    if selected == "pinecone":
+        return PineconeVectorStore(
+            embedding_provider=provider,
+            persist_path=persist_path,
+            index_name=os.environ.get("PINECONE_INDEX", ""),
+            namespace=os.environ.get("PINECONE_NAMESPACE", "default"),
+        )
     return VectorStore(embedding_provider=provider, persist_path=persist_path)

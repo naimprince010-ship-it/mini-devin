@@ -224,6 +224,17 @@ class SessionManager:
             )
             
             self.sessions[computed_session_id] = session
+
+            # Boot a session-scoped persistent LSP runtime (best-effort).
+            try:
+                from ..lsp.runtime import get_or_create_session_runtime
+
+                await get_or_create_session_runtime(
+                    session_id=computed_session_id,
+                    workspace_path=working_directory,
+                )
+            except Exception as _lsp_e:
+                print(f"[Session] LSP runtime init skipped: {_lsp_e}")
             
             return session
     
@@ -248,6 +259,13 @@ class SessionManager:
         async with self._session_lock:
             if session_id not in self.sessions:
                 return False
+
+            try:
+                from ..lsp.runtime import remove_session_runtime
+
+                await remove_session_runtime(session_id)
+            except Exception:
+                pass
             
             session = self.sessions[session_id]
             

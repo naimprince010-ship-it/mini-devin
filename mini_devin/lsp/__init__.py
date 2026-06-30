@@ -7,5 +7,20 @@ TypeScript/JavaScript: optional ``tsc`` via npx when Node is available.
 
 from .diagnostics import collect_diagnostics
 from .hover import collect_hover
+from .runtime import (
+	SessionLspRuntime,
+	get_or_create_session_runtime,
+	stop_session_runtime,
+	remove_session_runtime,
+	notify_workspace_file_changed,
+)
 
-__all__ = ["collect_diagnostics", "collect_hover"]
+__all__ = [
+	"collect_diagnostics",
+	"collect_hover",
+	"SessionLspRuntime",
+	"get_or_create_session_runtime",
+	"stop_session_runtime",
+	"remove_session_runtime",
+	"notify_workspace_file_changed",
+]

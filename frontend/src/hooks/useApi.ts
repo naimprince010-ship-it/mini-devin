@@ -11,6 +11,7 @@ import {
   UploadedFile,
   Memory,
   ExportResponse,
+  WorkerPoolMetricsResponse,
 } from '../types';
 import { fetchWithTimeout, isAbortError } from '../utils/fetchWithTimeout';
 import { getApiBase } from '../config/apiBase';
@@ -538,6 +539,10 @@ export function useApi() {
     }
   }, []);
 
+  const getWorkerPoolMetrics = useCallback(async (sessionId: string): Promise<WorkerPoolMetricsResponse> => {
+    return await fetchApi<WorkerPoolMetricsResponse>(`/orchestration/sessions/${sessionId}/worker-pools`);
+  }, []);
+
   return {
     loading,
     error,
@@ -580,5 +585,7 @@ export function useApi() {
     exportSession,
     // Evolution
     triggerSelfEvolution,
+    // Orchestration metrics
+    getWorkerPoolMetrics,
   };
 }

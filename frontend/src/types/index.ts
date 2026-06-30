@@ -213,3 +213,20 @@ export interface ExportResponse {
   files?: UploadedFile[];
   exported_at?: string;
 }
+
+export interface WorkerPoolRoleMetrics {
+  limit: number;
+  active: number;
+  waiting: number;
+  utilization: number;
+  saturated: boolean;
+  active_units: string[];
+}
+
+export interface WorkerPoolMetricsResponse {
+  session_id: string;
+  source: 'active' | 'last_run';
+  updated_at: string;
+  saturated_roles: string[];
+  pools: Record<string, WorkerPoolRoleMetrics>;
+}

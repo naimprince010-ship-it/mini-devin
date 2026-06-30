@@ -20,6 +20,8 @@ from .vector_store import (
     Document,
     SearchResult,
     VectorStore,
+    ChromaVectorStore,
+    PineconeVectorStore,
     create_vector_store,
 )
 
@@ -55,6 +57,8 @@ __all__ = [
     "Document",
     "SearchResult",
     "VectorStore",
+    "ChromaVectorStore",
+    "PineconeVectorStore",
     "create_vector_store",
     # Retrieval
     "RetrievalPolicy",
