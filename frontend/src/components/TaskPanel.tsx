@@ -85,6 +85,9 @@ export function TaskPanel({
   const [streamTaskId, setStreamTaskId] = useState<string | null>(null);
   const [showExport, setShowExport] = useState(false);
   const [modelBusy, setModelBusy] = useState(false);
+  const [isStalled, setIsStalled] = useState(false);
+  const [lastStreamEventAt, setLastStreamEventAt] = useState<number>(Date.now());
+  const [recovering, setRecovering] = useState(false);
   const currentTaskIdRef = useRef<string | null>(null);
   const exportMenuRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -120,6 +123,10 @@ export function TaskPanel({
 
   const handleWebSocketMessage = useCallback((message: WebSocketMessage) => {
     const data = message.data || {};
+    setLastStreamEventAt(Date.now());
+    if (isStalled) {
+      setIsStalled(false);
+    }
 
     switch (message.type) {
       case 'token':
@@ -251,6 +258,7 @@ export function TaskPanel({
 
       case 'task_completed':
         setIsStreaming(false);
+        setIsStalled(false);
         setStreamingContent(prev => {
           const summary = String(data.summary || '').trim();
           const finalContent = summary || `${prev.trim()}\n\nTask completed successfully.`.trim();
@@ -269,6 +277,7 @@ export function TaskPanel({
 
       case 'task_failed':
         setIsStreaming(false);
+        setIsStalled(false);
         setStreamingContent(prev => {
           const finalContent = prev + `\n\n❌ Task failed: ${data.error || 'Unknown error'}`;
           if (currentTaskIdRef.current) {
@@ -286,6 +295,7 @@ export function TaskPanel({
 
       case 'task_cancelled':
         setIsStreaming(false);
+        setIsStalled(false);
         setStreamingContent(prev => {
           const finalContent = prev.trim() || 'Task cancelled by user.';
           if (currentTaskIdRef.current) {
@@ -342,12 +352,27 @@ export function TaskPanel({
         break;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isStalled]);
 
-  const { isConnected, sendMessage, transport } = useSessionStream({
+  const { isConnected, sendMessage, transport, retryConnection, isReconnecting } = useSessionStream({
     sessionId: session.session_id,
     onMessage: handleWebSocketMessage,
   });
+
+  useEffect(() => {
+    if (!isStreaming) {
+      if (isStalled) setIsStalled(false);
+      return;
+    }
+    const timeoutMs = Number(import.meta.env.VITE_AGENT_STALL_TIMEOUT_MS || 45_000);
+    const id = window.setInterval(() => {
+      const delta = Date.now() - lastStreamEventAt;
+      if (delta > timeoutMs) {
+        setIsStalled(true);
+      }
+    }, 1500);
+    return () => window.clearInterval(id);
+  }, [isStreaming, lastStreamEventAt, isStalled]);
 
   useEffect(() => {
     loadTasks();
@@ -475,6 +500,68 @@ export function TaskPanel({
     }
     setTaskDescription(task.description);
     toast.success('Task loaded', 'Review the prompt, then send it again.');
+  };
+
+  const createOptimisticRunningTask = (description: string) => {
+    const newTaskId = `task-${Date.now()}`;
+    const mockTask: Task = {
+      task_id: newTaskId,
+      session_id: session.session_id,
+      description,
+      status: 'running',
+      created_at: new Date().toISOString(),
+      started_at: new Date().toISOString(),
+      completed_at: null,
+      iteration: 0,
+      error_message: null,
+    };
+    currentTaskIdRef.current = newTaskId;
+    setStreamTaskId(newTaskId);
+    setTasks(prev => [...prev, mockTask]);
+    setStreamingContent('');
+    setIsStreaming(true);
+    setIsStalled(false);
+    setLastStreamEventAt(Date.now());
+  };
+
+  const handleRegenerate = async () => {
+    if (recovering) return;
+    const runningPrompt = tasks.find(t => t.task_id === streamTaskId)?.description || '';
+    const localFallbackPrompt = runningPrompt || tasks[tasks.length - 1]?.description || taskDescription.trim();
+    let fallbackPrompt = localFallbackPrompt;
+    if (isStreaming || isStalled) {
+      try {
+        const recovered = await api.recoverSession(session.session_id);
+        if ((recovered.suggested_prompt || '').trim()) {
+          fallbackPrompt = recovered.suggested_prompt.trim();
+        }
+      } catch {
+        // fall through to local fallback + stop flow below
+      }
+    }
+    if (!fallbackPrompt) {
+      toast.error('Regenerate unavailable', 'No previous prompt found to regenerate.');
+      return;
+    }
+
+    setRecovering(true);
+    try {
+      if (isStreaming) {
+        await api.stopSession(session.session_id);
+        setIsStreaming(false);
+        events.onTaskEnded();
+      }
+
+      const ok = await sendMessage(fallbackPrompt);
+      if (!ok) {
+        toast.error('Regenerate failed', 'Could not restart the task. Retry connection and try again.');
+        return;
+      }
+      createOptimisticRunningTask(fallbackPrompt);
+      toast.success('Regenerating', 'A fresh run was started from the last prompt.');
+    } finally {
+      setRecovering(false);
+    }
   };
 
   const handleStop = async () => {
@@ -661,6 +748,12 @@ export function TaskPanel({
             {/* Phase + Iteration chips (only show when streaming) */}
             {isStreaming && (
               <div className="flex items-center gap-2">
+                {isStalled && (
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-500/10 border border-red-500/30">
+                    <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-red-400">Stalled</span>
+                  </div>
+                )}
                 {events.iteration > 0 && (
                   <div className="px-2 py-0.5 rounded-full bg-[#1a1a1a] border border-[#262626] text-[10px] text-[#a3a3a3]">
                     iter {events.iteration}/{events.maxIterations}
@@ -920,6 +1013,25 @@ export function TaskPanel({
 
       {/* Input Area */}
       <div className="p-6 bg-[#0f0f0f] border-t border-[#262626]">
+        {isStalled && (
+          <div className="max-w-3xl mx-auto mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2">
+            <span className="text-xs text-red-300">Agent looks stalled. Try reconnecting or regenerate the run.</span>
+            <button
+              onClick={retryConnection}
+              disabled={isReconnecting || recovering}
+              className="text-[11px] px-2.5 py-1 rounded-lg border border-[#262626] text-[#d1d1d1] hover:border-[#3a3a3a] disabled:opacity-50"
+            >
+              {isReconnecting ? 'Reconnecting...' : 'Retry Connection'}
+            </button>
+            <button
+              onClick={handleRegenerate}
+              disabled={recovering}
+              className="text-[11px] px-2.5 py-1 rounded-lg bg-[#00ff99]/20 border border-[#00ff99]/30 text-[#00ff99] hover:bg-[#00ff99]/30 disabled:opacity-50"
+            >
+              {recovering ? 'Regenerating...' : 'Regenerate'}
+            </button>
+          </div>
+        )}
         <div className="max-w-3xl mx-auto relative">
           <textarea
             value={taskDescription}

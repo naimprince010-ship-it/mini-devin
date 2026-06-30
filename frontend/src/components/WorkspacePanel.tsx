@@ -468,9 +468,9 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                 {/* IDE — Monaco or File Diff View */}
                 {activeTab === 'editor' && (
                     <div className="absolute inset-0 flex flex-col">
-                        {openFile && sessionId ? (
+                        {sessionId ? (
                             <div className="flex h-full min-h-0">
-                                <div className="w-52 flex-shrink-0 border-r border-[#1a1a1a] flex flex-col bg-[#080808] min-h-0">
+                                <div className="w-56 flex-shrink-0 border-r border-[#1a1a1a] flex flex-col bg-[#080808] min-h-0">
                                     <div className="text-[9px] uppercase tracking-wider text-[#525252] px-2 py-1.5 border-b border-[#1a1a1a] flex-shrink-0">
                                         Workspace
                                     </div>
@@ -481,35 +481,39 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         />
                                     </div>
                                 </div>
+
                                 <div className="flex-1 min-w-0 min-h-0 flex flex-col">
-                                    <MonacoEditorPanel
-                                        sessionId={sessionId}
-                                        filePath={openFile}
-                                        initialContent={events.fileEdits.find(f => f.path.replace(/\\/g, '/') === openFile.replace(/\\/g, '/'))?.content}
-                                        agentRemote={latestAgentRemote}
-                                        serverRefetchKey={serverRefetchKey}
-                                        onClose={() => setOpenFile(null)}
-                                        onSaved={() => { }}
-                                    />
+                                    {openFile ? (
+                                        <MonacoEditorPanel
+                                            sessionId={sessionId}
+                                            filePath={openFile}
+                                            initialContent={events.fileEdits.find(f => f.path.replace(/\\/g, '/') === openFile.replace(/\\/g, '/'))?.content}
+                                            agentRemote={latestAgentRemote}
+                                            serverRefetchKey={serverRefetchKey}
+                                            onClose={() => setOpenFile(null)}
+                                            onSaved={() => { }}
+                                        />
+                                    ) : events.fileEdits.length > 0 ? (
+                                        <div className="flex flex-col h-full">
+                                            <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#1a1a1a] bg-[#111] flex-shrink-0">
+                                                <span className="text-[10px] text-[#525252] uppercase tracking-wider">Agent file edits — select any workspace file from the left tree</span>
+                                            </div>
+                                            <FileDiffView
+                                                fileEdits={events.fileEdits}
+                                                onFileSelect={(path) => { setActiveTab('editor'); setOpenFile(path); }}
+                                            />
+                                        </div>
+                                    ) : (
+                                        <div className="h-full flex items-center justify-center text-[#3a3a3a] text-xs italic">
+                                            Select a file from the workspace tree to open it in the editor.
+                                        </div>
+                                    )}
                                 </div>
-                            </div>
-                        ) : events.fileEdits.length > 0 ? (
-                            // File diff view when agent has written files
-                            <div className="flex flex-col h-full">
-                                <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#1a1a1a] bg-[#111] flex-shrink-0">
-                                    <span className="text-[10px] text-[#525252] uppercase tracking-wider">Agent file edits — click a file to edit</span>
-                                </div>
-                                <FileDiffView
-                                    fileEdits={events.fileEdits}
-                                    onFileSelect={(path) => { setActiveTab('editor'); setOpenFile(path); }}
-                                />
                             </div>
                         ) : (
-                            // File explorer when no edits yet
-                            <FileExplorer
-                                sessionId={sessionId}
-                                onFileSelect={(path: string) => { setActiveTab('editor'); setOpenFile(path); }}
-                            />
+                            <div className="h-full flex items-center justify-center text-[#3a3a3a] text-xs italic">
+                                Select a session to browse workspace files.
+                            </div>
                         )}
                     </div>
                 )}

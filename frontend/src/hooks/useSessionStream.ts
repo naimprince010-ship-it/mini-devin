@@ -30,9 +30,29 @@ export function useSessionStream(options: UseSessionStreamOptions = {}) {
   }, [options.onMessage]);
 
   const [isConnected, setIsConnected] = useState(false);
+  const [isReconnecting, setIsReconnecting] = useState(false);
+  const [reconnectNonce, setReconnectNonce] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
+
+  const retryConnection = useCallback(() => {
+    setIsReconnecting(true);
+    setIsConnected(false);
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    if (esRef.current) {
+      esRef.current.close();
+      esRef.current = null;
+    }
+    setReconnectNonce((n) => n + 1);
+  }, []);
 
   const postAgentMessage = useCallback(async (data: string): Promise<boolean> => {
     if (!sessionId) {
@@ -78,9 +98,13 @@ export function useSessionStream(options: UseSessionStreamOptions = {}) {
       const connect = () => {
         const ws = new WebSocket(getApiWsUrl(sessionId));
         wsRef.current = ws;
-        ws.onopen = () => setIsConnected(true);
+        ws.onopen = () => {
+          setIsConnected(true);
+          setIsReconnecting(false);
+        };
         ws.onclose = () => {
           setIsConnected(false);
+          setIsReconnecting(true);
           if (wsRef.current === ws) {
             reconnectTimeoutRef.current = window.setTimeout(connect, 3000);
           }
@@ -111,10 +135,14 @@ export function useSessionStream(options: UseSessionStreamOptions = {}) {
 
     const es = new EventSource(getSessionSseUrl(sessionId));
     esRef.current = es;
-    es.onopen = () => setIsConnected(true);
+    es.onopen = () => {
+      setIsConnected(true);
+      setIsReconnecting(false);
+    };
     es.onerror = () => {
       if (es.readyState === EventSource.CLOSED) {
         setIsConnected(false);
+        setIsReconnecting(true);
       }
     };
     es.onmessage = (ev) => {
@@ -130,7 +158,7 @@ export function useSessionStream(options: UseSessionStreamOptions = {}) {
       esRef.current = null;
       setIsConnected(false);
     };
-  }, [sessionId, transport]);
+  }, [sessionId, transport, reconnectNonce]);
 
-  return { isConnected, sendMessage, transport };
+  return { isConnected, sendMessage, transport, retryConnection, isReconnecting };
 }

@@ -35,6 +35,25 @@ from ..schemas.tools import (
 )
 
 
+# Per-path async locks so concurrent write_file/str_replace/apply_patch operations
+# on the SAME file are serialized within a process. Prevents lost-update races where
+# two read-modify-write edits interleave and clobber each other.
+_FILE_LOCKS: dict[str, asyncio.Lock] = {}
+_FILE_LOCKS_GUARD = asyncio.Lock()
+
+
+async def _acquire_file_lock(path: str) -> asyncio.Lock:
+    """Return (creating if needed) the asyncio.Lock for an absolute file path."""
+    key = os.path.normcase(os.path.abspath(path))
+    async with _FILE_LOCKS_GUARD:
+        lock = _FILE_LOCKS.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _FILE_LOCKS[key] = lock
+        return lock
+
+
+
 class EditorTool(BaseTool[ReadFileInput, ReadFileOutput]):
     """
     Editor tool for file operations.
@@ -220,16 +239,18 @@ Use this tool for all file operations during development."""
         """Write content to a file."""
         start_time = time.time()
         path = self._resolve_path(input_data.path)
-        
+        lock = await _acquire_file_lock(path)
+
         try:
-            # Create directories if needed
-            if input_data.create_directories:
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-            
-            # Write file
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(input_data.content)
-            
+            async with lock:
+                # Create directories if needed
+                if input_data.create_directories:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+                # Write file
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(input_data.content)
+
             bytes_written = len(input_data.content.encode("utf-8"))
             
             return WriteFileOutput(
@@ -255,6 +276,7 @@ Use this tool for all file operations during development."""
         """
         start_time = time.time()
         path = self._resolve_path(input_data.path)
+        lock = await _acquire_file_lock(path)
 
         if not os.path.exists(path):
             return StrReplaceOutput(
@@ -266,33 +288,34 @@ Use this tool for all file operations during development."""
             )
 
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read()
+            async with lock:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
 
-            count = content.count(input_data.old_str)
-            if count == 0:
-                return StrReplaceOutput(
-                    status=ToolStatus.FAILURE,
-                    error_message=f"old_str not found in file: {path!r}",
-                    replacements_made=0,
-                    path=path,
-                    execution_time_ms=int((time.time() - start_time) * 1000),
-                )
-            if count > 1 and not input_data.allow_multiple:
-                return StrReplaceOutput(
-                    status=ToolStatus.FAILURE,
-                    error_message=(
-                        f"old_str appears {count} times in {path!r}. "
-                        "Add more context to make it unique, or set allow_multiple=true."
-                    ),
-                    replacements_made=0,
-                    path=path,
-                    execution_time_ms=int((time.time() - start_time) * 1000),
-                )
+                count = content.count(input_data.old_str)
+                if count == 0:
+                    return StrReplaceOutput(
+                        status=ToolStatus.FAILURE,
+                        error_message=f"old_str not found in file: {path!r}",
+                        replacements_made=0,
+                        path=path,
+                        execution_time_ms=int((time.time() - start_time) * 1000),
+                    )
+                if count > 1 and not input_data.allow_multiple:
+                    return StrReplaceOutput(
+                        status=ToolStatus.FAILURE,
+                        error_message=(
+                            f"old_str appears {count} times in {path!r}. "
+                            "Add more context to make it unique, or set allow_multiple=true."
+                        ),
+                        replacements_made=0,
+                        path=path,
+                        execution_time_ms=int((time.time() - start_time) * 1000),
+                    )
 
-            new_content = content.replace(input_data.old_str, input_data.new_str)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(new_content)
+                new_content = content.replace(input_data.old_str, input_data.new_str)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(new_content)
 
             return StrReplaceOutput(
                 status=ToolStatus.SUCCESS,
@@ -314,7 +337,8 @@ Use this tool for all file operations during development."""
         """Apply a unified diff patch to a file."""
         start_time = time.time()
         path = self._resolve_path(input_data.path)
-        
+        lock = await _acquire_file_lock(path)
+
         if not os.path.exists(path):
             return ApplyPatchOutput(
                 status=ToolStatus.FAILURE,
@@ -325,38 +349,39 @@ Use this tool for all file operations during development."""
             )
         
         try:
-            # Read current content
-            with open(path, "r", encoding="utf-8") as f:
-                original_content = f.read()
-            
-            # Parse and apply the patch
-            # This is a simplified patch application - for production, use a proper diff library
-            new_content, hunks_applied, hunks_failed = self._apply_unified_diff(
-                original_content, input_data.patch
-            )
-            
-            if hunks_failed > 0 and hunks_applied == 0:
-                return ApplyPatchOutput(
-                    status=ToolStatus.FAILURE,
-                    error_message=f"Failed to apply patch: {hunks_failed} hunks failed",
-                    hunks_applied=hunks_applied,
-                    hunks_failed=hunks_failed,
-                    execution_time_ms=int((time.time() - start_time) * 1000),
+            async with lock:
+                # Read current content
+                with open(path, "r", encoding="utf-8") as f:
+                    original_content = f.read()
+
+                # Parse and apply the patch
+                # This is a simplified patch application - for production, use a proper diff library
+                new_content, hunks_applied, hunks_failed = self._apply_unified_diff(
+                    original_content, input_data.patch
                 )
-            
-            if input_data.dry_run:
-                return ApplyPatchOutput(
-                    status=ToolStatus.SUCCESS,
-                    hunks_applied=hunks_applied,
-                    hunks_failed=hunks_failed,
-                    resulting_content=new_content,
-                    execution_time_ms=int((time.time() - start_time) * 1000),
-                )
-            
-            # Write the patched content
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(new_content)
-            
+
+                if hunks_failed > 0 and hunks_applied == 0:
+                    return ApplyPatchOutput(
+                        status=ToolStatus.FAILURE,
+                        error_message=f"Failed to apply patch: {hunks_failed} hunks failed",
+                        hunks_applied=hunks_applied,
+                        hunks_failed=hunks_failed,
+                        execution_time_ms=int((time.time() - start_time) * 1000),
+                    )
+
+                if input_data.dry_run:
+                    return ApplyPatchOutput(
+                        status=ToolStatus.SUCCESS,
+                        hunks_applied=hunks_applied,
+                        hunks_failed=hunks_failed,
+                        resulting_content=new_content,
+                        execution_time_ms=int((time.time() - start_time) * 1000),
+                    )
+
+                # Write the patched content
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+
             return ApplyPatchOutput(
                 status=ToolStatus.SUCCESS,
                 hunks_applied=hunks_applied,

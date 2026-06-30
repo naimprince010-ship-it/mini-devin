@@ -199,6 +199,13 @@ export function useApi() {
     }
   }, []);
 
+  const recoverSession = useCallback(async (sessionId: string): Promise<{ stopped: boolean; suggested_prompt: string }> => {
+    return await fetchApi<{ ok: boolean; session_id: string; stopped: boolean; suggested_prompt: string }>(
+      `/sessions/${sessionId}/recover`,
+      { method: 'POST', timeoutMs: 30_000 },
+    );
+  }, []);
+
   const openWorkspace = useCallback(async (sessionId: string): Promise<{ opened: boolean; path: string }> => {
     return await fetchApi<{ opened: boolean; path: string }>(`/sessions/${sessionId}/open-workspace`, {
       method: 'POST',
@@ -542,6 +549,7 @@ export function useApi() {
     patchSession,
     deleteSession,
     stopSession,
+    recoverSession,
     openWorkspace,
     // Tasks
     createTask,

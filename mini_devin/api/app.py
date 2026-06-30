@@ -2918,6 +2918,122 @@ async def read_file_content(session_id: str, path: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Session (working) memory ───────────────────────────────────────────────
+# Surfaces the agent's working memory (goal, constraints, plan, lessons, context)
+# that is populated during a task and persisted to {workspace}/.plodder/working_memory.json.
+
+
+class SessionMemoryRequest(BaseModel):
+    key: str
+    value: str
+
+
+def _session_working_memory(session):
+    """Return a WorkingMemory for a session (live agent's if loaded, else disk-backed)."""
+    from ..memory.working_memory import create_working_memory
+
+    agent = getattr(session, "agent", None)
+    if agent is not None and hasattr(agent, "get_working_memory"):
+        return agent.get_working_memory()
+
+    base_dir = os.path.abspath(session.working_directory or ".")
+    persist_path = os.path.join(base_dir, ".plodder", "working_memory.json")
+    return create_working_memory(persist_path=persist_path)
+
+
+def _memory_item_to_dict(item) -> dict:
+    """Map a WorkingMemory MemoryItem to the frontend Memory shape."""
+    item_type = getattr(item.item_type, "value", str(item.item_type))
+    created = item.created_at.isoformat() if item.created_at else ""
+    key = (item.metadata or {}).get("key") or item.id
+    return {
+        "memory_id": item.id,
+        "type": item_type,
+        "content": {"key": key, "value": item.content},
+        "created_at": created,
+        "last_accessed": created,
+        "access_count": 0,
+    }
+
+
+@app.get("/api/sessions/{session_id}/memory")
+@app.get("/sessions/{session_id}/memory")
+async def list_session_memory(session_id: str):
+    """List the agent's working-memory items for a session."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    try:
+        wm = _session_working_memory(session)
+        items = sorted(
+            wm.items.values(),
+            key=lambda it: it.created_at or datetime.now(timezone.utc),
+        )
+        memories = [_memory_item_to_dict(it) for it in items]
+        return {"memories": memories, "total": len(memories)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/sessions/{session_id}/memory")
+@app.post("/sessions/{session_id}/memory")
+async def store_session_memory(session_id: str, req: SessionMemoryRequest):
+    """Store a manual context entry into the agent's working memory."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    key = (req.key or "").strip()
+    value = (req.value or "").strip()
+    if not key or not value:
+        raise HTTPException(status_code=400, detail="key and value are required")
+
+    try:
+        from ..memory.working_memory import (
+            MemoryItem,
+            MemoryItemType,
+            MemoryPriority,
+        )
+
+        wm = _session_working_memory(session)
+        item = MemoryItem(
+            id="",
+            item_type=MemoryItemType.CONTEXT,
+            content=value,
+            priority=MemoryPriority.HIGH,
+            metadata={"key": key, "source": "user"},
+        )
+        memory_id = wm.add(item)
+        return {
+            "memory_id": memory_id,
+            "key": key,
+            "stored_at": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/sessions/{session_id}/memory/{memory_id}")
+@app.delete("/sessions/{session_id}/memory/{memory_id}")
+async def delete_session_memory(session_id: str, memory_id: str):
+    """Delete a working-memory item by id for a session."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    try:
+        wm = _session_working_memory(session)
+        if memory_id not in wm.items:
+            raise HTTPException(status_code=404, detail="Memory not found")
+        wm.remove(memory_id)
+        return {"deleted": memory_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/sessions/{session_id}/workspace.zip")
 @app.get("/sessions/{session_id}/workspace.zip")
 async def download_workspace_zip(session_id: str):
@@ -3223,6 +3339,22 @@ async def stop_session_app(session_id: str):
     """Stop the running task in a session."""
     success = await session_manager.stop_session(session_id)
     return {"stopped": True, "session_id": session_id}
+
+
+@app.post("/api/sessions/{session_id}/recover")
+@app.post("/sessions/{session_id}/recover")
+async def recover_session_app(session_id: str):
+    """Attempt to recover a session stuck in running state."""
+    try:
+        result = await session_manager.recover_session(session_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Session not found") from None
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "stopped": result.get("stopped", False),
+        "suggested_prompt": result.get("suggested_prompt", ""),
+    }
 
 
 @app.post("/api/sessions/{session_id}/open-workspace")

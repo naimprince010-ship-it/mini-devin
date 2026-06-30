@@ -74,6 +74,11 @@ def _serialized_len(msgs: list[dict[str, Any]]) -> int:
         return sum(len(str(m)) for m in msgs)
 
 
+def _estimated_tokens(msgs: list[dict[str, Any]]) -> int:
+    """Provider-agnostic rough token estimate for threshold gating."""
+    return max(0, _serialized_len(msgs) // 4)
+
+
 async def condense_chat_messages(
     messages: list[dict[str, Any]],
     *,
@@ -106,6 +111,9 @@ async def condense_chat_messages(
         raw_c = (os.environ.get("LLM_CONDENSE_MIN_CHARS") or "").strip()
         min_c = int(raw_c) if raw_c.isdigit() else 40_000
 
+    raw_t = (os.environ.get("LLM_CONDENSE_MIN_TOKENS") or "").strip()
+    min_t = int(raw_t) if raw_t.isdigit() else 12_000
+
     suffix_start = find_suffix_start_for_last_n_tool_observations(messages, last_n=n_obs)
     if suffix_start is None:
         return messages
@@ -123,7 +131,11 @@ async def condense_chat_messages(
     if len(middle) < 2:
         return messages
 
-    if len(messages) < min_m and _serialized_len(messages) < min_c:
+    if (
+        len(messages) < min_m
+        and _serialized_len(messages) < min_c
+        and _estimated_tokens(messages) < min_t
+    ):
         return messages
 
     raw_middle = json.dumps(middle, ensure_ascii=False, default=str)

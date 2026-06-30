@@ -494,6 +494,37 @@ class DatabaseSessionManager:
             return True
         return False
 
+    async def recover_session(self, session_id: str) -> dict[str, Any]:
+        """
+        Attempt to recover a stuck session by cancelling active execution.
+
+        Returns a suggested prompt from the latest task so clients can trigger
+        a one-click regenerate flow.
+        """
+        session = await self.get_session(session_id)
+        if not session:
+            raise ValueError(f"Session {session_id} not found")
+
+        stopped = await self.stop_session(session_id)
+
+        suggested_prompt = ""
+        async with self._session_maker() as db:
+            task_repo = TaskRepository(db)
+            tasks = await task_repo.list_by_session(session_id)
+            if tasks:
+                newest = tasks[0]
+                suggested_prompt = str(newest.description or "").strip()
+
+            session_repo = SessionRepository(db)
+            await session_repo.update_status(session_id, DBSessionStatus.IDLE)
+            await db.commit()
+
+        return {
+            "session_id": session_id,
+            "stopped": bool(stopped),
+            "suggested_prompt": suggested_prompt,
+        }
+
     async def start_sandbox(self, session_id: str) -> dict:
         """Start a Docker sandbox for the given session."""
         session = await self.get_session(session_id)

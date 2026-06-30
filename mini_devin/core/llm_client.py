@@ -12,7 +12,9 @@ import re
 import uuid
 import asyncio
 import random
+import time
 from html import unescape
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -171,14 +173,46 @@ def _is_transient_llm_error(message: str) -> bool:
 
 
 def _extract_retry_after_seconds(message: str) -> float | None:
+    """Parse a provider-supplied retry delay from an error message.
+
+    Handles the common formats emitted by OpenAI/Gemini/Groq/etc., e.g.::
+
+        Retry-After: 48
+        retry after 48 seconds
+        Please retry in 48s
+        retry in 48.5s
+        "retryDelay": "48s"
+        'retryDelay': '48s'
+        retryDelay: 48
+    """
     m = message or ""
-    match = re.search(r"retry(?:\s|-)?after\s*[:=]?\s*(\d+(?:\.\d+)?)", m, flags=re.IGNORECASE)
-    if match:
-        try:
-            return max(0.0, float(match.group(1)))
-        except ValueError:
-            return None
+    patterns = (
+        # Retry-After header style: "retry-after: 48", "retry after 48 seconds"
+        r"retry(?:\s|-)?after\s*[:=]?\s*(\d+(?:\.\d+)?)",
+        # Natural language: "retry in 48s", "Please retry in 48.5 seconds"
+        r"retry\s+in\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:s\b|sec|secs|second)",
+        # Gemini structured field: "retryDelay": "48s" / 'retryDelay': '48s' / retryDelay: 48
+        r"retry[\s_-]?delay['\"]?\s*[:=]?\s*['\"]?(\d+(?:\.\d+)?)\s*s?",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, m, flags=re.IGNORECASE)
+        if match:
+            try:
+                value = float(match.group(1))
+            except (ValueError, IndexError):
+                continue
+            if value >= 0:
+                return value
     return None
+
+
+def _retry_after_ceiling_seconds() -> float:
+    """Maximum provider-suggested delay we are willing to honor before giving up."""
+    raw = (os.environ.get("LLM_API_RETRY_AFTER_MAX_SECONDS") or "120").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 120.0
 
 
 def _retry_sleep_seconds(attempt: int, base_delay: float, last_error_msg: str) -> float:
@@ -196,6 +230,11 @@ def _retry_sleep_seconds(attempt: int, base_delay: float, last_error_msg: str) -
 
     retry_after = _extract_retry_after_seconds(last_error_msg)
     if retry_after is not None:
+        # Honor the provider hint, but cap it so the agent never hangs indefinitely
+        # on an unexpectedly large delay.
+        ceiling = _retry_after_ceiling_seconds()
+        if ceiling > 0:
+            return min(retry_after, ceiling)
         return retry_after
 
     base = max(0.0, base_delay)
@@ -205,6 +244,70 @@ def _retry_sleep_seconds(attempt: int, base_delay: float, last_error_msg: str) -
     if max_delay > 0:
         wait = min(wait, max_delay)
     return wait
+
+
+def _estimate_text_tokens(text: str) -> int:
+    """Rough token estimate used for guardrails (provider-agnostic fallback)."""
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
+
+
+def _estimate_message_tokens(message: dict[str, Any]) -> int:
+    """Approximate token count for one OpenAI-style message payload."""
+    base = 6
+    role = str(message.get("role") or "")
+    if role:
+        base += 1
+
+    content = message.get("content")
+    if isinstance(content, str):
+        base += _estimate_text_tokens(content)
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict):
+                txt = block.get("text")
+                if isinstance(txt, str):
+                    base += _estimate_text_tokens(txt)
+                else:
+                    base += _estimate_text_tokens(json.dumps(block, ensure_ascii=False, default=str))
+            else:
+                base += _estimate_text_tokens(str(block))
+    elif content is not None:
+        base += _estimate_text_tokens(str(content))
+
+    tcs = message.get("tool_calls")
+    if isinstance(tcs, list) and tcs:
+        for tc in tcs:
+            if not isinstance(tc, dict):
+                base += _estimate_text_tokens(str(tc))
+                continue
+            fn = tc.get("function")
+            if isinstance(fn, dict):
+                base += _estimate_text_tokens(str(fn.get("name") or ""))
+                args = fn.get("arguments")
+                if isinstance(args, str):
+                    base += _estimate_text_tokens(args)
+                elif args is not None:
+                    base += _estimate_text_tokens(json.dumps(args, ensure_ascii=False, default=str))
+            else:
+                base += _estimate_text_tokens(json.dumps(tc, ensure_ascii=False, default=str))
+
+    tci = message.get("tool_call_id")
+    if tci:
+        base += _estimate_text_tokens(str(tci))
+    return base
+
+
+def _estimate_prompt_tokens(messages: list[dict[str, Any]]) -> int:
+    """Approximate prompt token count for the outbound message list."""
+    total = 0
+    for m in messages:
+        if isinstance(m, dict):
+            total += _estimate_message_tokens(m)
+        else:
+            total += _estimate_text_tokens(str(m))
+    return total
 
 
 # LiteLLM import
@@ -707,19 +810,131 @@ class LLMClient:
             return 200
         return 80
 
+    def _conversation_prompt_token_budget(self) -> int | None:
+        """Prompt token budget for outbound chat context (None = disabled)."""
+        raw_prompt = (os.environ.get("LLM_MAX_PROMPT_TOKENS") or "").strip()
+        if raw_prompt.isdigit():
+            v = int(raw_prompt)
+            return v if v > 0 else None
+
+        raw_total = (os.environ.get("LLM_MAX_TOTAL_CONTEXT_TOKENS") or "").strip()
+        if raw_total.isdigit():
+            total_budget = int(raw_total)
+            if total_budget <= 0:
+                return None
+            reserve_raw = (os.environ.get("LLM_CONTEXT_RESERVED_OUTPUT_TOKENS") or "2048").strip()
+            reserve = int(reserve_raw) if reserve_raw.isdigit() else 2048
+            prompt_budget = max(512, total_budget - max(0, reserve))
+            return prompt_budget
+        return None
+
+    def _trim_messages_to_token_budget(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """
+        Sliding-window context trim using an approximate token budget.
+
+        Keeps all ``system`` messages and trims only non-system history from the left,
+        preserving OpenAI tool_call/tool ordering constraints.
+        """
+        budget = self._conversation_prompt_token_budget()
+        if budget is None or budget <= 0:
+            return messages
+        if not messages:
+            return messages
+
+        est = _estimate_prompt_tokens(messages)
+        if est <= budget:
+            return messages
+
+        system_msgs = [dict(m) for m in messages if m.get("role") == "system"]
+        rest = [dict(m) for m in messages if m.get("role") != "system"]
+        if not rest:
+            return system_msgs
+
+        trimmed: list[dict[str, Any]] | None = None
+        for start in range(0, len(rest)):
+            window = rest[start:]
+            if not _openai_non_system_window_valid(window):
+                continue
+            candidate = system_msgs + window
+            if _estimate_prompt_tokens(candidate) <= budget:
+                trimmed = candidate
+                break
+
+        if trimmed is None:
+            safe_tail = _tail_trim_non_system_openai_safe(rest, max(1, min(12, len(rest))))
+            if safe_tail:
+                trimmed = system_msgs + safe_tail
+            else:
+                trimmed = system_msgs + rest[-1:]
+
+        # Last-resort clamp: if a single recent message is huge, truncate its text body.
+        if _estimate_prompt_tokens(trimmed) > budget and trimmed:
+            idx = len(trimmed) - 1
+            msg = dict(trimmed[idx])
+            body = msg.get("content")
+            if isinstance(body, str) and len(body) > 2000:
+                keep_chars = max(1200, budget * 3)
+                msg["content"] = body[-keep_chars:] + "\n\n...(truncated by prompt token budget)\n"
+                trimmed[idx] = msg
+
+        after_est = _estimate_prompt_tokens(trimmed)
+        print(
+            "[LLM] Prompt context trimmed by token budget: "
+            f"~{est} -> ~{after_est} tokens (budget={budget}, messages={len(messages)}->{len(trimmed)})"
+        )
+        return trimmed
+
+    def _clamp_oversized_message_bodies(
+        self, messages: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Cap any single non-system message body so one huge tool output cannot
+        dominate (or blow) the prompt token budget.
+
+        Only the *content* string is truncated — messages and their tool_call/tool
+        ordering are preserved, so this is safe for OpenAI-style tool flows. The cap
+        is configurable via ``LLM_MAX_MESSAGE_CHARS`` (default 16000 chars,
+        ~4k tokens). Set to 0 to disable.
+        """
+        raw_cap = (os.environ.get("LLM_MAX_MESSAGE_CHARS") or "16000").strip()
+        try:
+            cap = int(raw_cap)
+        except ValueError:
+            cap = 16000
+        if cap <= 0:
+            return messages
+
+        head_keep = max(256, cap // 4)
+        tail_keep = max(256, cap - head_keep)
+        clamped: list[dict[str, Any]] = []
+        for m in messages:
+            body = m.get("content")
+            if m.get("role") != "system" and isinstance(body, str) and len(body) > cap:
+                new_m = dict(m)
+                omitted = len(body) - head_keep - tail_keep
+                new_m["content"] = (
+                    body[:head_keep]
+                    + f"\n\n...(truncated {omitted} chars of oversized output)...\n\n"
+                    + body[-tail_keep:]
+                )
+                clamped.append(new_m)
+            else:
+                clamped.append(m)
+        return clamped
+
     def get_conversation_for_api(self) -> list[dict[str, Any]]:
         """Get conversation in API format (optional tail trim via LLM_MAX_HISTORY_MESSAGES)."""
         msgs = [msg.to_dict() for msg in self.conversation]
+        msgs = self._clamp_oversized_message_bodies(msgs)
         limit = self._conversation_message_limit()
         if limit is None or len(msgs) <= limit:
-            return msgs
+            return self._trim_messages_to_token_budget(msgs)
         system_msgs = [m for m in msgs if m.get("role") == "system"]
         rest = [m for m in msgs if m.get("role") != "system"]
         cap_rest = max(0, limit - len(system_msgs))
         if cap_rest <= 0:
-            return system_msgs
+            return self._trim_messages_to_token_budget(system_msgs)
         rest = _tail_trim_non_system_openai_safe(rest, cap_rest)
-        return system_msgs + rest
+        return self._trim_messages_to_token_budget(system_msgs + rest)
 
     async def completion_ephemeral(
         self,
@@ -799,6 +1014,8 @@ class LLMClient:
             messages = self.get_conversation_for_api()
         if ephemeral_user_messages:
             messages = messages + [dict(m) for m in ephemeral_user_messages]
+        messages = coerce_messages_openai_strict(messages)
+        messages = self._trim_messages_to_token_budget(messages)
         messages = coerce_messages_openai_strict(messages)
 
         model_candidates = _completion_model_candidates(self.config)
@@ -882,6 +1099,15 @@ class LLMClient:
         # return rate-limit, connection, or 5xx errors, so retry transient failures.
         retry_count = max(1, int(os.environ.get("LLM_API_MAX_ATTEMPTS", "7")))
         retry_delay = max(0.0, float(os.environ.get("LLM_API_RETRY_DELAY_SECONDS", "5")))
+        retry_total_timeout_raw = (os.environ.get("LLM_RETRY_TOTAL_TIMEOUT_SEC") or "").strip()
+        retry_total_timeout: float | None = None
+        if retry_total_timeout_raw:
+            try:
+                parsed_total = float(retry_total_timeout_raw)
+                retry_total_timeout = parsed_total if parsed_total > 0 else None
+            except ValueError:
+                retry_total_timeout = None
+        deadline = (time.monotonic() + retry_total_timeout) if retry_total_timeout else None
         response = None
         last_error_msg = ""
         rate_limited = False
@@ -900,6 +1126,15 @@ class LLMClient:
                 )
 
             for attempt in range(1, retry_count + 1):
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        last_error_msg = (
+                            "LLM retry budget exhausted before request completed "
+                            f"(LLM_RETRY_TOTAL_TIMEOUT_SEC={retry_total_timeout_raw})."
+                        )
+                        break
+                    kwargs["timeout"] = max(1, min(int(remaining), int(self.config.timeout)))
                 try:
                     print(
                         f"[LLM] Requesting completion: model={model_name}, "
@@ -928,6 +1163,13 @@ class LLMClient:
                         )
                     transient = _is_transient_llm_error(last_error_msg)
                     hard_quota_exhausted = _is_hard_quota_exhausted_error(last_error_msg)
+                    # A provider-supplied retry delay means the limit is time-based
+                    # (e.g. per-minute quota) and IS recoverable — honor it and retry
+                    # instead of treating it as a hard, non-recoverable exhaustion.
+                    retry_after_hint = _extract_retry_after_seconds(last_error_msg)
+                    if hard_quota_exhausted and retry_after_hint is not None:
+                        hard_quota_exhausted = False
+                        transient = True
                     if gateway is not None:
                         failure_type = gateway.classify_failure(last_error_msg)
                         transient = transient and gateway.should_retry(failure_type)
@@ -972,7 +1214,31 @@ class LLMClient:
         model_returned = model_name
         
         if stream:
-            async for chunk in response:
+            stream_stall_raw = (os.environ.get("LLM_STREAM_STALL_TIMEOUT_SEC") or "75").strip()
+            try:
+                stream_stall_timeout = float(stream_stall_raw)
+            except ValueError:
+                stream_stall_timeout = 75.0
+            if stream_stall_timeout <= 0:
+                stream_stall_timeout = 0.0
+
+            stream_iter = response.__aiter__()
+            while True:
+                try:
+                    if stream_stall_timeout > 0:
+                        chunk = await asyncio.wait_for(
+                            stream_iter.__anext__(),
+                            timeout=stream_stall_timeout,
+                        )
+                    else:
+                        chunk = await stream_iter.__anext__()
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError as e:
+                    raise RuntimeError(
+                        f"LLM stream stalled for {stream_stall_timeout:.1f}s (LLM_STREAM_STALL_TIMEOUT_SEC)."
+                    ) from e
+
                 # The final streaming chunk carries token usage but no choices, so read
                 # usage before skipping choice-less chunks (otherwise tokens stay 0).
                 chunk_usage = getattr(chunk, "usage", None)

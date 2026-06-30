@@ -1347,6 +1347,7 @@ class Agent:
 - search: Search for patterns in files
 - list_directory: List directory contents
 - apply_patch: Apply a unified diff patch
+- revert_file: Undo all uncommitted changes to a file and restore its last known good state (git checkout)
 
 PREFER str_replace over write_file when editing existing files.
 
@@ -1363,6 +1364,7 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                                 "search",
                                 "list_directory",
                                 "apply_patch",
+                                "revert_file",
                             ],
                             "description": "The action to perform",
                         },
@@ -2698,6 +2700,7 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
 
         start_time = time.time()
         call_id = str(uuid.uuid4())[:8]
+        arg_dict = dict(arguments) if isinstance(arguments, dict) else {}
 
         # ── ask_user: pause and request clarification from user ──
         if name == "ask_user":
@@ -2807,7 +2810,6 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 return json.dumps(out_ok, indent=2)
             return f"Error: unknown live_preview action '{action}'"
 
-        arg_dict = dict(arguments) if isinstance(arguments, dict) else {}
         if name == "browser_open":
             url = str(arg_dict.get("url", "") or "").strip()
             if not re.match(r"^https?://", url, re.IGNORECASE):
@@ -2854,6 +2856,72 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                 f"Opened URL in the user's Plodder Browser tab: {url}\n"
                 "If the site blocks iframe embedding, the Browser tab still shows an external-open link."
             )
+
+        def _is_high_risk_terminal_command(cmd: str) -> tuple[bool, str]:
+            c = (cmd or "").strip().lower()
+            if not c:
+                return False, ""
+            risky_patterns = [
+                (r"\brm\s+-rf\b", "destructive recursive delete"),
+                (r"\brm\s+-r\b", "recursive delete"),
+                (r"\bdel\s+/[a-z]*f", "forced file delete"),
+                (r"\brmdir\s+/[a-z]*s", "recursive directory delete"),
+                (r"\bgit\s+reset\s+--hard\b", "destructive git reset"),
+                (r"\bgit\s+clean\s+-[a-z]*f", "destructive git clean"),
+                (r"\bmkfs\b", "filesystem format command"),
+                (r"\bdd\s+if=", "raw disk write command"),
+            ]
+            for pat, reason in risky_patterns:
+                if re.search(pat, c):
+                    return True, reason
+            return False, ""
+
+        async def _require_human_approval(question: str, context: str) -> bool:
+            on_clarification = self.callbacks.get("on_clarification_needed")
+            if on_clarification:
+                on_clarification(
+                    {
+                        "question": question,
+                        "options": ["Approve", "Reject"],
+                        "context": context,
+                    }
+                )
+            self._clarification_event = asyncio.Event()
+            self._clarification_answer = None
+            try:
+                await asyncio.wait_for(self._clarification_event.wait(), timeout=300)
+            except asyncio.TimeoutError:
+                self._clarification_event = None
+                self._clarification_answer = None
+                return False
+            answer = (self._clarification_answer or "").strip().lower()
+            self._clarification_event = None
+            self._clarification_answer = None
+            return answer in {"approve", "approved", "yes", "y", "allow", "continue", "proceed"}
+
+        # Human-in-the-loop gate for risky actions.
+        if name == "terminal":
+            cmd = str(arg_dict.get("command", "") or "")
+            risky, reason = _is_high_risk_terminal_command(cmd)
+            if risky:
+                approved = await _require_human_approval(
+                    "This command looks risky. Approve execution?",
+                    f"Reason: {reason}\nCommand:\n{cmd}",
+                )
+                if not approved:
+                    return f"Blocked by human approval gate: {reason}. Command was not executed."
+
+        if name in {"editor", "atomic_edit"}:
+            action = str(arg_dict.get("action", "") or "").lower()
+            delete_actions = {"delete_file", "remove_file", "unlink", "delete"}
+            if action in delete_actions:
+                target_path = str(arg_dict.get("path", "") or "")
+                approved = await _require_human_approval(
+                    "Agent requested file deletion. Approve?",
+                    f"Action: {action}\nPath: {target_path or '(missing path)'}",
+                )
+                if not approved:
+                    return "Blocked by human approval gate: file deletion was rejected."
 
         tool = self.registry.get(name)
         if not tool:
@@ -3378,12 +3446,28 @@ Optional **`apply_ruff_fix`**: set to true on `write_file` / `str_replace` / `ap
                     else:
                         output = f"Error: {result.error_message}"
 
+                elif action == "revert_file":
+                    import subprocess
+                    try:
+                        subprocess.run(
+                            ["git", "checkout", "HEAD", "--", file_path],
+                            cwd=self.working_directory or ".",
+                            check=True,
+                            capture_output=True,
+                            text=True
+                        )
+                        output = f"Successfully reverted {file_path} to its last committed state."
+                        if self._artifact_logger:
+                            self._artifact_logger.add_file_modified(file_path)
+                    except subprocess.CalledProcessError as e:
+                        output = f"Error reverting {file_path}: {e.stderr}"
+
                 else:
                     output = f"Error: Unknown editor action '{action}'"
 
                 written_paths: list[str] = []
                 if (
-                    action in ("write_file", "str_replace", "apply_patch")
+                    action in ("write_file", "str_replace", "apply_patch", "revert_file")
                     and "Error" not in output
                     and "BLOCKED" not in output
                 ):
@@ -6999,6 +7083,13 @@ Call a tool (editor or terminal) immediately as your first action."""
                         _single_tool_batch = len(response.tool_calls) == 1
                         # Track all tool_call_ids answered for this assistant turn (replenish on mid-batch break)
                         _batch_answered_tool_ids: set[str] = set()
+                        _should_run_critic = False
+                        
+                        import uuid
+                        _turn_checkpoint_id = f"pre_edit_{uuid.uuid4().hex[:8]}"
+                        git_mgr = self._get_git_manager()
+                        if git_mgr:
+                            await git_mgr.create_checkpoint(_turn_checkpoint_id, "Auto-checkpoint before tool executions")
 
                         # Execute each tool
                         for tc in response.tool_calls:
@@ -7376,6 +7467,11 @@ Call a tool (editor or terminal) immediately as your first action."""
                                 tool_ids_answered.add(tc.id)
                                 _batch_answered_tool_ids.add(tc.id)
 
+                            if tool_success and tc.name == "editor" and isinstance(tc.arguments, dict):
+                                _act = tc.arguments.get("action", "")
+                                if _act in ("write_file", "str_replace", "apply_patch"):
+                                    _should_run_critic = True
+
                             if _single_tool_batch:
                                 progress_guard = self._progress_guard_message(
                                     task,
@@ -7526,6 +7622,52 @@ Call a tool (editor or terminal) immediately as your first action."""
                                                 _batch_answered_tool_ids.add(_ptc.id)
                                         self._synthesize_tool_replies_for_open_assistant_tail()
                                         break
+
+                        # --- Multi-Agent Critic System Injection ---
+                        if _should_run_critic and task.status != TaskStatus.COMPLETED:
+                            self._log("Triggering ReviewerAgent for Critic check...")
+                            try:
+                                review_feedback = await self.review_changes(task_description=task.goal.description)
+                                if not review_feedback.approved or review_feedback.has_blocking_issues:
+                                    # State Rollback
+                                    if git_mgr:
+                                        self._log(f"Critic rejected changes. Rolling back to {_turn_checkpoint_id}...")
+                                        await git_mgr.rollback_to_checkpoint(_turn_checkpoint_id, hard=True)
+                                        if "on_message" in self.callbacks:
+                                            await self._trigger_callback(
+                                                "on_message",
+                                                "⏪ **State Rollback Triggered**: Critic rejected changes. Reverted to previous clean state.",
+                                                is_token=False,
+                                            )
+                                    
+                                    critic_msg = (
+                                        "Critic / Reviewer Feedback on your recent edit:\n\n"
+                                        + review_feedback.format_report()
+                                        + "\n\n⚠️ **STATE ROLLBACK ACTIVATED**: Your recent code changes have been automatically reverted because they contained HIGH/CRITICAL issues. "
+                                        "The file is now back to its previous pristine state. Please rewrite the code from scratch incorporating the feedback above."
+                                    )
+                                    self._log(f"Reviewer produced feedback (Approved: {review_feedback.approved})")
+                                    self.llm.add_user_message(critic_msg)
+                                    self._append_session_event(
+                                        AgentStreamEvent(
+                                            kind=AgentEventKind.STATUS,
+                                            role="system",
+                                            text="Critic feedback appended and rollback executed.",
+                                            legacy_type="critic_feedback",
+                                            meta={"task_id": task.task_id},
+                                        )
+                                    )
+                                    if "on_message" in self.callbacks:
+                                        await self._trigger_callback(
+                                            "on_message",
+                                            "🔍 **Critic Review Failed**: Issues found with recent changes. See details in context.",
+                                            is_token=False,
+                                        )
+                                else:
+                                    self._log("Reviewer approved changes.")
+                            except Exception as e:
+                                self._log(f"Critic Review failed: {e}")
+                        # ---------------------------------------------
 
                         if task.status == TaskStatus.COMPLETED:
                             break

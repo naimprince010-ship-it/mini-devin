@@ -15,6 +15,10 @@ export function MemoryView({ sessionId }: MemoryViewProps) {
   const [loading, setLoading] = useState(false);
   const api = useApi();
 
+  // NOTE: `api` (from useApi) is a fresh object every render, so it must NOT be a
+  // dependency here — otherwise loadMemories is recreated each render and the effect
+  // below re-fires endlessly, flooding the backend. The api methods are stable
+  // (useCallback), so referencing api.listMemories without listing `api` is safe.
   const loadMemories = useCallback(async () => {
     setLoading(true);
     try {
@@ -25,7 +29,8 @@ export function MemoryView({ sessionId }: MemoryViewProps) {
     } finally {
       setLoading(false);
     }
-  }, [sessionId, api]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
 
   useEffect(() => {
     loadMemories();

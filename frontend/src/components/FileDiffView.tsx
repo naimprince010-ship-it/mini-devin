@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { FileCode, ChevronDown, ChevronRight } from 'lucide-react';
+import { DiffEditor } from '@monaco-editor/react';
 import type { FileEdit } from '../contexts/SessionEventsContext';
 
 interface FileDiffViewProps {
@@ -88,6 +89,7 @@ function FileItem({ edit, isSelected, onClick }: { edit: FileEdit; isSelected: b
 export function FileDiffView({ fileEdits, onFileSelect }: FileDiffViewProps) {
     const [selectedPath, setSelectedPath] = useState<string | null>(null);
     const [showFullFile, setShowFullFile] = useState(false);
+    const [sideBySide, setSideBySide] = useState(true);
 
     if (fileEdits.length === 0) {
         return (
@@ -171,38 +173,65 @@ export function FileDiffView({ fileEdits, onFileSelect }: FileDiffViewProps) {
                             </div>
                         </div>
 
-                        {/* Lines */}
-                        <div className="flex-1 overflow-y-auto custom-scrollbar font-mono text-[11px]">
-                            {displayLines.map((line, i) => (
-                                <div
-                                    key={i}
-                                    className={`flex items-start gap-0 leading-5 ${line.type === 'add'
-                                        ? 'bg-green-900/20'
-                                        : line.type === 'remove'
-                                            ? 'bg-red-900/20'
-                                            : ''
-                                        }`}
-                                >
-                                    {/* Line number */}
-                                    <span className="w-10 text-right pr-3 text-[#2a2a2a] select-none flex-shrink-0 py-0.5">
-                                        {i + 1}
-                                    </span>
-                                    {/* Prefix */}
-                                    <span className={`w-4 flex-shrink-0 py-0.5 font-bold ${line.type === 'add' ? 'text-green-500'
-                                        : line.type === 'remove' ? 'text-red-500'
-                                            : 'text-transparent'
-                                        }`}>
-                                        {line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' '}
-                                    </span>
-                                    {/* Content */}
-                                    <span className={`flex-1 py-0.5 pr-4 whitespace-pre-wrap break-all ${line.type === 'add' ? 'text-green-300'
-                                        : line.type === 'remove' ? 'text-red-400 line-through opacity-70'
-                                            : 'text-[#c0c0c0]'
-                                        }`}>
-                                        {line.line || ' '}
-                                    </span>
+                        {/* Lines / Monaco diff */}
+                        <div className="flex-1 min-h-0 overflow-hidden">
+                            {selectedEdit.before ? (
+                                <>
+                                    <div className="px-3 py-1 border-b border-[#1a1a1a] bg-[#0a0a0a] flex items-center justify-end gap-2">
+                                        <button
+                                            onClick={() => setSideBySide((v) => !v)}
+                                            className="text-[9px] text-[#737373] hover:text-[#d1d1d1] uppercase tracking-wider"
+                                        >
+                                            {sideBySide ? 'Inline Diff' : 'Side-by-side'}
+                                        </button>
+                                    </div>
+                                    <DiffEditor
+                                        original={selectedEdit.before || ''}
+                                        modified={selectedEdit.content || ''}
+                                        language={lang === 'text' ? undefined : lang}
+                                        theme="vs-dark"
+                                        options={{
+                                            readOnly: true,
+                                            renderSideBySide: sideBySide,
+                                            minimap: { enabled: false },
+                                            scrollBeyondLastLine: false,
+                                            wordWrap: 'on',
+                                            lineNumbers: 'on',
+                                            fontSize: 12,
+                                        }}
+                                    />
+                                </>
+                            ) : (
+                                <div className="h-full overflow-y-auto custom-scrollbar font-mono text-[11px]">
+                                    {displayLines.map((line, i) => (
+                                        <div
+                                            key={i}
+                                            className={`flex items-start gap-0 leading-5 ${line.type === 'add'
+                                                ? 'bg-green-900/20'
+                                                : line.type === 'remove'
+                                                    ? 'bg-red-900/20'
+                                                    : ''
+                                                }`}
+                                        >
+                                            <span className="w-10 text-right pr-3 text-[#2a2a2a] select-none flex-shrink-0 py-0.5">
+                                                {i + 1}
+                                            </span>
+                                            <span className={`w-4 flex-shrink-0 py-0.5 font-bold ${line.type === 'add' ? 'text-green-500'
+                                                : line.type === 'remove' ? 'text-red-500'
+                                                    : 'text-transparent'
+                                                }`}>
+                                                {line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' '}
+                                            </span>
+                                            <span className={`flex-1 py-0.5 pr-4 whitespace-pre-wrap break-all ${line.type === 'add' ? 'text-green-300'
+                                                : line.type === 'remove' ? 'text-red-400 line-through opacity-70'
+                                                    : 'text-[#c0c0c0]'
+                                                }`}>
+                                                {line.line || ' '}
+                                            </span>
+                                        </div>
+                                    ))}
                                 </div>
-                            ))}
+                            )}
                         </div>
                     </>
                 )}
