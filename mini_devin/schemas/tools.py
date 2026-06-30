@@ -52,9 +52,9 @@ class TerminalInput(BaseToolInput):
         description="Working directory for command execution"
     )
     timeout_seconds: int = Field(
-        default=30,
+        default=120,
         ge=1,
-        le=300,
+        le=600,
         description="Maximum execution time in seconds"
     )
     env_vars: dict[str, str] = Field(

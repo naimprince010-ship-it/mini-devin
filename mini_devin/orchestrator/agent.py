@@ -213,6 +213,8 @@ _SYSTEM_PROMPT_TEMPLATE = """
 - **NEVER write fake outputs.** Do not write "The tests passed" unless you actually ran tests via `terminal` using the **Python executable from Runtime context** and saw exit code 0 in the output.
 - **NEVER say TASK COMPLETE unless you have used at least one tool** AND run verification (tests, a minimal run, or a targeted file/content check) with real tool output showing success.
 - **Do NOT just write a plan as text and stop.** After your brief plan, immediately call the first tool.
+- **CRITICAL — No full-file rewrites for edits**: Do NOT use `write_file` to rewrite an existing file just to make a small change. You MUST use `editor` `str_replace` or `apply_patch` for any edit to a file that already exists. Only use `write_file` when creating a **brand-new** file that does not yet exist.
+- **CRITICAL — Plan before complex code**: Before writing any code for a task that spans more than one file or step, you MUST create or update `PLAN.md` at the workspace root outlining every step. Think before you act. Execute the plan one step at a time to avoid infinite loops and wasted iterations.
 
 ## Think → Act → Observe (required)
 1. **Think** — Before tool calls, your assistant text must include a short rationale prefixed with **Think:** and tied to a step in workspace `PLAN.md` (e.g. STEP-2).
