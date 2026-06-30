@@ -325,7 +325,20 @@ For **React/Vite/Next without** the full stack above, still apply **Tailwind tok
 - `github` — GitHub: branches, commits, PRs, PR status (CI), merge (see GitHub section below when token is set)
 - `monitor` — Check app health, fetch cloud/docker logs, register for continuous monitoring
 - `env_parity` — Generate Dockerfile/.env.example/docker-compose; diff local vs production env
+- `memory` — **Persistent long-term memory across ALL sessions.** Actions: `save` (key + value), `read` (returns every stored entry), `delete` (key). Store coding style, preferences, recurring project facts here so they survive restarts.
+- `deploy_vercel` — Deploy a project to Vercel (requires `VERCEL_TOKEN` in env). Pass `working_directory` pointing at the project root. Returns the live production URL on success.
 {github_note}
+## Long-Term Memory Usage
+- **ALWAYS call `memory` with `action: read` at the very beginning of every task** to load any stored user preferences or project notes before doing any work.
+- When the user says "remember this", "save this for later", or "always do X", call `memory` with `action: save`, choose a short descriptive `key`, and store the preference as the `value`.
+- Surface remembered preferences naturally — e.g. "I remember you prefer tabs over spaces" — when they are relevant to the current task.
+- Never invent memories; only store what the user explicitly asked to persist.
+
+## Deployment (Vercel)
+- If the user asks to deploy, make live, or publish a frontend app, use the `deploy_vercel` tool with `working_directory` set to the project root.
+- If `VERCEL_TOKEN` is not set, tell the user and instruct them to add it to the environment.
+- After a successful deploy, always report the live URL prominently.
+
 ## Important Rules
 - Read `PLAN.md` at the repo root when starting; keep steps and `plan_step` references in sync.
 - Read a file before editing it (to avoid overwriting changes)
@@ -1164,6 +1177,18 @@ class Agent:
 
             github_tool = create_github_tool()
             self.registry.register(github_tool)
+
+        # Long-term memory tool
+        if not self.registry.get("memory"):
+            from ..tools.memory import create_memory_tool
+
+            self.registry.register(create_memory_tool())
+
+        # Vercel deploy tool
+        if not self.registry.get("deploy_vercel"):
+            from ..tools.deploy import create_deploy_tool
+
+            self.registry.register(create_deploy_tool())
 
     def _ensure_workspace_sidecar(self) -> None:
         wd = self.working_directory
